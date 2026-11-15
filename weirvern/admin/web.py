@@ -1584,14 +1584,11 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    payload = assets_mod.asset_inventory(client, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.assets), so the two cannot disagree
+                    # about a column, a zero or the failure shape.
+                    payload = payloads.assets(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("asset inventory unavailable: %s", exc)
-                return self._json({
-                    "available": False, "hosts": [],
-                    "reason": read_failure(exc),
-                    "data_error": str(exc),
-                })
+                return self._json(payloads.assets_failure(exc))
             self._json(payload)
 
         def _findings(self, query: dict) -> None:
@@ -1635,14 +1632,10 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    payload = assets_mod.asset_changes(client, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.asset_changes).
+                    payload = payloads.asset_changes(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("asset changes unavailable: %s", exc)
-                return self._json({
-                    "available": False, "changes": [], "count": 0,
-                    "reason": read_failure(exc),
-                    "data_error": str(exc),
-                })
+                return self._json(payloads.asset_changes_failure(exc))
             self._json(payload)
 
         def _asset_posture(self) -> None:
@@ -1662,21 +1655,12 @@ def _build_handler(ctx: GuiContext):
             ip = str((query.get("ip") or [""])[0]).strip()
             try:
                 with self._with_client() as client:
-                    rows = scan_jobs.list_jobs(client, ip=ip, limit=20)
+                    # SHARED WITH THE FLASK SURFACE (payloads.scan_jobs), including the timestamp
+                    # serialisation: a job's requested_at is the same string on both surfaces.
+                    payload = payloads.scan_jobs(client, ip=ip)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("scan jobs unavailable: %s", exc)
-                return self._json({
-                    "available": False, "reason": "the scan-job table is not readable",
-                    "jobs": [], "count": 0,
-                })
-            out = []
-            for job in rows:
-                item = dict(job)
-                for key in ("requested_at", "lease_until", "started_at", "finished_at"):
-                    value = item.get(key)
-                    item[key] = _iso(value)
-                out.append(item)
-            self._json({"available": True, "reason": "", "jobs": out, "count": len(out)})
+                return self._json(payloads.scan_jobs_failure(exc))
+            self._json(payload)
 
         def _scan_job_create(self) -> None:
             """Queue one host scan for the scanner to claim under a lease."""
@@ -1765,13 +1749,10 @@ def _build_handler(ctx: GuiContext):
             """
             try:
                 with self._with_client() as client:
-                    payload = status_mod.host_identity_view(client)
+                    # SHARED WITH THE FLASK SURFACE (payloads.host_identity).
+                    payload = payloads.host_identity(client)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("host identity unavailable: %s", exc)
-                return self._json({
-                    "available": False, "hosts": [], "count": 0, "coverage": None,
-                    "reason": read_failure(exc),
-                })
+                return self._json(payloads.host_identity_failure(exc))
             self._json(payload)
 
         def _sluice(self, query: dict) -> None:
@@ -4305,24 +4286,15 @@ def _build_handler(ctx: GuiContext):
 
         def _networks(self, query: dict) -> None:
             """Read-only network coverage for Settings and the Weirlings tab."""
-            try:
-                hours = max(1, min(168, int(query.get("hours", ["24"])[0])))
-            except (TypeError, ValueError, IndexError):
-                hours = 24
+            # The same clamped parse both surfaces use (`_int_arg` defaults and clamps, deliberately).
+            hours = _int_arg(query, "hours", 24, 1, 168)
             try:
                 with self._with_client() as client:
-                    payload = networks.overview(client, hours=hours)
-                    if not payload.get("scopes"):
-                        payload["suggested_scopes"] = [
-                            scope.public() for scope in networks.suggested_monitored_scopes()
-                        ]
+                    # SHARED WITH THE FLASK SURFACE (payloads.networks_overview), suggestion block
+                    # included, so both surfaces offer the same starting points.
+                    payload = payloads.networks_overview(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("network scope read failed: %s", exc)
-                return self._json({
-                    "available": False,
-                    "reason": f"could not read network scopes: {type(exc).__name__}",
-                    "scopes": [], "summary": {}, "counts_available": False,
-                })
+                return self._json(payloads.networks_failure(exc))
             self._json(payload)
 
         def _networks_autofill(self) -> None:

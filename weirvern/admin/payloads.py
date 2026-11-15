@@ -22,12 +22,15 @@ console keeps serving everything not yet moved.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from clickhouse_connect.driver.client import Client
 
 from weirvern.admin import status as status_mod
 from weirvern.admin import web_api
+
+logger = logging.getLogger(__name__)
 
 
 def episodes(client: Client, *, hours: int, limit: int) -> dict[str, Any]:
@@ -48,8 +51,20 @@ def baselines(client: Client) -> dict[str, Any]:
 
     `available`/`reason` pass through intact, because "the store could not be read" and "no host has a
     baseline yet" need different words on screen and only the server knows which is true.
+
+    A FAILED read is a 200 carrying `available: false`, NOT a 503: the card sits beside others, and an
+    error page for one of them would take down the views around it. The console words it the same way,
+    through `baselines_failure`, so the two surfaces cannot drift on it.
     """
     return web_api.baselines_payload(status_mod.baselines_overview(client))
+
+
+def baselines_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/baselines, shared so both surfaces cannot drift."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("baselines unavailable: %s", exc)
+    return {"available": False, "reason": read_failure(exc)}
 
 
 def detectors(client: Client) -> dict[str, Any]:
@@ -204,6 +219,111 @@ def ml_data_contract(client: Client) -> dict[str, Any]:
         return {"available": False, "reason": f"cannot read the data contract: {exc}",
                 "sources": [], "families": [], "gaps": [], "hosts": [],
                 "population": {}, "promotion_ok": False}
+
+
+# ── inventory reads: one fetch, one shape, and a failure the panel can draw around ──────────
+
+def assets(client: Client, *, hours: int) -> dict[str, Any]:
+    """The asset inventory: every host seen, with a per-host summary.
+
+    `hours` bounds the TRAFFIC columns only. A host whose last packet was days ago is still an asset,
+    so it appears with zeroed counters rather than being dropped.
+    """
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    return assets_mod.asset_inventory(client, hours=hours)
+
+
+def assets_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/assets, shared so both surfaces cannot drift."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("asset inventory unavailable: %s", exc)
+    return {"available": False, "hosts": [], "reason": read_failure(exc), "data_error": str(exc)}
+
+
+def asset_changes(client: Client, *, hours: int) -> dict[str, Any]:
+    """Recent service changes and their shadow posture score. Hours bounds the window only."""
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    return assets_mod.asset_changes(client, hours=hours)
+
+
+def asset_changes_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/asset-changes, shared between the surfaces."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("asset changes unavailable: %s", exc)
+    return {"available": False, "changes": [], "count": 0, "reason": read_failure(exc),
+            "data_error": str(exc)}
+
+
+def scan_jobs(client: Client, *, ip: str) -> dict[str, Any]:
+    """The manual-scan queue: recent requests, optionally for one address.
+
+    The row timestamps are serialised here, through the console's own `_iso`, so a job's
+    `requested_at` is the same string on both surfaces.
+    """
+    from weirvern import scan_jobs as scan_jobs_mod  # noqa: PLC0415
+    from weirvern.admin.web import _iso  # noqa: PLC0415
+
+    rows = scan_jobs_mod.list_jobs(client, ip=ip, limit=20)
+    out = []
+    for job in rows:
+        item = dict(job)
+        for key in ("requested_at", "lease_until", "started_at", "finished_at"):
+            item[key] = _iso(item.get(key))
+        out.append(item)
+    return {"available": True, "reason": "", "jobs": out, "count": len(out)}
+
+
+def scan_jobs_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/scan-jobs.
+
+    A FIXED SENTENCE, not `read_failure`: the queue is not a monitoring read and the operator is told
+    which table is unreadable. Reproduced exactly rather than tidied into the house wording.
+    """
+    logger.warning("scan jobs unavailable: %s", exc)
+    return {"available": False, "reason": "the scan-job table is not readable",
+            "jobs": [], "count": 0}
+
+
+def host_identity(client: Client) -> dict[str, Any]:
+    """What each host IS, from traffic already seen. Nothing is sent, so this is a pure read."""
+    return status_mod.host_identity_view(client)
+
+
+def host_identity_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/identity, shared between the surfaces."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("host identity unavailable: %s", exc)
+    return {"available": False, "hosts": [], "count": 0, "coverage": None,
+            "reason": read_failure(exc)}
+
+
+def networks_overview(client: Client, *, hours: int) -> dict[str, Any]:
+    """Read-only network coverage for Settings and the Warden tab.
+
+    The suggestion block is part of the payload: with no declared scopes the pane offers starting
+    points, and deriving them here means both surfaces offer the same ones.
+    """
+    from weirvern import networks as networks_mod  # noqa: PLC0415
+
+    payload = networks_mod.overview(client, hours=hours)
+    if not payload.get("scopes"):
+        payload["suggested_scopes"] = [
+            scope.public() for scope in networks_mod.suggested_monitored_scopes()
+        ]
+    return payload
+
+
+def networks_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/networks: the exception TYPE, never its message."""
+    logger.warning("network scope read failed: %s", exc)
+    return {"available": False,
+            "reason": f"could not read network scopes: {type(exc).__name__}",
+            "scopes": [], "summary": {}, "counts_available": False}
 
 
 # ── windowed reads: the arguments are part of the contract ──────────────────────────────────

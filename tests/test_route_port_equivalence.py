@@ -1,18 +1,23 @@
 """Every ported route must answer EXACTLY as the console does.
 
-WHY THIS FILE IS THE POINT OF THE PORT. The console has 52 GET reads and 31 POST writes, and its
-JavaScript depends on the exact payload shape of most of them. Hand-rewriting a handler onto the
-shared payload layer is therefore a change to a contract that nothing else checks: the console's own
-tests exercise the legacy handler, and the DOM harness renders against fixtures rather than the
-server. A ported route that drifts by one key returns a panel that renders blanks with no error,
-which is this project's most-repeated defect.
+WHY THIS FILE IS THE POINT OF THE PORT. The console has 53 GET reads and 34 POST entries over 84
+distinct API paths, and its JavaScript depends on the exact payload shape of most of them.
+Hand-rewriting a handler onto the shared payload layer is therefore a change to a contract that
+nothing else checks: the console's own tests exercise the legacy handler, and the DOM harness renders
+against fixtures rather than the server. A ported route that drifts by one key returns a panel that
+renders blanks with no error, which is this project's most-repeated defect.
 
 So each ported route is driven on BOTH surfaces over the SAME stubbed data, and the two responses are
-compared whole -- status and body. That is the only check that makes porting 83 routes safe, and it is
+compared whole -- status and body. That is the only check that makes porting 84 routes safe, and it is
 why it exists before the bulk of the porting rather than after.
 
 THE REGISTRY BELOW IS THE WORK LIST. A route appears in `PORTED` only once it has moved, and the count
 is asserted at the end so the number can only fall as routes cross.
+
+TWO READS ARE DELIBERATELY OUTSIDE IT. `/api/session` and `/api/healthz` are auth and liveness
+probes, not data reads: neither has a fetcher to stub, and their subject is the session payload and
+the gate rather than a table. They are pinned in `test_flask_surface.py`, which drives them with
+accounts armed and disarmed. Listing them here would mean adding a second, weaker mechanism.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import importlib
 import json
 import pathlib
+import re
 import urllib.error
 import urllib.request
 
@@ -65,10 +71,50 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
     "/api/ml/ledger": ("ml_ledger", None, None, ""),
     "/api/ml/eval-report": ("ml_eval_report", None, None, ""),
     "/api/ml/review": ("ml_review", None, None, ""),
+    # Ported BEFORE the registry caught up: these four were live on Flask with no equivalence
+    # entry, which is exactly the way a port grows on trust. The failure shapes are the interesting
+    # half -- `/api/baselines` answered 200/available:false on the console and 503 on Flask until
+    # `payloads.baselines_failure` was shared, and the registry is what surfaced it.
+    "/api/episodes": ("episodes", "weirvern.admin.status.episodes_recent",
+                      {"episodes": [{"src_addr": ""}]}, "?hours=6&limit=5"),
+    "/api/baselines": ("baselines", "weirvern.admin.status.baselines_overview",
+                       {"available": True, "host_count": 0, "hosts": []}, ""),
+    "/api/ml/slo": ("ml_slo", "weirvern.models.quality.report",
+                    {"available": True, "windows": []}, ""),
+    "/api/ml/coverage": ("ml_coverage", "weirvern.models.source_coverage.collect",
+                         {"available": True, "sources": []}, ""),
+    # The inventory reads: one fetch each, and a failure the panel draws around rather than a 503.
+    "/api/assets": ("assets", "weirvern.admin.assets.asset_inventory",
+                    {"available": True, "hosts": []}, "?hours=6"),
+    "/api/asset-changes": ("asset_changes", "weirvern.admin.assets.asset_changes",
+                           {"available": True, "changes": [], "count": 0}, "?hours=6"),
+    "/api/scan-jobs": ("scan_jobs", "weirvern.scan_jobs.list_jobs", [], "?ip=203.0.113.9"),
+    "/api/identity": ("host_identity", "weirvern.admin.status.host_identity_view",
+                      {"available": True, "hosts": []}, ""),
+    "/api/networks": ("networks_overview", "weirvern.networks.overview",
+                      {"available": True, "scopes": [{"cidr": "10.0.0.0/8"}]}, "?hours=6"),
 }
 
-CONSOLE_GET_ROUTES = 52
-CONSOLE_POST_ROUTES = 31
+
+def test_no_flask_route_is_missing_from_the_registry():
+    """Every API read Flask serves is in the registry, or one of the three named exceptions.
+
+    THE FAILURE THIS CATCHES IS THE ONE THAT PRODUCED IT. Five routes (`session`, `episodes`,
+    `baselines`, `ml/slo`, `ml/coverage`) were live on Flask with no equivalence entry, so nothing
+    compared them with the console -- and when `baselines` was finally driven, its failure path
+    answered 200 here and 503 there. A registry that is only appended to by hand cannot notice that,
+    so the Flask route list is the second source of truth and the difference is asserted empty.
+
+    `/api/proposals` never existed on the console (it is new work, not a port) and the other two are
+    auth and liveness probes, pinned in `test_flask_surface.py`.
+    """
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
+    served = set(re.findall(r'@app\.get\("(/api/[^"]+)"\)', src))
+    unregistered = served - set(PORTED) - {"/api/session", "/api/healthz", "/api/proposals"}
+    assert not unregistered, (
+        f"Flask serves {sorted(unregistered)} with no equivalence entry, so nothing compares it "
+        f"with the console"
+    )
 
 
 class _CM:
@@ -205,7 +251,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 13, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 22, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────

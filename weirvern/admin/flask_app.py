@@ -10,10 +10,11 @@ JavaScript. The 900-odd checks in `scripts/jsdom_render.js` keep measuring the c
 before, because the console is served unchanged. A big-bang port would have thrown that away to gain
 a framework.
 
-THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API routes and the
-dashboard's own JavaScript calls 59 of them. This app serves 6. Replacing the console outright would
-therefore load the page and break 53 endpoints, with every panel reporting "no such endpoint" -- a
-regression dressed as a migration.
+THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 25 of
+the reads natively. Replacing the console outright would therefore load the page and break every
+endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
+migration.
 
 So the front door FORWARDS what it has not taken over. With `proxy_to` set, any path this app does not
 own is passed to the legacy server, which keeps running on loopback inside the same process. Flask owns
@@ -385,6 +386,21 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except Exception as exc:  # noqa: BLE001
             return _json_error(503, read_failure(exc))
 
+    def _soft_route(fetcher, failure, **kwargs):
+        """A read whose FAILURE is a 200 carrying `available: false`, not a 503.
+
+        Some console routes answer a failed read with a payload the panel can still draw around;
+        others raise so the route answers 503. That difference is deliberate per route, and it is
+        part of what the operator sees, so it is not tidied away here. The fetcher raises and
+        `failure` -- the console's own shape, shared from the payload layer -- builds the body, so
+        neither surface can invent its own wording.
+        """
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                return jsonify(fetcher(client, **kwargs))
+        except Exception as exc:  # noqa: BLE001
+            return jsonify(failure(exc))
+
     @app.get("/api/audit")
     @gated
     def audit():
@@ -518,14 +534,57 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def baselines():
         """The per-host baseline snapshot, from the same fetcher the console uses."""
         from weirvern.admin import payloads  # noqa: PLC0415
-        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        return _soft_route(payloads.baselines, payloads.baselines_failure)
+
+    # ── the inventory reads: a failed read is a 200 the panel can draw around ──────────────────
+
+    @app.get("/api/assets")
+    @gated
+    def assets():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
 
         try:
-            with ctx.connect_factory(ctx.settings) as client:
-                return jsonify(payloads.baselines(client))
-        except Exception as exc:  # noqa: BLE001
-            return _json_error(503, read_failure(exc))
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.assets, payloads.assets_failure, hours=hours)
 
+    @app.get("/api/asset-changes")
+    @gated
+    def asset_changes():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.asset_changes, payloads.asset_changes_failure, hours=hours)
+
+    @app.get("/api/scan-jobs")
+    @gated
+    def scan_jobs():
+        """The manual-scan queue. `ip` is optional; its own limit of 20 is inside the fetcher."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        ip = str(web._first(request.args, "ip", "") or "").strip()
+        return _soft_route(payloads.scan_jobs, payloads.scan_jobs_failure, ip=ip)
+
+    @app.get("/api/identity")
+    @gated
+    def host_identity():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _soft_route(payloads.host_identity, payloads.host_identity_failure)
+
+    @app.get("/api/networks")
+    @gated
+    def networks():
+        """The clamped parse is the console's own, so `?hours=9999` is 168 on both surfaces."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        hours = web._int_arg(request.args, "hours", 24, 1, 168)
+        return _soft_route(payloads.networks_overview, payloads.networks_failure, hours=hours)
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
