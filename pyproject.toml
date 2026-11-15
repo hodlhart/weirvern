@@ -25,6 +25,12 @@ dependencies = [
     # can be written against the same payload layer. Bounded like the others so a major bump is a
     # deliberate act rather than something CI resolves overnight.
     "flask>=3.0,<4",
+    # THE WSGI SERVER THE DEPLOYMENT ACTUALLY RUNS. Flask ships no server of its own, and Werkzeug's
+    # is single-process and documented as not for production; `gui --flask` used it in front of a
+    # handful of routes and was fine, but this is now the dashboard's entry point, so the server is a
+    # declared dependency rather than an assumption. waitress is pure Python with no transitive
+    # dependencies, so it costs nothing at image size and nothing at runtime.
+    "waitress>=3,<4",
 ]
 
 [project.optional-dependencies]

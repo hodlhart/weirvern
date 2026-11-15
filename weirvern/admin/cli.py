@@ -830,20 +830,21 @@ def cmd_tune(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int) -> int:
-    """Serve the Flask surface. OPT-IN, because switching the dashboard's transport is a decision.
+def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int,
+               proxy_legacy: bool = False) -> int:
+    """Serve the Flask surface. This IS the console now: every API route lives here.
 
-    THE TWO SERVERS ARE DIFFERENT PRODUCTS RIGHT NOW, and pretending otherwise would be the bug.
-    The hand-rolled handler serves the full dashboard: every API route, the TLS-from-its-own-CA path,
-    the /panic no-JS fallback, the static allow-list. The Flask app serves the rendered pages (login,
-    register, the block proposal form) and the routes that have been migrated onto the shared payload
-    layer. Running `gui --flask` therefore gives the RENDERED UI, not the full console.
+    THE LEGACY SERVER IS NO LONGER STARTED BY DEFAULT. It used to run on loopback inside this process
+    and answer whatever Flask had not taken over -- correct while the migration was half done, and a
+    liability afterwards: a route Flask does not serve would be answered by a second implementation
+    nobody was testing, and the two would drift in exactly the places nobody looked. Every one of the
+    console's 83 API paths is ported, so the passthrough is now OPT-IN (`--proxy-legacy`) and exists
+    only for the one remaining prefix family, `/api/models/retrain/<id>`.
 
-    That is why it is a flag and not a replacement: a deployment can run both, on different ports,
-    while routes move across one at a time. Nothing about the default changes.
-
-    The signing key is required for the cookie the rendered pages need. Without it the pages refuse
-    and say so, and the JSON routes still work, because they authenticate by header.
+    THE SIGNING KEY IS REQUIRED for the cookie the rendered pages need. Without it the pages refuse
+    and say so, and the JSON routes still work because they authenticate by header -- which is
+    exactly the state a deployment is in between applying this image and adding the key to its
+    Secret, and why the deployment declares the key explicitly rather than letting it be absent.
     """
     from weirvern.admin import flask_app, web
 
@@ -852,24 +853,27 @@ def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port:
                         "to sign a session cookie and will say so. The JSON routes still work."))
 
     ctx = web.build_context(admin_client, settings, pdir, namespace)
-
-    # THE LEGACY SERVER KEEPS RUNNING, ON LOOPBACK, INSIDE THIS PROCESS. It is not a second front
-    # door: it is bound to 127.0.0.1 on an ephemeral port and nothing outside can reach it. Flask
-    # forwards to it whatever it has not taken over, which is how the console's other 78 API routes
-    # keep working while they are migrated one at a time. Serving them from Flask today is not
-    # possible -- it has 6 of the 84, and the dashboard calls 59.
-    legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
-    proxy_to = f"http://127.0.0.1:{legacy.port}"
-    print(_c("dim", f"    console routes still served by the legacy handler at {proxy_to}"))
+    proxy_to = ""
+    if proxy_legacy:
+        legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
+        proxy_to = f"http://127.0.0.1:{legacy.port}"
+        print(_c("dim", f"    --proxy-legacy: routes this app does not serve go to {proxy_to}"))
 
     app = flask_app.create_app(ctx, proxy_to=proxy_to)
     print(_c("bold", f"Weirvern on http://{host}:{port}"))
     print(_c("dim", "    rendered pages: /login /register /home /block"))
-    print(_c("dim", "    JSON: /api/healthz /api/session /api/episodes /api/baselines /api/proposals"))
-    print(_c("dim", "    everything else is passed through to the console unchanged"))
-    # Werkzeug's own server, single-process. A deployment puts gunicorn or waitress in front; this
-    # exists so the surface can be started and driven without adding a WSGI server as a dependency.
-    app.run(host=host, port=port, threaded=True, use_reloader=False)
+    print(_c("dim", "    the JSON API is served by this app; nothing is passed through by default"))
+    # WAITRESS WHEN AVAILABLE. Werkzeug's server is single-process and documented as not for
+    # production; it stays as the fallback so the surface can still be started without that
+    # dependency, and says which server answered.
+    try:
+        from waitress import serve  # type: ignore[import-untyped]  # noqa: PLC0415
+    except ImportError:
+        print(_c("dim", "    waitress is not installed; using Werkzeug's development server"))
+        app.run(host=host, port=port, threaded=True, use_reloader=False)
+        return EXIT_OK
+    print(_c("dim", "    serving with waitress (threaded, one process)"))
+    serve(app, host=host, port=port, threads=8)
     return EXIT_OK
 
 
@@ -1496,14 +1500,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="check this interface as the management port")
     s.set_defaults(func=cmd_interfaces)
 
-    s = sub.add_parser("gui", help="serve the read-only web dashboard")
+    s = sub.add_parser("gui", help="serve the web dashboard (the console, writes included)")
     s.add_argument("--host", default=None,
                    help="bind address (default 127.0.0.1, or $GUI_HOST)")
     s.add_argument("--port", type=int, default=None,
                    help="port (default 8088, or $GUI_PORT)")
     s.add_argument("--flask", action="store_true",
-                   help="serve the Flask surface (rendered pages + proposals API) instead of the "
-                        "hand-rolled dashboard server")
+                   help="serve the Flask surface. This is the console now: every API route lives "
+                        "there, so this is the deployment's entry point")
+    s.add_argument("--proxy-legacy", action="store_true",
+                   help="with --flask: also start the old handler on loopback and pass it whatever "
+                        "this app does not serve (only /api/models/retrain/<id> remains)")
     s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("prune", help="apply the per-component disk caps")
