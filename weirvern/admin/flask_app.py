@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 34 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 39 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -390,16 +390,16 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # answer a failed read with a 503 and some with a 200 carrying `available: false`; that
     # difference is deliberate per route (a panel that can still draw around a missing card), and a
     # port that "tidied" it into one shape would change what the operator sees.
-    def _payload_route(fetcher, *, needs_client=True, settings=False):
+    def _payload_route(fetcher, *, needs_client=True, settings=False, **kwargs):
         from weirvern.admin.web import read_failure  # noqa: PLC0415
 
         try:
             if not needs_client:
-                return jsonify(fetcher())
+                return jsonify(fetcher(**kwargs))
             with ctx.connect_factory(ctx.settings) as client:
                 if settings:
-                    return jsonify(fetcher(client, ctx.settings))
-                return jsonify(fetcher(client))
+                    return jsonify(fetcher(client, ctx.settings, **kwargs))
+                return jsonify(fetcher(client, **kwargs))
         except Exception as exc:  # noqa: BLE001
             return _json_error(503, read_failure(exc))
 
@@ -721,6 +721,68 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except ValueError as exc:
             return _json_error(400, str(exc))
         return _soft_route(payloads.dns, payloads.dns_failure, hours=hours, **args)
+
+    # ── the address-validated detail reads: a 503 on failure, like the console's ───────────────
+
+    @app.get("/api/host")
+    @gated
+    def host():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        # The console checks the address BEFORE the window, so this order is the contract.
+        try:
+            addr = web.host_addr(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _payload_route(payloads.host, addr=addr, hours=hours)
+
+    @app.get("/api/evidence")
+    @gated
+    def evidence():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            args = web.evidence_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(payloads.evidence, **args)
+
+    @app.get("/api/incident")
+    @gated
+    def incident():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            args = web.incident_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(payloads.incident, **args)
+
+    @app.get("/api/fingerprints")
+    @gated
+    def fingerprints():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            ja4 = web.fingerprints_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(payloads.fingerprints, ja4=ja4)
+
+    @app.get("/api/findings")
+    @gated
+    def findings():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            args = web.findings_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.findings, payloads.findings_failure, **args)
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

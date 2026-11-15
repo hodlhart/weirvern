@@ -117,6 +117,19 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                    {"available": True, "points": []}, "?hours=6&port=443"),
     "/api/dns": ("dns", "weirvern.admin.payloads.dns",
                  {"available": True, "rows": []}, "?hours=6"),
+    # The address-validated detail reads. `host` stubs only the load-bearing read: the exposure
+    # annotation runs against the placeholder client, fails, and takes its documented fallback,
+    # which is the behaviour under test as much as the happy path.
+    "/api/host": ("host", "weirvern.admin.status.host_detail",
+                  {"src_addr": "203.0.113.9", "hours": 6}, "?addr=203.0.113.9&hours=6"),
+    "/api/evidence": ("evidence", "weirvern.admin.status.alert_evidence",
+                      {"rows": []}, "?addr=203.0.113.9&start=2026-11-13T00:00:00"),
+    "/api/incident": ("incident", "weirvern.admin.status.incident_detail",
+                      {"available": True}, "?addr=203.0.113.9&start=2026-11-13T00:00:00"),
+    "/api/fingerprints": ("fingerprints", "weirvern.admin.status.fingerprint_hosts",
+                          {"hosts": []}, "?ja4=t13d1516h2_abc"),
+    "/api/findings": ("findings", "weirvern.admin.payloads.findings",
+                      {"available": True, "findings": []}, "?severity=high&limit=5"),
 }
 
 
@@ -280,7 +293,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 31, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 36, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -421,6 +434,13 @@ REFUSALS = [
     ("/api/dns", "?qtype=abc"),
     ("/api/dns", "?qtype=99999"),
     ("/api/zeek", "?log=bogus"),
+    ("/api/host", ""),
+    ("/api/host", "?addr=not%20an%20address!"),
+    ("/api/evidence", "?addr=203.0.113.9"),
+    ("/api/incident", ""),
+    ("/api/fingerprints", "?ja4=###"),
+    ("/api/findings", "?severity=bogus"),
+    ("/api/findings", "?limit=abc"),
 ]
 
 
@@ -456,4 +476,28 @@ def test_the_dns_filters_and_paging_reach_the_fetcher_identically(surfaces, monk
     assert [(c.get("qtype"), c.get("rcode")) for c in seen] == [(1, 3), (1, 3)]
     assert [c.get("domain") for c in seen] == ["example.com", "example.com"]
     assert [c.get("client_ip") for c in seen] == ["203.0.113.9", "203.0.113.9"]
+
+
+def test_the_findings_filters_parse_identically_and_the_limit_is_NOT_clamped(surfaces, monkeypatch):
+    """`severity` lowercases and `limit` passes through unbounded, on both surfaces.
+
+    THE ABSENCE OF A CLAMP IS THE CONTRACT. Findings are historical evidence and this route hands
+    the caller's number straight to the query, so a port that "helpfully" clamped it would answer a
+    different question than the one asked -- while both surfaces agreed with each other, which is
+    exactly the kind of agreement that hides a defect.
+    """
+    rec = _Recorder({"available": True, "findings": []})
+    _patch(monkeypatch, "weirvern.admin.payloads.findings", rec)
+    legacy, app = surfaces()
+
+    q = "?ip=203.0.113.9&severity=HIGH&limit=999999"
+    _legacy_http(legacy.port, "/api/findings" + q)
+    _flask_http(app, "/api/findings" + q)
+
+    seen = rec.seen
+    assert [c.get("severity") for c in seen] == ["high", "high"]
+    assert [c.get("limit") for c in seen] == [999999, 999999], (
+        f"the findings limit is not supposed to be clamped: {seen}"
+    )
+    assert [c.get("ip") for c in seen] == ["203.0.113.9", "203.0.113.9"]
 

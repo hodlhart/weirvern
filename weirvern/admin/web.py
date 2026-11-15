@@ -1481,25 +1481,16 @@ def _build_handler(ctx: GuiContext):
             severity filter is an allow-list, and the host filter is a plain equality on a
             parameterized value.
             """
-            ip = str((query.get("ip") or [""])[0]).strip()
-            if ip and (len(ip) > 64 or not all(c.isalnum() or c in ".:-_" for c in ip)):
-                return self._error(400, "ip does not look like an address")
-            severity = str((query.get("severity") or [""])[0]).strip().lower()
-            if severity and severity not in {"critical", "high", "medium", "low", "info", "unknown"}:
-                return self._error(400, "severity must be critical, high, medium, low, info or unknown")
             try:
-                limit = int((query.get("limit") or ["500"])[0])
-            except ValueError:
-                return self._error(400, "limit must be an integer")
+                args = findings_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    payload = assets_mod.asset_findings_list(
-                        client, ip=ip, severity=severity, limit=limit)
+                    # SHARED WITH THE FLASK SURFACE (payloads.findings), filter echo included.
+                    payload = payloads.findings(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("findings unavailable: %s", exc)
-                return self._json({"available": False, "findings": [], "count": 0,
-                                   "counts": {}, "reason": "the data could not be read"})
-            payload["filter"] = {"ip": ip, "severity": severity}
+                return self._json(payloads.findings_failure(exc))
             self._json(payload)
 
         def _asset_changes(self, query: dict) -> None:
@@ -4353,35 +4344,23 @@ def _build_handler(ctx: GuiContext):
             self._json(payload)
 
         def _host(self, query: dict) -> None:
-            addr = (query.get("addr") or [""])[0].strip()
-            if not addr:
-                return self._error(400, "addr is required, e.g. /api/host?addr=198.51.100.5")
-            # Validate before it reaches a query parameter. clickhouse-connect
-            # parameterises these, so this is not the only defence, but an
-            # obviously-wrong address should not become a database round trip.
-            if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
-                return self._error(400, "addr does not look like an IP address or hostname")
+            # Validate before it reaches a query parameter. clickhouse-connect parameterises these,
+            # so this is not the only defence, but an obviously-wrong address should not become a
+            # database round trip. The sentence is the console's, from the shared parser.
+            try:
+                addr = host_addr(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
             try:
                 with self._with_client() as client:
-                    detail = status_mod.host_detail(client, addr, hours=hours)
-                    # The scanner is an annotation on the host page, never a reason to fail
-                    # the page. A missing table is reported inside `exposure.available` and
-                    # rendered as "unavailable", not as "not scanned".
-                    try:
-                        exposure = assets_mod.asset_exposure(client, addr)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("host exposure unavailable for %s: %s", addr, exc)
-                        exposure = {"available": False,
-                                    "reason": "the scanner exposure read failed",
-                                    "registered": False, "state": "unknown",
-                                    "exposure": "unknown", "services": [], "findings": [], "counts": {}}
+                    # SHARED WITH THE FLASK SURFACE (payloads.host): the exposure annotation and
+                    # its own unavailable state travel with the detail.
+                    payload = payloads.host(client, addr=addr, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
-            payload = web_api.host_payload(detail)
-            payload["exposure"] = exposure
             self._json(payload)
 
         def _evidence(self, query: dict) -> None:
@@ -4391,30 +4370,17 @@ def _build_handler(ctx: GuiContext):
             before it becomes a query parameter, and a database failure is a 503 with
             the reason rather than an empty page.
             """
-            addr = (query.get("addr") or [""])[0].strip()
-            if not addr:
-                return self._error(
-                    400, "addr is required, e.g. /api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
-            if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
-                return self._error(400, "addr does not look like an IP address or hostname")
-            start = (query.get("start") or [""])[0].strip()
-            if not start:
-                return self._error(
-                    400, "start is required (the alert's window_start), e.g. "
-                         "/api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
-            # Length-capped so a pathological value cannot reach the parser. The
-            # query parameterises it, and parseDateTime64BestEffort is tolerant.
-            if len(start) > 64:
-                return self._error(400, "start is not a valid timestamp")
-            end = (query.get("end") or [""])[0].strip() or None
-            if end is not None and len(end) > 64:
-                return self._error(400, "end is not a valid timestamp")
+            try:
+                args = evidence_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    data = status_mod.alert_evidence(client, addr, start, end)
+                    # SHARED WITH THE FLASK SURFACE (payloads.evidence).
+                    payload = payloads.evidence(client, **args)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
-            self._json(web_api.evidence_payload(data))
+            self._json(payload)
 
         def _incident(self, query: dict) -> None:
             """One incident object: actor + asset + window + evidence + review provenance.
@@ -4422,22 +4388,17 @@ def _build_handler(ctx: GuiContext):
             The episode API answers the queue; this is the page an analyst opens from it. A
             missing incident is an explicit `available:false` answer, not an empty success.
             """
-            addr = (query.get("addr") or [""])[0].strip()
-            start = (query.get("start") or [""])[0].strip()
-            if not addr or not start:
-                return self._error(
-                    400, "addr and start are required, e.g. "
-                         "/api/incident?addr=198.51.100.5&start=2026-10-30T00:00:00")
-            if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
-                return self._error(400, "addr does not look like an IP address or hostname")
-            if len(start) > 64:
-                return self._error(400, "start is not a valid timestamp")
+            try:
+                args = incident_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    data = status_mod.incident_detail(client, addr, start)
+                    # SHARED WITH THE FLASK SURFACE (payloads.incident).
+                    payload = payloads.incident(client, **args)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
-            self._json(web_api.incident_payload(data))
+            self._json(payload)
 
         def _fingerprints(self, query: dict) -> None:
             """Which hosts have presented a given JA4 fingerprint -- the hunting pivot.
@@ -4448,15 +4409,14 @@ def _build_handler(ctx: GuiContext):
             before it becomes a query parameter, and a database failure is a 503 with the reason
             rather than an empty list that would read as "nobody uses this".
             """
-            ja4 = (query.get("ja4") or [""])[0].strip()
-            if not ja4:
-                return self._error(
-                    400, "ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...")
-            if len(ja4) > 128 or not all(c.isalnum() or c in "._-:" for c in ja4):
-                return self._error(400, "ja4 does not look like a fingerprint")
+            try:
+                ja4 = fingerprints_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    payload = status_mod.fingerprint_hosts(client, ja4)
+                    # SHARED WITH THE FLASK SURFACE (payloads.fingerprints).
+                    payload = payloads.fingerprints(client, ja4=ja4)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
             self._json(payload)
@@ -4608,6 +4568,99 @@ def dns_args(query: dict) -> dict:
             rcode = value
     return {"domain": domain, "client_ip": client_ip, "qtype": qtype, "rcode": rcode,
             "offset": offset, "limit": limit}
+
+
+FINDING_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "unknown"})
+
+
+def _address_ok(value: str, limit: int = 64) -> bool:
+    """The console's shape check for an address-like value. NOT a validator.
+
+    It rejects the obviously wrong before it becomes a database round trip. clickhouse-connect
+    parameterises every value, so this is a guard rather than the only defence, which is why it has
+    always been this loose: an IP, a hostname and a partially-qualified name all pass.
+    """
+    return len(value) <= limit and all(c.isalnum() or c in ".:-_" for c in value)
+
+
+def host_addr(query: dict) -> str:
+    """`addr` for /api/host, refused with the console's own sentences."""
+    addr = str(_first(query, "addr", "") or "").strip()
+    if not addr:
+        raise ValueError("addr is required, e.g. /api/host?addr=198.51.100.5")
+    if not _address_ok(addr):
+        raise ValueError("addr does not look like an IP address or hostname")
+    return addr
+
+
+def evidence_args(query: dict) -> dict:
+    """`addr`, `start` and optional `end` for the evidence pivot, in the console's check ORDER."""
+    addr = str(_first(query, "addr", "") or "").strip()
+    if not addr:
+        raise ValueError("addr is required, e.g. "
+                         "/api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
+    if not _address_ok(addr):
+        raise ValueError("addr does not look like an IP address or hostname")
+    start = str(_first(query, "start", "") or "").strip()
+    if not start:
+        raise ValueError("start is required (the alert's window_start), e.g. "
+                         "/api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
+    # Length-capped so a pathological value cannot reach the parser. The query parameterises it,
+    # and parseDateTime64BestEffort is tolerant.
+    if len(start) > 64:
+        raise ValueError("start is not a valid timestamp")
+    end = str(_first(query, "end", "") or "").strip() or None
+    if end is not None and len(end) > 64:
+        raise ValueError("end is not a valid timestamp")
+    return {"addr": addr, "start": start, "end": end}
+
+
+def incident_args(query: dict) -> dict:
+    """`addr` and `start` for the incident page.
+
+    ONE combined sentence when either is absent, which is the console's wording; splitting it into
+    two messages would change what an analyst sees for half the bad requests.
+    """
+    addr = str(_first(query, "addr", "") or "").strip()
+    start = str(_first(query, "start", "") or "").strip()
+    if not addr or not start:
+        raise ValueError("addr and start are required, e.g. "
+                         "/api/incident?addr=198.51.100.5&start=2026-10-30T00:00:00")
+    if not _address_ok(addr):
+        raise ValueError("addr does not look like an IP address or hostname")
+    if len(start) > 64:
+        raise ValueError("start is not a valid timestamp")
+    return {"addr": addr, "start": start}
+
+
+def fingerprints_args(query: dict) -> str:
+    """`ja4` for the hunting pivot, with its own shape check and its own sentence."""
+    ja4 = str(_first(query, "ja4", "") or "").strip()
+    if not ja4:
+        raise ValueError("ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...")
+    if len(ja4) > 128 or not all(c.isalnum() or c in "._-:" for c in ja4):
+        raise ValueError("ja4 does not look like a fingerprint")
+    return ja4
+
+
+def findings_args(query: dict) -> dict:
+    """`ip`, `severity` and an UNCLAMPED `limit` for the findings queue.
+
+    The limit is not bounded here, and that is the console's contract: this route hands the number
+    straight to the query. Do not add a clamp during a port -- it would answer a different number
+    than the operator asked for, and the two surfaces would agree on the wrong thing.
+    """
+    ip = str(_first(query, "ip", "") or "").strip()
+    if ip and not _address_ok(ip):
+        raise ValueError("ip does not look like an address")
+    severity = str(_first(query, "severity", "") or "").strip().lower()
+    if severity and severity not in FINDING_SEVERITIES:
+        raise ValueError("severity must be critical, high, medium, low, info or unknown")
+    try:
+        limit = int(str(_first(query, "limit", "500")))
+    except (TypeError, ValueError):
+        raise ValueError("limit must be an integer") from None
+    return {"ip": ip, "severity": severity, "limit": limit}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

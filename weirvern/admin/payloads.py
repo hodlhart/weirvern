@@ -622,6 +622,74 @@ def dns_failure(exc: BaseException) -> dict[str, Any]:
             "data_error": str(exc)}
 
 
+# ── the address-validated detail reads: a 503 on failure, by design ─────────────────────────
+#
+# These four RAISE and the surface answers 503, which is different from the panels above: a detail
+# page has nothing to draw without its subject, so an error page is the honest answer rather than a
+# card-shaped 200 saying "unavailable". The difference is the console's and it is preserved.
+
+def host(client: Client, *, addr: str, hours: int) -> dict[str, Any]:
+    """One host's detail, with the scanner exposure as an ANNOTATION.
+
+    A missing exposure table is reported inside `exposure.available` and rendered as "unavailable",
+    never as a reason to fail the page -- the host detail is the load-bearing read, the scanner is
+    the extra.
+    """
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    detail = status_mod.host_detail(client, addr, hours=hours)
+    try:
+        exposure = assets_mod.asset_exposure(client, addr)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("host exposure unavailable for %s: %s", addr, exc)
+        exposure = {"available": False, "reason": "the scanner exposure read failed",
+                    "registered": False, "state": "unknown", "exposure": "unknown",
+                    "services": [], "findings": [], "counts": {}}
+    payload = web_api.host_payload(detail)
+    payload["exposure"] = exposure
+    return payload
+
+
+def evidence(client: Client, *, addr: str, start: str, end: str | None) -> dict[str, Any]:
+    """The alert-evidence pivot: the RAW records inside one detection window."""
+    return web_api.evidence_payload(status_mod.alert_evidence(client, addr, start, end))
+
+
+def incident(client: Client, *, addr: str, start: str) -> dict[str, Any]:
+    """One incident object: actor, asset, window, evidence and review provenance."""
+    return web_api.incident_payload(status_mod.incident_detail(client, addr, start))
+
+
+def fingerprints(client: Client, *, ja4: str) -> dict[str, Any]:
+    """Which hosts have presented a given JA4 fingerprint -- the hunting pivot."""
+    return status_mod.fingerprint_hosts(client, ja4)
+
+
+def findings(client: Client, *, ip: str, severity: str, limit: int) -> dict[str, Any]:
+    """Recorded scanner findings for the Findings drill.
+
+    Findings are historical evidence, so the global time window does not hide them: a finding
+    observed last week is still a fact about the host today. `limit` is NOT clamped here, which is
+    the console's contract; the value is bounded by the caller, not by this layer.
+    """
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    try:
+        payload = assets_mod.asset_findings_list(
+            client, ip=ip, severity=severity, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return findings_failure(exc)
+    payload["filter"] = {"ip": ip, "severity": severity}
+    return payload
+
+
+def findings_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/findings: a FIXED sentence, not `read_failure`."""
+    logger.warning("findings unavailable: %s", exc)
+    return {"available": False, "findings": [], "count": 0, "counts": {},
+            "reason": "the data could not be read"}
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415
