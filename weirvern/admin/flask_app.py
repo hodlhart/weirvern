@@ -413,14 +413,27 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # answer a failed read with a 503 and some with a 200 carrying `available: false`; that
     # difference is deliberate per route (a panel that can still draw around a missing card), and a
     # port that "tidied" it into one shape would change what the operator sees.
-    def _payload_route(fetcher, *, needs_client=True, settings=False, **kwargs):
+    def _payload_route(fetcher, *, needs_client=True, settings_positional=False, **kwargs):
+        """Call a fetcher and answer its payload.
+
+        `settings_positional` IS NOT CALLED `settings` ANY MORE, and the rename is the fix for a real
+        defect: routes that pass `settings=ctx.settings` as a FETCHER KEYWORD were silently setting this
+        helper's own flag instead, so the fetcher received settings POSITIONALLY -- and every fetcher
+        that declares it keyword-only (`payloads.anomalies`, among others) raised TypeError, which the
+        catch below turned into a 503. The dashboard showed "could not read the data: TypeError:
+        anomalies() takes 1 positional argument but 2 ... were given" on the Anomalies tab.
+
+        The equivalence harness did not catch it because the route tests replace the FETCHER with a
+        permissive lambda, so both surfaces answered the stub and the arity mismatch between what each
+        surface passes never ran. Only driving the real fetcher over a real client does.
+        """
         from weirvern.admin.web import read_failure  # noqa: PLC0415
 
         try:
             if not needs_client:
                 return jsonify(fetcher(**kwargs))
             with ctx.connect_factory(ctx.settings) as client:
-                if settings:
+                if settings_positional:
                     return jsonify(fetcher(client, ctx.settings, **kwargs))
                 return jsonify(fetcher(client, **kwargs))
         except Exception as exc:  # noqa: BLE001
@@ -546,7 +559,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def models_calibration():
         from weirvern.admin import payloads  # noqa: PLC0415
 
-        return _payload_route(payloads.models_calibration, settings=True)
+        return _payload_route(payloads.models_calibration, settings_positional=True)
 
     @app.get("/api/models/shadow")
     @gated

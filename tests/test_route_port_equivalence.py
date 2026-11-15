@@ -1934,3 +1934,64 @@ def test_the_retrain_family_answers_identically(surfaces, monkeypatch):
     del filed[:]
     _same("/api/models/retrain", {"action": "trash", "note": "x", "target_id": "act-7"}, 200)
     assert filed[0]["target_id"] == "act-7", filed
+
+
+def test_no_route_kwarg_collides_with_the_payload_route_helper():
+    """A route's `settings=` must reach the FETCHER, never the helper's own parameter list.
+
+    MEASURED DEFECT (live, after the switch): `_payload_route` had a parameter named `settings`, so
+    `/api/anomalies` passing `settings=ctx.settings` set that FLAG instead of forwarding the value, and
+    the fetcher was then called with settings POSITIONALLY. `payloads.anomalies` declares it keyword-
+    only, so the route answered 503 "could not read the data: TypeError: anomalies() takes 1 positional
+    argument but 2 positional arguments ... were given" on the Anomalies tab.
+
+    THE EQUIVALENCE TESTS COULD NOT SEE IT because they replace the fetcher with `lambda *a, **k`, which
+    accepts any call shape. This guard pins the helper's parameter names against the fetcher kwargs the
+    routes pass, which is the trap itself rather than one instance of it.
+    """
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
+    head = src.split("def _payload_route(", 1)[1]
+    params = head[:head.index("):")].replace("\n", " ")
+    names = {p.split("=")[0].strip().lstrip("*") for p in params.split(",") if p.strip()}
+    # Every fetcher kwarg a route may legitimately pass. `settings` is the one that bit us.
+    for shadow in ("settings", "hours", "limit", "backend", "user_store"):
+        assert shadow not in names, (
+            f"_payload_route has a parameter named {shadow!r}, so a route passing {shadow}= as a fetcher "
+            f"argument would set the helper's flag instead and the fetcher would never receive it"
+        )
+
+
+def test_the_anomalies_route_reaches_the_real_fetcher(surfaces, monkeypatch):
+    """A SIGNATURE-FAITHFUL stub, unlike the permissive ones the equivalence matrix uses.
+
+    The stub here declares `(client, **kwargs)` exactly as `payloads.anomalies` does, so a route that
+    passes settings POSITIONALLY fails loudly instead of being absorbed.
+    """
+    legacy, app = surfaces()
+
+    seen: dict = {}
+
+    def faithful(client, **kwargs):
+        seen.update(kwargs)
+        return {"available": True, "rows": [], "hours": kwargs["hours"],
+                "min_score": kwargs["min_score"], "unreviewed_only": kwargs["unreviewed_only"],
+                "watched_only": kwargs["watched_only"], "tiles": {}}
+
+    _patch(monkeypatch, "weirvern.admin.payloads.anomalies", faithful)
+
+    path = "/api/anomalies?min_score=0&limit=50&hours=24"
+    lstatus, lbody = _legacy_http(legacy.port, path)
+    assert lstatus == 200, f"console {lstatus}: {lbody[:200]!r}"
+    console_kwargs = dict(seen)
+    seen.clear()
+
+    fstatus, fbody = _flask_http(app, path)
+    assert fstatus == 200, (
+        f"flask {fstatus}: {fbody[:200]!r}. A 503 carrying TypeError is the arity defect this test "
+        f"exists for: the route passed settings positionally to a keyword-only fetcher"
+    )
+    assert json.loads(fbody) == json.loads(lbody)
+    # BOTH SURFACES PASS IT AS A KEYWORD. The stub declares (client, **kwargs), exactly as the real
+    # fetcher does, so a positional pass would have raised rather than reached this assertion.
+    assert "settings" in console_kwargs and "settings" in seen, (console_kwargs, seen)
+    assert set(console_kwargs) == set(seen), (console_kwargs, seen)

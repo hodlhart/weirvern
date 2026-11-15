@@ -62,14 +62,20 @@ def _unavailable(reason: str, **extra) -> dict:
     return {"available": False, "reason": reason, **extra}
 
 
-def _rows(client, sql: str, params: dict, what: str) -> list | None:
+def _rows(client, sql: str, params: dict, what: str,
+          settings: dict | None = None) -> list | None:
     """Run a query, returning None (and logging which one) if it fails.
 
     A failed source must be reportable, so callers collect None and name it rather than
     treating it as an empty result.
+
+    `settings` is for ClickHouse execution limits. A raw-flows aggregate over a 24h window is
+    measured between 0.3s and 107s on this deployment depending on how busy the ingestion side is
+    (276M flows/day), and without a bound a slow one holds a GUI worker thread for minutes.
     """
     try:
-        return client.query(sql, parameters=params).result_rows
+        kwargs = {"settings": settings} if settings else {}
+        return client.query(sql, parameters=params, **kwargs).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("%s failed: %s", what, exc)
         return None
@@ -746,6 +752,12 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     }
 
 
+# A raw-flows aggregate over one day of this deployment's traffic is measured between 0.3s and
+# 107s depending on ingestion load. The cap turns the worst case into a named refusal instead of a
+# request that holds a worker thread for minutes; the panel renders the reason.
+GRAPH_MAX_SECONDS = 25
+
+
 def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     """Nodes and edges for the Network view's connection graph.
 
@@ -789,9 +801,15 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "ORDER BY bytes DESC LIMIT %(n)s",
         {**timewindow.w(hours), "n": scan},
         "connection graph",
+        settings={"max_execution_time": GRAPH_MAX_SECONDS},
     )
     if edges is None:
-        return _unavailable("the connection query failed (see the worker log for the reason)")
+        return _unavailable(
+            f"the connection query did not finish within {GRAPH_MAX_SECONDS}s for a {hours}h "
+            f"window, or it failed (the worker log names the query). The graph reads raw flows, so "
+            f"a wide window on a busy segment is expensive: narrow the window, or track specific "
+            f"hosts, and try again."
+        )
 
     # A conversation is the unordered port pair; the raw rows are its two directions.
     total_rows = _rows(
@@ -805,6 +823,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND " + addressing.sql_host("dst_addr") + " ",
         {**timewindow.w(hours)},
         "connection graph (total)",
+        settings={"max_execution_time": GRAPH_MAX_SECONDS},
     )
     total = int(total_rows[0][0] or 0) if total_rows else len(edges)
 

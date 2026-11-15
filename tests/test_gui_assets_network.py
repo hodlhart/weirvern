@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from weirvern.admin import assets
+
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
 
 APP_JS = (WEB / "app.js").read_text()
@@ -536,7 +538,7 @@ def test_connection_graph_derives_hops_from_outbound_ttls_only():
         def __init__(self, edges, total):
             self._edges, self._total = edges, total
 
-        def query(self, sql, parameters=None):
+        def query(self, sql, parameters=None, settings=None):
             return _Result(self._edges if "GROUP BY src_addr, dst_addr" in sql else self._total)
 
     ts = _dt.datetime(2026, 1, 1)
@@ -831,3 +833,36 @@ def test_the_flow_drill_accepts_a_destination_filter_and_binds_it():
     c2 = _C()
     soc.flows_matching(c2, dst="198.51.100.9", port=443)
     assert "dst_addr = %(dst)s" in c2.sqls[0] and "dst_port = %(port)s" in c2.sqls[0], c2.sqls[0]
+
+class _SlowClient:
+    """A client whose query never returns in time, the way a saturated ClickHouse behaves."""
+
+    def __init__(self):
+        self.seen_settings = []
+
+    def query(self, sql, parameters=None, settings=None):
+        self.seen_settings.append(settings)
+        if "uniqExact" in sql:
+            return type("R", (), {"result_rows": [(5,)]})()
+        raise RuntimeError("Code: 159. DB::Exception: Timeout exceeded: elapsed 25.1 seconds")
+
+
+def test_the_connection_graph_is_bounded_and_says_so():
+    """A WIDE GRAPH QUERY MUST END IN A NAMED REFUSAL, NOT A HELD WORKER THREAD.
+
+    MEASURED ON THE LIVE DEPLOYMENT (2026-11-15): `/api/graph?hours=24` took 103s and 108s on two
+    consecutive requests, and 0.3s minutes earlier on the same SQL, because the raw-flows aggregate
+    competes with ingestion (276M flows/day). Nothing bounded it, so every such request kept one of
+    the eight waitress threads for up to two minutes.
+
+    The limit is pushed to ClickHouse, and the refusal tells the operator the one thing that helps:
+    narrow the window.
+    """
+    client = _SlowClient()
+    out = assets.connection_graph(client, hours=24)
+    assert out["available"] is False, out
+    limit = client.seen_settings[0]
+    assert limit and limit.get("max_execution_time") == assets.GRAPH_MAX_SECONDS, limit
+    # The sentence names the limit AND the action, or the operator is left staring at a blank panel.
+    assert f"{assets.GRAPH_MAX_SECONDS}s" in out["reason"], out["reason"]
+    assert "narrow the window" in out["reason"], out["reason"]
