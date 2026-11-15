@@ -976,6 +976,105 @@ def users_list(*, store: Any, accounts_on: bool, note: str) -> dict[str, Any]:
             "roles": list(users_mod.ROLES)}
 
 
+def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
+             sensor: str, port: int | None, offset: int, limit: int,
+             src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:
+    """DISCOVER: raw flows with a filter bar -- Kibana's Discover over the flow table.
+
+    ONE ROUTE, THREE FEEDS. DNS filters the CLIENT address and hides the chips; Zeek takes only the
+    sensor; netflow takes the whole bar. The branch lives here so both surfaces cannot choose a
+    different feed for the same request.
+    """
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        if feed == "dns":
+            return soc_mod.discover_dns(
+                client, hours=hours, limit=limit, offset=offset,
+                client_ip=addr, sensor=sensor,
+            )
+        if feed == "zeek":
+            return soc_mod.discover_zeek(client, hours=hours, sensor=sensor)
+        return soc_mod.discover(
+            client, hours=hours, proto=proto, addr=addr or None, port=port,
+            sensor=sensor or None, limit=limit, offset=offset,
+            src=src, dst=dst, sport=sport, dport=dport,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return discover_failure(exc)
+
+
+def discover_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/discover."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("discover unavailable: %s", exc)
+    return {"available": False, "rows": [], "reason": read_failure(exc),
+            "data_error": str(exc)}
+
+
+def anomalies(client: Client, *, limit: int, min_score: float, hours: int, host: str,
+              severity: str, model: str, feature: str, unreviewed_only: bool,
+              watched_only: bool, settings: Any) -> dict[str, Any]:
+    """The grouped anomaly queue, its header tiles, and every per-row state that rides along.
+
+    EVERY AUXILIARY READ DEGRADES SEPARATELY. Reviews, adjustments and the watch list are read
+    apart from the rows so a table that does not exist yet on an old schema leaves per-row
+    "unavailable" chips rather than failing the whole queue. Two filters are SKIPPED when their
+    state could not be read, because filtering on a state nobody could read would answer "nothing
+    is unreviewed" -- a confident claim built from a failed query.
+    """
+    from weirvern import fleet_store  # noqa: PLC0415
+    from weirvern.admin.web import _attach_anomaly_locations, _interface_network_names  # noqa: PLC0415
+
+    rows = status_mod.anomalies_grouped(
+        client, limit=limit, min_score=min_score, host=host, severity=severity,
+        model=model, feature=feature, hours=hours)
+    # The header tiles: counts per severity under min-score + host, NOT under the severity filter
+    # itself (see status.anomaly_severity_counts for why).
+    severity_counts = status_mod.anomaly_severity_counts(
+        client, min_score=min_score, host=host, feature=feature, hours=hours)
+    # FIRED VS ACTED-ON (BF-12): the alert-budget line, self-guarding like the tiles.
+    discipline = status_mod.anomaly_discipline_counts(
+        client, min_score=min_score, host=host, hours=hours)
+    # SOC-1: review state, read separately so a missing table degrades to per-row chips.
+    idx, rev_err, covered_since = status_mod.review_index(client)
+    # covered_since is the index's OWN lower bound, so a row older than the review window is marked
+    # unknowable rather than reading as "unreviewed".
+    status_mod.attach_group_reviews(rows, idx, rev_err, covered_since)
+    adj_idx, adj_err = status_mod.adjustment_index(client)
+    status_mod.attach_adjustments(rows, adj_idx, adj_err)
+    # US-6: the UNFILTERED total under the same min-score. A failed read is None (the header omits
+    # "of Y"), never a zero.
+    try:
+        total_unfiltered = status_mod.anomalies_total_count(
+            client, min_score=min_score, hours=hours)
+    except Exception:  # noqa: BLE001
+        total_unfiltered = None
+    watch_set, watch_err = status_mod.watch_index(client)
+    for r in rows:
+        r["watched"] = (r.get("src_addr") in watch_set) if watch_err is None else None
+    # WHERE EACH ALERT HAPPENED: the weirling that sees this host's network and the network itself,
+    # resolved from the fleet's declared segments so the console and the fleet tab cannot disagree.
+    try:
+        fleet = fleet_store.build_fleet(client)
+        _attach_anomaly_locations(
+            rows, fleet.get("sensors") or [],
+            _interface_network_names(getattr(settings, "interface_networks", "")),
+        )
+    except Exception as loc_exc:  # noqa: BLE001
+        logger.warning("anomaly locations unavailable: %s", loc_exc)
+    # THE FILTER IS SKIPPED WHEN THE STATE IS UNREADABLE: see the docstring.
+    if unreviewed_only and rev_err is None:
+        # A group counts as unreviewed when ANY of its occurrences is.
+        rows = [r for r in rows if r.get("unreviewed_n", 0) > 0]
+    if watched_only and watch_err is None:
+        rows = [r for r in rows if r.get("watched")]
+    return web_api.anomalies_payload(
+        rows, severity_counts=severity_counts, discipline=discipline,
+        watch_error=watch_err, total_unfiltered=total_unfiltered)
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415

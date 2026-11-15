@@ -155,6 +155,11 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                              (200, {"ok": True}), "?request=r1"),
     "/api/users": ("users_list", "weirvern.admin.payloads.users_list",
                    {"available": True, "users": []}, ""),
+    "/api/anomalies": ("anomalies", "weirvern.admin.payloads.anomalies",
+                       {"rows": [], "severity_counts": {}}, "?hours=6&min_score=0.5"),
+    # feed=dns on purpose: it takes the OTHER branch, which is the one with different arguments.
+    "/api/discover": ("discover", "weirvern.admin.payloads.discover",
+                      {"available": True, "rows": []}, "?hours=6&feed=dns&addr=203.0.113.9"),
 }
 
 
@@ -318,7 +323,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 46, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 48, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -473,6 +478,10 @@ REFUSALS = [
     ("/api/blocked", "?client=" + "a" * 65),
     ("/api/weirlings/detail", ""),
     ("/api/weirlings/probe", ""),
+    ("/api/discover", "?feed=bogus"),
+    ("/api/discover", "?proto=bogusproto"),
+    ("/api/discover", "?sport=99999"),
+    ("/api/anomalies", "?host=" + "a" * 65),
 ]
 
 
@@ -532,6 +541,31 @@ def test_the_findings_filters_parse_identically_and_the_limit_is_NOT_clamped(sur
         f"the findings limit is not supposed to be clamped: {seen}"
     )
     assert [c.get("ip") for c in seen] == ["203.0.113.9", "203.0.113.9"]
+
+
+def test_the_discover_chips_survive_repetition_on_both_surfaces(surfaces, monkeypatch):
+    """`?src=A&src=B&dport=443&dport=80` must reach the fetcher as FOUR values, not two.
+
+    THE CHIP FILTERS ARE THE MULTI-SELECT, and the shapes differ again: parse_qs gives lists,
+    MultiDict.get gives the first scalar. A parser that read the scalar would filter by one address
+    and one port while the UI showed two chips selected.
+    """
+    rec = _Recorder({"available": True, "rows": []})
+    _patch(monkeypatch, "weirvern.admin.payloads.discover", rec)
+    legacy, app = surfaces()
+
+    q = "?hours=6&src=203.0.113.9&src=203.0.113.10&dport=443&dport=80"
+    _legacy_http(legacy.port, "/api/discover" + q)
+    _flask_http(app, "/api/discover" + q)
+
+    seen = rec.seen
+    assert [c.get("src") for c in seen] == [
+        ["203.0.113.9", "203.0.113.10"], ["203.0.113.9", "203.0.113.10"]], (
+        f"a repeated src chip was collapsed on one surface: {seen}"
+    )
+    assert [c.get("dport") for c in seen] == [[443, 80], [443, 80]], (
+        f"a repeated dport chip was collapsed or left unparsed: {seen}"
+    )
 
 
 def test_the_graph_tracked_selection_survives_repetition_on_both_surfaces(surfaces, monkeypatch):

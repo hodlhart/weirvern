@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 49 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 51 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -948,6 +948,39 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             store=getattr(ctx, "user_store", None),
             accounts_on=requestauth.accounts_on(ctx),
             note=getattr(ctx, "accounts_note", "") or ""))
+
+    @app.get("/api/anomalies")
+    @gated
+    def anomalies():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            args = web.anomalies_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(payloads.anomalies, hours=hours, settings=ctx.settings, **args)
+
+    @app.get("/api/discover")
+    @gated
+    def discover():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        # The chips are REPEATED values: getlist, or only the first one survives.
+        fields = ("src", "dst", "sport", "dport")
+        repeated = {field: request.args.getlist(field) for field in fields}
+        try:
+            args = web.discover_args(request.args, repeated)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.discover, payloads.discover_failure, hours=hours, **args)
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

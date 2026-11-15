@@ -250,9 +250,11 @@ def test_the_review_route_exists_and_goes_through_the_operator_gate():
 
 
 def test_the_anomalies_route_merges_reviews_and_filters_only_when_readable():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    body = src[src.index("def _anomalies(self,"):]
-    body = body[:body.index("\n        def _models")]
+    """The merge moved into payloads.anomalies when the route crossed to Flask; the intent is
+    unchanged, and it is asserted where the merge now lives."""
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    body = src[src.index("def anomalies("):]
+    body = body[:body.index("\ndef ")]
     # The merge is the GROUPED one since 2026-10-16 (the count column); the intent is unchanged.
     assert "review_index" in body and "attach_group_reviews" in body
     # THE SUBTLE ONE: the unreviewed filter must not run on a FAILED read.

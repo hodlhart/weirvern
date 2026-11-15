@@ -669,96 +669,23 @@ def _build_handler(ctx: GuiContext):
                 user_store=getattr(ctx, "user_store", None), capabilities=ctx.capabilities))
 
         def _anomalies(self, query: dict) -> None:
-            limit = _int_arg(query, "limit", 100, 1, 1000)
-            min_score = _float_arg(query, "min_score", 0.0, 0.0, 1.0)
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            unreviewed_only = (_query_bool(query, "unreviewed") is True)
-            watched_only = (_query_bool(query, "watched") is True)
+            try:
+                args = anomalies_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    # REFUSED, NOT TRUNCATED (the house rule: a filter that cannot be read is a
-                    # 400 with a sentence, never silently altered -- a truncated value would
-                    # answer a DIFFERENT question than the one that was asked).
-                    host_f = (query.get("host") or [""])[0].strip()
-                    sev_f = (query.get("severity") or [""])[0].strip()
-                    model_f = (query.get("model") or [""])[0].strip()
-                    feature_f = (query.get("feature") or [""])[0].strip()
-                    if len(host_f) > 64 or len(sev_f) > 24 or len(model_f) > 64:
-                        return self._error(400, "host, severity or model filter is implausibly long")
-                    if len(feature_f) > 64:
-                        return self._error(400, "feature filter is implausibly long")
-                    # GROUPED (the operator, 2026-10-16): identical anomalies fold into one row
-                    # carrying a count, with each occurrence's window behind the click. A
-                    # duplicate-consuming list would quietly shrink the queue's coverage.
-                    rows = status_mod.anomalies_grouped(
-                        client, limit=limit, min_score=min_score, host=host_f, severity=sev_f,
-                        model=model_f, feature=feature_f, hours=hours)
-                    # The header tiles: counts per severity under min-score + host, NOT under the
-                    # severity filter itself (see status.anomaly_severity_counts for why).
-                    severity_counts = status_mod.anomaly_severity_counts(
-                        client, min_score=min_score, host=host_f, feature=feature_f, hours=hours)
-                    # FIRED VS ACTED-ON (BF-12): the alert-budget line. Same self-guarding
-                    # shape as the severity counts -- a failed read is its own state.
-                    discipline = status_mod.anomaly_discipline_counts(
-                        client, min_score=min_score, host=host_f, hours=hours)
-                    # SOC-1: merge review state. Read separately (one small query) rather
-                    # than joined in SQL because the reviews table may not exist yet on a
-                    # deployment whose schema job has not re-run -- a join would make the
-                    # WHOLE anomalies view fail, where this degrades to per-row
-                    # "review state unavailable" chips while the alerts still render.
-                    idx, rev_err, covered_since = status_mod.review_index(client)
-                    # covered_since is the index's OWN lower bound, so a row older than the
-                    # review window is marked unknowable rather than reading as "unreviewed".
-                    # Without it, an analyst re-triages an alert that was already dispositioned.
-                    status_mod.attach_group_reviews(rows, idx, rev_err, covered_since)
-                    # Provenance rides the same way: a separate small read, and a missing
-                    # adjustment table is an explicit error rather than a silent "none".
-                    adj_idx, adj_err = status_mod.adjustment_index(client)
-                    status_mod.attach_adjustments(rows, adj_idx, adj_err)
-                    # THE WATCH LIST rides the same way the reviews do: a separate small
-                    # read that degrades to an explicit "unavailable" marker instead of
-                    # failing the view.
-                    # US-6: the UNFILTERED total under the same min-score. A failed read is
-                    # carried as None (the header omits "of Y") -- never as a zero.
-                    try:
-                        total_unfiltered = status_mod.anomalies_total_count(
-                            client, min_score=min_score, hours=hours)
-                    except Exception:  # noqa: BLE001
-                        total_unfiltered = None
-                    watch_set, watch_err = status_mod.watch_index(client)
-                    for r in rows:
-                        r["watched"] = (r.get("src_addr") in watch_set) if watch_err is None else None
-                    # WHERE EACH ALERT HAPPENED (operator, 2026-10-19): the Owner column became
-                    # Location -- the weirling that sees this host's network and the network
-                    # itself. Resolved here, from the fleet's declared segments, so the console
-                    # and the fleet tab cannot disagree about which sensor covers an address.
-                    try:
-                        _fleet = fleet_store.build_fleet(client)
-                        _attach_anomaly_locations(
-                            rows, _fleet.get("sensors") or [],
-                            _interface_network_names(getattr(ctx.settings, "interface_networks", "")),
-                        )
-                    except Exception as _loc_exc:  # noqa: BLE001
-                        logger.warning("anomaly locations unavailable: %s", _loc_exc)
-                    # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
-                    # state we could not read would answer "nothing is unreviewed" -- a
-                    # confident claim built from a failed query. Better to return the rows
-                    # unfiltered, carrying the unavailable marker, and let the UI say why.
-                    if unreviewed_only and rev_err is None:
-                        # A group counts as unreviewed when ANY of its occurrences is.
-                        rows = [r for r in rows if r.get("unreviewed_n", 0) > 0]
-                    # Same skip-on-failed-read rule as the reviews above: filtering on a
-                    # state we could not read would answer "nothing is watched".
-                    if watched_only and watch_err is None:
-                        rows = [r for r in rows if r.get("watched")]
+                    # SHARED WITH THE FLASK SURFACE (payloads.anomalies): the grouped rows, the
+                    # header tiles and every per-row state ride one fetcher, so the two surfaces
+                    # cannot disagree about which alerts are unreviewed or watched.
+                    payload = payloads.anomalies(
+                        client, hours=hours, settings=ctx.settings, **args)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
-            self._json(web_api.anomalies_payload(
-                rows, severity_counts=severity_counts, discipline=discipline,
-                watch_error=watch_err, total_unfiltered=total_unfiltered))
-
+            self._json(payload)
         def _episodes(self, query: dict) -> None:
             """One row per incident: the episode view, not the five-minute window list."""
             limit = _int_arg(query, "limit", 100, 1, 1000)
@@ -1197,81 +1124,19 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            # THE FEED (the operator, 2026-10-16): Discover reads three feeds -- its native
-            # flows, the DNS records, and the Zeek logs -- because the view's job is "see the
-            # data feeds being collected". An unknown feed is a 400 with a sentence, never a
-            # silent fallback: answering the flows question when the DNS one was asked is a lie.
-            feed = (query.get("feed") or ["netflow"])[0].strip().lower() or "netflow"
-            if feed not in ("netflow", "dns", "zeek"):
-                return self._error(
-                    400, f"'{feed}' is not a feed this view reads; expected netflow, dns or zeek")
-            proto_raw = (query.get("proto") or [""])[0].strip()
-            addr = (query.get("addr") or [""])[0].strip()
-            sensor = (query.get("sensor") or [""])[0].strip()
-            port_raw = (query.get("port") or [""])[0].strip()
-            offset = _int_arg(query, "offset", 0, 0, 1000000)
-            limit = _int_arg(query, "limit", 100, 1, 500)
+            fields = ("src", "dst", "sport", "dport")
             try:
-                proto = soc_mod.proto_number(proto_raw)
+                args = discover_args(
+                    query, {field: query.get(field) or [] for field in fields})
             except ValueError as exc:
                 return self._error(400, str(exc))
-            for value, name in ((addr, "addr"), (sensor, "sensor")):
-                if value and (len(value) > 64 or not all(c.isalnum() or c in ".:-_" for c in value)):
-                    return self._error(400, f"{name} does not look like an address or a name: {value!r}")
-            port: int | None = None
-            if port_raw:
-                try:
-                    port = int(port_raw)
-                    if not 0 <= port <= 65535:
-                        raise ValueError
-                except ValueError:
-                    return self._error(400, f"port does not look like a port: {port_raw!r}")
-            # THE CHIP FILTERS. Repeated query parameters (src=A&src=B) are the console's
-            # click-a-value-and-it-is-added filters; parse_qs already hands them over as lists.
-            lists: dict[str, list] = {}
-            for field in ("src", "dst"):
-                values = [v.strip() for v in (query.get(field) or []) if v.strip()]
-                for value in values:
-                    if len(value) > 64 or not all(c.isalnum() or c in ".:-_" for c in value):
-                        return self._error(400, f"{field} does not look like an address: {value!r}")
-                lists[field] = values
-            for field in ("sport", "dport"):
-                values = []
-                for raw in (query.get(field) or []):
-                    try:
-                        n = int(raw)
-                        if not 0 <= n <= 65535:
-                            raise ValueError
-                    except (TypeError, ValueError):
-                        return self._error(400, f"{field} does not look like a port: {raw!r}")
-                    values.append(n)
-                lists[field] = values
             try:
                 with self._with_client() as client:
-                    if feed == "dns":
-                        # The address box filters the CLIENT in this feed (the host asking the
-                        # questions); chips and the weirling/protocol/port controls do not
-                        # apply to DNS records and the view hides them.
-                        payload = soc_mod.discover_dns(
-                            client, hours=hours, limit=limit, offset=offset,
-                            client_ip=addr, sensor=sensor,
-                        )
-                    elif feed == "zeek":
-                        payload = soc_mod.discover_zeek(client, hours=hours, sensor=sensor)
-                    else:
-                        payload = soc_mod.discover(
-                            client, hours=hours, proto=proto, addr=addr or None, port=port,
-                            sensor=sensor or None, limit=limit, offset=offset,
-                            src=lists["src"], dst=lists["dst"],
-                            sport=lists["sport"], dport=lists["dport"],
-                        )
+                    # SHARED WITH THE FLASK SURFACE (payloads.discover), feed branch included.
+                    payload = payloads.discover(client, hours=hours, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("discover unavailable: %s", exc)
-                return self._json({"available": False, "rows": [], "reason":
-                                   read_failure(exc),
-                                   "data_error": str(exc)})
+                return self._json(payloads.discover_failure(exc))
             self._json(payload)
-
         def _dns(self, query: dict) -> None:
             """The DNS view: Q/A rows, filters, histogram and facets. Read-only.
 
@@ -4600,6 +4465,85 @@ def weirlings_probe_args(query: dict) -> str:
     return request_id
 
 
+def discover_args(query: dict, repeated: dict[str, list]) -> dict:
+    """The Discover filter bar. `repeated` carries the MULTI-VALUED chips.
+
+    THE REPEATED VALUES COME IN SEPARATELY because the two surfaces read them differently: the
+    console's parse_qs hands a list and Flask needs `getlist`. A parser that read
+    `query.get(field)` would see only the first chip on one surface -- a filter that silently
+    ignores most of the operator's selection.
+    """
+    feed = str(_first(query, "feed", "netflow") or "netflow").strip().lower() or "netflow"
+    if feed not in ("netflow", "dns", "zeek"):
+        raise ValueError(
+            f"'{feed}' is not a feed this view reads; expected netflow, dns or zeek")
+    proto_raw = str(_first(query, "proto", "") or "").strip()
+    addr = str(_first(query, "addr", "") or "").strip()
+    sensor = str(_first(query, "sensor", "") or "").strip()
+    port_raw = str(_first(query, "port", "") or "").strip()
+    offset = _int_arg(query, "offset", 0, 0, 1000000)
+    limit = _int_arg(query, "limit", 100, 1, 500)
+    try:
+        proto = soc_mod.proto_number(proto_raw)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
+    for value, name in ((addr, "addr"), (sensor, "sensor")):
+        if value and not _address_ok(value):
+            raise ValueError(f"{name} does not look like an address or a name: {value!r}")
+    port: int | None = None
+    if port_raw:
+        try:
+            port = int(port_raw)
+            if not 0 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"port does not look like a port: {port_raw!r}") from None
+    lists: dict[str, list] = {}
+    for field in ("src", "dst"):
+        values = [str(v).strip() for v in repeated.get(field, []) if str(v).strip()]
+        for value in values:
+            if not _address_ok(value):
+                raise ValueError(f"{field} does not look like an address: {value!r}")
+        lists[field] = values
+    for field in ("sport", "dport"):
+        nums: list[int] = []
+        for raw in repeated.get(field, []):
+            try:
+                n = int(raw)
+                if not 0 <= n <= 65535:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(f"{field} does not look like a port: {raw!r}") from None
+            nums.append(n)
+        lists[field] = nums
+    return {"feed": feed, "proto": proto, "addr": addr, "sensor": sensor, "port": port,
+            "offset": offset, "limit": limit,
+            "src": lists["src"], "dst": lists["dst"],
+            "sport": lists["sport"], "dport": lists["dport"]}
+
+
+def anomalies_args(query: dict) -> dict:
+    """The anomaly queue's window, score floor and filters.
+
+    THE FILTER-LENGTH CHECKS MOVED OUT OF THE CLIENT BLOCK. They used to run after the connection
+    opened, so a bad filter against an unreachable database answered 503 rather than 400. The
+    request is bad either way, and now both surfaces answer it the same way.
+    """
+    host = str(_first(query, "host", "") or "").strip()
+    severity = str(_first(query, "severity", "") or "").strip()
+    model = str(_first(query, "model", "") or "").strip()
+    feature = str(_first(query, "feature", "") or "").strip()
+    if len(host) > 64 or len(severity) > 24 or len(model) > 64:
+        raise ValueError("host, severity or model filter is implausibly long")
+    if len(feature) > 64:
+        raise ValueError("feature filter is implausibly long")
+    return {"limit": _int_arg(query, "limit", 100, 1, 1000),
+            "min_score": _float_arg(query, "min_score", 0.0, 0.0, 1.0),
+            "host": host, "severity": severity, "model": model, "feature": feature,
+            "unreviewed_only": _query_bool(query, "unreviewed") is True,
+            "watched_only": _query_bool(query, "watched") is True}
+
+
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:
     """The request's time window: `hours` (relative) or `from`/`to` (absolute).
 
@@ -4640,11 +4584,14 @@ def _query_bool(query: dict, name: str) -> bool | None:
     None is distinct from False on purpose: `unreviewed=` with no value is not the same
     statement as `unreviewed` absent entirely, and a caller that wanted the second must
     not silently get the first. Only explicit truthy spellings turn the flag on.
+
+    READS THROUGH `_first`, because the two surfaces hand over different query shapes: the
+    console's dict holds lists and Flask's MultiDict holds scalars, and `"true"[0]` is `"t"`.
     """
     if name not in query:
         return None
-    raw = (query.get(name) or [""])[0]
-    return str(raw).strip().lower() in ("1", "true", "yes", "on", "")
+    raw = _first(query, name, "")
+    return str(raw if raw is not None else "").strip().lower() in ("1", "true", "yes", "on", "")
 
 
 class GuiServer:
