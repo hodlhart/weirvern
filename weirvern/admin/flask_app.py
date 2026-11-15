@@ -1617,6 +1617,29 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         code, payload = payloads.settings_plan(ctx, **args)
         return jsonify(payload), code
 
+    @app.post("/api/settings/apply")
+    def settings_apply():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.settings_apply_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        ident = requestauth.identity(ctx, _auth_headers())
+        # THE CHECKS AND THE TRAIL NEED A DATABASE CONNECTION, and the ConfigMap write does not: the
+        # factory is passed rather than opened here, because the fetcher opens one per block and a
+        # failed connection must degrade the CHECKS, not the apply.
+        code, payload = payloads.settings_apply(
+            ctx, _connect, actor=(ident.username if ident else "operator"), **args)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 

@@ -22,6 +22,7 @@ console keeps serving everything not yet moved.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from typing import Any
@@ -1909,6 +1910,160 @@ def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
             for x in p.proposals
         ],
         "restart_targets": p.restart_targets,
+    }
+
+
+def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, reason: str,
+                   revert: bool, actor: str) -> tuple[int, dict[str, Any]]:
+    """Write the configuration, then restart what reads it.
+
+    THE WRITE IS VERIFIED BY READ-BACK inside ClusterConfig.apply, so a merge-patch that matched
+    nothing is reported as a failure rather than as success. THE RESTART IS WHAT MAKES IT TAKE: a
+    ConfigMap env var is read at process start, so without it the operator is told "saved" about a
+    change that is inert -- which is why a saved-but-not-restarted change is reported as a failure of
+    applying rather than folded into success.
+
+    FOUR GATES STAND BETWEEN THE REQUEST AND THE WRITE, in this order, and every one of them is
+    preserved: the in-path REASON (400), the plan's own validation (400), the explicit CONFIRMATION of
+    any change carrying a warning (409 with the proposals), and the mode's own prerequisite gate (409),
+    which is the same `mode.validate` the CLI runs. A GUI session must not be a way around it.
+    """
+    from weirvern import apply_checks, fleet_store  # noqa: PLC0415
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+    from weirvern.admin import web as web_mod  # noqa: PLC0415
+
+    # BF-9: a destructive setting needs a reason, and the reason is recorded. Enabling siphon moves
+    # the sensor IN PATH -- it becomes a cut point for its segment -- and the write trail must answer
+    # who took it in-path and why.
+    siphon_now = any(
+        str(k).strip().lower() == "sensor_mode" and str(v).strip().lower() == "siphon"
+        for k, v in changes.items())
+    if siphon_now and not reason:
+        return 400, {"ok": False, "error": (
+            "enabling siphon puts this deployment in the traffic path; a reason is required and is "
+            "recorded with your name and the time")}
+
+    raw_changes = {k: str(v) for k, v in changes.items()}
+    client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
+    try:
+        current = client.read()
+        p = cc.plan(raw_changes, current)
+    except cc.ConfigError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not read the configuration: {exc}", "code": 502}
+
+    # A change with a warning must be confirmed explicitly: the value is legal but costly, and a plan
+    # the caller never saw is not consent.
+    if not confirmed and any(x.warning for x in p.proposals):
+        return 409, {
+            "ok": False, "needs_confirmation": True,
+            "proposals": [{"key": x.key, "current": x.current, "proposed": x.proposed,
+                           "warning": x.warning} for x in p.proposals if x.warning],
+        }
+
+    mode_error = web_mod.mode_gate(ctx, changes)
+    if mode_error:
+        return 409, {"ok": False, "error": mode_error}
+
+    # THE PLAN OWNS THE CAPTURE PORT LIST. A per-NIC plan already says which ports capture and which
+    # siphon; the legacy ZEEK_IFACES list can still name a NIC the plan leaves unassigned, and then
+    # Settings says "capture" where the fleet row says "unassigned". Reconcile in the same write:
+    # siphon needs Zeek too, so the effective list is capture ports UNION siphon ports.
+    if "intercept_plans" in raw_changes:
+        try:
+            from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+            plans = NicPlanSet.from_json(raw_changes.get("intercept_plans") or "")
+            ports = plans.capture_ports()
+            if ports:
+                raw_changes["zeek_ifaces"] = ",".join(ports)
+                current_capture = str(current.get("CAPTURE_IFACE") or "").strip()
+                if current_capture not in ports:
+                    raw_changes["capture_iface"] = ports[0]
+        except Exception as exc:  # noqa: BLE001
+            # A malformed plan is refused by ClusterConfig.plan below with its own message; do not
+            # turn it into a derivation traceback here.
+            logger.warning("could not derive capture ports from intercept_plans: %s", exc)
+    # The EFFECTIVE plan, including the reconciled keys, is what every later step uses.
+    try:
+        p = cc.plan(raw_changes, current)
+    except cc.ConfigError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+
+    # APPLY-TIME CHECKS (BF-14): named assertions between the plan and the write. A failure BLOCKS
+    # the apply and names itself; a check that cannot run says why. THE CHECKS FAILING MUST NOT FAIL
+    # THE APPLY: they are a gate on the CHANGE, not a dependency of the write.
+    try:
+        norm_changes = {cc.to_configmap_key(k): v for k, v in raw_changes.items()}
+        with connect() as ch:
+            checks = apply_checks.run_apply_checks(
+                changes=norm_changes, current=current, ch_client=ch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("apply-time checks could not run: %s", exc)
+        checks = {"results": [], "blocked": False, "failed": [],
+                  "summary": f"the apply-time checks could not run ({type(exc).__name__})"}
+    if checks.get("blocked"):
+        return 409, {
+            "ok": False, "blocked": True,
+            "error": ("blocked by apply-time checks: "
+                      + "; ".join(checks.get("failed") or [])),
+            "tests": checks.get("results") or [],
+            "summary": checks.get("summary") or "",
+        }
+
+    try:
+        landed = client.apply(raw_changes, reason=reason, by=actor)
+    except cc.ConfigError as exc:
+        # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT: the read-back raised, but a fresh read can
+        # still say which values ARE there, and that beats a whole-batch error nobody can act on.
+        after = None
+        try:
+            after = client.read()
+        except Exception:  # noqa: BLE001
+            after = None
+        return 502, {
+            "ok": False, "error": str(exc),
+            "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+            "items": cc.receipt_items(raw_changes, None, after=after, error=str(exc)),
+        }
+
+    restarted: list[str] = []
+    restart_errors: list[str] = []
+    for target in p.restart_targets:
+        try:
+            client.restart(target)
+            restarted.append(target)
+        except cc.ConfigError as exc:
+            restart_errors.append(str(exc))
+
+    # US-10: THE TRAIL GETS THE SETTINGS WRITE TOO, one row PER KEY so a multi-key apply stays
+    # linkable from a single key's provenance row. A failed audit write does not fail the apply.
+    action = "revert" if revert else "apply"
+    try:
+        with connect() as ch:
+            for key in raw_changes:
+                fleet_store.write_audit(
+                    ch, scope="settings", action=action, target=str(key),
+                    reason=reason, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("settings audit write failed: %s", exc)
+
+    return 200, {
+        "ok": True,
+        # TRANSLATED AT THE BOUNDARY: `changes` is ROW-keyed (what the GUI staged) and `landed` is
+        # the ConfigMap's own data (ConfigMap keys). `landed.get(row_key)` returned "" for every key,
+        # so the confirmation read `saved: reverse_dns=(empty)` AFTER A WRITE THAT ACTUALLY LANDED:
+        # the write was right and the receipt lied.
+        "applied": {k: landed.get(cc.to_configmap_key(k), "") for k in raw_changes},
+        "restarted": restarted,
+        "restart_errors": restart_errors,
+        "note": ("restarted " + ", ".join(restarted)) if restarted
+                else "no workload needed a restart",
+        "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "items": cc.receipt_items(raw_changes, landed),
+        "tests": checks.get("results") or [],
+        "summary": checks.get("summary") or "",
     }
 
 

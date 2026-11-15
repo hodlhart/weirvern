@@ -44,7 +44,6 @@ can get to it.
 from __future__ import annotations
 
 import contextlib
-import datetime
 import ipaddress
 import json
 import logging
@@ -55,7 +54,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from weirvern import fleet_store
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -2390,186 +2388,25 @@ def _build_handler(ctx: GuiContext):
         def _settings_apply(self) -> None:
             """Write the configuration, then restart what reads it.
 
-            The write is verified by READ-BACK inside ClusterConfig.apply, so a merge-patch that
-            matched nothing is reported as a failure rather than as success. The restart is what
-            makes the change take effect -- a ConfigMap env var is read at process start, so
-            without it the operator would be told "saved" about a change that is inert.
+            EVERY GATE LIVES IN payloads.settings_apply, in the console's order: the in-path reason,
+            the plan's validation, the explicit confirmation of a warned change (409 with the
+            proposals), the mode's own prerequisite gate (409, the CLI's own check), the apply-time
+            checks (409 when blocked) -- and only then the write, the restarts and the per-key trail.
             """
             if not self._authorize():
                 return
-            from weirvern.admin import cluster_config as cc
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            changes = body.get("changes")
-            if not isinstance(changes, dict) or not changes:
-                return self._error(400, "a non-empty 'changes' object is required")
-            confirmed = bool(body.get("confirmed"))
-            reason = str(body.get("reason") or "").strip()
-
-            # BF-9: A DESTRUCTIVE SETTING NEEDS A REASON, AND THE REASON IS RECORDED. Enabling
-            # siphon moves the sensor IN PATH -- it becomes a cut point for its segment -- and
-            # the write trail must answer who took it in-path and why. The refusal names the
-            # requirement so a caller cannot miss it.
-            siphon_now = any(
-                str(k).strip().lower() == "sensor_mode" and str(v).strip().lower() == "siphon"
-                for k, v in changes.items())
-            if siphon_now and not reason:
-                return self._json({
-                    "ok": False,
-                    "error": "enabling siphon puts this deployment in the traffic path; a reason "
-                             "is required and is recorded with your name and the time",
-                }, 400)
-
-            raw_changes = {k: str(v) for k, v in changes.items()}
-            client = ctx.config_client or cc.ClusterConfig()
             try:
-                current = client.read()
-                p = cc.plan(raw_changes, current)
-            except cc.ConfigError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not read the configuration: {exc}")
-
-            # A change with a warning must be confirmed explicitly. The warning exists because the
-            # value is legal but costly, and a plan the caller never saw is not consent.
-            if not confirmed and any(x.warning for x in p.proposals):
-                return self._json({
-                    "ok": False,
-                    "needs_confirmation": True,
-                    "proposals": [
-                        {"key": x.key, "current": x.current, "proposed": x.proposed,
-                         "warning": x.warning} for x in p.proposals if x.warning
-                    ],
-                }, 409)
-
-            # The mode change gets the CLI's OWN gate, imported rather than reimplemented: two
-            # copies of a safety check drift, and the one that drifts is the one nobody tests.
-            mode_error = self._mode_gate(changes)
-            if mode_error:
-                return self._json({"ok": False, "error": mode_error}, 409)
-
-            # THE PLAN OWNS THE CAPTURE PORT LIST. A per-NIC plan already says which ports
-            # capture and which siphon; the legacy ZEEK_IFACES list can still name a NIC the
-            # plan leaves unassigned, and then Settings says "capture" where the fleet row says
-            # "unassigned" -- the mismatch the operator reported. Reconcile in the same write:
-            # siphon needs Zeek too, so the effective list is capture ports ∪ siphon ports.
-            if "intercept_plans" in raw_changes:
-                try:
-                    from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
-
-                    plans = NicPlanSet.from_json(raw_changes.get("intercept_plans") or "")
-                    ports = plans.capture_ports()
-                    if ports:
-                        raw_changes["zeek_ifaces"] = ",".join(ports)
-                        current_capture = str(current.get("CAPTURE_IFACE") or "").strip()
-                        if current_capture not in ports:
-                            raw_changes["capture_iface"] = ports[0]
-                except Exception as exc:  # noqa: BLE001
-                    # A malformed plan is refused by ClusterConfig.plan below with its own
-                    # message; do not turn it into a derivation traceback here.
-                    logger.warning("could not derive capture ports from intercept_plans: %s", exc)
-            # The effective plan, including the reconciled keys, is what every later step uses
-            # (apply-time checks, restart targets, write and receipt).
-            try:
-                p = cc.plan(raw_changes, current)
-            except cc.ConfigError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-
-            # APPLY-TIME CHECKS (BF-14): named assertions between the plan and the write. A
-            # failure BLOCKS the apply and names itself; a check that cannot run says why
-            # (the UI's "N passed, M skipped -- why?" reads this payload). The checks judge
-            # the EFFECTIVE configuration -- current merged with what is being staged.
-            from weirvern import apply_checks  # noqa: PLC0415
-
-            try:
-                norm_changes = {cc.to_configmap_key(k): v for k, v in raw_changes.items()}
-                with self._with_client() as ch:
-                    checks = apply_checks.run_apply_checks(
-                        changes=norm_changes, current=current, ch_client=ch)
-            except Exception as exc:  # noqa: BLE001
-                # THE CHECKS THEMSELVES FAILING MUST NOT FAIL THE APPLY: they are a gate on
-                # the CHANGE, not a dependency of the write. The operator sees the skip.
-                logger.warning("apply-time checks could not run: %s", exc)
-                checks = {"results": [], "blocked": False, "failed": [],
-                          "summary": f"the apply-time checks could not run ({type(exc).__name__})"}
-            if checks.get("blocked"):
-                return self._json({
-                    "ok": False,
-                    "blocked": True,
-                    "error": "blocked by apply-time checks: " + "; ".join(checks.get("failed") or []),
-                    "tests": checks.get("results") or [],
-                    "summary": checks.get("summary") or "",
-                }, 409)
-
+                args = settings_apply_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             ident = self._identity()
-            try:
-                landed = client.apply(raw_changes, reason=reason,
-                                      by=(ident.username if ident else "operator"))
-            except cc.ConfigError as exc:
-                # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT. The apply's read-back raised, but
-                # a fresh read can still say which values ARE there -- "failed, and here is the
-                # reason per key" beats a whole-batch error the operator cannot act on.
-                after = None
-                try:
-                    after = client.read()
-                except Exception:  # noqa: BLE001
-                    after = None
-                return self._json({
-                    "ok": False,
-                    "error": str(exc),
-                    "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-                    "items": cc.receipt_items(raw_changes,
-                                              None, after=after, error=str(exc)),
-                }, 502)
-
-            restarted: list[str] = []
-            restart_errors: list[str] = []
-            for target in p.restart_targets:
-                try:
-                    client.restart(target)
-                    restarted.append(target)
-                except cc.ConfigError as exc:
-                    restart_errors.append(str(exc))
-
-            # US-10: THE TRAIL GETS THE SETTINGS WRITE TOO. One row PER KEY -- a multi-key apply
-            # must stay linkable from a single key's provenance row (an exact target match).
-            # A failed audit write does not fail the apply (the write landed); it is logged so
-            # the gap is findable, the same contract as the fleet writes.
-            action = "revert" if body.get("revert") else "apply"
-            try:
-                with self._with_client() as ch:
-                    for key in raw_changes:
-                        fleet_store.write_audit(
-                            ch, scope="settings", action=action, target=str(key),
-                            reason=reason, actor=(ident.username if ident else "operator"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("settings audit write failed: %s", exc)
-            self._json({
-                "ok": True,
-                # TRANSLATED AT THE BOUNDARY, same reason as the plan route: `changes` is
-                # ROW-keyed (what the GUI staged) and `landed` is the ConfigMap's own data
-                # (CONFIGMAP keys). `landed.get(k)` with the row key returned "" for every
-                # key, so the confirmation read `saved: reverse_dns=(empty)` AFTER A WRITE
-                # THAT ACTUALLY LANDED -- the report contradicted the read-back that had
-                # just proved it. The write was right; the receipt lied.
-                "applied": {k: landed.get(cc.to_configmap_key(k), "") for k in raw_changes},
-                "restarted": restarted,
-                # A saved-but-not-restarted change is INERT, so it is reported as a failure of
-                # applying rather than quietly folded into success.
-                "restart_errors": restart_errors,
-                "note": ("restarted " + ", ".join(restarted)) if restarted
-                        else "no workload needed a restart",
-                "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-                # THE RECEIPT: per key, the value, the verdict and (on failure) the reason.
-                "items": cc.receipt_items(raw_changes, landed),
-                # ...and the apply-time checks that let this write through.
-                "tests": checks.get("results") or [],
-                "summary": checks.get("summary") or "",
-            })
+            code, payload = payloads.settings_apply(
+                ctx, self._with_client, actor=(ident.username if ident else "operator"), **args)
+            self._json(payload, code)
 
         def _settings_sonar(self) -> None:
             """Survey the capture interface's segment and return recommendations.
@@ -2835,63 +2672,12 @@ def _build_handler(ctx: GuiContext):
             self._json(result, code)
 
         def _mode_gate(self, changes: dict) -> str:
-            """Reject a mode change that the mode's own prerequisites forbid. "" when fine.
-
-            The gate is `mode.validate`, which is what `weirvern mode siphon` uses. A GUI session must
-            not be a way around it: enabling in-path interception without forwarding working takes
-            the segment down, and the check that prevents that has to be the same check.
-            """
-            wanted = None
-            for k, v in changes.items():
-                if k.strip().upper() == "SENSOR_MODE":
-                    wanted = str(v)
-            if wanted is None:
-                return ""
-            from weirvern.admin import mode as mode_mod
-
-            normalised = mode_mod.normalise(wanted)
-            has_net_admin, has_net_raw = self._sensor_caps()
-            verdict = mode_mod.validate(normalised, has_net_admin=has_net_admin,
-                                        has_net_raw=has_net_raw, watchdog_available=True)
-            if verdict.ok:
-                return ""
-            reasons = "; ".join(getattr(verdict, "blockers", []) or [])
-            return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
+            """Reject a mode change that the mode's own prerequisites forbid (see mode_gate)."""
+            return mode_gate(ctx, changes)
 
         def _sensor_caps(self) -> tuple[bool, bool]:
-            """(net_admin, net_raw) for the WORKER, which is what runs the intercept.
-
-            WHY THE WORKER AND NOT ZEEK: `weirvern intercept` is a control-plane command; it
-            executes in the worker pod. The worker forges the ARP frames, installs the
-            policy route and drives the forwarding path. The zeek pod only captures, and
-            giving the packet parser NET_ADMIN widens the wrong process. The worker's
-            Deployment is therefore the authoritative place to read the capabilities that
-            siphon actually needs.
-
-            WHY THE CLUSTER AND NOT THIS PROCESS: the GUI runs in its own pod, and its
-            effective capabilities describe the wrong container.
-
-            A capability that cannot be verified is reported ABSENT, never assumed: the
-            gate exists so the in-path mode cannot be enabled without the ability to
-            forward. (This began as a stub that answered "no" unconditionally.)
-            """
-            from weirvern.admin import cluster_config as cc
-
-            client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
-            try:
-                dep = client.get_json(
-                    f"/apis/apps/v1/namespaces/{cc.NAMESPACE}/deployments/weirvern-worker")
-                containers = (
-                    ((dep.get("spec") or {}).get("template") or {}).get("spec") or {}
-                ).get("containers") or []
-                for container in containers:
-                    if container.get("name") == "worker":
-                        adds = ((container.get("securityContext") or {})
-                                .get("capabilities") or {}).get("add") or []
-                        return ("NET_ADMIN" in adds), ("NET_RAW" in adds)
-            except Exception:  # noqa: BLE001
-                pass
-            return False, False
+            """(net_admin, net_raw) for the worker (see sensor_caps)."""
+            return sensor_caps(ctx)
 
         def _networks(self, query: dict) -> None:
             """Read-only network coverage for Settings and the Weirlings tab."""
@@ -3782,6 +3568,74 @@ def settings_changes_args(body: dict) -> dict:
     if not isinstance(changes, dict) or not changes:
         raise ValueError("a non-empty 'changes' object is required")
     return {"changes": changes}
+
+
+def settings_apply_args(body: dict) -> dict:
+    """The apply form: a non-empty `changes` object, the confirmation, the reason and the revert flag.
+
+    `confirmed` and `revert` are read for truth, as on the console: the form posts checkboxes.
+    """
+    changes = body.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError("a non-empty 'changes' object is required")
+    return {"changes": changes, "confirmed": bool(body.get("confirmed")),
+            "reason": str(body.get("reason") or "").strip(),
+            "revert": bool(body.get("revert"))}
+
+
+def sensor_caps(ctx) -> tuple[bool, bool]:
+    """(net_admin, net_raw) for the WORKER, which is what runs the intercept.
+
+    WHY THE WORKER AND NOT ZEEK: `weirvern intercept` is a control-plane command; it executes in the
+    worker pod. The worker forges the ARP frames, installs the policy route and drives the forwarding
+    path. The zeek pod only captures, and giving the packet parser NET_ADMIN widens the wrong process.
+
+    WHY THE CLUSTER AND NOT THIS PROCESS: the GUI runs in its own pod, and its effective capabilities
+    describe the wrong container. A capability that cannot be verified is reported ABSENT, never
+    assumed: the gate exists so the in-path mode cannot be enabled without the ability to forward.
+    """
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+    client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
+    try:
+        dep = client.get_json(
+            f"/apis/apps/v1/namespaces/{cc.NAMESPACE}/deployments/weirvern-worker")
+        containers = (
+            ((dep.get("spec") or {}).get("template") or {}).get("spec") or {}
+        ).get("containers") or []
+        for container in containers:
+            if container.get("name") == "worker":
+                adds = ((container.get("securityContext") or {})
+                        .get("capabilities") or {}).get("add") or []
+                return ("NET_ADMIN" in adds), ("NET_RAW" in adds)
+    except Exception:  # noqa: BLE001
+        pass
+    return False, False
+
+
+def mode_gate(ctx, changes: dict) -> str:
+    """Reject a mode change that the mode's own prerequisites forbid. "" when fine.
+
+    THE GATE IS `mode.validate`, which is what `weirvern mode siphon` uses: a GUI session must not be a
+    way around it, because enabling in-path interception without forwarding working takes the segment
+    down, and the check that prevents that has to be the same check.
+    """
+    wanted = None
+    for k, v in changes.items():
+        if k.strip().upper() == "SENSOR_MODE":
+            wanted = str(v)
+    if wanted is None:
+        return ""
+    from weirvern.admin import mode as mode_mod  # noqa: PLC0415
+
+    normalised = mode_mod.normalise(wanted)
+    has_net_admin, has_net_raw = sensor_caps(ctx)
+    verdict = mode_mod.validate(normalised, has_net_admin=has_net_admin,
+                                has_net_raw=has_net_raw, watchdog_available=True)
+    if verdict.ok:
+        return ""
+    reasons = "; ".join(getattr(verdict, "blockers", []) or [])
+    return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
 
 
 def sensor_addresses(ctx) -> list[str]:

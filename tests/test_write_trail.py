@@ -54,9 +54,10 @@ def test_the_trail_route_is_filterable_and_self_guarding():
 
 
 def test_a_settings_apply_writes_one_audit_row_PER_KEY():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split('# US-10: THE TRAIL GETS THE SETTINGS WRITE TOO.', 1)[1].split("self._json({", 1)[0]
-    assert 'action = "revert" if body.get("revert") else "apply"' in seg
+    # THE TRAIL MOVED into payloads.settings_apply with the port; it is asserted where it lives.
+    src = (PY / "admin" / "payloads.py").read_text()
+    seg = src.split('# US-10: THE TRAIL GETS THE SETTINGS WRITE TOO', 1)[1].split('return 200, {', 1)[0]
+    assert 'action = "revert" if revert else "apply"' in seg
     assert "for key in raw_changes:" in seg, (
         "one row per key keeps a single-key provenance link an EXACT match; derived keys "
         "such as the reconciled ZEEK_IFACES are real writes and must be audited too")

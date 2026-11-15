@@ -62,9 +62,16 @@ def test_values_are_normalised_like_the_write_path():
 
 
 def test_the_route_emits_the_receipt_on_both_paths():
+    """THE APPLY MOVED into payloads.settings_apply with the port; the receipt went with it.
+
+    Both paths still owe one: a failed write must say which keys landed, and that means re-reading
+    rather than guessing.
+    """
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    body = src[src.index("def _settings_apply(self)"):]
-    body = body[:body.index("def _settings_sonar")]
+    assert "payloads.settings_apply(" in src, "the apply route no longer uses the shared fetcher"
+    body = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    body = body[body.index("def settings_apply("):]
+    body = body[:body.index("\ndef ")]
     assert '"items"' in body and '"at"' in body, "the receipt is gone from the apply response"
     assert body.count("receipt_items") >= 2, (
         "the refusal path lost its receipt -- a failed write must still say which keys landed"

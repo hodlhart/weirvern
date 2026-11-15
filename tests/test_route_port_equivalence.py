@@ -708,6 +708,7 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/networks/autofill": ("network_scope_autofill",
                                "weirvern.admin.payloads.network_scope_autofill"),
     "/api/settings/plan": ("settings_plan", "weirvern.admin.payloads.settings_plan"),
+    "/api/settings/apply": ("settings_apply", "weirvern.admin.payloads.settings_apply"),
 }
 
 
@@ -724,7 +725,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 29, (
+    assert len(PORTED_WRITES) >= 30, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1605,3 +1606,131 @@ def test_autofill_and_the_settings_plan_answer_identically(surfaces, monkeypatch
     body = _same("/api/settings/plan", {"changes": {"sensor_mode": "sideways"}}, 400)
     assert body == {"ok": False, "error": "SENSOR_MODE must be loch or siphon"}, body
     assert networks, "the patches above must target the real module"
+
+
+def test_the_settings_apply_answers_identically(surfaces, monkeypatch):
+    """The one route that writes the ConfigMap: four gates before the write, and a receipt after it.
+
+    THE ORDER OF THE GATES IS THE CONTRACT. A siphon change with no reason is refused BEFORE the
+    configuration is even read, so the operator is told what is missing rather than being shown a
+    validation error from a plan nobody needed. Then the plan's validation, then the explicit
+    confirmation of any warned change, then the mode's own prerequisite gate. Only after all four
+    does anything get written.
+    """
+    import types
+
+    from weirvern.admin import cluster_config as cc
+    from weirvern.admin import mode as mode_mod
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    applied: list = []
+    restarted: list = []
+    ctx.config_client = types.SimpleNamespace(
+        read=lambda: {"SENSOR_MODE": "loch", "INTERCEPT_SECONDS": "600"},
+        apply=lambda changes, reason="", by="": (applied.append((dict(changes), reason, by))
+                                                 or {"SENSOR_MODE": "siphon"}),
+        restart=lambda target: restarted.append(target),
+        get_json=lambda path: {},
+    )
+
+    def _same(path, payload, expected):
+        raw = json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:220]!r} / {fb[:220]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:260]!r}\n  flask:   {fb[:260]!r}")
+        return json.loads(fb)
+
+    class _Proposal:
+        key = "SENSOR_MODE"
+        current = "loch"
+        proposed = "siphon"
+        restarts = ["worker"]
+        blast = "in path"
+        warning = "this puts the deployment in the traffic path"
+
+    _patch(monkeypatch, "weirvern.admin.cluster_config.plan",
+           lambda changes, current: types.SimpleNamespace(
+               proposals=[_Proposal], restart_targets=["worker"]))
+    _patch(monkeypatch, "weirvern.admin.cluster_config.to_configmap_key",
+           lambda key: key.upper())
+    _patch(monkeypatch, "weirvern.admin.cluster_config.receipt_items",
+           lambda changes, landed, after=None, error=None: [
+               {"key": k, "value": (landed or {}).get(k.upper(), "")} for k in changes])
+
+    # 1. An empty changes object.
+    body = _same("/api/settings/apply", {}, 400)
+    assert body == {"error": "a non-empty 'changes' object is required", "code": 400}, body
+
+    # 2. IN PATH WITHOUT A REASON, refused before the configuration is read.
+    body = _same("/api/settings/apply", {"changes": {"sensor_mode": "siphon"}}, 400)
+    assert body["ok"] is False and "puts this deployment in the traffic path" in body["error"], body
+    assert applied == [], "a refused apply must not write"
+
+    # 3. A plan validation error is `{"ok": false}` with the validator's own sentence.
+    def _plan_refuse(changes, current):
+        raise cc.ConfigError("SENSOR_MODE must be loch or siphon")
+
+    _patch(monkeypatch, "weirvern.admin.cluster_config.plan", _plan_refuse)
+    body = _same("/api/settings/apply",
+                 {"changes": {"sensor_mode": "sideways"}, "reason": "testing"}, 400)
+    assert body == {"ok": False, "error": "SENSOR_MODE must be loch or siphon"}, body
+
+    _patch(monkeypatch, "weirvern.admin.cluster_config.plan",
+           lambda changes, current: types.SimpleNamespace(
+               proposals=[_Proposal], restart_targets=["worker"]))
+
+    # 4. A WARNED CHANGE WITHOUT `confirmed` IS A 409 CARRYING THE PROPOSALS, not a write.
+    body = _same("/api/settings/apply",
+                 {"changes": {"sensor_mode": "siphon"}, "reason": "splitting traffic"}, 409)
+    assert body["ok"] is False and body["needs_confirmation"] is True, body
+    assert body["proposals"] == [{"key": "SENSOR_MODE", "current": "loch",
+                                  "proposed": "siphon",
+                                  "warning": "this puts the deployment in the traffic path"}], body
+    assert applied == [], "an unconfirmed warned change must not write"
+
+    # 5. THE MODE'S OWN GATE, which the CLI also runs.
+    _patch(monkeypatch, "weirvern.admin.mode.validate",
+           lambda *a, **k: types.SimpleNamespace(ok=False, blockers=["NET_ADMIN is missing"]))
+    body = _same("/api/settings/apply",
+                 {"changes": {"sensor_mode": "siphon"}, "reason": "splitting traffic",
+                  "confirmed": True}, 409)
+    assert body == {"ok": False, "error": "cannot enable siphon: NET_ADMIN is missing"}, body
+    assert applied == [], "a mode the prerequisites forbid must not write"
+
+    _patch(monkeypatch, "weirvern.admin.mode.validate",
+           lambda *a, **k: types.SimpleNamespace(ok=True, blockers=[]))
+
+    # 6. The apply-time checks can BLOCK the write, and say which check failed.
+    _patch(monkeypatch, "weirvern.apply_checks.run_apply_checks",
+           lambda **k: {"results": [{"name": "forwarding"}], "blocked": True,
+                        "failed": ["forwarding is not working"], "summary": "1 failed"})
+    body = _same("/api/settings/apply",
+                 {"changes": {"sensor_mode": "siphon"}, "reason": "splitting traffic",
+                  "confirmed": True}, 409)
+    assert body["blocked"] is True, body
+    assert body["error"] == "blocked by apply-time checks: forwarding is not working", body
+    assert body["tests"] == [{"name": "forwarding"}], body
+    assert applied == [], "a blocked apply must not write"
+
+    # 7. And when every gate passes, the write lands and the receipt translates back to row keys.
+    _patch(monkeypatch, "weirvern.apply_checks.run_apply_checks",
+           lambda **k: {"results": [{"name": "forwarding", "ok": True}], "blocked": False,
+                        "failed": [], "summary": "1 passed"})
+    body = _same("/api/settings/apply",
+                 {"changes": {"sensor_mode": "siphon"}, "reason": "splitting traffic",
+                  "confirmed": True}, 200)
+    assert body["applied"] == {"sensor_mode": "siphon"}, body
+    assert body["restarted"] == ["worker"] and body["restart_errors"] == [], body
+    assert body["note"] == "restarted worker", body
+    assert body["items"] == [{"key": "sensor_mode", "value": "siphon"}], body
+    assert body["summary"] == "1 passed", body
+    assert len(applied) == 2 and applied[0][1:] == ("splitting traffic", "sam"), applied
+    assert restarted == ["worker", "worker"], restarted
+    assert mode_mod, "the patches above must target the real module"

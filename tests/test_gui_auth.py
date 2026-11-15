@@ -309,13 +309,17 @@ def test_every_editable_key_declares_what_must_restart():
 
 
 def test_a_failed_restart_is_reported_as_a_failure_not_as_success():
-    src = WEB.read_text()
-    i = src.index("def _settings_apply(")
-    # Sliced to the FUNCTION'S END (the next handler def), not a fixed 4000-char window:
-    # the window was an implicit budget that a growing function silently outran, and this
-    # assertion then read a truncated body and failed for a reason unrelated to what it
-    # checks. The boundary anchor is what it always meant.
-    j = src.index("\n        def ", i + 10)
+    """THE APPLY MOVED into payloads.settings_apply with the port; the property went with it.
+
+    Sliced to the FUNCTION'S END (the next top-level def), not a fixed character window: the window
+    was an implicit budget that a growing function silently outran, and this assertion then read a
+    truncated body and failed for a reason unrelated to what it checks.
+    """
+    assert "payloads.settings_apply(" in WEB.read_text(), (
+        "the apply route no longer uses the shared fetcher, so this property is untested")
+    src = (WEB.parent / "payloads.py").read_text()
+    i = src.index("def settings_apply(")
+    j = src.index("\ndef ", i + 10)
     body = src[i:j]
     assert "restart_errors" in body, "a failed restart is not surfaced"
     assert '"ok": True' in body and "restart_errors" in body
@@ -341,9 +345,13 @@ def test_the_mode_change_reuses_mode_validate_rather_than_reimplementing_it():
     """Two copies of a safety check drift, and the one that drifts is the one nobody tests.
     Enabling in-path interception without forwarding working takes the segment down."""
     src = WEB.read_text()
-    i = src.index("        def _mode_gate(self")
+    # THE GATE MOVED to the module-level web.mode_gate when the Flask surface began serving the
+    # route; the console's method is a one-line adapter. Asserting it there would demand the check
+    # be duplicated again.
+    assert "mode_gate(ctx, changes)" in src.split("def _mode_gate(self", 1)[1].split("\n        def ", 1)[0]
+    i = src.index("def mode_gate(")
     body = src[i:]
-    body = body[:body.index("\n        def ", 10)]
+    body = body[:body.index("\ndef ", 10)]
     assert "mode_mod.validate(" in body, "the GUI does not use the CLI's mode gate"
     assert "from weirvern.admin import mode as mode_mod" in body
 
@@ -364,8 +372,10 @@ def test_the_gui_reads_sensor_capabilities_from_the_CLUSTER_and_defaults_to_ABSE
     the default is what keeps in-path interception from being enabled on a sensor that
     cannot forward."""
     src = WEB.read_text()
-    i = src.index("def _sensor_caps(")
-    body = src[i:src.index("\n        def ", i + 10)]
+    # THE PROBE MOVED to the module-level web.sensor_caps with the port; the method is an adapter.
+    assert "sensor_caps(ctx)" in src.split("def _sensor_caps(self", 1)[1].split("\n        def ", 1)[0]
+    i = src.index("def sensor_caps(")
+    body = src[i:src.index("\ndef ", i + 10)]
     assert "get_json" in body and "deployments/weirvern-worker" in body, (
         "the capability probe does not read the sensor's DaemonSet from the cluster"
     )
@@ -418,9 +428,9 @@ def test_resolving_PUBLIC_addresses_is_allowed_but_WARNS(before=""):
 
 def test_a_warned_change_needs_EXPLICIT_confirmation():
     """A legal-but-costly value must not apply from a plan the caller never saw."""
-    src = WEB.read_text()
-    i = src.index("def _settings_apply(")
-    body = src[i:i + 3000]
+    src = (WEB.parent / "payloads.py").read_text()
+    i = src.index("def settings_apply(")
+    body = src[i:src.index("\ndef ", i + 10)]
     assert "needs_confirmation" in body, "a warned change applies without confirmation"
     assert "confirmed" in body
 

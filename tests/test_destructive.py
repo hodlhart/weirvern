@@ -60,9 +60,13 @@ def test_the_write_trail_table_is_a_shipped_schema():
 
 
 def test_enabling_siphon_in_settings_demands_a_reason():
+    """THE GUARD MOVED into payloads.settings_apply with the port; the handler must still ask it."""
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert 'enabling siphon puts this deployment in the traffic path' in src
-    assert 'siphon_now and not reason' in src
+    assert "payloads.settings_apply(" in src, "the apply route no longer uses the shared fetcher"
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    guard = payloads.split("def settings_apply(", 1)[1].split("\ndef ", 1)[0]
+    assert 'enabling siphon puts this deployment in the traffic path' in guard
+    assert 'siphon_now and not reason' in guard
 
 
 def test_a_siphon_plan_write_demands_a_reason():
