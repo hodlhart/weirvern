@@ -671,6 +671,7 @@ def test_the_users_read_is_admin_gated_identically_and_answers_when_granted(surf
 
 PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/watch": ("watch", "weirvern.admin.payloads.watch"),
+    "/api/review": ("review", "weirvern.admin.payloads.review"),
 }
 
 
@@ -687,7 +688,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 1, (
+    assert len(PORTED_WRITES) >= 2, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -740,3 +741,73 @@ def test_the_watch_write_answers_identically(surfaces, monkeypatch):
         assert fs == ls == 400, f"{bad!r}: console {ls}, flask {fs}"
         assert expected in lb and expected in fb, (bad, lb[:160], fb[:160])
         assert json.loads(fb) == json.loads(lb), (bad, lb[:160], fb[:160])
+
+
+def test_the_review_write_answers_identically(surfaces, monkeypatch):
+    """A disposition and its optional adjustment, plus every refusal around them.
+
+    THE UNKNOWN-STATE ANSWER IS ITS OWN SHAPE: a 400 carrying `valid_states`, not the house error.
+    The adjustment has three sentences of its own, and a review that lands beside a REJECTED
+    adjustment still 400s -- the console's behaviour, preserved rather than tidied.
+    """
+    import types
+
+    legacy, app = surfaces()
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+    writes = []
+    _patch(monkeypatch, "weirvern.admin.status.write_review",
+           lambda client, **k: writes.append(k))
+    _patch(monkeypatch, "weirvern.models.active_learning.build_adjustment",
+           lambda **k: dict(k))
+    adjustments = []
+    _patch(monkeypatch, "weirvern.models.active_learning.write_adjustment",
+           lambda client, adj: adjustments.append(adj))
+
+    stamp = '"window_start": "2026-11-13T00:00:00", "src_addr": "203.0.113.9"'
+
+    # 1. A plain disposition lands, and both surfaces wrote the same row.
+    good = ('{' + stamp + ', "state": "ack", "note": "seen"}').encode()
+    ls, lb = _post_legacy(legacy.port, "/api/review", good)
+    fs, fb = _post_flask(app, "/api/review", good)
+    assert fs == ls == 200, f"console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}"
+    assert json.loads(fb) == json.loads(lb)
+    assert len(writes) == 2 and writes[0] == writes[1], writes
+
+    # 2. An unknown state is the 400 WITH valid_states.
+    bad_state = ('{' + stamp + ', "state": "nope"}').encode()
+    ls, lb = _post_legacy(legacy.port, "/api/review", bad_state)
+    fs, fb = _post_flask(app, "/api/review", bad_state)
+    assert fs == ls == 400, f"console {ls}, flask {fs}"
+    assert json.loads(fb) == json.loads(lb)
+    assert json.loads(fb).get("valid_states"), "the refusal lost its valid_states list"
+
+    # 3. Missing fields.
+    missing = b'{"state": "ack"}'
+    ls, lb = _post_legacy(legacy.port, "/api/review", missing)
+    fs, fb = _post_flask(app, "/api/review", missing)
+    assert fs == ls == 400, f"console {ls}, flask {fs}"
+    assert json.loads(fb) == json.loads(lb)
+
+    # 4. Adjustment validation: not an object, then a non-numeric value.
+    for adj, expected in (
+        ('"adjustment": 5', b"'adjustment' must be an object"),
+        ('"adjustment": {"before_value": "x", "after_value": 2}',
+         b"before_value and after_value must be numbers"),
+    ):
+        raw = ('{' + stamp + ', "state": "ack", ' + adj + '}').encode()
+        ls, lb = _post_legacy(legacy.port, "/api/review", raw)
+        fs, fb = _post_flask(app, "/api/review", raw)
+        assert fs == ls == 400, f"{adj}: console {ls}, flask {fs}"
+        assert expected in lb and expected in fb, (adj, lb[:200], fb[:200])
+        assert json.loads(fb) == json.loads(lb), (adj, lb[:200], fb[:200])
+
+    # 5. A valid adjustment rides the response.
+    adj_ok = ('{' + stamp + ', "state": "ack", "adjustment": {"before_value": 1, '
+              '"after_value": 2, "reason": "tuned"}}').encode()
+    ls, lb = _post_legacy(legacy.port, "/api/review", adj_ok)
+    fs, fb = _post_flask(app, "/api/review", adj_ok)
+    assert fs == ls == 200, f"console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}"
+    assert json.loads(fb) == json.loads(lb)
+    assert json.loads(fb).get("adjustment"), "the adjustment is missing from the answer"
+    assert len(adjustments) == 2, adjustments

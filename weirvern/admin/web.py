@@ -2879,66 +2879,22 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            window_start = body.get("window_start")
-            src_addr = str(body.get("src_addr") or "").strip()
-            state = str(body.get("state") or "").strip()
-            note = str(body.get("note") or "")[:500]
-            adjustment_body = body.get("adjustment")
-
-            if not window_start or not src_addr:
-                return self._error(400, "'window_start' and 'src_addr' are required")
-            if state not in status_mod.VALID_REVIEW_STATES:
-                return self._json({
-                    "ok": False,
-                    "error": f"unknown review state {state!r}",
-                    "valid_states": [s for s in status_mod.VALID_REVIEW_STATES if s],
-                }, 400)
-            response = {"ok": True, "state": state, "note": note}
             try:
-                with self._with_client() as client:
-                    status_mod.write_review(
-                        client, window_start=window_start, src_addr=src_addr,
-                        state=state, note=note)
-                    if adjustment_body is not None:
-                        if not isinstance(adjustment_body, dict):
-                            return self._error(400, "'adjustment' must be an object")
-                        from weirvern.models.active_learning import (  # noqa: PLC0415
-                            build_adjustment,
-                            write_adjustment,
-                        )
-
-                        raw_before = adjustment_body.get("before_value")
-                        raw_after = adjustment_body.get("after_value")
-                        if raw_before is None or raw_after is None:
-                            raise ValueError(
-                                "adjustment before_value and after_value are required"
-                            )
-                        try:
-                            before_value = float(str(raw_before))
-                            after_value = float(str(raw_after))
-                        except ValueError as exc:
-                            raise ValueError(
-                                "adjustment before_value and after_value must be numbers"
-                            ) from exc
-                        adjustment = build_adjustment(
-                            scope=str(adjustment_body.get("scope") or "host"),
-                            subject=str(adjustment_body.get("subject") or src_addr),
-                            metric=str(adjustment_body.get("metric") or "page_budget"),
-                            before_value=before_value,
-                            after_value=after_value,
-                            reason=str(adjustment_body.get("reason") or note),
-                            review_window_start=status_mod._parse_stamp(window_start),
-                            review_src_addr=src_addr,
-                            expiry_days=int(adjustment_body.get("expiry_days") or 14),
-                        )
-                        write_adjustment(client, adjustment)
-                        response["adjustment"] = adjustment
+                args = review_args(body)
             except ValueError as exc:
                 return self._error(400, str(exc))
+            # THE STATE HAS ITS OWN 400 SHAPE (with `valid_states`), checked BEFORE the database
+            # is touched, which is where the console has always checked it.
+            refusal = payloads.review_state_refusal(args["state"])
+            if refusal is not None:
+                return self._json(refusal, 400)
+            try:
+                with self._with_client() as client:
+                    # SHARED WITH THE FLASK SURFACE (payloads.review), status included.
+                    code, payload = payloads.review(client, **args)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"could not record the review: {exc}")
-            self._json(response)
+                code, payload = payloads.review_failure(exc)
+            self._json(payload, code)
 
         def _watch(self) -> None:
             """Toggle one host's place on the watch list (the alert action cell's Watch).
@@ -4145,6 +4101,22 @@ def watch_body(body: dict) -> dict:
     if not isinstance(on, bool):
         raise ValueError("'on' must be true or false")
     return {"src_addr": src_addr, "on": on}
+
+
+def review_args(body: dict) -> dict:
+    """The review write's fields, validated for presence with the console's sentence.
+
+    `state` is returned unchecked: an unknown state answers a DIFFERENT 400 (with `valid_states`),
+    which `review_state_refusal` builds, and that check must happen before the database is touched.
+    """
+    window_start = body.get("window_start")
+    src_addr = str(body.get("src_addr") or "").strip()
+    state = str(body.get("state") or "").strip()
+    note = str(body.get("note") or "")[:500]
+    if not window_start or not src_addr:
+        raise ValueError("'window_start' and 'src_addr' are required")
+    return {"window_start": window_start, "src_addr": src_addr, "state": state,
+            "note": note, "adjustment": body.get("adjustment")}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

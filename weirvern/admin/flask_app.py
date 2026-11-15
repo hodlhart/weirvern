@@ -47,10 +47,28 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
+from flask.json.provider import DefaultJSONProvider
 
 from weirvern.admin import requestauth
 
 logger = logging.getLogger(__name__)
+
+
+class ConsoleJSONProvider(DefaultJSONProvider):
+    """Serialise EXACTLY like the console: `json.dumps(payload, default=str)`.
+
+    THIS WAS A REAL DIVERGENCE, caught by the review write's adjustment. Flask's default provider
+    turns a datetime into an RFC 822 string and a UUID into str(); the console falls back to `str()`
+    for EVERYTHING unknown. A payload carrying a raw datetime therefore reads differently on the two
+    surfaces -- "Thu, 13 Nov 2026 00:00:00 GMT" against "2026-11-13 00:00:00" -- and nothing in the
+    route says so, because the value is assembled deep inside a payload builder.
+
+    Overriding `default` is what makes the bytes match. `sort_keys` is off as well: the console
+    preserves insertion order, and while JSON objects are unordered, a reader diffing two responses
+    should not have to think about that.
+    """
+
+    default = staticmethod(str)
 
 # The templates ship inside the package (see pyproject package-data), so this is a path relative to
 # the module and not a working-directory guess.
@@ -87,6 +105,10 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     from weirvern.admin.web import STATIC_DIR, STATIC_FILES
 
     app = Flask(__name__, static_folder=None, template_folder=str(TEMPLATE_DIR))
+    # THE SAME JSON AS THE CONSOLE (see ConsoleJSONProvider). Datetimes are the case that made this
+    # necessary: Flask's default writes RFC 822, the console writes str().
+    app.json = ConsoleJSONProvider(app)
+    app.json.sort_keys = False
 
     # ── THE COOKIE, AND WHY THIS SURFACE HAS ONE WHEN THE API DOES NOT ──────────────────────────
     #
@@ -1050,6 +1072,35 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                 code, payload = payloads.watch(client, **args)
         except Exception as exc:  # noqa: BLE001
             code, payload = payloads.watch_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/review")
+    def review():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.review_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        # The unknown-state answer carries `valid_states`, so it is its own body rather than the
+        # house error shape; both surfaces ask the same builder.
+        state_refusal = payloads.review_state_refusal(args["state"])
+        if state_refusal is not None:
+            return jsonify(state_refusal), 400
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.review(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.review_failure(exc)
         return jsonify(payload), code
 
     def _auth_headers():

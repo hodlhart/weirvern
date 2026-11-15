@@ -1500,6 +1500,74 @@ def watch_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
     return 503, {"error": f"could not record the watch: {exc}", "code": 503}
 
 
+def review(client: Client, *, window_start: Any, src_addr: str, state: str, note: str,
+           adjustment: Any) -> tuple[int, dict[str, Any]]:
+    """Record an analyst's disposition of one anomaly, and optionally an active-learning adjustment.
+
+    RETURNS (STATUS, PAYLOAD). A disposition is a write whose answer is what LANDED, and an
+    adjustment carries its own validation: a non-object, a missing value or a non-numeric one is a
+    400 with the sentence that says which, not a silent no-op beside a stored review.
+    """
+    try:
+        status_mod.write_review(
+            client, window_start=window_start, src_addr=src_addr, state=state, note=note)
+        response: dict[str, Any] = {"ok": True, "state": state, "note": note}
+        if adjustment is not None:
+            if not isinstance(adjustment, dict):
+                raise ValueError("'adjustment' must be an object")
+            from weirvern.models.active_learning import (  # noqa: PLC0415
+                build_adjustment,
+                write_adjustment,
+            )
+
+            raw_before = adjustment.get("before_value")
+            raw_after = adjustment.get("after_value")
+            if raw_before is None or raw_after is None:
+                raise ValueError("adjustment before_value and after_value are required")
+            try:
+                before_value = float(str(raw_before))
+                after_value = float(str(raw_after))
+            except ValueError as exc:
+                raise ValueError(
+                    "adjustment before_value and after_value must be numbers") from exc
+            built = build_adjustment(
+                scope=str(adjustment.get("scope") or "host"),
+                subject=str(adjustment.get("subject") or src_addr),
+                metric=str(adjustment.get("metric") or "page_budget"),
+                before_value=before_value,
+                after_value=after_value,
+                reason=str(adjustment.get("reason") or note),
+                review_window_start=status_mod._parse_stamp(window_start),
+                review_src_addr=src_addr,
+                expiry_days=int(adjustment.get("expiry_days") or 14),
+            )
+            write_adjustment(client, built)
+            response["adjustment"] = built
+    except ValueError as exc:
+        return 400, {"error": str(exc), "code": 400}
+    except Exception as exc:  # noqa: BLE001
+        return review_failure(exc)
+    return 200, response
+
+
+def review_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """The console's own failure shape for a review that did not land."""
+    logger.warning("review write failed: %s", exc)
+    return 503, {"error": f"could not record the review: {exc}", "code": 503}
+
+
+def review_state_refusal(state: str) -> dict[str, Any] | None:
+    """The 400 body for an unknown review state, or None when the state is valid.
+
+    A SHAPE OF ITS OWN, not the house error: the console sends `valid_states` so the caller can
+    offer the right choices rather than guess.
+    """
+    if state in status_mod.VALID_REVIEW_STATES:
+        return None
+    return {"ok": False, "error": f"unknown review state {state!r}",
+            "valid_states": [s for s in status_mod.VALID_REVIEW_STATES if s]}
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415
