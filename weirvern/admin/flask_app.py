@@ -1156,6 +1156,55 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         return _account_write("reset", payloads.user_reset)
 
+    # ── the session routes: sign in, sign out, change your own password ───────────────────────
+    #
+    # THESE THREE DO NOT USE `_account_write` OR `gated`. /api/login is the door itself, and the other
+    # two are the only writes a non-admin account may make: they check the SESSION (not the role, not
+    # the operator token), and they check it BEFORE parsing, which is the console's order.
+
+    @app.post("/api/login")
+    def api_login():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        # The accounts check comes first: a GUI with no accounts refuses whatever was posted.
+        refusal = payloads.login_refusal(ctx)
+        if refusal is not None:
+            return jsonify(refusal), 403
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        code, payload = payloads.login(
+            ctx, username=str(body.get("username") or ""),
+            password=str(body.get("password") or ""), addr=request.remote_addr or "")
+        return jsonify(payload), code
+
+    @app.post("/api/logout")
+    def api_logout():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        ident, refusal = payloads.session_required(ctx, _auth_headers())
+        if refusal is not None:
+            return jsonify(refusal[1]), refusal[0]
+        code, payload = payloads.logout(ctx, ident, _auth_headers())
+        return jsonify(payload), code
+
+    @app.post("/api/password")
+    def api_password():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        ident, refusal = payloads.session_required(ctx, _auth_headers())
+        if refusal is not None:
+            return jsonify(refusal[1]), refusal[0]
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        code, payload = payloads.password_change(
+            ctx, ident, current=str(body.get("current") or ""),
+            new=str(body.get("new") or ""))
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 

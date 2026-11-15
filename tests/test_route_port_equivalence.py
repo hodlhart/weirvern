@@ -680,6 +680,9 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/users/role": ("user_role", "weirvern.admin.payloads.user_role"),
     "/api/users/delete": ("user_delete", "weirvern.admin.payloads.user_delete"),
     "/api/users/reset": ("user_reset", "weirvern.admin.payloads.user_reset"),
+    "/api/login": ("login", "weirvern.admin.payloads.login"),
+    "/api/logout": ("logout", "weirvern.admin.payloads.logout"),
+    "/api/password": ("password_change", "weirvern.admin.payloads.password_change"),
 }
 
 
@@ -696,7 +699,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 6, (
+    assert len(PORTED_WRITES) >= 9, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -931,3 +934,103 @@ def test_the_account_writes_answer_identically(surfaces, monkeypatch):
     fs, fb = _post_flask(app, "/api/users/create", b"{}")
     assert fs == ls == 503, f"console {ls}, flask {fs}"
     assert json.loads(fb) == json.loads(lb)
+
+
+def test_the_session_writes_answer_identically(surfaces, monkeypatch):
+    """Sign in, sign out and change your own password: same order, same bodies, same revocations.
+
+    THE ORDER IS THE POINT IN TWO PLACES. A GUI with no accounts refuses a sign-in BEFORE it looks at
+    the body, so a malformed one still gets 403; and a request with no session is refused before the
+    body is parsed, so sign-out and password-change answer 401 even when the JSON is garbage.
+    """
+    import types
+
+    from weirvern.admin import gui_auth
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ident = types.SimpleNamespace(is_admin=False, must_change=False, username="viewer",
+                                  role="viewer")
+
+    class _Store:
+        def has_users(self):
+            return True
+
+        def find(self, username):
+            return types.SimpleNamespace(username=username, hash="hashed",
+                                        role="viewer", is_admin=False, must_change=False)
+
+        def set_password(self, username, password, must_change=False):
+            revocations.append(("password", username, password, must_change))
+
+    revocations: list = []
+    ctx.user_store = _Store()
+    ctx.sessions = types.SimpleNamespace(
+        revoke=lambda token: revocations.append(("revoke", token)) or 1,
+        revoke_user=lambda u: revocations.append(("revoke_user", u)) or 1,
+    )
+    audited: list = []
+    _patch(monkeypatch, "weirvern.admin.requestauth.audit_auth",
+           lambda ctx_, action, username, reason: audited.append((action, username, reason)))
+    _patch(monkeypatch, "weirvern.admin.users.verify_password",
+           lambda presented, hashed: presented == "right")
+
+    def _both(path, payload, headers=None):
+        raw = json.dumps(payload).encode() if payload is not None else b""
+        return (_post_legacy(legacy.port, path, raw, headers),
+                _post_flask(app, path, raw, headers))
+
+    def _same(path, payload, headers=None, expected=None):
+        (ls, lb), (fs, fb) = _both(path, payload, headers)
+        if expected is not None:
+            assert ls == fs == expected, f"{path}: console {ls}, flask {fs}: {lb[:160]!r} / {fb[:160]!r}"
+        assert fs == ls, f"{path}: console {ls}, flask {fs}"
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} drifted.\n  console: {lb[:200]!r}\n  flask:   {fb[:200]!r}")
+        return json.loads(fb)
+
+    # 1. No accounts: 403 BEFORE the body is examined, so malformed JSON does not become a 400.
+    ctx.user_store = None
+    body = _same("/api/login", None, expected=403)
+    assert body["error"].startswith("cannot sign in: "), body
+    (ls, lb), (fs, fb) = _both("/api/login", None)
+    assert b"is required" not in lb and b"is required" not in fb
+
+    # 2. With accounts: a good password mints a token, a bad one answers 401 with the same words.
+    ctx.user_store = _Store()
+    _patch(monkeypatch, "weirvern.admin.requestauth.authenticate",
+           lambda ctx_, u, p, addr="": ((ident, "tok-abc", None) if p == "right"
+                                        else (None, None, "the username or password is not correct")))
+    body = _same("/api/login", {"username": "viewer", "password": "right"}, expected=200)
+    assert body["session"] == "tok-abc" and body["role"] == "viewer", body
+    body = _same("/api/login", {"username": "viewer", "password": "wrong"}, expected=401)
+    assert body["error"] == "the username or password is not correct", body
+
+    # 3. No session: 401 "sign in first" on both, and no body parsing to get in the way.
+    body = _same("/api/logout", None, expected=401)
+    assert body == {"error": "sign in first", "code": 401}, body
+    body = _same("/api/password", {"current": "wrong"}, expected=401)
+    assert body == {"error": "sign in first", "code": 401}, body
+
+    # 4. With a session: sign-out revokes THIS session and audits the fact.
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+    headers = {gui_auth.SESSION_HEADER: "tok-abc"}
+    del revocations[:], audited[:]
+    body = _same("/api/logout", None, headers, expected=200)
+    assert body == {"ok": True}, body
+    assert revocations == [("revoke", "tok-abc"), ("revoke", "tok-abc")], revocations
+    assert audited == [("logout", "viewer", "signed out")] * 2, audited
+
+    # 5. A wrong current password is a 401 and writes nothing.
+    del revocations[:]
+    body = _same("/api/password", {"current": "wrong", "new": "new-one"}, headers, expected=401)
+    assert body == {"ok": False, "error": "the current password is not correct"}, body
+    assert revocations == [], revocations
+
+    # 6. The right one saves, then revokes every session for the account.
+    body = _same("/api/password", {"current": "right", "new": "new-one"}, headers, expected=200)
+    assert body["signed_out"] is True, body
+    assert revocations == [("password", "viewer", "new-one", False),
+                          ("revoke_user", "viewer"),
+                          ("password", "viewer", "new-one", False),
+                          ("revoke_user", "viewer")], revocations

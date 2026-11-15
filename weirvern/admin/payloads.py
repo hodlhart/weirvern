@@ -1063,6 +1063,107 @@ def user_reset(store: Any, sessions: Any, *, username: str,
                  "note": "the account must change this password at next sign-in"}
 
 
+def login_refusal(ctx: Any) -> dict[str, Any] | None:
+    """The 403 body for a GUI with no accounts, or None.
+
+    CHECKED BEFORE THE BODY IS READ, on both surfaces: a deployment with no accounts refuses a
+    sign-in whatever was posted, and the console has always answered that way.
+    """
+    from weirvern.admin import requestauth  # noqa: PLC0415
+
+    if requestauth.accounts_on(ctx):
+        return None
+    note = getattr(ctx, "accounts_note", "") or "this deployment has no accounts provisioned"
+    return {"ok": False, "error": f"cannot sign in: {note}"}
+
+
+def login(ctx: Any, *, username: str, password: str, addr: str) -> tuple[int, dict[str, Any]]:
+    """Verify a username and password, and mint a session token.
+
+    THE CHECK IS SHARED (requestauth.authenticate): the JSON API and the rendered form ask the same
+    function the same question, so they cannot disagree about a password, about timing, or about
+    throttling. Only the TRANSPORT of the answer differs -- a token in JSON here, a signed cookie in
+    the rendered UI.
+    """
+    from weirvern.admin import requestauth  # noqa: PLC0415
+
+    ident, token, error = requestauth.authenticate(ctx, username, password, addr=addr)
+    if ident is None:
+        return 401, {"ok": False, "error": error}
+    return 200, {"ok": True, "session": token, "username": ident.username,
+                 "role": ident.role, "must_change": ident.must_change}
+
+
+def session_required(ctx: Any, headers: Any) -> tuple[Any, tuple[int, dict[str, Any]] | None]:
+    """The signed-in identity, or the refusal that answers for it.
+
+    For the routes every account may use whatever its role -- signing out, changing one's OWN
+    password. Deliberately NOT satisfiable by the operator token: a token has no account, so there is
+    no password to change and nothing to sign out of, and pretending otherwise offers a button that
+    cannot work.
+
+    THE CALLER CHECKS THIS BEFORE READING A BODY, because that is the console's order: no session
+    answers 401 even when the request is also malformed.
+    """
+    from weirvern.admin import requestauth  # noqa: PLC0415
+
+    if not requestauth.accounts_on(ctx):
+        return None, (403, {"error": "this deployment has no accounts provisioned", "code": 403})
+    ident = requestauth.identity(ctx, headers)
+    if ident is None:
+        return None, (401, {"error": "sign in first", "code": 401})
+    return ident, None
+
+
+def logout(ctx: Any, ident: Any, headers: Any) -> tuple[int, dict[str, Any]]:
+    """Drop this request's session, then audit it.
+
+    A SESSION IS REQUIRED (the caller checked), for uniform audit rules: "every mutating route
+    presents a session" is a rule somebody can check at a glance. A tab whose session already expired
+    catches the refusal and clears its own state anyway, which is what signing out does.
+    """
+    from weirvern.admin import gui_auth, requestauth  # noqa: PLC0415
+
+    sessions = getattr(ctx, "sessions", None)
+    if sessions is not None:
+        sessions.revoke(gui_auth.session_from_request(requestauth.headers_only(headers)))
+    logger.info("signed out %s", ident.username)
+    requestauth.audit_auth(ctx, "logout", ident.username, "signed out")
+    return 200, {"ok": True}
+
+
+def password_change(ctx: Any, ident: Any, *, current: str,
+                    new: str) -> tuple[int, dict[str, Any]]:
+    """Change the signed-in account's own password.
+
+    THE CURRENT PASSWORD IS REQUIRED for two reasons: it stops a stolen session token from locking
+    the owner out of their account, and it makes a `must_change` change an informed one rather than a
+    form submitted blind. Every session is revoked afterwards -- a password change is the one moment
+    where dropping the others is exactly what the operator expects.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    store = getattr(ctx, "user_store", None)
+    if store is None:
+        return 503, {"error": ACCOUNTS_UNAVAILABLE, "code": 503}
+    record = store.find(ident.username)
+    if record is None:
+        return 404, {"error": "this account no longer exists", "code": 404}
+    if not users_mod.verify_password(current, record.hash):
+        return 401, {"ok": False, "error": "the current password is not correct"}
+    try:
+        store.set_password(ident.username, new, must_change=False)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not save the new password: {exc}", "code": 502}
+    sessions = getattr(ctx, "sessions", None)
+    revoked = sessions.revoke_user(ident.username) if sessions is not None else 0
+    logger.info("password changed for %s (%d session(s) revoked)", ident.username, revoked)
+    return 200, {"ok": True, "signed_out": True,
+                 "note": "password changed; sign in again with the new one"}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

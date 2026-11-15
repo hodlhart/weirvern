@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlparse
 
 from weirvern import fleet_store, networks, scan_jobs
 from weirvern.admin import assets as assets_mod
-from weirvern.admin import gui_auth, payloads, requestauth, timewindow, web_api
+from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import users as users_mod
@@ -2429,18 +2429,15 @@ def _build_handler(ctx: GuiContext):
         def _require_session(self) -> users_mod.Identity | None:
             """The signed-in identity, or None with the refusal already sent.
 
-            For the routes every account may use regardless of role -- signing out and
-            changing one's OWN password. Deliberately not satisfiable by the token: the
-            token has no account, so there is no password to change and nothing to sign out
-            of, and pretending otherwise would offer the operator a button that cannot work.
+            THE DECISION IS SHARED (payloads.session_required): a deployment with no accounts answers
+            403 and an unknown caller 401, identically on both surfaces. Deliberately not satisfiable
+            by the token: the token has no account, so there is no password to change and nothing to
+            sign out of, and pretending otherwise would offer a button that cannot work.
             """
-            if not _accounts_on(ctx):
-                self._error(403, "this deployment has no accounts provisioned")
-                return None
-            ident = self._identity()
+            ident, refusal = payloads.session_required(ctx, self)
             if ident is None:
-                self._error(401, "sign in first")
-                return None
+                assert refusal is not None
+                self._json(refusal[1], refusal[0])
             return ident
 
         def _authorize(self) -> bool:
@@ -2644,93 +2641,62 @@ def _build_handler(ctx: GuiContext):
         def _login(self) -> None:
             """Verify a username and password, and mint a session.
 
-            THE CHECK IS SHARED (see requestauth.authenticate). The console API and the Flask form
-            ask the same function the same question, so they cannot disagree about a password, about
-            timing, or about throttling. Only the TRANSPORT of the answer differs: a token in JSON
-            here, a signed cookie in the rendered UI.
+            THE CHECK IS SHARED (payloads.login, over requestauth.authenticate): the console API and
+            the rendered form ask the same function the same question, so they cannot disagree about a
+            password, about timing, or about throttling. Only the TRANSPORT of the answer differs: a
+            token in JSON here, a signed cookie in the rendered UI. The accounts check comes FIRST,
+            before the body is parsed -- a deployment with no accounts refuses the sign-in whatever
+            was posted.
             """
-            if not _accounts_on(ctx):
-                note = getattr(ctx, "accounts_note", "") or (
-                    "this deployment has no accounts provisioned"
-                )
-                return self._json({"ok": False, "error": f"cannot sign in: {note}"}, 403)
+            refusal = payloads.login_refusal(ctx)
+            if refusal is not None:
+                return self._json(refusal, 403)
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            ident, token, error = requestauth.authenticate(
-                ctx,
-                str(body.get("username") or ""),
-                str(body.get("password") or ""),
-                addr=self._client_addr(),
-            )
-            if ident is None:
-                return self._json({"ok": False, "error": error}, 401)
-            self._json({
-                "ok": True, "session": token, "username": ident.username,
-                "role": ident.role, "must_change": ident.must_change,
-            })
+            code, payload = payloads.login(
+                ctx, username=str(body.get("username") or ""),
+                password=str(body.get("password") or ""), addr=self._client_addr())
+            self._json(payload, code)
 
         def _logout(self) -> None:
             """Drop the caller's session.
 
-            A session is REQUIRED, for the same uniformity as every other account route: an
-            audit rule that says "every mutating route presents a session" is one somebody can
-            check at a glance, and an exception has to be re-justified forever. The client-side
-            flow is unaffected -- a tab whose session already expired catches the refusal and
-            clears its own state anyway, which is what signing out does.
+            A session is REQUIRED, for the same uniformity as every other account route: an audit
+            rule that says "every mutating route presents a session" is one somebody can check at a
+            glance, and an exception has to be re-justified forever. The client-side flow is
+            unaffected -- a tab whose session already expired catches the refusal and clears its own
+            state anyway, which is what signing out does.
             """
-            ident = self._require_session()
+            ident, refusal = payloads.session_required(ctx, self)
             if ident is None:
-                return
-            sessions = getattr(ctx, "sessions", None)
-            if sessions is not None:
-                sessions.revoke(gui_auth.session_from_request(self))
-            logger.info("signed out %s", ident.username)
-            self._audit_auth("logout", ident.username, "signed out")
-            self._json({"ok": True})
+                assert refusal is not None
+                return self._json(refusal[1], refusal[0])
+            code, payload = payloads.logout(ctx, ident, self)
+            self._json(payload, code)
 
         def _password(self) -> None:
             """Change the signed-in account's own password.
 
-            Requires the CURRENT password for two reasons: it stops a stolen session token
-            from locking the owner out of their account, and it makes `must_change` an
-            informed change rather than a form the operator submits blind. Sessions are
-            revoked afterwards -- a password change is the one moment where dropping every
-            other session is exactly what the operator expects.
+            THE CURRENT PASSWORD IS REQUIRED (payloads.password_change owns why): it stops a stolen
+            session token from locking the owner out, and it makes `must_change` an informed change
+            rather than a form the operator submits blind. Sessions are revoked afterwards -- a
+            password change is the one moment where dropping every other session is exactly what the
+            operator expects.
             """
-            ident = self._require_session()
+            ident, refusal = payloads.session_required(ctx, self)
             if ident is None:
-                return
+                assert refusal is not None
+                return self._json(refusal[1], refusal[0])
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            current = str(body.get("current") or "")
-            new = str(body.get("new") or "")
-            store = getattr(ctx, "user_store", None)
-            if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            record = store.find(ident.username)
-            if record is None:
-                return self._error(404, "this account no longer exists")
-            if not users_mod.verify_password(current, record.hash):
-                return self._json({
-                    "ok": False, "error": "the current password is not correct",
-                }, 401)
-            try:
-                store.set_password(ident.username, new, must_change=False)
-            except users_mod.UserError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not save the new password: {exc}")
-            # Every session for this account, including this one: the UI signs in again with
-            # the new password, which also proves the change took.
-            sessions = getattr(ctx, "sessions", None)
-            revoked = sessions.revoke_user(ident.username) if sessions is not None else 0
-            logger.info("password changed for %s (%d session(s) revoked)", ident.username, revoked)
-            self._json({"ok": True, "signed_out": True,
-                        "note": "password changed; sign in again with the new one"})
+            code, payload = payloads.password_change(
+                ctx, ident, current=str(body.get("current") or ""),
+                new=str(body.get("new") or ""))
+            self._json(payload, code)
 
         def _users_list(self) -> None:
             """Every account, for an admin. Reads are admin-only: the account list is not

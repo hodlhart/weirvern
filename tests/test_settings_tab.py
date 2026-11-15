@@ -167,13 +167,17 @@ def test_every_write_route_consults_A_GATE():
             # route that reaches NO throttled path at all, so it accepts either shape and the
             # behavioural test proves the throttle fires.
             assert ("throttle" in body or "Throttle" in body
-                    or "requestauth.authenticate(" in body), (
+                    or "requestauth.authenticate(" in body
+                    or "payloads.login(" in body), (
                 "the sign-in route carries no throttle and does not delegate to the shared "
                 "credential check, so passwords can be guessed at wire speed"
             )
             continue
         if name in SESSION_GATED:
-            assert "_require_session()" in body, (
+            # THE DECISION MOVED into payloads.session_required when the Flask surface needed the
+            # same answer; `_require_session` is a thin adapter over it, so either call proves the
+            # route requires a session. What must not happen is a route that skips it entirely.
+            assert ("_require_session()" in body or "payloads.session_required(" in body), (
                 f"the account route {name} does not require a session"
             )
             continue
