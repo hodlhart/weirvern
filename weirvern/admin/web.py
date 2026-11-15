@@ -1466,76 +1466,21 @@ def _build_handler(ctx: GuiContext):
         def _weirlings_probe_post(self) -> None:
             """Queue a READ-ONLY capture-liveness probe for a remote weirling.
 
-            Body: `{sensor_id, iface?, seconds?}`. The sensor's own agent claims it on its plan
-            poll and measures its own NIC; the hub never reaches into the box. This does not
-            change a mode, a plan, a sysctl or an interface. An inline/ARP test is a different
-            capability and is deliberately not served here.
+            Body: `{sensor_id, iface?, seconds?}`. The sensor's own agent claims it on its plan poll
+            and measures its own NIC; the hub never reaches into the box. The refusal shapes and the
+            interface-resolution order live in payloads.weirling_probe.
             """
             if not self._authorize():
                 return
-            from weirvern import fleet_store, probe_store  # noqa: PLC0415
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
-            sensor_id = str(body.get("sensor_id") or "").strip()
-            if not sensor_id:
-                return self._json({"ok": False, "error": "sensor_id is required"}, 400)
-            if sensor_id == _gate_sensor_name():
-                return self._json({
-                    "ok": False,
-                    "error": ("this is the hub's own sensor; use the Settings test run there. "
-                              "The remote capture probe is for units with an mTLS agent."),
-                }, 400)
-            try:
-                with self._with_client() as client:
-                    row = fleet_store.classify_one(client, sensor_id)
-                    regs = fleet_store.read_registrations(client)
-            except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False,
-                                   "error": f"the sensor could not be read: {str(exc)[:200]}"}, 503)
-            reg = next((r for r in regs if r.sensor_id == sensor_id), None)
-            if reg is None:
-                return self._json({"ok": False,
-                                   "error": f"no registered weirling named {sensor_id!r}"}, 404)
-            iface = str(body.get("iface") or (reg.plan.iface if reg.plan else "") or "").strip()
-            if not iface:
-                nics = list((row or {}).get("interfaces") or [])
-                if len(nics) == 1:
-                    iface = nics[0]
-                elif nics:
-                    return self._json({
-                        "ok": False,
-                        "error": (f"{sensor_id} reports several NICs ({', '.join(nics)}); name "
-                                  "the capture interface to probe."),
-                    }, 400)
-            if not iface:
-                return self._json({
-                    "ok": False,
-                    "error": (f"{sensor_id} has no capture interface in its plan and has not "
-                              "reported exactly one NIC; name the interface to probe."),
-                }, 400)
-            try:
-                seconds = int(body.get("seconds") or probe_store.DEFAULT_SECONDS)
-            except (TypeError, ValueError):
-                return self._json({"ok": False, "error": "seconds must be a number"}, 400)
-            try:
-                with self._with_client() as client:
-                    created = probe_store.create_request(
-                        client, sensor_id=sensor_id, iface=iface, seconds=seconds)
-            except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False,
-                                   "error": f"the probe could not be queued: {str(exc)[:200]}"}, 503)
-            return self._json({
-                "ok": True,
-                "request_id": created["request_id"],
-                "sensor_id": created["sensor_id"],
-                "iface": created["iface"],
-                "seconds": created["seconds"],
-                "status": created["status"],
-                "scope": "capture-liveness",
-            }, 202)
+            args, refusal = weirling_probe_args(body)
+            if refusal:
+                return self._json({"ok": False, "error": refusal}, 400)
+            code, payload = payloads.weirling_probe(self._with_client, **args)
+            self._json(payload, code)
 
         def _weirlings_detail(self, query: dict) -> None:
             """One sensor, for the drill-down.
@@ -1878,47 +1823,23 @@ def _build_handler(ctx: GuiContext):
         # -- weirlings writes -----------------------------------------------
 
         def _plan_subject(self, sensor_id: str):
-            """Resolve the sensor a per-sensor plan write targets. (registration, refusal).
+            """Resolve the sensor a per-sensor plan write targets: (registration, refusal).
 
-            WHY THE LOCAL SENSOR IS REFUSED HERE, not silently accepted. This hub's OWN sensor
-            is configured where it runs: the Settings tab writes SENSOR_MODE + INTERCEPT_* into
-            the cluster ConfigMap, and the worker's supervisor reads them from its environment.
-            Storing a registry plan for it as well would create a second source of truth that
-            nothing reads -- a control that appears applied and moves nothing, which is the
-            family of defects this project keeps removing. The refusal names where the real
-            control is, so the operator is sent to the right one.
+            THE DECISION IS SHARED (payloads.plan_subject): the local sensor is refused there because
+            its runtime is configured in the cluster ConfigMap, not in a registry row, and storing a
+            plan for it would be a second source that nothing reads.
             """
-            if not sensor_id:
-                return None, ("a sensor id is required: a plan belongs to one weirling "
-                              "(the drill-down knows which one)")
-            if sensor_id == _gate_sensor_name():
-                return None, (
-                    f"{sensor_id!r} is this hub's OWN sensor, and its runtime is configured "
-                    f"where it runs: the Settings tab writes SENSOR_MODE and the INTERCEPT_* "
-                    f"keys into the cluster ConfigMap, and this hub's worker reads them. A plan "
-                    f"stored here would be a second source that nothing reads -- so the "
-                    f"controls for this sensor stay on the Settings tab."
-                )
-            try:
-                from weirvern import fleet_store  # noqa: PLC0415
-                with self._with_client() as client:
-                    reg, refusal = fleet_store.plan_subject(client, sensor_id)
-            except Exception as exc:  # noqa: BLE001
-                return None, f"the sensor could not be read: {str(exc)[:200]}"
-            if refusal:
-                return None, refusal
-            return reg, ""
+            return payloads.plan_subject(self._with_client, sensor_id)
 
         def _weirlings_plan(self) -> None:
             """What a per-sensor plan change WOULD do. Touches nothing.
 
             Body: `{"sensor_id": "weirvern-eth2", "changes": {"mode": "siphon", ...}}`.
 
-            The same staged-then-applied shape the Settings tab uses, against the sensor's own
-            plan instead of the hub's ConfigMap: the values are validated HERE, by the same
-            `fleet.make_plan` the write will use, and the in-path cost comes back as a warning
-            on the change that carries it -- so a client cannot skip the confirmation by staging
-            a plan itself.
+            The same staged-then-applied shape the Settings tab uses, against the sensor's own plan
+            instead of the hub's ConfigMap: payloads.weirling_plan validates with the same
+            `fleet.plan_from_changes` the write uses, so a client cannot skip the confirmation by
+            staging a plan itself.
             """
             if not self._authorize():
                 return
@@ -1926,65 +1847,17 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
-
-            from weirvern import fleet as fleet_mod  # noqa: PLC0415
-
-            sensor_id = str(body.get("sensor_id") or "").strip()
-            changes = body.get("changes")
-            if not isinstance(changes, dict) or not changes:
-                return self._json(
-                    {"ok": False, "error": "`changes` must be an object naming at least one plan "
-                                           "field to change"}, code=400)
-            reg, refusal = self._plan_subject(sensor_id)
+            args, refusal = weirling_plan_args(body)
             if refusal:
                 return self._json({"ok": False, "error": refusal}, code=400)
-
-            current = reg.plan if reg is not None else fleet_mod.SensorPlan()
-            try:
-                merged = fleet_mod.plan_from_changes(current, changes)
-            except fleet_mod.FleetError as exc:
-                # The refusal names the field and what a usable value looks like; passed
-                # through verbatim for exactly that reason.
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-
-            proposals = []
-            for key in fleet_mod.PLAN_FIELDS:
-                if key not in changes:
-                    continue
-                value = merged.as_dict()[key]
-                if value == current.as_dict()[key]:
-                    continue
-                warning = ""
-                if key == "mode" and value == "siphon":
-                    warning = (
-                        f"this puts {sensor_id} IN THE TRAFFIC PATH: every host the plan names "
-                        f"will depend on the sensor forwarding, so a stopped sensor is their "
-                        f"outage — and only those hosts, which is why the target list is worth "
-                        f"checking before applying."
-                    )
-                proposals.append({"key": key, "value": value, "warning": warning})
-
-            # Incompleteness is carried as a plan-level warning, not a refusal: a half-filled
-            # plan is a legitimate state (stage the segment now, the address tomorrow), and the
-            # sensor refuses to arm until it is complete -- saying so on its own heartbeat.
-            warnings = list(merged.warnings())
-            warnings += [f"the plan cannot arm yet: {gap}" for gap in merged.problems()]
-            self._json({
-                "ok": True,
-                "sensor_id": sensor_id,
-                "proposals": proposals,
-                "restart_targets": [],
-                "warnings": warnings,
-                "note": (f"{sensor_id} reads its own plan on every refresh (about 30 seconds) "
-                         f"and arms or disarms itself then. Nothing on this hub restarts."),
-            })
+            code, payload = payloads.weirling_plan(self._with_client, **args)
+            self._json(payload, code)
 
         def _weirlings_apply(self) -> None:
             """Write a per-sensor plan. The sensor picks it up on its next refresh.
 
-            Body: `{"sensor_id": "...", "changes": {...}}`. Same validation as the plan step --
-            the write path cannot be looser than the preview, or the preview is theatre -- and
-            the response echoes what was APPLIED, keyed by the plan's own field names.
+            Body: `{"sensor_id": "...", "changes": {...}, "reason": "..."}`. Same validation as the
+            plan step -- the write path cannot be looser than the preview, or the preview is theatre.
             """
             if not self._authorize():
                 return
@@ -1992,78 +1865,20 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
-
-            from weirvern import fleet as fleet_mod  # noqa: PLC0415
-            from weirvern import fleet_store  # noqa: PLC0415
-
-            sensor_id = str(body.get("sensor_id") or "").strip()
-            changes = body.get("changes")
-            if not isinstance(changes, dict) or not changes:
-                return self._json(
-                    {"ok": False, "error": "`changes` must be an object naming at least one plan "
-                                           "field to change"}, code=400)
-            reg, refusal = self._plan_subject(sensor_id)
+            args, refusal = weirling_apply_args(body)
             if refusal:
                 return self._json({"ok": False, "error": refusal}, code=400)
-
-            current = reg.plan if reg is not None else fleet_mod.SensorPlan()
-            try:
-                merged = fleet_mod.plan_from_changes(current, changes)
-            except fleet_mod.FleetError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-
-            # BF-9: a plan that lands in-path needs a reason; every plan write is recorded.
-            reason = str(body.get("reason") or "").strip()
-            if merged.mode == "siphon" and not reason:
-                return self._json({
-                    "ok": False,
-                    "error": "putting this sensor in path is irreversible enough to deserve a "
-                             "reason; it is recorded with your name and the time",
-                }, code=400)
-
-            applied = {k: v for k, v in merged.as_dict().items()
-                       if k in changes and v != current.as_dict()[k]}
-            # THE WRITE IS THE ONE THE PREVIEW VALIDATED: `register(plan=...)` replaces the plan
-            # as a group and keeps `expected_mode` in step with its mode (see fleet_store), so
-            # the fleet view's declaration and the sensor's runbook stay one fact.
-            try:
-                with self._with_client() as client:
-                    fleet_store.register(client, sensor_id, plan=merged)
-            except fleet_store.FleetError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            except fleet_store.FleetStoreError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=503)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("weirling plan apply failed: %s", exc)
-                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
-                                  code=500)
-            # THE TRAIL: what changed, on which sensor, why, by whom. A failed audit write does
-            # not fail the plan (the plan IS saved); it is logged so the gap is findable.
-            try:
-                ident = self._identity()
-                with self._with_client() as client:
-                    fleet_store.write_audit(
-                        client, scope="fleet", action="plan", target=sensor_id,
-                        reason=reason, actor=(ident.username if ident else "operator"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fleet audit write failed: %s", exc)
-            self._json({
-                "ok": True,
-                "sensor_id": sensor_id,
-                "applied": applied,
-                # WHAT HAPPENS NEXT, in the server's words: the sensor owns when it arms, and
-                # the fleet row will show declared-vs-reported if it never does.
-                "restart_targets": [],
-                "note": (f"saved. {sensor_id} applies it on its next plan refresh (about 30 "
-                         f"seconds) and reports the mode it ends up running."),
-            })
+            ident = self._identity()
+            code, payload = payloads.weirling_apply(
+                self._with_client, actor=(ident.username if ident else "operator"), **args)
+            self._json(payload, code)
 
         def _weirlings_register(self) -> None:
             """Register (or re-register) a sensor.
 
-            The refusal is RETURNED, not raised as a 5xx: a rejected registration is a normal
-            outcome of a form an operator is filling in, and an error page would read as the
-            feature being broken rather than the input being wrong.
+            The refusal is RETURNED, not raised as a 5xx: a rejected registration is a normal outcome
+            of a form an operator is filling in, and an error page would read as the feature being
+            broken rather than the input being wrong.
             """
             if not self._authorize():
                 return
@@ -2071,28 +1886,13 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
+            args = weirling_register_args(body)
             try:
                 with self._with_client() as client:
-                    reg = fleet_store.register(
-                        client,
-                        str(body.get("sensor_id") or ""),
-                        address=str(body.get("address") or ""),
-                        segment=str(body.get("segment") or ""),
-                        expected_mode=str(body.get("expected_mode") or "loch"),
-                        note=str(body.get("note") or ""),
-                        topology=str(body.get("topology") or ""),
-                    )
-            except fleet_store.FleetError as exc:
-                # The message names the fix, so it is passed through verbatim rather than
-                # wrapped in a generic "invalid input".
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            except fleet_store.FleetStoreError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=503)
+                    code, payload = payloads.weirling_register(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("weirling registration failed: %s", exc)
-                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
-                                  code=500)
-            self._json({"ok": True, "sensor_id": reg.sensor_id})
+                code, payload = payloads.weirling_save_failure(exc)
+            self._json(payload, code)
 
         def _weirlings_enable(self) -> None:
             """Switch a registered sensor on or off WITHOUT revoking it."""
@@ -2102,102 +1902,37 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
-            # Strict booleans: `bool("false")` is True, so a client sending the string "false"
-            # would silently ENABLE a sensor. Refused rather than coerced.
-            enabled = body.get("enabled")
-            if not isinstance(enabled, bool):
-                return self._json(
-                    {"ok": False, "error": "`enabled` must be true or false"}, code=400)
+            args, refusal = weirling_enable_args(body)
+            if refusal:
+                return self._json({"ok": False, "error": refusal}, code=400)
             try:
                 with self._with_client() as client:
-                    reg = fleet_store.set_enabled(client, str(body.get("sensor_id") or ""), enabled)
-            except fleet_store.FleetError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            except fleet_store.FleetStoreError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=503)
+                    code, payload = payloads.weirling_enable(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("weirling enable failed: %s", exc)
-                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
-                                  code=500)
-            self._json({"ok": True, "sensor_id": reg.sensor_id, "enabled": reg.enabled})
+                code, payload = payloads.weirling_save_failure(exc)
+            self._json(payload, code)
 
         def _weirlings_revoke(self) -> None:
-            """Retire a registration. The row is kept; nothing is deleted."""
+            """Retire a registration. The row is kept; nothing is deleted.
+
+            THE CONFIGMAP CLEAR LIVES IN payloads.weirling_revoke, with the reason it exists: clearing
+            only the registry row left the worker forwarding and intercepting after a revoke, because
+            the plan is read from the cluster environment and not from ClickHouse.
+            """
             if not self._authorize():
                 return
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
-            # BF-9: retires a registration is irreversible for this deployment's memory of the
-            # sensor; the reason rides the same rule as the other destructive actions.
-            reason = str(body.get("reason") or "").strip()
-            sensor_id = str(body.get("sensor_id") or "")
-            if not reason:
-                return self._json({
-                    "ok": False,
-                    "error": "revoking a registration is a decision, not a cleanup; a reason is "
-                             "required and is recorded with your name and the time",
-                }, code=400)
-            try:
-                with self._with_client() as client:
-                    reg = fleet_store.revoke_registration(client, sensor_id)
-            except fleet_store.FleetError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            except fleet_store.FleetStoreError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=503)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("weirling revoke failed: %s", exc)
-                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
-                                  code=500)
+            args, refusal = weirling_revoke_args(body)
+            if refusal:
+                return self._json({"ok": False, "error": refusal}, code=400)
             ident = self._identity()
-            # THE LOCAL SENSOR'S SETTINGS LIVE IN THE CONFIGMAP, NOT IN THE REGISTRY ROW. Clearing
-            # only the row left the worker forwarding and intercepting after a revoke: the plan
-            # is read from the cluster environment, not from ClickHouse. Clear the sensor-role
-            # keys here so "revoke, then adopt" is a clean start, and restart what read them.
-            settings_cleared = None
-            settings_error = ""
-            if reg.sensor_id == _gate_sensor_name():
-                try:
-                    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
-
-                    config_client = ctx.config_client or cc.ClusterConfig()
-                    current = config_client.read()
-                    p = cc.plan(dict(cc.REVOCATION_CLEARS), current)
-                    config_client.apply(
-                        dict(cc.REVOCATION_CLEARS),
-                        reason=f"weirling {reg.sensor_id} revoked: {reason}",
-                        by=(ident.username if ident else "operator"),
-                    )
-                    restarted: list[str] = []
-                    restart_errors: list[str] = []
-                    for target in p.restart_targets:
-                        try:
-                            config_client.restart(target)
-                            restarted.append(target)
-                        except Exception as exc:  # noqa: BLE001
-                            restart_errors.append(f"{target}: {exc}")
-                    settings_cleared = True
-                    if restart_errors:
-                        settings_error = ("the settings were cleared but a restart failed: "
-                                          + "; ".join(restart_errors))
-                except Exception as exc:  # noqa: BLE001
-                    # The revoke itself is already durable. Report the settings failure rather
-                    # than pretending the sensor is clean, and do not make a retry impossible.
-                    settings_cleared = False
-                    settings_error = f"the sensor was revoked but its settings were not cleared: {exc}"
-                    logger.warning("weirling revoke settings clear failed: %s", exc)
-            try:
-                with self._with_client() as client:
-                    fleet_store.write_audit(
-                        client, scope="fleet", action="revoke", target=reg.sensor_id,
-                        reason=reason, actor=(ident.username if ident else "operator"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fleet audit write failed: %s", exc)
-            self._json({"ok": True, "sensor_id": reg.sensor_id,
-                        "settings_cleared": settings_cleared,
-                        "settings_error": settings_error})
-
+            code, payload = payloads.weirling_revoke(
+                self._with_client, actor=(ident.username if ident else "operator"),
+                config_client=getattr(ctx, "config_client", None), **args)
+            self._json(payload, code)
 
         def _require_read(self) -> bool:
             """Whether this request may READ. Sends the refusal itself.
@@ -4000,6 +3735,88 @@ def blocklist_enable_args(body: dict) -> dict:
     if not source_id or not isinstance(enabled, bool):
         raise ValueError("source_id and a boolean enabled are required")
     return {"source_id": source_id, "enabled": enabled}
+
+
+def weirling_register_args(body: dict) -> dict:
+    """Registration fields. Nothing is validated here: the store owns the rules and names the fix.
+
+    `expected_mode` DEFAULTS TO loch -- the mode a sensor is expected to run before anyone says
+    otherwise, which is what the fleet view compares against.
+    """
+    return {"sensor_id": str(body.get("sensor_id") or ""),
+            "address": str(body.get("address") or ""),
+            "segment": str(body.get("segment") or ""),
+            "expected_mode": str(body.get("expected_mode") or "loch"),
+            "note": str(body.get("note") or ""),
+            "topology": str(body.get("topology") or "")}
+
+
+def weirling_enable_args(body: dict) -> tuple[dict, str | None]:
+    """A sensor id and a STRICT boolean.
+
+    `bool("false")` IS TRUE, so a client sending the string "false" would silently ENABLE a sensor.
+    Refused rather than coerced -- the refusal is `{"ok": false}`, the shape this family of routes uses.
+    """
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return {}, "`enabled` must be true or false"
+    return {"sensor_id": str(body.get("sensor_id") or ""), "enabled": enabled}, None
+
+
+def weirling_revoke_args(body: dict) -> tuple[dict, str | None]:
+    """A sensor id and a REASON: revoking retires this deployment's memory of the sensor.
+
+    BF-9: the reason rides the same rule as the other destructive actions, and the sentence says what
+    it is for rather than just demanding a value.
+    """
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        return {}, ("revoking a registration is a decision, not a cleanup; a reason is required and "
+                    "is recorded with your name and the time")
+    return {"sensor_id": str(body.get("sensor_id") or ""), "reason": reason}, None
+
+
+def weirling_plan_args(body: dict) -> tuple[dict, str | None]:
+    """A sensor id and a NON-EMPTY `changes` object.
+
+    A plan with nothing to change is refused here rather than written as a no-op: "saved" would then
+    claim a change that did not happen.
+    """
+    changes = body.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        return {}, "`changes` must be an object naming at least one plan field to change"
+    return {"sensor_id": str(body.get("sensor_id") or "").strip(), "changes": changes}, None
+
+
+def weirling_apply_args(body: dict) -> tuple[dict, str | None]:
+    """`weirling_plan_args` plus the optional reason.
+
+    THE REASON'S OWN RULE CANNOT BE CHECKED HERE: whether it is required depends on the MERGED plan's
+    mode, so that check lives in the fetcher, after the merge and before the write.
+    """
+    args, refusal = weirling_plan_args(body)
+    if refusal:
+        return {}, refusal
+    args["reason"] = str(body.get("reason") or "").strip()
+    return args, None
+
+
+def weirling_probe_args(body: dict) -> tuple[dict, str | None]:
+    """A sensor id, an optional interface and a bounded duration.
+
+    THE HUB DOES NOT GUESS AN INTERFACE: an empty `iface` is passed through, and the fetcher resolves it
+    from the sensor's plan or its single reported NIC, refusing a multi-NIC sensor outright.
+    """
+    sensor_id = str(body.get("sensor_id") or "").strip()
+    if not sensor_id:
+        return {}, "sensor_id is required"
+    try:
+        from weirvern import probe_store  # noqa: PLC0415
+
+        seconds = int(body.get("seconds") or probe_store.DEFAULT_SECONDS)
+    except (TypeError, ValueError):
+        return {}, "seconds must be a number"
+    return {"sensor_id": sensor_id, "iface": str(body.get("iface") or ""), "seconds": seconds}, None
 
 
 def sensor_addresses(ctx) -> list[str]:

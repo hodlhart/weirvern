@@ -698,6 +698,13 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/networks/save": ("network_scope_save", "weirvern.admin.payloads.network_scope_save"),
     "/api/networks/delete": ("network_scope_delete",
                              "weirvern.admin.payloads.network_scope_delete"),
+    "/api/weirlings/register": ("weirling_register",
+                                "weirvern.admin.payloads.weirling_register"),
+    "/api/weirlings/enable": ("weirling_enable", "weirvern.admin.payloads.weirling_enable"),
+    "/api/weirlings/revoke": ("weirling_revoke", "weirvern.admin.payloads.weirling_revoke"),
+    "/api/weirlings/plan": ("weirling_plan", "weirvern.admin.payloads.weirling_plan"),
+    "/api/weirlings/apply": ("weirling_apply", "weirvern.admin.payloads.weirling_apply"),
+    "/api/weirlings/probe": ("weirling_probe", "weirvern.admin.payloads.weirling_probe"),
 }
 
 
@@ -714,7 +721,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 21, (
+    assert len(PORTED_WRITES) >= 27, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1376,3 +1383,135 @@ def test_the_blocklist_and_network_writes_answer_identically(surfaces, monkeypat
     body = _same("/api/networks/delete", {"id": "n1"}, 200)
     assert body["ok"] is True, body
     assert blocklists and networks, "the patches above must target the real modules"
+
+
+def test_the_fleet_writes_answer_identically(surfaces, monkeypatch):
+    """Register, enable, revoke, plan, apply and probe: the fleet panel's whole write surface.
+
+    THREE THINGS WORTH PINNING. A rejected registration is a 400 carrying {"ok": false} rather than a
+    5xx -- it is a normal outcome of a form. Revoking the HUB'S OWN sensor clears the ConfigMap keys
+    and restarts what read them, because a registry row alone left the worker forwarding; revoking a
+    remote one touches no settings at all. And a probe never guesses an interface: a sensor reporting
+    several NICs is refused rather than probed on the wrong one.
+    """
+    import types
+
+    from weirvern import fleet_store
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ctx.settings = types.SimpleNamespace(sluice_iface="eth0", zeek_iface="", mgmt_iface="eth1",
+                                         sluice_interval_s=15)
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+    _patch(monkeypatch, "weirvern.admin.web._gate_sensor_name", lambda: "hub-eth0")
+
+    def _same(path, payload, expected):
+        raw = json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:240]!r}\n  flask:   {fb[:240]!r}")
+        return json.loads(fb)
+
+    # ── register ──────────────────────────────────────────────────────────────────────────────
+    def _fleet_error(*a, **k):
+        raise fleet_store.FleetError("a sensor id is required")
+
+    _patch(monkeypatch, "weirvern.fleet_store.register", _fleet_error)
+    body = _same("/api/weirlings/register", {"sensor_id": ""}, 400)
+    assert body == {"ok": False, "error": "a sensor id is required"}, body
+
+    _patch(monkeypatch, "weirvern.fleet_store.register",
+           lambda client, sensor_id, **k: types.SimpleNamespace(sensor_id=sensor_id))
+    body = _same("/api/weirlings/register", {"sensor_id": "remote-1"}, 200)
+    assert body == {"ok": True, "sensor_id": "remote-1"}, body
+
+    # ── enable: the STRING "false" must not enable anything ──────────────────────────────────
+    body = _same("/api/weirlings/enable", {"sensor_id": "remote-1", "enabled": "false"}, 400)
+    assert body == {"ok": False, "error": "`enabled` must be true or false"}, body
+
+    _patch(monkeypatch, "weirvern.fleet_store.set_enabled",
+           lambda client, sid, enabled: types.SimpleNamespace(sensor_id=sid, enabled=enabled))
+    body = _same("/api/weirlings/enable", {"sensor_id": "remote-1", "enabled": False}, 200)
+    assert body == {"ok": True, "sensor_id": "remote-1", "enabled": False}, body
+
+    # ── revoke ────────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/weirlings/revoke", {"sensor_id": "remote-1"}, 400)
+    assert "revoking a registration is a decision" in body["error"], body
+
+    audits: list = []
+    _patch(monkeypatch, "weirvern.fleet_store.revoke_registration",
+           lambda client, sid: types.SimpleNamespace(sensor_id=sid))
+    _patch(monkeypatch, "weirvern.fleet_store.write_audit", lambda client, **k: audits.append(k))
+    body = _same("/api/weirlings/revoke",
+                 {"sensor_id": "remote-1", "reason": "decommissioned"}, 200)
+    assert body == {"ok": True, "sensor_id": "remote-1", "settings_cleared": None,
+                    "settings_error": ""}, body
+    assert audits and audits[0]["action"] == "revoke", audits
+
+    # THE HUB'S OWN SENSOR: the registry row is not enough, the ConfigMap must be cleared too.
+    applied: list = []
+    restarted: list = []
+    ctx.config_client = types.SimpleNamespace(
+        read=lambda: {"SENSOR_MODE": "siphon"},
+        apply=lambda changes, reason="", by="": applied.append((dict(changes), reason, by)),
+        restart=lambda target: restarted.append(target),
+    )
+    body = _same("/api/weirlings/revoke", {"sensor_id": "hub-eth0", "reason": "retiring"}, 200)
+    assert body["settings_cleared"] is True, body
+    assert applied and "SENSOR_MODE" in applied[0][0], applied
+    assert applied[0][2] == "sam", applied
+
+    # ── plan: the preview cannot be looser than the write ─────────────────────────────────────
+    _patch(monkeypatch, "weirvern.fleet_store.plan_subject", lambda client, sid: (None, ""))
+    body = _same("/api/weirlings/plan", {"sensor_id": "remote-1"}, 400)
+    assert body["ok"] is False and "`changes`" in body["error"], body
+
+    body = _same("/api/weirlings/plan",
+                 {"sensor_id": "remote-1", "changes": {"mode": "siphon"}}, 200)
+    prop = next(p for p in body["proposals"] if p["key"] == "mode")
+    assert prop["value"] == "siphon" and "IN THE TRAFFIC PATH" in prop["warning"], prop
+    assert body["restart_targets"] == [], body
+
+    # ── apply: an in-path plan needs a reason, and the row lands ──────────────────────────────
+    registered: list = []
+    _patch(monkeypatch, "weirvern.fleet_store.register",
+           lambda client, sensor_id, plan=None, **k: registered.append((sensor_id, plan)))
+    body = _same("/api/weirlings/apply",
+                 {"sensor_id": "remote-1", "changes": {"mode": "siphon"}}, 400)
+    assert "irreversible enough to deserve a reason" in body["error"], body
+
+    body = _same("/api/weirlings/apply",
+                 {"sensor_id": "remote-1", "changes": {"mode": "siphon"},
+                  "reason": "splitting traffic"}, 200)
+    assert body["applied"] == {"mode": "siphon"}, body
+    assert len(registered) == 2, registered
+
+    # ── probe ─────────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/weirlings/probe", {}, 400)
+    assert body == {"ok": False, "error": "sensor_id is required"}, body
+
+    body = _same("/api/weirlings/probe", {"sensor_id": "hub-eth0"}, 400)
+    assert "the hub's own sensor" in body["error"], body
+
+    _patch(monkeypatch, "weirvern.fleet_store.classify_one", lambda client, sid: {"interfaces": []})
+    _patch(monkeypatch, "weirvern.fleet_store.read_registrations", lambda client: [])
+    body = _same("/api/weirlings/probe", {"sensor_id": "ghost"}, 404)
+    assert body == {"ok": False, "error": "no registered weirling named 'ghost'"}, body
+
+    _patch(monkeypatch, "weirvern.fleet_store.read_registrations",
+           lambda client: [types.SimpleNamespace(sensor_id="remote-1", plan=None, enabled=True)])
+    _patch(monkeypatch, "weirvern.fleet_store.classify_one",
+           lambda client, sid: {"interfaces": ["eth2", "eth3"]})
+    body = _same("/api/weirlings/probe", {"sensor_id": "remote-1"}, 400)
+    assert "reports several NICs" in body["error"], body
+
+    _patch(monkeypatch, "weirvern.probe_store.create_request",
+           lambda client, sensor_id, iface, seconds: {
+               "request_id": "p1", "sensor_id": sensor_id, "iface": iface,
+               "seconds": seconds, "status": "queued"})
+    body = _same("/api/weirlings/probe", {"sensor_id": "remote-1", "iface": "eth2"}, 202)
+    assert body["request_id"] == "p1" and body["scope"] == "capture-liveness", body

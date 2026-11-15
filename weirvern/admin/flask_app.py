@@ -1452,6 +1452,143 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         return _write_json(lambda body: {"scope_id": str(body.get("id") or "")},
                            payloads.network_scope_delete, payloads.network_delete_failure)
 
+    # ── the fleet writes: registrations and per-sensor plans ────────────────────────────────────
+    #
+    # THESE ANSWER `{"ok": false}` FOR A BAD BODY, not the house error shape: the fleet panel renders
+    # `error` beside the form either way, and the console has always sent it this way.
+
+    def _gate_write():
+        """The write gate, as the caller's refusal response or None."""
+        from weirvern.admin import requestauth  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if ok:
+            return None
+        code, message = refusal if refusal is not None else (403, "write access is required")
+        return _json_error(code, message)
+
+    def _connect():
+        """A fresh connection, per block: the fleet routes open several, as the console does."""
+        return ctx.connect_factory(ctx.settings)
+
+    def _body_or_refusal():
+        from weirvern.admin import web  # noqa: PLC0415
+
+        try:
+            return web.json_body(request.get_data(cache=False)), None
+        except ValueError as exc:
+            return None, (jsonify({"ok": False, "error": str(exc)}), 400)
+
+    @app.post("/api/weirlings/register")
+    def weirlings_register():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args = web.weirling_register_args(body)
+        try:
+            with _connect() as client:
+                code, payload = payloads.weirling_register(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.weirling_save_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/weirlings/enable")
+    def weirlings_enable():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args, refusal = web.weirling_enable_args(body)
+        if refusal:
+            return jsonify({"ok": False, "error": refusal}), 400
+        try:
+            with _connect() as client:
+                code, payload = payloads.weirling_enable(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.weirling_save_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/weirlings/revoke")
+    def weirlings_revoke():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args, refusal = web.weirling_revoke_args(body)
+        if refusal:
+            return jsonify({"ok": False, "error": refusal}), 400
+        ident = requestauth.identity(ctx, _auth_headers())
+        code, payload = payloads.weirling_revoke(
+            _connect, actor=(ident.username if ident else "operator"),
+            config_client=getattr(ctx, "config_client", None), **args)
+        return jsonify(payload), code
+
+    @app.post("/api/weirlings/plan")
+    def weirlings_plan():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args, refusal = web.weirling_plan_args(body)
+        if refusal:
+            return jsonify({"ok": False, "error": refusal}), 400
+        code, payload = payloads.weirling_plan(_connect, **args)
+        return jsonify(payload), code
+
+    @app.post("/api/weirlings/apply")
+    def weirlings_apply():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args, refusal = web.weirling_apply_args(body)
+        if refusal:
+            return jsonify({"ok": False, "error": refusal}), 400
+        ident = requestauth.identity(ctx, _auth_headers())
+        code, payload = payloads.weirling_apply(
+            _connect, actor=(ident.username if ident else "operator"), **args)
+        return jsonify(payload), code
+
+    @app.post("/api/weirlings/probe")
+    def weirlings_probe_post():
+        # NOT `weirlings_probe`: the GET route above already owns that endpoint name, and Flask refuses
+        # two views with one name. The console's handler is `_weirlings_probe_post` for the same reason.
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, bad = _body_or_refusal()
+        if bad is not None:
+            return bad
+        args, refusal = web.weirling_probe_args(body)
+        if refusal:
+            return jsonify({"ok": False, "error": refusal}), 400
+        code, payload = payloads.weirling_probe(_connect, **args)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 
