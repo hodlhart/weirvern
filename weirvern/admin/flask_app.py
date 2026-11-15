@@ -1589,6 +1589,34 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         code, payload = payloads.weirling_probe(_connect, **args)
         return jsonify(payload), code
 
+    @app.post("/api/networks/autofill")
+    def networks_autofill():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        # NO BODY: the approval is the whole request, and the console never reads one.
+        return _write_json(lambda body: {}, payloads.network_scope_autofill,
+                           payloads.network_autofill_failure, needs_body=False)
+
+    @app.post("/api/settings/plan")
+    def settings_plan():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.settings_changes_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        # NO DATABASE CONNECTION, deliberately: the console's plan route reads the ConfigMap and
+        # nothing else, so opening one here would invent a failure mode the console does not have.
+        code, payload = payloads.settings_plan(ctx, **args)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 

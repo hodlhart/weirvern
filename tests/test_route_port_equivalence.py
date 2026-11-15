@@ -705,6 +705,9 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/weirlings/plan": ("weirling_plan", "weirvern.admin.payloads.weirling_plan"),
     "/api/weirlings/apply": ("weirling_apply", "weirvern.admin.payloads.weirling_apply"),
     "/api/weirlings/probe": ("weirling_probe", "weirvern.admin.payloads.weirling_probe"),
+    "/api/networks/autofill": ("network_scope_autofill",
+                               "weirvern.admin.payloads.network_scope_autofill"),
+    "/api/settings/plan": ("settings_plan", "weirvern.admin.payloads.settings_plan"),
 }
 
 
@@ -721,7 +724,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 27, (
+    assert len(PORTED_WRITES) >= 29, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1515,3 +1518,90 @@ def test_the_fleet_writes_answer_identically(surfaces, monkeypatch):
                "seconds": seconds, "status": "queued"})
     body = _same("/api/weirlings/probe", {"sensor_id": "remote-1", "iface": "eth2"}, 202)
     assert body["request_id"] == "p1" and body["scope"] == "capture-liveness", body
+
+
+def test_autofill_and_the_settings_plan_answer_identically(surfaces, monkeypatch):
+    """The one-approval scope fill, and the dry run that states the blast radius.
+
+    THE 409 IS THE SAFETY PROPERTY: a second call, or a deployment whose scopes the operator already
+    edited by hand, must be refused rather than overwritten with a suggestion. And the plan must
+    ECHO THE CALLER'S KEY VOCABULARY (`sensor_mode`, not `SENSOR_MODE`) or the UI's warning lookup
+    misses and skips the costly-change dialog for exactly the changes that need it.
+    """
+    import types
+
+    from weirvern import networks
+    from weirvern.admin import cluster_config as cc
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ctx.settings = types.SimpleNamespace(sluice_iface="eth0", zeek_iface="", mgmt_iface="eth1",
+                                         sluice_interval_s=15)
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    def _same(path, payload, expected):
+        raw = b"" if payload is None else json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:240]!r}\n  flask:   {fb[:240]!r}")
+        return json.loads(fb)
+
+    # ── autofill ──────────────────────────────────────────────────────────────────────────────
+    _patch(monkeypatch, "weirvern.networks.load_scopes", lambda client: [{"id": "n1"}])
+    body = _same("/api/networks/autofill", None, 409)
+    assert body == {"error": "network scopes are already declared", "code": 409}, body
+
+    _patch(monkeypatch, "weirvern.networks.load_scopes", lambda client: [])
+    _patch(monkeypatch, "weirvern.networks.suggested_monitored_scopes", lambda: [])
+    body = _same("/api/networks/autofill", None, 400)
+    assert body == {"error": "no monitored networks are configured to fill from",
+                    "code": 400}, body
+
+    saved: list = []
+    scope = types.SimpleNamespace(public=lambda: {"id": "n1", "name": "lan"})
+    _patch(monkeypatch, "weirvern.networks.suggested_monitored_scopes", lambda: [scope])
+    _patch(monkeypatch, "weirvern.networks.save_scope",
+           lambda client, body: (saved.append(body) or scope))
+    _patch(monkeypatch, "weirvern.networks.overview",
+           lambda client, hours=24: {"scopes": [], "hours": hours})
+    body = _same("/api/networks/autofill", None, 200)
+    assert body["created"] == 1 and body["scopes_added"] == [{"id": "n1", "name": "lan"}], body
+    assert saved == [{"id": "n1", "name": "lan"}] * 2, saved
+
+    # ── the settings plan ─────────────────────────────────────────────────────────────────────
+    body = _same("/api/settings/plan", {}, 400)
+    assert body == {"error": "a non-empty 'changes' object is required", "code": 400}, body
+
+    ctx.config_client = types.SimpleNamespace(
+        read=lambda: {"SENSOR_MODE": "loch", "INTERCEPT_SECONDS": "600"})
+
+    class _Proposal:
+        key = "SENSOR_MODE"
+        current = "loch"
+        proposed = "siphon"
+        restarts = ["worker"]
+        blast = "in path"
+        warning = "this puts the sensor in the traffic path"
+
+    _patch(monkeypatch, "weirvern.admin.cluster_config.plan",
+           lambda changes, current: types.SimpleNamespace(
+               proposals=[_Proposal], restart_targets=["worker"]))
+    _patch(monkeypatch, "weirvern.admin.cluster_config.to_configmap_key",
+           lambda key: "SENSOR_MODE" if key == "sensor_mode" else key.upper())
+    body = _same("/api/settings/plan", {"changes": {"sensor_mode": "siphon"}}, 200)
+    # THE KEY COMES BACK AS THE CALLER NAMED IT, or the UI's warning lookup never matches.
+    assert body["proposals"][0]["key"] == "sensor_mode", body["proposals"]
+    assert body["proposals"][0]["warning"], body["proposals"]
+    assert body["restart_targets"] == ["worker"], body
+
+    def _cfg_error(*a, **k):
+        raise cc.ConfigError("SENSOR_MODE must be loch or siphon")
+
+    _patch(monkeypatch, "weirvern.admin.cluster_config.plan", _cfg_error)
+    body = _same("/api/settings/plan", {"changes": {"sensor_mode": "sideways"}}, 400)
+    assert body == {"ok": False, "error": "SENSOR_MODE must be loch or siphon"}, body
+    assert networks, "the patches above must target the real module"

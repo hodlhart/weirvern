@@ -1835,6 +1835,83 @@ def weirling_probe(connect: Any, *, sensor_id: str, iface: str,
     }
 
 
+def network_scope_autofill(client: Client) -> tuple[int, dict[str, Any]]:
+    """Create the scopes already implied by monitored networks, after one approval.
+
+    DELIBERATELY A WRITE, NOT A READ SIDE EFFECT: reading coverage must never change what is
+    monitored. The proposals come only from INTERCEPT_PLANS -- segments the operator already
+    configured the sensor to watch -- never from observed traffic or an RFC1918 guess.
+
+    THE 409 IS THE WHOLE POINT of the route being safe to call twice: scopes that already exist mean
+    the operator edited something by hand, and overwriting that with a suggestion would undo their
+    work.
+    """
+    from weirvern import networks  # noqa: PLC0415
+
+    try:
+        existing = networks.load_scopes(client)
+        if existing:
+            return 409, {"error": "network scopes are already declared", "code": 409}
+        proposed = networks.suggested_monitored_scopes()
+        if not proposed:
+            return 400, {"error": "no monitored networks are configured to fill from", "code": 400}
+        saved = [networks.save_scope(client, scope.public()) for scope in proposed]
+        payload = networks.overview(client, hours=24)
+    except ValueError as exc:
+        return 400, {"error": str(exc), "code": 400}
+    except Exception as exc:  # noqa: BLE001
+        return network_autofill_failure(exc)
+    payload["ok"] = True
+    payload["created"] = len(saved)
+    payload["scopes_added"] = [scope.public() for scope in saved]
+    return 200, payload
+
+
+def network_autofill_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    logger.warning("network scope auto-fill failed: %s", exc)
+    return 500, {"error": f"could not auto-fill network scopes: {str(exc)[:200]}", "code": 500}
+
+
+def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
+    """Validate and describe a proposed change WITHOUT touching anything.
+
+    THE UI CALLS THIS FIRST and shows the result, so the blast radius is stated before the change
+    rather than discovered after.
+
+    PROPOSALS ECHO THE CALLER'S KEY VOCABULARY. The GUI stages ROW keys (`sensor_mode`); `cc.plan`
+    speaks CONFIGMAP keys (`SENSOR_MODE`) because the validator does. Returning the ConfigMap key
+    meant the client's warning lookup never matched, so the costly-change confirmation dialog was
+    skipped for exactly the changes that need it (the in-path mode among them). The translation back
+    happens HERE, at the boundary, so both sides speak the key the caller used.
+    """
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+    try:
+        config = getattr(ctx, "config_client", None)
+        current = cc.ClusterConfig().read() if config is None else config.read()
+    except cc.ConfigError as exc:
+        return 502, {"error": str(exc), "code": 502}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not read the configuration: {exc}", "code": 502}
+
+    try:
+        p = cc.plan({k: str(v) for k, v in changes.items()}, current)
+    except cc.ConfigError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+
+    caller_key = {cc.to_configmap_key(k): k for k in changes}
+    return 200, {
+        "ok": True,
+        "proposals": [
+            {"key": caller_key.get(x.key, x.key), "current": x.current,
+             "proposed": x.proposed, "restarts": x.restarts, "blast": x.blast,
+             "warning": x.warning}
+            for x in p.proposals
+        ],
+        "restart_targets": p.restart_targets,
+    }
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from weirvern import fleet_store, networks
+from weirvern import fleet_store
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -2370,52 +2370,22 @@ def _build_handler(ctx: GuiContext):
             The UI calls this first and shows the result, so the blast radius is stated before the
             change rather than discovered after. Requires the token too: even a dry run reveals the
             deployment's configuration shape.
+
+            The key translation (ConfigMap keys back to the caller's row keys) lives in
+            payloads.settings_plan, at the boundary, so a client's warning lookup cannot miss.
             """
             if not self._authorize():
                 return
-            from weirvern.admin import cluster_config as cc
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            changes = body.get("changes")
-            if not isinstance(changes, dict) or not changes:
-                return self._error(400, "a non-empty 'changes' object is required")
-
             try:
-                current = cc.ClusterConfig().read() if ctx.config_client is None else \
-                    ctx.config_client.read()
-            except cc.ConfigError as exc:
-                return self._error(502, str(exc))
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not read the configuration: {exc}")
-
-            try:
-                p = cc.plan({k: str(v) for k, v in changes.items()}, current)
-            except cc.ConfigError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-
-            # PROPOSALS ECHO THE CALLER'S KEY VOCABULARY. The GUI stages ROW keys
-            # (`sensor_mode`); `cc.plan` speaks CONFIGMAP keys (`SENSOR_MODE`) because the
-            # validator does. Returning the ConfigMap key here meant the client's warning
-            # lookup (`stagedKeys.has(p.key)`) never matched -- so the costly-change
-            # confirmation dialog was SKIPPED for exactly the changes that need it (the
-            # in-path mode among them), and the staging list showed no warnings. The fix is
-            # at the boundary: translate back, so both sides speak the key the caller used.
-            caller_key = {cc.to_configmap_key(k): k for k in changes}
-
-            self._json({
-                "ok": True,
-                "proposals": [
-                    {"key": caller_key.get(x.key, x.key), "current": x.current,
-                     "proposed": x.proposed, "restarts": x.restarts, "blast": x.blast,
-                     "warning": x.warning}
-                    for x in p.proposals
-                ],
-                "restart_targets": p.restart_targets,
-            })
+                args = settings_changes_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            code, payload = payloads.settings_plan(ctx, **args)
+            self._json(payload, code)
 
         def _settings_apply(self) -> None:
             """Write the configuration, then restart what reads it.
@@ -2939,32 +2909,19 @@ def _build_handler(ctx: GuiContext):
         def _networks_autofill(self) -> None:
             """Create the scopes already implied by monitored networks, after one approval.
 
-            This is deliberately a POST, not a GET side effect: reading coverage must never
-            change what is monitored. The proposals come only from INTERCEPT_PLANS -- segments
-            the operator already configured the sensor to watch -- never from observed traffic
-            or an RFC1918 guess.
+            This is deliberately a POST, not a GET side effect: reading coverage must never change
+            what is monitored. The proposals come only from INTERCEPT_PLANS -- segments the operator
+            already configured the sensor to watch -- never from observed traffic or an RFC1918 guess.
+            The 409 on existing scopes lives in payloads.network_scope_autofill.
             """
             if not self._authorize():
                 return
             try:
                 with self._with_client() as client:
-                    existing = networks.load_scopes(client)
-                    if existing:
-                        return self._error(409, "network scopes are already declared")
-                    proposed = networks.suggested_monitored_scopes()
-                    if not proposed:
-                        return self._error(400, "no monitored networks are configured to fill from")
-                    saved = [networks.save_scope(client, scope.public()) for scope in proposed]
-                    payload = networks.overview(client, hours=24)
-            except ValueError as exc:
-                return self._error(400, str(exc))
+                    code, payload = payloads.network_scope_autofill(client)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("network scope auto-fill failed: %s", exc)
-                return self._error(500, f"could not auto-fill network scopes: {str(exc)[:200]}")
-            payload["ok"] = True
-            payload["created"] = len(saved)
-            payload["scopes_added"] = [scope.public() for scope in saved]
-            self._json(payload)
+                code, payload = payloads.network_autofill_failure(exc)
+            self._json(payload, code)
 
         def _networks_save(self) -> None:
             """Create or update one operator-declared network scope.
@@ -3817,6 +3774,14 @@ def weirling_probe_args(body: dict) -> tuple[dict, str | None]:
     except (TypeError, ValueError):
         return {}, "seconds must be a number"
     return {"sensor_id": sensor_id, "iface": str(body.get("iface") or ""), "seconds": seconds}, None
+
+
+def settings_changes_args(body: dict) -> dict:
+    """A non-empty `changes` object. A plan with nothing to change is refused, not written as a no-op."""
+    changes = body.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError("a non-empty 'changes' object is required")
+    return {"changes": changes}
 
 
 def sensor_addresses(ctx) -> list[str]:
