@@ -167,6 +167,8 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                     {"available": True, "rules": []}, "?hours=6"),
     "/api/settings": ("settings_payload", "weirvern.admin.payloads.settings_payload",
                       {"available": True, "groups": {}}, ""),
+    "/api/weirlings": ("weirlings", "weirvern.admin.payloads.weirlings",
+                       {"available": True, "sensors": []}, "?problems=1"),
 }
 
 
@@ -330,7 +332,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 50, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 51, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────

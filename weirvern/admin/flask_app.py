@@ -11,9 +11,9 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 53 of
-the reads natively. Replacing the console outright would therefore load the page and break every
-endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves ALL 53
+reads natively and none of the writes yet. Replacing the console outright would therefore load the
+page and break every write, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
 
 So the front door FORWARDS what it has not taken over. With `proxy_to` set, any path this app does not
@@ -1011,6 +1011,17 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             config_client=getattr(ctx, "config_client", None),
             auth=getattr(ctx, "auth", None), role=role, via=via, identity=ident,
             accounts_on=requestauth.accounts_on(ctx)))
+
+    @app.get("/api/weirlings")
+    @gated
+    def weirlings():
+        """The last read. A connection factory again: the fleet read, the flow evidence and the
+        revoked list each open their own connection and each fail on their own."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        return jsonify(payloads.weirlings(
+            lambda: ctx.connect_factory(ctx.settings), settings=ctx.settings,
+            **web.weirlings_args(request.args)))
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

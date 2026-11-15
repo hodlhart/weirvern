@@ -1326,6 +1326,154 @@ def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
     return payload
 
 
+def weirlings(with_client: Any, *, settings: Any, include_problems: bool,
+              include_revoked: bool) -> dict[str, Any]:
+    """The fleet: registrations compared against heartbeats, with the evidence that says whether
+    each sensor is actually working.
+
+    ONE PAYLOAD CARRIES BOTH THE ROWS AND THE AVAILABILITY, because "you have no sensors" and "the
+    registry could not be read" are indistinguishable by the time a renderer sees a bare list.
+
+    TAKES A CONNECTION FACTORY, like overview and sluice: the console opens a SEPARATE connection
+    for the fleet read, the flow evidence and the revoked list, and each block has its own failure
+    behaviour. One shared client would turn a connection error in the second block into a different
+    answer than the first, which is the sort of drift this port exists to avoid.
+    """
+    import datetime  # noqa: PLC0415
+
+    from weirvern import fleet_store  # noqa: PLC0415
+    from weirvern.admin.web import (  # noqa: PLC0415
+        _flow_exporters,
+        _gate_sensor_name,
+        _human_age,
+        _interface_network_names,
+    )
+
+    try:
+        with with_client() as client:
+            payload = fleet_store.build_fleet(client, problems_only=include_problems)
+    except Exception as exc:  # noqa: BLE001
+        # A connection failure is the same fact as an unreadable registry from the operator's
+        # side, so it takes the same shape rather than a 5xx that would blank the whole tab.
+        logger.warning("weirlings unavailable: %s", exc)
+        return {
+            "available": False,
+            "reason": f"the fleet could not be read: {str(exc)[:200]}",
+            "sensors": [], "summary": None,
+            "heartbeats_available": False, "heartbeat_reason": None,
+        }
+
+    # WHICH OF THESE SENSORS RUNS ON THIS HUB. A sensor's runtime can only be changed on the box
+    # that runs it, so the row whose id is this deployment's own sensor is marked, through the same
+    # helper the Sluice gate uses so the two cannot drift.
+    local_name = _gate_sensor_name()
+    payload["local_sensor"] = local_name
+    network_names = _interface_network_names(
+        str(getattr(settings, "interface_networks", "") or ""))
+    for row in payload.get("sensors") or []:
+        row["local"] = (row.get("sensor_id") == local_name)
+        # The operator's own label for each interface (eth1=Servers), so a NIC line can read
+        # "eth1 - Servers", not only a CIDR.
+        row["network_names"] = network_names
+
+    # WL-1: the flow trend and the tap indicators, from the flows' own exporter address. One query
+    # each for the whole fleet; a failure leaves the fields ABSENT (the list renders "not observed"
+    # with its reason), never a fabricated zero. A row's exporter is its own address, but THIS
+    # deployment's own sensor exports over loopback, so the local row looks up the loopback
+    # samplers instead.
+    exporters = _flow_exporters(payload.get("sensors") or [])
+    addresses = sorted({a for group in exporters.values() for a in group})
+    try:
+        with with_client() as ev_client:
+            evidence, ev_err = fleet_store.flow_evidence(ev_client, addresses)
+            series, _series_err = fleet_store.flow_series(ev_client, addresses)
+            zeek, _zeek_err = fleet_store.zeek_evidence(ev_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fleet flow evidence unavailable: %s", exc)
+        evidence, series = {}, {}
+        zeek = {"observed": False, "rows": 0, "last_at": "", "why": str(exc)[:120]}
+        ev_err = str(exc)[:120]
+    for row in payload.get("sensors") or []:
+        sid = str(row.get("sensor_id") or "")
+        keys = exporters.get(sid) or []
+        evs = [evidence.get(k) or {} for k in keys]
+        flows = sum(int(e.get("flows") or 0) for e in evs)
+        last = max((str(e.get("last_at") or "") for e in evs if e.get("last_at")), default="")
+        # THE NEWEST EVIDENCE WINS: one exporter still sending means the feed is up.
+        ages: list[int] = [int(e["age_s"]) for e in evs if e.get("age_s") is not None]
+        age_s: int | None = min(ages) if ages else None
+        stale = bool(keys) and (age_s is None or age_s > fleet_store.NETFLOW_STALE_S)
+        merged_series = [0] * 12
+        has_series = False
+        for k in keys:
+            vals = series.get(k) or []
+            if vals:
+                has_series = True
+            for i, v in enumerate(vals[:12]):
+                merged_series[i] += int(v or 0)
+        row["flow_series"] = merged_series if has_series else []
+        row["netflow"] = {
+            "known": bool(keys),
+            "observed": flows > 0,
+            # OBSERVED IS NOT FRESH. A 24-hour count keeps a dead exporter looking healthy for a
+            # day; `fresh` and `age_s` say whether it is sending NOW.
+            "fresh": bool(keys) and not stale and flows > 0,
+            "stale": stale,
+            "age_s": age_s,
+            "flows": flows,
+            "last_at": last,
+            # NETFLOW IS SENSOR-SCOPED, NOT PER-NIC: NETFLOW_IFACE is one sensor-level setting and
+            # the exporter address belongs to the box, so a NIC line must not imply it owns a local
+            # probe.
+            "scope": "sensor",
+            "scope_label": "netflow",
+            "scope_note": ("the hub sees one sensor-wide NetFlow feed; it cannot "
+                           "attribute it to this NIC"),
+            "why": ("" if (flows and not stale) else
+                    (f"exporter silent for {_human_age(age_s)}" if keys and stale
+                     else "no flows from this sensor's exporter in 24h" if keys
+                     else ("the sensor has not reported an address yet"
+                           if ev_err else "no address reported yet"))),
+        }
+        row["zeek"] = (
+            {"known": True, "observed": bool(zeek.get("observed")),
+             "last_at": zeek.get("last_at") or "",
+             "why": zeek.get("why") or ""}
+            if row.get("local") else
+            {"known": False, "observed": False, "last_at": "",
+             "why": "only the hub runs Zeek; a remote weirling does not report one"}
+        )
+        # THE CHANNEL IS NOT THE MODE (measured live 2026-10-19: mode siphon, mappings 0, no flows
+        # for 24h). The row states the evidence, and the reason when it is not there, so a
+        # configured path cannot read as a working one.
+        row["channel"] = fleet_store.channel_state(
+            str(row.get("reported_mode") or row.get("expected_mode") or ""),
+            int(row.get("mappings") or 0),
+            bool(row.get("running")),
+            row.get("state") == "alive",
+        )
+
+    if include_revoked:
+        # Revoked rows are shown on request, for the audit question ("was this ever covered?").
+        # Fetched separately and appended, so the normal view cannot accidentally include them.
+        try:
+            with with_client() as client:
+                revoked = [r for r in fleet_store.read_registrations(
+                    client, include_revoked=True) if not r.live]
+            payload["revoked"] = [
+                {"sensor_id": r.sensor_id, "segment": r.segment,
+                 "address": r.address, "expected_mode": r.expected_mode,
+                 "note": r.note,
+                 "revoked_at": (r.revoked_at.isoformat()
+                                if isinstance(r.revoked_at, datetime.datetime) else None)}
+                for r in revoked
+            ]
+        except fleet_store.FleetStoreError as exc:
+            payload["revoked"] = []
+            payload["revoked_reason"] = str(exc)
+    return payload
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415
