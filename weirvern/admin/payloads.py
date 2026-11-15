@@ -2067,6 +2067,176 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     }
 
 
+def settings_test(ctx: Any, connect: Any, *, seconds: float) -> tuple[int, dict[str, Any]]:
+    """Run the intercept for a bounded TEST window, then revert the mode to loch.
+
+    THE MOST CONSEQUENTIAL WRITE ON THIS PAGE: while the probe runs, this sensor is genuinely in the
+    traffic path for the hosts the plan names -- the ARP mappings are real and the traffic really
+    relays. What the probe changes is the ENDING: the mode is written back to loch in a finally, and
+    the worker's restart stops the supervised intercept through its orderly SIGTERM path.
+
+    THE LIVENESS EVIDENCE COMES FROM status.siphon_liveness -- the same check `weirvern status` uses --
+    so the probe's verdict and the CLI's cannot disagree about what "an intercept was running" means.
+
+    200 EVEN WHEN NO EVIDENCE WAS SEEN: the run happened and its outcome is the answer; only a failed
+    REVERT is a problem to flag loudly, which is why that answers 500.
+    """
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+    from weirvern.admin import siphon_probe as probe_mod  # noqa: PLC0415
+
+    if getattr(ctx, "config_client", None) is not None:
+        client = ctx.config_client
+    else:
+        try:
+            client = cc.ClusterConfig()
+        except cc.ConfigError as exc:
+            return 503, {"ok": False, "error": str(exc)}
+
+    def liveness():
+        """Intercept evidence via the same check the CLI uses. None-safe."""
+        try:
+            with connect() as ch:
+                configured = ""
+                try:
+                    configured = str((client.read() or {}).get("SENSOR_MODE") or "")
+                except Exception:  # noqa: BLE001
+                    configured = ""
+                return status_mod.siphon_liveness(configured, ch)
+        except Exception as exc:  # noqa: BLE001
+            return {"live": False, "error": f"could not read intercept evidence: {exc}"}
+
+    try:
+        result = probe_mod.run_probe(client, seconds=seconds, liveness=liveness)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("siphon probe failed", exc_info=True)
+        return 500, {"ok": False, "error": f"the test run failed: {exc}"}
+    if result.get("ok") is False:
+        return 422, result
+    return (200 if result.get("reverted") else 500), result
+
+
+def settings_sonar(ctx: Any, connect: Any, *, sensor_id: str, iface: str, mgmt: str,
+                   progress: Any = None) -> tuple[int, dict[str, Any]]:
+    """Survey the capture interface's segment and return recommendations.
+
+    THE SURVEY RUNS AS A ONE-SHOT JOB, NOT IN THIS PROCESS: this pod has its own network namespace and
+    no capabilities, so a survey here would measure the wrong machine and recommend settings for
+    interfaces the sensor node does not have. It changes NOTHING -- the UI stages the recommendations
+    as pending changes -- and the only frames it sends are ARP requests.
+
+    THE NAMED-SENSOR FORM surveys THAT sensor's port, resolved in a deliberate order: an explicit name,
+    else the sensor's declared capture interface, else its single reported NIC -- and REFUSES, naming
+    the candidates, when the answer is ambiguous. Surveying the wrong port produces a confident plan
+    for a segment the sensor is not on, which is worse than no survey at all.
+
+    A NAMED REMOTE SENSOR IS NOT A JOB IN THIS CLUSTER: the request goes through the ClickHouse handoff
+    the remote agent polls, and that branch comes BEFORE any ClusterConfig or Job creation, or a hub
+    interface with the same name would be surveyed and returned under the remote sensor's id.
+    """
+    import os  # noqa: PLC0415
+
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+    from weirvern.admin import sonar as sonar_mod  # noqa: PLC0415
+    from weirvern.admin import web as web_mod  # noqa: PLC0415
+
+    hub_sensor = web_mod._gate_sensor_name()
+    remote = bool(sensor_id) and sensor_id != hub_sensor
+
+    if remote:
+        # A NAMED WEIRLING, so the port comes from the SENSOR's own report/plan. BOTH READS ARE TYPED:
+        # the declaration from the registry (plan_subject), the report from the heartbeat rows.
+        try:
+            from weirvern import fleet_store  # noqa: PLC0415
+
+            with connect() as ch:
+                reg, refusal = fleet_store.plan_subject(ch, sensor_id)
+                if refusal:
+                    return 400, {"ok": False, "error": refusal}
+                hb_rows, _hb_err = fleet_store.read_heartbeats(ch)
+        except Exception as exc:  # noqa: BLE001
+            return 503, {"ok": False,
+                         "error": f"the sensor could not be read: {str(exc)[:200]}"}
+        if not iface:
+            iface = str(reg.plan.iface if reg is not None else "").strip()
+        if not iface:
+            nics = next(([str(n) for n in (hb.get("interfaces") or [])]
+                         for hb in hb_rows if hb.get("sensor_id") == sensor_id), [])
+            if len(nics) == 1:
+                iface = nics[0]
+            elif nics:
+                return 400, {
+                    "ok": False,
+                    "error": (f"{sensor_id} reports several NICs ({', '.join(nics)}), so which one "
+                              f"to survey is a choice, not a guess: name the capture interface."),
+                    "sensor": sensor_id,
+                    "interfaces": nics,
+                }
+            else:
+                return 400, {
+                    "ok": False,
+                    "error": (f"{sensor_id} has not reported its NICs and no capture interface is "
+                              f"set in its plan, so there is nothing to survey for it yet. The "
+                              f"sensor reports its interfaces on every heartbeat -- wait for one, "
+                              f"or name an interface."),
+                    "sensor": sensor_id,
+                }
+
+    if not iface:
+        # The interface the intercept would ACTUALLY run on: CAPTURE_IFACE wins when set (the
+        # supervisor's rule), else the configured capture interface -- read from the environment so
+        # the default cannot drift from what the worker's supervisor uses.
+        iface = (os.environ.get("CAPTURE_IFACE") or os.environ.get("ZEEK_IFACE") or "").strip()
+    if not mgmt:
+        mgmt = (os.environ.get("MGMT_IFACE") or "").strip()
+    if not iface:
+        return 400, {
+            "ok": False,
+            "error": ("no capture interface is configured, so there is nothing to survey. Set the "
+                      "capture interface (ZEEK_IFACE) in Settings first, or name one in this "
+                      "request."),
+        }
+
+    # THE SHAPE CHECK AT THE REQUEST BOUNDARY (audit F091, CONFIRMED): `interface`/`mgmt_interface`
+    # are the only free-text inputs this page takes, and they went from the body into a privileged
+    # Job's env with no contract at all. `build_job` refuses too, so no caller can bypass this; the
+    # check is repeated HERE because only here can the refusal carry a sentence an operator reads.
+    why = sonar_mod.validate_survey_ifaces(iface, mgmt)
+    if why:
+        return 400, {"ok": False,
+                     "error": f"cannot survey: {why}. {sonar_mod.iface_input_remedy()}"}
+
+    if remote:
+        try:
+            with connect() as ch:
+                result = sonar_mod.run_remote_survey(ch, sensor_id, iface, mgmt,
+                                                     progress=progress)
+        except sonar_mod.SonarError as exc:
+            return 502, {"ok": False, "error": str(exc), "sensor": sensor_id}
+        if isinstance(result, dict):
+            result["sensor"] = sensor_id
+        return (200 if result.get("ok") else 422), result
+
+    client = getattr(ctx, "config_client", None)
+    if client is None:
+        try:
+            client = cc.ClusterConfig()
+        except cc.ConfigError as exc:
+            return 503, {"ok": False, "error": str(exc)}
+
+    try:
+        result = sonar_mod.run_survey_job(client, iface, mgmt, progress=progress)
+    except sonar_mod.SonarError as exc:
+        return 502, {"ok": False, "error": str(exc)}
+    # A refusal INSIDE the job (it ran, and said no) passes through with its reason, distinct from a
+    # job that could not run at all. STAMPED WITH THE SENSOR IT RAN FOR, so the reply cannot be
+    # staged against another one's plan.
+    if isinstance(result, dict):
+        result["sensor"] = sensor_id
+    if isinstance(result, dict) and result.get("ok") is False:
+        return 422, result
+    return 200, result
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

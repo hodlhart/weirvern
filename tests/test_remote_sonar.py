@@ -56,11 +56,20 @@ def test_remote_survey_reports_a_sensor_refusal_without_faking_a_result(monkeypa
 
 
 def test_remote_survey_is_not_a_hub_job():
+    """THE ORDER MOVED into payloads.settings_sonar with the port, and it is asserted where it lives.
+
+    A named remote sensor must be handled BEFORE any ClusterConfig or Job creation, or a hub interface
+    with the same name would be surveyed and returned under the remote sensor's id. Asserting the
+    console handler's text would demand the branch be duplicated on the second surface.
+    """
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    remote = src.index("run_remote_survey")
-    job = src.index("run_survey_job(client, iface, mgmt")
-    assert remote < job
-    assert "sensor_id and sensor_id != _gate_sensor_name()" in src
+    assert "payloads.settings_sonar(" in src, "the sonar route no longer uses the shared fetcher"
+    body = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    body = body.split("def settings_sonar(", 1)[1].split("\ndef ", 1)[0]
+    remote = body.index("run_remote_survey")
+    job = body.index("run_survey_job(")
+    assert remote < job, "the remote branch runs after the hub job, so a hub NIC can be surveyed"
+    assert "remote = bool(sensor_id) and sensor_id != hub_sensor" in body
 
 
 def test_sensor_claims_a_pending_sonar_and_posts_the_result(monkeypatch):

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import functools
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -46,7 +47,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, stream_with_context, url_for
 from flask.json.provider import DefaultJSONProvider
 
 from weirvern.admin import requestauth
@@ -1639,6 +1640,73 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         code, payload = payloads.settings_apply(
             ctx, _connect, actor=(ident.username if ident else "operator"), **args)
         return jsonify(payload), code
+
+    @app.post("/api/settings/test")
+    def settings_test():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.settings_test_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        # BLOCKS FOR UP TO `seconds`: the result IS the observation window, and the browser shows a
+        # running state while it waits. No database connection is opened here -- the probe opens one
+        # per liveness read, through the same factory.
+        code, payload = payloads.settings_test(ctx, _connect, **args)
+        return jsonify(payload), code
+
+    @app.post("/api/settings/sonar")
+    def settings_sonar():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        args = web.sonar_args(body)
+        if not body.get("stream"):
+            code, payload = payloads.settings_sonar(ctx, _connect, progress=lambda p: None, **args)
+            return jsonify(payload), code
+
+        # NDJSON, the same shape the console writes to its socket: one line per step, then the result.
+        # THE WORK RUNS ON A THREAD so progress can be yielded WHILE the job runs -- building the whole
+        # response first would make the stream a lie.
+        import queue as queue_mod  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+
+        def generate():
+            q: queue_mod.Queue = queue_mod.Queue()
+            box: dict = {}
+
+            def work():
+                try:
+                    box["payload"] = payloads.settings_sonar(
+                        ctx, _connect, progress=lambda p: q.put(p), **args)[1]
+                except Exception as exc:  # noqa: BLE001
+                    box["payload"] = {"ok": False, "error": f"the survey failed: {exc}"}
+                finally:
+                    q.put(None)
+
+            threading.Thread(target=work, daemon=True).start()
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                yield json.dumps({"progress": item}, default=str) + "\n"
+            yield json.dumps({"result": box.get("payload")}, default=str) + "\n"
+
+        return Response(stream_with_context(generate()),
+                        content_type="application/x-ndjson; charset=utf-8")
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

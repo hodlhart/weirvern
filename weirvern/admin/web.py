@@ -428,6 +428,13 @@ def _build_handler(ctx: GuiContext):
             body = json.dumps(payload, default=str).encode()
             self._send(code, body, "application/json; charset=utf-8")
 
+
+        def _ndjson(self, obj) -> None:
+            """One NDJSON line, swallowing a client that went away (a tab closed mid-survey)."""
+            with contextlib.suppress(BrokenPipeError, OSError):
+                self.wfile.write((json.dumps(obj, default=str) + "\n").encode())
+                self.wfile.flush()
+
         def _error(self, code: int, message: str) -> None:
             self._json({"error": message, "code": code}, code)
 
@@ -2411,66 +2418,23 @@ def _build_handler(ctx: GuiContext):
         def _settings_sonar(self) -> None:
             """Survey the capture interface's segment and return recommendations.
 
-            THE SURVEY RUNS AS A ONE-SHOT JOB, NOT IN THIS PROCESS. This pod has its own
-            network namespace and no capabilities, so a survey run here would measure the
-            wrong machine and recommend settings for interfaces the sensor node does not
-            have. The job runs with the sensor's shape (hostNetwork, pinned to the sensor
-            node, NET_RAW for the ARP socket) -- see admin/sonar.py.
+            THE SURVEY RUNS AS A ONE-SHOT JOB, NOT IN THIS PROCESS (see payloads.settings_sonar): this
+            pod has its own network namespace and no capabilities, so a survey here would measure the
+            wrong machine. It changes NOTHING -- the UI stages the recommendations as pending changes
+            -- and the only frames it sends are ARP requests.
 
-            It changes NOTHING: no setting is written (the UI stages the recommendations as
-            pending changes), no address is assigned, and the only frames it sends are ARP
-            requests. Admin-gated because it creates a cluster object and spends the sensor
-            node's time, not because it writes configuration.
-
-            Body: `{"interface": "eth1"}` (optional; defaults to the running capture
-            interface), `{"mgmt_interface": "eth0"}` (optional; for the two-port warning),
-            `{"sensor": "weirvern-eth2"}` (optional; survey FOR that weirling instead).
-
-            ── THE `sensor` FORM: A SURVEY FOR A NAMED WEIRLING ──────────────────────────────
-
-            A weirling's plan belongs to THAT sensor (fleet.SensorPlan), so the survey that
-            seeds it must measure THAT sensor's port, not the hub's. The interface then resolves
-            in a deliberate order -- an explicit name, else the sensor's own declared capture
-            interface, else its single reported NIC -- and REFUSES, naming the candidates, when
-            the answer is ambiguous: surveying the wrong port produces a confident plan for a
-            segment the sensor is not on, which is worse than no survey at all.
-
-            The job itself is unchanged (hostNetwork, pinned to the sensor node, NET_RAW): on
-            this deployment every in-cluster weirling runs on the node that carries the
-            `weirvern.io/sensor-node` label, which is exactly what the pin selects. A sensor on
-            ANOTHER box is not in-cluster, so the job cannot reach it -- and it says so through
-            Sonar's own refusal ("no such interface on this node, interfaces present: ...")
-            rather than pretending to have measured something.
+            NDJSON PROGRESS: one line per step, then {"result": ...}. A browser fetch reads the stream
+            so the sheet can say "DHCP" / "passive" / "ARP" while the Job runs; callers that do not ask
+            for it get the same one-shot JSON as before.
             """
             if not self._authorize():
                 return
-            from weirvern.admin import cluster_config as cc
-            from weirvern.admin import sonar as sonar_mod
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
 
-            # NDJSON progress: one line per step, then {"result": ...}. A browser fetch reads
-            # the stream so the sheet can say "DHCP" / "passive" / "ARP" while the Job runs;
-            # callers that do not ask for it get the same one-shot JSON as before.
             stream = bool(body.get("stream"))
-
-            def emit(payload, code: int = 200) -> None:
-                if stream:
-                    with contextlib.suppress(BrokenPipeError, OSError):
-                        self.wfile.write((json.dumps({"result": payload}, default=str) + "\n").encode())
-                        self.wfile.flush()
-                else:
-                    self._json(payload, code)
-
-            def emit_progress(payload) -> None:
-                if stream:
-                    with contextlib.suppress(BrokenPipeError, OSError):
-                        self.wfile.write((json.dumps({"progress": payload}, default=str) + "\n").encode())
-                        self.wfile.flush()
-
             if stream:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -2482,194 +2446,37 @@ def _build_handler(ctx: GuiContext):
                 self.end_headers()
                 self.close_connection = True
 
-            sensor_id = str(body.get("sensor") or "").strip()
-            iface = str(body.get("interface") or "").strip()
-            mgmt = str(body.get("mgmt_interface") or "").strip()
-            if sensor_id and sensor_id != _gate_sensor_name():
-                # A NAMED WEIRLING, so the port comes from the SENSOR's own report/plan.
-                # BOTH READS ARE TYPED: the declaration from the registry
-                # (`plan_subject`), the report from the heartbeat rows -- never a
-                # presentation payload.
-                try:
-                    from weirvern import fleet_store  # noqa: PLC0415
-                    with self._with_client() as ch:
-                        reg, refusal = fleet_store.plan_subject(ch, sensor_id)
-                        if refusal:
-                            return emit({"ok": False, "error": refusal}, 400)
-                        hb_rows, _hb_err = fleet_store.read_heartbeats(ch)
-                except Exception as exc:  # noqa: BLE001
-                    return emit({
-                        "ok": False,
-                        "error": f"the sensor could not be read: {str(exc)[:200]}",
-                    }, 503)
-                if not iface:
-                    iface = str(reg.plan.iface if reg is not None else "").strip()
-                if not iface:
-                    nics = next(([str(n) for n in (hb.get("interfaces") or [])]
-                                 for hb in hb_rows if hb.get("sensor_id") == sensor_id), [])
-                    if len(nics) == 1:
-                        iface = nics[0]
-                    elif nics:
-                        return emit({
-                            "ok": False,
-                            "error": (f"{sensor_id} reports several NICs ({', '.join(nics)}), so "
-                                      f"which one to survey is a choice, not a guess: name the "
-                                      f"capture interface."),
-                            "sensor": sensor_id,
-                            "interfaces": nics,
-                        }, 400)
-                    else:
-                        return emit({
-                            "ok": False,
-                            "error": (f"{sensor_id} has not reported its NICs and no capture "
-                                      f"interface is set in its plan, so there is nothing to "
-                                      f"survey for it yet. The sensor reports its interfaces on "
-                                      f"every heartbeat -- wait for one, or name an interface."),
-                            "sensor": sensor_id,
-                        }, 400)
-            if not iface:
-                # The interface the intercept would ACTUALLY run on: CAPTURE_IFACE wins when
-                # set (the supervisor's rule), else the configured capture interface. Read
-                # from the environment rather than the request so the default cannot drift
-                # from what the worker's supervisor uses.
-                iface = (os.environ.get("CAPTURE_IFACE")
-                         or os.environ.get("ZEEK_IFACE") or "").strip()
-            if not mgmt:
-                mgmt = (os.environ.get("MGMT_IFACE") or "").strip()
-            if not iface:
-                return emit({
-                    "ok": False,
-                    "error": "no capture interface is configured, so there is nothing to "
-                             "survey. Set the capture interface (ZEEK_IFACE) in Settings "
-                             "first, or name one in this request.",
-                }, 400)
-
-            # ── THE SHAPE CHECK AT THE REQUEST BOUNDARY (audit F091, CONFIRMED) ────────────────
-            #
-            # `interface`/`mgmt_interface` are the only free-text inputs this page takes, and they
-            # went from the body into a privileged Job's env with no contract at all. `build_job`
-            # now refuses too, so no caller can bypass this -- and the check is repeated HERE
-            # because only here can the refusal carry a sentence an operator reads. Letting it
-            # through to build_job would surface it as a 500-class failure with an exception name,
-            # which for a typo in an interface name is the wrong story.
-            _why = sonar_mod.validate_survey_ifaces(iface, mgmt)
-            if _why:
-                return emit({
-                    "ok": False,
-                    "error": f"cannot survey: {_why}. {sonar_mod.iface_input_remedy()}",
-                }, 400)
-
-            # A NAMED REMOTE SENSOR IS NOT A JOB IN THIS CLUSTER. The request goes through
-            # the same ClickHouse handoff the remote agent already polls; the sensor runs
-            # sonar.survey() on its own network and posts the measured result back. This
-            # branch must come BEFORE ClusterConfig/Job creation, or a hub interface with
-            # the same name would be surveyed and returned under the remote sensor's id.
-            if sensor_id and sensor_id != _gate_sensor_name():
-                try:
-                    with self._with_client() as ch:
-                        result = sonar_mod.run_remote_survey(
-                            ch, sensor_id, iface, mgmt, progress=emit_progress)
-                except sonar_mod.SonarError as exc:
-                    return emit({"ok": False, "error": str(exc), "sensor": sensor_id}, 502)
-                if isinstance(result, dict):
-                    result["sensor"] = sensor_id
-                return emit(result, 200 if result.get("ok") else 422)
-
-            if ctx.config_client is not None:
-                client = ctx.config_client
-            else:
-                try:
-                    client = cc.ClusterConfig()
-                except cc.ConfigError as exc:
-                    return emit({"ok": False, "error": str(exc)}, 503)
-
-            try:
-                result = sonar_mod.run_survey_job(client, iface, mgmt, progress=emit_progress)
-            except sonar_mod.SonarError as exc:
-                return emit({"ok": False, "error": str(exc)}, 502)
-
-            # A refusal INSIDE the job (it ran, and said no) is passed through with its reason,
-            # distinct from a job that could not run at all.
-            if isinstance(result, dict) and result.get("ok") is False:
-                result["sensor"] = sensor_id
-                return emit(result, 422)
-            # STAMPED WITH THE SENSOR IT RAN FOR, so the reply cannot be staged against another
-            # one's plan -- the client shows what this survey belongs to, and the harness can
-            # assert it. Empty means the hub's own capture port (the pre-existing form).
-            if isinstance(result, dict):
-                result["sensor"] = sensor_id
-            emit(result)
+            args = sonar_args(body)
+            progress = ((lambda p: self._ndjson({"progress": p})) if stream
+                        else (lambda p: None))
+            code, payload = payloads.settings_sonar(
+                ctx, self._with_client, progress=progress, **args)
+            if stream:
+                self._ndjson({"result": payload})
+                return
+            self._json(payload, code)
 
         def _settings_test(self) -> None:
             """Run the intercept for a bounded TEST window, then revert the mode to loch.
 
-            THE MOST CONSEQUENTIAL WRITE ON THIS PAGE: while the probe runs, this sensor is
-            genuinely in the traffic path for the hosts the plan names -- the ARP mappings are
-            real and the traffic really relays. What the probe changes is the ENDING: the mode
-            is written back to `loch` in a finally, and the worker's restart stops the
-            supervised intercept through its orderly SIGTERM path (the same restore contract
-            every production run uses). See admin/siphon_probe.py for the full reasoning,
-            including why it drives the ConfigMap instead of spawning its own intercept.
-
-            Body: `{"seconds": 30}` (optional; bounded server-side). Blocking for up to
-            `seconds` -- a few tens of seconds is acceptable for a probe whose result IS the
-            observation window, and the browser shows a running state while it waits.
-
-            The liveness evidence is collected through status.siphon_liveness -- the same
-            check `weirvern status` uses -- so the probe's verdict and the CLI's cannot
-            disagree about what "an intercept was running" means.
+            THE MOST CONSEQUENTIAL WRITE ON THIS PAGE: while the probe runs, this sensor is genuinely
+            in the traffic path for the hosts the plan names. What the probe changes is the ENDING --
+            the mode is written back to `loch` in a finally and the worker's restart stops the
+            supervised intercept through its orderly SIGTERM path -- and the whole flow lives in
+            payloads.settings_test, including the same `status.siphon_liveness` the CLI uses.
             """
             if not self._authorize():
                 return
-            from weirvern.admin import cluster_config as cc
-            from weirvern.admin import siphon_probe as probe_mod
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            raw_seconds = body.get("seconds")
             try:
-                seconds = float(raw_seconds) if raw_seconds is not None else 30.0
-            except (TypeError, ValueError):
-                return self._error(400, "seconds must be a number")
-            if not 5.0 <= seconds <= 600.0:
-                return self._error(400, "seconds must be between 5 and 600")
-
-            if ctx.config_client is not None:
-                client = ctx.config_client
-            else:
-                try:
-                    client = cc.ClusterConfig()
-                except cc.ConfigError as exc:
-                    return self._json({"ok": False, "error": str(exc)}, 503)
-
-            def liveness():
-                """Intercept evidence via the same check the CLI uses. None-safe."""
-                try:
-                    with self._with_client() as ch:
-                        configured = ""
-                        try:
-                            configured = str((client.read() or {}).get("SENSOR_MODE") or "")
-                        except Exception:  # noqa: BLE001
-                            configured = ""
-                        return status_mod.siphon_liveness(configured, ch)
-                except Exception as exc:  # noqa: BLE001
-                    return {"live": False, "error": f"could not read intercept evidence: {exc}"}
-
-            try:
-                result = probe_mod.run_probe(client, seconds=seconds, liveness=liveness)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("siphon probe failed", exc_info=True)
-                return self._json({"ok": False, "error": f"the test run failed: {exc}"}, 500)
-            if result.get("ok") is False:
-                return self._json(result, 422)
-            # 200 even when the run produced no evidence: the RUN happened and its outcome
-            # (including "no intercept was observed") IS the answer. Only a failed revert is
-            # a problem to flag loudly.
-            code = 200 if result.get("reverted") else 500
-            self._json(result, code)
+                args = settings_test_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            code, payload = payloads.settings_test(ctx, self._with_client, **args)
+            self._json(payload, code)
 
         def _mode_gate(self, changes: dict) -> str:
             """Reject a mode change that the mode's own prerequisites forbid (see mode_gate)."""
@@ -3636,6 +3443,29 @@ def mode_gate(ctx, changes: dict) -> str:
         return ""
     reasons = "; ".join(getattr(verdict, "blockers", []) or [])
     return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
+
+
+def settings_test_args(body: dict) -> dict:
+    """The test run's duration: a number, bounded server-side.
+
+    The bounds are the console's: under 5 seconds is not an observation, and over 600 would hold a
+    request open longer than anyone is watching.
+    """
+    raw_seconds = body.get("seconds")
+    try:
+        seconds = float(raw_seconds) if raw_seconds is not None else 30.0
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seconds must be a number") from exc
+    if not 5.0 <= seconds <= 600.0:
+        raise ValueError("seconds must be between 5 and 600")
+    return {"seconds": seconds}
+
+
+def sonar_args(body: dict) -> dict:
+    """The survey's three optional inputs, all free text (validated by the survey module's own check)."""
+    return {"sensor_id": str(body.get("sensor") or "").strip(),
+            "iface": str(body.get("interface") or "").strip(),
+            "mgmt": str(body.get("mgmt_interface") or "").strip()}
 
 
 def sensor_addresses(ctx) -> list[str]:

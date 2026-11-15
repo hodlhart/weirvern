@@ -709,6 +709,8 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
                                "weirvern.admin.payloads.network_scope_autofill"),
     "/api/settings/plan": ("settings_plan", "weirvern.admin.payloads.settings_plan"),
     "/api/settings/apply": ("settings_apply", "weirvern.admin.payloads.settings_apply"),
+    "/api/settings/test": ("settings_test", "weirvern.admin.payloads.settings_test"),
+    "/api/settings/sonar": ("settings_sonar", "weirvern.admin.payloads.settings_sonar"),
 }
 
 
@@ -725,7 +727,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 30, (
+    assert len(PORTED_WRITES) >= 32, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1734,3 +1736,120 @@ def test_the_settings_apply_answers_identically(surfaces, monkeypatch):
     assert len(applied) == 2 and applied[0][1:] == ("splitting traffic", "sam"), applied
     assert restarted == ["worker", "worker"], restarted
     assert mode_mod, "the patches above must target the real module"
+
+
+def test_the_settings_test_and_sonar_answer_identically(surfaces, monkeypatch):
+    """The live probe and the segment survey: both bounded, both reporting an outcome, neither one
+    inventing a success.
+
+    THREE THINGS WORTH PINNING. A probe that RAN but could not revert is a 500 -- saved-but-inert is a
+    failure of applying. A survey that ran and REFUSED passes its reason through as a 422, distinct
+    from a job that could not run at all (502). And the NDJSON stream must carry the same lines on
+    both surfaces: progress as it happens, then one result line.
+    """
+    import types
+
+    from weirvern.admin import cluster_config as cc
+    from weirvern.admin import sonar as sonar_mod
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+    _patch(monkeypatch, "weirvern.admin.web._gate_sensor_name", lambda: "hub-eth0")
+    monkeypatch.delenv("CAPTURE_IFACE", raising=False)
+    monkeypatch.delenv("ZEEK_IFACE", raising=False)
+    monkeypatch.delenv("MGMT_IFACE", raising=False)
+
+    def _same(path, payload, expected):
+        raw = json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:220]!r} / {fb[:220]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:260]!r}\n  flask:   {fb[:260]!r}")
+        return json.loads(fb)
+
+    # ── the test run ──────────────────────────────────────────────────────────────────────────
+    body = _same("/api/settings/test", {"seconds": "soon"}, 400)
+    assert body["error"] == "seconds must be a number", body
+    body = _same("/api/settings/test", {"seconds": 2}, 400)
+    assert body["error"] == "seconds must be between 5 and 600", body
+
+    ctx.config_client = types.SimpleNamespace(read=lambda: {"SENSOR_MODE": "loch"})
+    probed: list = []
+    _patch(monkeypatch, "weirvern.admin.siphon_probe.run_probe",
+           lambda client, seconds, liveness: (probed.append(seconds)
+                                              or {"ok": True, "reverted": True, "live": True}))
+    body = _same("/api/settings/test", {}, 200)
+    assert body["reverted"] is True, body
+    assert probed == [30.0, 30.0], probed
+
+    _patch(monkeypatch, "weirvern.admin.siphon_probe.run_probe",
+           lambda client, seconds, liveness: {"ok": True, "reverted": False})
+    body = _same("/api/settings/test", {"seconds": 10}, 500)
+    assert body["reverted"] is False, body
+
+    _patch(monkeypatch, "weirvern.admin.siphon_probe.run_probe",
+           lambda client, seconds, liveness: {"ok": False, "error": "forwarding is not working"})
+    body = _same("/api/settings/test", {}, 422)
+    assert body["ok"] is False, body
+
+    # ── the survey ────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/settings/sonar", {}, 400)
+    assert "no capture interface is configured" in body["error"], body
+
+    _patch(monkeypatch, "weirvern.admin.sonar.validate_survey_ifaces",
+           lambda iface, mgmt: "that is not an interface name")
+    _patch(monkeypatch, "weirvern.admin.sonar.iface_input_remedy", lambda: "Use eth0.")
+    body = _same("/api/settings/sonar", {"interface": "--bad"}, 400)
+    assert body["error"] == "cannot survey: that is not an interface name. Use eth0.", body
+
+    _patch(monkeypatch, "weirvern.admin.sonar.validate_survey_ifaces", lambda iface, mgmt: "")
+
+    def _job(client, iface, mgmt, progress=None):
+        if progress:
+            progress({"step": "dhcp"})
+        return {"ok": True, "recommendations": [{"setting": "x"}], "interface": iface}
+
+    _patch(monkeypatch, "weirvern.admin.sonar.run_survey_job", _job)
+    body = _same("/api/settings/sonar", {"interface": "eth2"}, 200)
+    assert body["interface"] == "eth2" and body["sensor"] == "", body
+
+    # A job that RAN and refused is a 422 carrying its reason, not a 502.
+    _patch(monkeypatch, "weirvern.admin.sonar.run_survey_job",
+           lambda client, iface, mgmt, progress=None: {"ok": False,
+                                                       "error": "no such interface"})
+    body = _same("/api/settings/sonar", {"interface": "eth9"}, 422)
+    assert body["error"] == "no such interface", body
+
+    _patch(monkeypatch, "weirvern.admin.sonar.run_survey_job",
+           lambda client, iface, mgmt, progress=None: (_ for _ in ()).throw(
+               sonar_mod.SonarError("the job could not be created")))
+    body = _same("/api/settings/sonar", {"interface": "eth2"}, 502)
+    assert body["error"] == "the job could not be created", body
+
+    # ── the NDJSON stream, on both surfaces ───────────────────────────────────────────────────
+    _patch(monkeypatch, "weirvern.admin.sonar.run_survey_job", _job)
+    raw = json.dumps({"interface": "eth2", "stream": True}).encode()
+
+    import urllib.request as urlreq
+    req = urlreq.Request(f"http://127.0.0.1:{legacy.port}/api/settings/sonar", data=raw,
+                         method="POST", headers={"Content-Type": "application/json"})
+    with urlreq.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
+        assert resp.headers.get("Content-Type", "").startswith("application/x-ndjson")
+        console_lines = [json.loads(ln) for ln in resp.read().decode().splitlines() if ln.strip()]
+
+    flask_resp = app.test_client().post(
+        "/api/settings/sonar", data=raw, headers={"Content-Type": "application/json"})
+    assert flask_resp.status_code == 200
+    assert flask_resp.headers["Content-Type"].startswith("application/x-ndjson")
+    flask_lines = [json.loads(ln) for ln in flask_resp.get_data(as_text=True).splitlines()
+                   if ln.strip()]
+
+    assert console_lines == flask_lines, (console_lines, flask_lines)
+    assert console_lines[0] == {"progress": {"step": "dhcp"}}, console_lines
+    assert console_lines[-1]["result"]["ok"] is True, console_lines
+    assert cc, "the patches above must target the real module"
