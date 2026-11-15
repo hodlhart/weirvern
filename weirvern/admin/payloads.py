@@ -1283,6 +1283,86 @@ def sluice_revoke(client: Client, *, rule_id: str, rule_ids: list[str], reason: 
                  "note": f"revoked; enforcement stops within {int(interval_s)}s"}
 
 
+def sluice_rule_mode(client: Client, *, by: str, rule_id: str,
+                     mode: str) -> tuple[int, dict[str, Any]]:
+    """Change a rule's mode in place -- the Blocked tab's "open the rule and modify it".
+
+    MOVING TO block ARMS THE KERNEL; the `confirmed` friction is checked by the caller, before any
+    query, because it is a request-shape requirement rather than something the store decides.
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+    try:
+        rule = sluice_store.update_rule_mode(client, rule_id, mode, by=by)
+    except SluiceError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return sluice_rule_failure(exc)
+    return 200, {"ok": True, "rule": {"rule_id": rule.rule_id,
+                                      "describes": rule.describes(), "mode": rule.mode}}
+
+
+def sluice_rule_domain(client: Client, *, by: str, rule_id: str,
+                       domain: str) -> tuple[int, dict[str, Any]]:
+    """Rename a rule, including adding a `*.` marker. Stored as typed; subdomains were always covered."""
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+    try:
+        rule = sluice_store.update_rule(client, rule_id, domain=domain, by=by)
+    except SluiceError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return sluice_rule_failure(exc)
+    return 200, {"ok": True, "rule": {"rule_id": rule.rule_id,
+                                      "describes": rule.describes(), "domain": rule.domain}}
+
+
+def sluice_rule_disabled(client: Client, *, by: str, rule_id: str, rule_ids: list[str],
+                         disabled: bool, interval_s: int) -> tuple[int, dict[str, Any]]:
+    """Park a rule or put it back, for one id or a selection.
+
+    A SELECTION REPORTS PER-ID REFUSALS instead of stopping at the first: the server re-reads every
+    rule before flipping it, so one that was edited or revoked in the meantime comes back in `refused`
+    with a sentence rather than being guessed past -- and the rest of the selection still lands.
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+
+    changed: list[str] = []
+    refused: list[dict[str, Any]] = []
+    try:
+        for rid in (rule_ids or [rule_id]):
+            try:
+                sluice_store.set_rule_disabled(client, rid, disabled, by=by)
+                changed.append(rid)
+            except sluice_store.SluiceError as exc:
+                refused.append({"rule_id": rid, "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return sluice_rule_disabled_failure(exc)
+    return 200, {"ok": True, "changed": changed, "refused": refused,
+                 "note": ("disabled" if disabled else "re-enabled")
+                         + f"; enforcement reflects it within {int(interval_s)}s"}
+
+
+def sluice_rule_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """A rule edit the store did not name a reason for: 503 with the READ failure wording.
+
+    THE `{"ok": false}` ON A 503 IS THE CONSOLE'S SHAPE, not the house error body. A client reads `ok`
+    to decide whether to re-render the rule, so normalising this would make a failure look like a
+    success on one surface and not the other.
+    """
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    return 503, {"ok": False, "error": read_failure(exc)}
+
+
+def sluice_rule_disabled_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """A disable/enable pass that failed outside the per-id refusals: the store never answered."""
+    logger.warning("sluice rule disable failed: %s", exc)
+    return 502, {"error": f"could not change the rule: {type(exc).__name__}", "code": 502}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

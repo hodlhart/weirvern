@@ -686,6 +686,10 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/scan-jobs": ("scan_job_create", "weirvern.admin.payloads.scan_job_create"),
     "/api/sluice/block": ("sluice_block", "weirvern.admin.payloads.sluice_block"),
     "/api/sluice/revoke": ("sluice_revoke", "weirvern.admin.payloads.sluice_revoke"),
+    "/api/sluice/rule/mode": ("sluice_rule_mode", "weirvern.admin.payloads.sluice_rule_mode"),
+    "/api/sluice/rule/domain": ("sluice_rule_domain", "weirvern.admin.payloads.sluice_rule_domain"),
+    "/api/sluice/rule/disabled": ("sluice_rule_disabled",
+                                  "weirvern.admin.payloads.sluice_rule_disabled"),
 }
 
 
@@ -702,7 +706,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 12, (
+    assert len(PORTED_WRITES) >= 15, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1149,3 +1153,90 @@ def test_the_sluice_and_scan_writes_answer_identically(surfaces, monkeypatch):
                  {"rule_ids": ["rule-1", "rule-x"], "reason": "cleanup"}, 200)
     assert body["revoked"] == ["rule-1", "rule-x"] and body["missing"] == ["rule-x"], body
     assert sluice and sluice_store, "the patches above must target the real modules"
+
+
+def test_the_sluice_rule_edits_answer_identically(surfaces, monkeypatch):
+    """Mode, rename and park: the `confirmed` friction, the odd 503, and per-id refusals.
+
+    THREE SHAPES THAT ARE EASY TO "TIDY" AWAY. Arming the kernel without `confirmed: true` is a 400
+    carrying `{"ok": false}`; a store failure the console knows nothing about is a 503 that ALSO says
+    `{"ok": false}` rather than the house error body; and a bulk park reports the rules it refused in
+    a list beside the ones it changed instead of failing the whole selection.
+    """
+    import types
+
+    from weirvern import sluice, sluice_store
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ctx.settings = types.SimpleNamespace(
+        sluice_iface="eth0", zeek_iface="", mgmt_iface="eth1", sluice_interval_s=15)
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    def _same(path, payload, expected):
+        raw = json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:220]!r}\n  flask:   {fb[:220]!r}")
+        return json.loads(fb)
+
+    rule = types.SimpleNamespace(rule_id="rule-1", mode="alert", domain="*.example.com",
+                                 describes=lambda: "*.example.com")
+
+    # ── mode ──────────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/sluice/rule/mode", {"rule_id": "rule-1", "mode": "block"}, 400)
+    assert body == {"ok": False, "error": "moving a rule to block changes what the kernel drops; "
+                                          "resend with confirmed: true"}, body
+
+    calls = []
+    _patch(monkeypatch, "weirvern.sluice_store.update_rule_mode",
+           lambda client, rid, mode, by="": (calls.append((rid, mode, by)) or rule))
+    body = _same("/api/sluice/rule/mode",
+                 {"rule_id": "rule-1", "mode": "block", "confirmed": True}, 200)
+    assert body == {"ok": True, "rule": {"rule_id": "rule-1", "describes": "*.example.com",
+                                        "mode": "alert"}}, body
+    assert calls == [("rule-1", "block", "sam")] * 2, calls
+
+    # Moving BACK to alert needs no confirmation: widening what drops is not the dangerous direction.
+    _same("/api/sluice/rule/mode", {"rule_id": "rule-1", "mode": "alert"}, 200)
+
+    # ── rename ────────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/sluice/rule/domain", {"rule_id": "rule-1"}, 400)
+    assert body["error"] == "a domain is required" and body["code"] == 400, body
+
+    _patch(monkeypatch, "weirvern.sluice_store.update_rule",
+           lambda client, rid, domain="", by="": rule)
+    body = _same("/api/sluice/rule/domain",
+                 {"rule_id": "rule-1", "domain": "*.example.com"}, 200)
+    assert body == {"ok": True, "rule": {"rule_id": "rule-1", "describes": "*.example.com",
+                                        "domain": "*.example.com"}}, body
+
+    # ── park ──────────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/sluice/rule/disabled", {"disabled": True}, 400)
+    assert body["error"] == "rule_id (or rule_ids) is required", body
+
+    parked: list = []
+    _patch(monkeypatch, "weirvern.sluice_store.set_rule_disabled",
+           lambda client, rid, disabled, by="": parked.append((rid, disabled, by)))
+    body = _same("/api/sluice/rule/disabled", {"rule_id": "rule-1", "disabled": True}, 200)
+    assert body == {"ok": True, "changed": ["rule-1"], "refused": [],
+                    "note": "disabled; enforcement reflects it within 15s"}, body
+    assert parked == [("rule-1", True, "sam")] * 2, parked
+
+    # ONE REFUSED ID DOES NOT SINK THE REST OF THE SELECTION.
+    def _park(client, rid, disabled, by=""):
+        if rid == "rule-x":
+            raise sluice_store.SluiceError("rule-x was revoked while you were selecting")
+        parked.append((rid, disabled, by))
+
+    _patch(monkeypatch, "weirvern.sluice_store.set_rule_disabled", _park)
+    body = _same("/api/sluice/rule/disabled",
+                 {"rule_ids": ["rule-1", "rule-x"], "disabled": False}, 200)
+    assert body["changed"] == ["rule-1"] and body["refused"] == [
+        {"rule_id": "rule-x", "error": "rule-x was revoked while you were selecting"}], body
+    assert body["note"].startswith("re-enabled;"), body
+    assert sluice, "the patches above must target the real module"

@@ -1649,34 +1649,26 @@ def _build_handler(ctx: GuiContext):
                                  "off \u2014 its names leave the watch set at the next load")})
 
         def _sluice_rule_domain(self) -> None:
-            """Rename a rule -- including adding a `*.` marker (the operator, 2026-10-16:
-            "modify it like adding a *"). Stored as typed; subdomains were always covered."""
+            """Rename a rule -- including adding a `*.` marker. Stored as typed; subdomains were
+            always covered."""
             if not self._authorize():
                 return
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            from weirvern import sluice_store  # noqa: PLC0415
-            from weirvern.sluice import SluiceError  # noqa: PLC0415
-
-            rule_id = str(body.get("rule_id") or "").strip()
-            domain = str(body.get("domain") or "").strip()
-            if not domain:
-                return self._error(400, "a domain is required")
+            try:
+                args = sluice_rule_domain_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            ident = self._identity()
             try:
                 with self._with_client() as client:
-                    ident = self._identity()
-                    rule = sluice_store.update_rule(
-                        client, rule_id, domain=domain,
-                        by=(ident.username if ident else "operator"))
-            except SluiceError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.sluice_rule_domain(
+                        client, by=(ident.username if ident else "operator"), **args)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": read_failure(exc)}, 503)
-            self._json({"ok": True, "rule": {"rule_id": rule.rule_id,
-                                             "describes": rule.describes(),
-                                             "domain": rule.domain}})
+                code, payload = payloads.sluice_rule_failure(exc)
+            self._json(payload, code)
 
         def _blocklists_source(self) -> None:
             """Add a URL source, with its format named and validated.
@@ -1736,12 +1728,12 @@ def _build_handler(ctx: GuiContext):
             self._json({"ok": True, "action": action, "domain": name})
 
         def _sluice_rule_mode(self) -> None:
-            """Change a rule's mode in place -- the Blocked tab's "open the rule and modify it"
-            (the operator, 2026-10-16).
+            """Change a rule's mode in place -- the Blocked tab's "open the rule and modify it".
 
-            MOVING TO block ARMS THE KERNEL, so it needs `"confirmed": true` in the body -- the
-            same friction every enforcement change carries. Moving back to alert needs none:
-            widening what gets dropped is not the dangerous direction.
+            MOVING TO block ARMS THE KERNEL, so it needs `"confirmed": true` in the body -- the same
+            friction every enforcement change carries, checked by sluice_rule_mode_args BEFORE any
+            query. Moving back to alert needs none: widening what gets dropped is not the dangerous
+            direction.
             """
             if not self._authorize():
                 return
@@ -1749,25 +1741,20 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            from weirvern import sluice_store  # noqa: PLC0415
-            from weirvern.sluice import SluiceError  # noqa: PLC0415
-
-            rule_id = str(body.get("rule_id") or "").strip()
-            mode = str(body.get("mode") or "").strip().lower()
-            if mode == "block" and body.get("confirmed") is not True:
-                return self._json({"ok": False, "error": "moving a rule to block changes what the "
-                                   "kernel drops; resend with confirmed: true"}, 400)
+            try:
+                args, refusal = sluice_rule_mode_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            if refusal:
+                return self._json({"ok": False, "error": refusal}, 400)
+            ident = self._identity()
             try:
                 with self._with_client() as client:
-                    ident = self._identity()
-                    rule = sluice_store.update_rule_mode(
-                        client, rule_id, mode, by=(ident.username if ident else "operator"))
-            except SluiceError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.sluice_rule_mode(
+                        client, by=(ident.username if ident else "operator"), **args)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": read_failure(exc)}, 503)
-            self._json({"ok": True, "rule": {"rule_id": rule.rule_id, "describes": rule.describes(),
-                                             "mode": rule.mode}})
+                code, payload = payloads.sluice_rule_failure(exc)
+            self._json(payload, code)
 
         def _sluice_revoke(self) -> None:
             """Stop enforcing a rule, keeping the RECORD.
@@ -1800,9 +1787,8 @@ def _build_handler(ctx: GuiContext):
         def _sluice_rule_disabled(self) -> None:
             """Park a rule or put it back (the operator, 2026-10-16).
 
-            A single rule_id or a rule_ids selection, and the server re-reads every rule FINAL
-            before flipping it -- a selection must never flip a rule that was edited or revoked
-            in the meantime; those come back in `refused` with sentences, never guessed past.
+            A single rule_id or a rule_ids selection; the shared fetcher re-reads every rule FINAL
+            before flipping it and reports the ones it refused instead of guessing past them.
             """
             if not self._authorize():
                 return
@@ -1810,31 +1796,19 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            rule_id = str(body.get("rule_id") or "").strip()
-            ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
-            if not rule_id and not ids:
-                return self._error(400, "rule_id (or rule_ids) is required")
-            disabled = bool(body.get("disabled"))
-            from weirvern import sluice_store  # noqa: PLC0415
+            try:
+                args = sluice_rule_disabled_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             ident = self._identity()
-            by = ident.username if ident else "operator"
-            changed: list[str] = []
-            refused: list[dict] = []
             try:
                 with self._with_client() as client:
-                    for rid in (ids or [rule_id]):
-                        try:
-                            sluice_store.set_rule_disabled(client, rid, disabled, by=by)
-                            changed.append(rid)
-                        except sluice_store.SluiceError as exc:
-                            refused.append({"rule_id": rid, "error": str(exc)})
+                    code, payload = payloads.sluice_rule_disabled(
+                        client, by=(ident.username if ident else "operator"), **args,
+                        interval_s=int(ctx.settings.sluice_interval_s))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("sluice rule disable failed: %s", exc)
-                return self._error(502, f"could not change the rule: {type(exc).__name__}")
-            self._json({"ok": True, "changed": changed, "refused": refused,
-                        "note": ("disabled" if disabled else "re-enabled")
-                                + "; enforcement reflects it within "
-                                  f"{int(ctx.settings.sluice_interval_s)}s"})
+                code, payload = payloads.sluice_rule_disabled_failure(exc)
+            self._json(payload, code)
 
         def _sensor_addresses(self) -> list[str]:
             """This host's own addresses, for the self-block check (see sensor_addresses)."""
@@ -3994,6 +3968,42 @@ def sluice_revoke_args(body: dict) -> dict:
         raise ValueError("a reason is required to revoke a rule; it is recorded with your name and "
                          "the time")
     return {"rule_id": rule_id, "rule_ids": ids, "reason": reason}
+
+
+def sluice_rule_mode_args(body: dict) -> tuple[dict, str | None]:
+    """A rule id and a mode, plus the `confirmed` friction when the mode ARMS THE KERNEL.
+
+    THE REFUSAL IS NOT THE HOUSE 400: it answers `{"ok": false, "error"}`, which the rule sheet renders
+    beside the switch. Returning it rather than raising keeps that shape explicit.
+    """
+    rule_id = str(body.get("rule_id") or "").strip()
+    mode = str(body.get("mode") or "").strip().lower()
+    if mode == "block" and body.get("confirmed") is not True:
+        return {}, ("moving a rule to block changes what the kernel drops; "
+                    "resend with confirmed: true")
+    return {"rule_id": rule_id, "mode": mode}, None
+
+
+def sluice_rule_domain_args(body: dict) -> dict:
+    """A rule id and the name to store. Stored AS TYPED, `*.` marker included."""
+    rule_id = str(body.get("rule_id") or "").strip()
+    domain = str(body.get("domain") or "").strip()
+    if not domain:
+        raise ValueError("a domain is required")
+    return {"rule_id": rule_id, "domain": domain}
+
+
+def sluice_rule_disabled_args(body: dict) -> dict:
+    """One rule id or a selection, plus the state to set.
+
+    `disabled` is a TRUTHY read rather than a strict boolean, as on the console: the form posts a
+    checkbox, and a JSON `true` and a form `on` both mean the same thing here.
+    """
+    rule_id = str(body.get("rule_id") or "").strip()
+    ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
+    if not rule_id and not ids:
+        raise ValueError("rule_id (or rule_ids) is required")
+    return {"rule_id": rule_id, "rule_ids": ids, "disabled": bool(body.get("disabled"))}
 
 
 def sensor_addresses(ctx) -> list[str]:

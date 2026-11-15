@@ -1291,6 +1291,89 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = payloads.sluice_revoke_failure(exc)
         return jsonify(payload), code
 
+    # ── the rule sheet: three edits that are small but change enforcement ───────────────────────
+
+    @app.post("/api/sluice/rule/mode")
+    def sluice_rule_mode():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args, mode_refusal = web.sluice_rule_mode_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        if mode_refusal:
+            return jsonify({"ok": False, "error": mode_refusal}), 400
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.sluice_rule_mode(
+                    client, by=(ident.username if ident else "operator"), **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.sluice_rule_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/sluice/rule/domain")
+    def sluice_rule_domain():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.sluice_rule_domain_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.sluice_rule_domain(
+                    client, by=(ident.username if ident else "operator"), **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.sluice_rule_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/sluice/rule/disabled")
+    def sluice_rule_disabled():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.sluice_rule_disabled_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.sluice_rule_disabled(
+                    client, by=(ident.username if ident else "operator"), **args,
+                    interval_s=int(ctx.settings.sluice_interval_s))
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.sluice_rule_disabled_failure(exc)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 
