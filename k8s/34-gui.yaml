@@ -86,7 +86,26 @@ spec:
           # that running it on a workstation does not accidentally publish the
           # dashboard; inside a pod, binding to loopback would make the Service
           # unreachable and the NodePort silently useless.
-          command: ["python", "-m", "weirvern.admin.cli", "gui"]
+          command: ["python", "-m", "weirvern.admin.cli", "gui", "--flask"]
+          # GUI_HOST=0.0.0.0 is REQUIRED here. The CLI defaults to 127.0.0.1 so
+          # that running it on a workstation does not accidentally publish the
+          # dashboard; inside a pod, binding to loopback would make the Service
+          # unreachable and the NodePort silently useless.
+          #
+          # WEIRVERN_FLASK_SECRET IS DECLARED EXPLICITLY, not left to envFrom.
+          #
+          # The rendered UI signs a session cookie with it. Every other key arrives through
+          # envFrom, which injects whatever the Secret happens to hold -- so a MISSING key is not an
+          # error anywhere, it is simply an absent variable, and the app then serves a login page that
+          # says "the rendered UI is disabled". That state is indistinguishable from a working
+          # deployment when all you check is that the pod is Ready. Declaring it makes the key part of
+          # what this workload IS: a cluster without it refuses this container at start, naming the
+          # key, which is the honest failure. install.sh generates it alongside the operator token.
+          #
+          # The JSON API keeps working without it (it authenticates by header), which is why the
+          # failure is contained to the rendered pages -- but the dashboard a person clicks is the
+          # point of this workload, so a missing key is a deployment defect rather than a mode.
+          #
           # WEIRVERN_REVERSE_DNS IS DELIBERATELY NOT PINNED HERE. It used to be set to
           # "private" in this env: list, and a pod's own `env:` entry SHADOWS envFrom -- so
           # the ConfigMap value could never reach the GUI, and changing the setting from the
@@ -100,6 +119,11 @@ spec:
               value: "0.0.0.0"
             - name: GUI_PORT
               value: "8088"
+            - name: WEIRVERN_FLASK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: weirvern-secrets
+                  key: WEIRVERN_FLASK_SECRET
             # NODE_NAME, for the same reason as the worker: the GUI READS the gate's state rows,
             # which are keyed by sensor, and it must compute the SAME identity the worker writes
             # under. Inside a pod `socket.gethostname()` is the pod name, so without this the GUI

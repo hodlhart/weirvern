@@ -29,8 +29,9 @@ def test_the_empty_rules_sentence_names_hidden_revoked_rules_and_the_separate_do
 
 
 def test_hits_use_the_selected_window_on_both_surfaces():
-    py = (ROOT / "weirvern" / "admin" / "web.py").read_text(encoding="utf-8")
+    py = (ROOT / "weirvern" / "admin" / "payloads.py").read_text(encoding="utf-8")
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
+    # THE FETCH MOVED into payloads.sluice with the port; the window arithmetic moved with it.
     assert "hits_hours" in py
     assert "INTERVAL {int(hours)} HOUR" in py
     assert "/api/sluice?hours=${slHours}" in js

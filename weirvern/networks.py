@@ -347,7 +347,8 @@ def _external_overview(client, scopes: list[Scope], hours: int) -> dict[str, Any
                 "observed_only": True, "inbound": {}, "outbound": {}}
 
 
-def training_filter_sql(scopes: Iterable[Scope], alias: str = "a") -> str:
+def training_filter_sql(scopes: Iterable[Scope], alias: str = "a",
+                        column: str = "src_addr") -> str:
     """The SQL predicate that keeps model training on the monitored host population.
 
     NO SCOPES MEANS LEGACY: an upgrade with no declarations must train exactly as it did,
@@ -362,7 +363,11 @@ def training_filter_sql(scopes: Iterable[Scope], alias: str = "a") -> str:
     monitored = [s for s in scopes if is_monitored(s)]
     if not monitored:
         return "AND 0"
-    terms = " OR ".join(f"isIPAddressInRange({alias}.src_addr, '{s.cidr}')" for s in monitored)
+    # THE COLUMN IS A PARAMETER because not every caller keys on an address called src_addr.
+    # `asset_registry` stores it as `ip`, and a predicate that hardcoded src_addr there produced a
+    # ClickHouse error rather than a wrong answer, which is the better of the two failures but
+    # still a failure.
+    terms = " OR ".join(f"isIPAddressInRange({alias}.{column}, '{s.cidr}')" for s in monitored)
     return f"AND ({terms})"
 
 

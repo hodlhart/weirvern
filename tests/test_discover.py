@@ -288,7 +288,7 @@ class _DirectionClient(_Client):
 def test_discover_puts_the_direction_and_opener_on_each_row():
     row = ("2026-10-16 06:00:00", "127.0.0.1", "203.0.113.10", 443,
            "198.51.100.20", 51515, 6, 900, 8, 0, 64, "", 0, 0)
-    c = _DirectionClient(row, [("198.51.100.20", 51515, "203.0.113.10", 443, 6, 0x02)])
+    c = _DirectionClient(row, [("198.51.100.20", 51515, "203.0.113.10", 443, 6, [0x02])])
     out = soc.discover(c, hours=6)
     got = out["rows"][0]
     assert (got["direction"], got["direction_evidence"], got["direction_confidence"]) == (
@@ -299,3 +299,45 @@ def test_discover_puts_the_direction_and_opener_on_each_row():
     reverse_params = c.params[c.sql.index(reverse_sql)]
     assert "IN (" in reverse_sql and "203.0.113.10" not in reverse_sql
     assert reverse_params["d0a"] == "198.51.100.20", "the reverse key must be bound, not interpolated"
+
+def test_the_reverse_direction_query_returns_one_row_per_key():
+    """THE QUERY MUST NOT RETURN A ROW PER PACKET, and this pins the shape that makes it impossible.
+
+    MEASURED ON THE LIVE DEPLOYMENT (2026-11-15): a page of 50 flows named a 5-tuple that appeared
+    1,999,786 times in 24 hours, so the reverse-half probe materialised all of them, the GUI process
+    reached ~730 MiB and was OOMKilled against its 512Mi limit. `/api/discover` answered nothing and
+    the dashboard died mid-request.
+
+    `_flow_direction` needs the SET of TCP roles the reverse half showed, not the packet count, so the
+    distinct flags are aggregated server-side and the result is bounded by the page size.
+    """
+    row = ("2026-10-16 06:00:00", "127.0.0.1", "203.0.113.10", 443,
+           "198.51.100.20", 51515, 6, 900, 8, 0, 64, "", 0, 0)
+    c = _DirectionClient(row, [("198.51.100.20", 51515, "203.0.113.10", 443, 6, [0x02, 0x18])])
+    out = soc.discover(c, hours=6)
+    sql = next(s for s in c.sql if "flow-direction reverse halves" in s)
+    assert "groupUniqArray(tcp_flags)" in sql, (
+        "the reverse probe selects raw rows again, so a busy 5-tuple can return millions of them"
+    )
+    assert "GROUP BY src_addr, src_port, dst_addr, dst_port, proto" in sql, sql
+    # The evidence still reaches the row: a reverse SYN proves this half is the reply.
+    got = out["rows"][0]
+    assert got["direction"] == "reply" and got["direction_evidence"] == "reverse-tcp-syn", got
+
+
+def test_the_reverse_flags_accumulate_every_distinct_role():
+    """Distinct flags, so a key that saw both a SYN and a SYN-ACK keeps BOTH roles.
+
+    Collapsing them with a bitwise OR would turn 0x02|0x12 into 0x12 and silently lose the request
+    half, which is why the query returns an array rather than one aggregated integer.
+    """
+    row = ("2026-10-16 06:00:00", "127.0.0.1", "203.0.113.10", 443,
+           "198.51.100.20", 51515, 6, 900, 8, 0, 64, "", 0, 0)
+    c = _DirectionClient(row, [("198.51.100.20", 51515, "203.0.113.10", 443, 6, [0x02, 0x12, 0x02])])
+    out = soc.discover(c, hours=6)
+    flags = soc._reverse_direction_flags(c, [{
+        "src_addr": "203.0.113.10", "src_port": 443, "dst_addr": "198.51.100.20",
+        "dst_port": 51515, "proto": 6}], {"since": "x", "until": "y"})
+    key = ("198.51.100.20", 51515, "203.0.113.10", 443, 6)
+    assert flags[key] == [0x02, 0x12, 0x02], flags
+    assert out["rows"][0]["direction"] == "reply"

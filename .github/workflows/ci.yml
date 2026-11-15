@@ -106,10 +106,18 @@ jobs:
           KUBECONFORM_VERSION: v0.8.0
         run: |
           base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
-          curl -sSfL "$base/kubeconform-linux-amd64.tar.gz" -o /tmp/kubeconform.tgz
+          # THE DOWNLOAD MUST KEEP THE NAME THE CHECKSUM NAMES (WV1-21). This saved the archive as
+          # kubeconform.tgz, shipped a CHECKSUMS line naming kubeconform-linux-amd64.tar.gz, and
+          # then ran `sha256sum -c` on that file -- which reads the FILENAME out of the checksums
+          # and opens it relative to the cwd. Measured in the 6d24697 log:
+          #     sha256sum: kubeconform-linux-amd64.tar.gz: No such file or directory
+          #     kubeconform-linux-amd64.tar.gz: FAILED open or read
+          # so verification could never pass and this job has NEVER validated a manifest. Issue #65
+          # has the same root cause and is still open. Renaming before verifying is the whole fix.
+          curl -sSfL "$base/kubeconform-linux-amd64.tar.gz" -o /tmp/kubeconform-linux-amd64.tar.gz
           curl -sSfL "$base/CHECKSUMS" -o /tmp/kubeconform.CHECKSUMS
           (cd /tmp && grep ' kubeconform-linux-amd64.tar.gz$' kubeconform.CHECKSUMS | sha256sum -c -)
-          tar xzf /tmp/kubeconform.tgz -C /tmp kubeconform
+          tar xzf /tmp/kubeconform-linux-amd64.tar.gz -C /tmp kubeconform
           sudo mv /tmp/kubeconform /usr/local/bin/
           kubeconform -v
 
@@ -127,7 +135,19 @@ jobs:
 
       - name: Validate manifests against Kubernetes schemas
         run: |
-          kubeconform -strict -summary -ignore-missing-schemas k8s/
+          # KUSTOMIZATION FILES ARE BUILD INPUTS, NOT OBJECTS (WV1-21, the defect behind the
+          # checksum one). `kustomization.yaml` has no kind or apiVersion to validate, so -strict
+          # exits 1 on every one it is handed. Measured 2026-10-22: k8s/mtls and k8s/tls fail for
+          # exactly this and nothing else. Fixing the checksum alone would have turned a job that
+          # never ran into a job that runs and is red for a reason that is not a defect.
+          #
+          # The find also means an unreadable path is loud: an empty list makes xargs exit non-zero
+          # rather than passing with nothing checked, which is the silent-empty shape this project
+          # keeps removing.
+          manifests=$(find k8s -name '*.yaml' ! -name kustomization.yaml | sort)
+          [ -n "$manifests" ] || { echo "no manifests found under k8s/"; exit 1; }
+          echo "$manifests" | wc -l | xargs echo "validating manifest files:"
+          echo "$manifests" | xargs kubeconform -strict -summary -ignore-missing-schemas
           for f in k8s/units/*.template; do
             # The unit templates are YAML documents with placeholders, not manifests; a
             # placeholder is expected to fail schema validation, so they are parsed, not

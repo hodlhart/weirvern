@@ -109,6 +109,12 @@ def test_the_models_input_excludes_non_hosts_too():
     the baseline on something that is not a host."""
     src = (addressing.__file__.rsplit("weirvern/", 1)[0] + "weirvern/worker.py")
     text = Path(src).read_text()
-    for table in ("flows_aggregated", "flows_aggregated_diversity", "flows_aggregated_temporal"):
-        i = text.index(f"FROM weirvern.{table} WHERE window_start >= %(since)s AND")
+    # `flows_aggregated` is no longer read by the sweep: the folded table replaced it,
+    # so a duplicated insert-block key cannot reach a model at all.
+    for table in ("flows_window", "flows_aggregated_diversity", "flows_aggregated_temporal"):
+        # Anchor on the FROM clause rather than on a full concatenation: the reader now also
+        # carries an upper bound (`window_start < %(until)s`) so a catching-up cycle cannot pull
+        # the whole backlog, and pinning the exact string would forbid that fix. What must hold is
+        # that the host filter is applied to every one of these reads.
+        i = text.index(f"FROM weirvern.{table} WHERE window_start >= %(since)s")
         assert 'addressing.sql_host("src_addr")' in text[i:i + 500], table

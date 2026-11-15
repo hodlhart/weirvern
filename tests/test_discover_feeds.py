@@ -14,9 +14,16 @@ def test_the_discover_route_refuses_an_unknown_feed_with_a_sentence():
 
 
 def test_the_route_branches_to_the_right_reader_per_feed():
-    body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    """The feed branch moved into payloads.discover with the port; the parser still allow-lists it."""
+    body = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
     assert "soc_mod.discover_dns(" in body and "soc_mod.discover_zeek(" in body
     assert 'feed == "dns"' in body and 'feed == "zeek"' in body
+
+    web = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    parser = web.split("def discover_args(", 1)[1].split("\ndef ", 1)[0]
+    assert '("netflow", "dns", "zeek")' in parser, (
+        "an unknown feed must be refused with a sentence, not silently fall back to netflow"
+    )
 
 
 def test_discover_dns_wraps_the_dns_views_own_reader(monkeypatch):

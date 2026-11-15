@@ -62,14 +62,20 @@ def _unavailable(reason: str, **extra) -> dict:
     return {"available": False, "reason": reason, **extra}
 
 
-def _rows(client, sql: str, params: dict, what: str) -> list | None:
+def _rows(client, sql: str, params: dict, what: str,
+          settings: dict | None = None) -> list | None:
     """Run a query, returning None (and logging which one) if it fails.
 
     A failed source must be reportable, so callers collect None and name it rather than
     treating it as an empty result.
+
+    `settings` is for ClickHouse execution limits. A raw-flows aggregate over a 24h window is
+    measured between 0.3s and 107s on this deployment depending on how busy the ingestion side is
+    (276M flows/day), and without a bound a slow one holds a GUI worker thread for minutes.
     """
     try:
-        return client.query(sql, parameters=params).result_rows
+        kwargs = {"settings": settings} if settings else {}
+        return client.query(sql, parameters=params, **kwargs).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("%s failed: %s", what, exc)
         return None
@@ -746,6 +752,32 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     }
 
 
+# A raw-flows aggregate over one day of this deployment's traffic is measured between 0.3s and
+# 107s depending on ingestion load. The cap turns the worst case into a named refusal instead of a
+# request that holds a worker thread for minutes; the panel renders the reason.
+GRAPH_MAX_SECONDS = 25
+
+
+def _window_ladder(hours: int) -> list[tuple[int, int]]:
+    """Windows to try for an edge aggregate, widest first, with each one's execution budget.
+
+    THE OPERATOR ASKED FOR A WINDOW, so answering a different one silently would be a lie. But an
+    empty panel is not the truthful answer either. The caller reports the window it actually covers
+    (`hours`) alongside the one it could not (`narrowed_from`), and the panel prints both.
+
+    MEASURED ON THE LIVE DEPLOYMENT (2026-11-15, 276M flows/day): 24h of raw flows aggregates in
+    0.3s to 108s depending on ingestion load, 6h in ~13s, 1h in ~1.5s. The ladder gives a busy
+    segment a graph it can draw instead of a refusal.
+    """
+    wanted = max(1, int(hours))
+    ladder: list[tuple[int, int]] = []
+    for h in (wanted, max(1, wanted // 4), 1):
+        if any(h == seen for seen, _ in ladder):
+            continue
+        ladder.append((h, GRAPH_MAX_SECONDS if h == wanted else max(8, GRAPH_MAX_SECONDS // 2)))
+    return ladder
+
+
 def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     """Nodes and edges for the Network view's connection graph.
 
@@ -773,8 +805,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     # 5-tuple is the flow's own identity; keep it through the aggregate and merge only the
     # exact reverse tuple.
     scan = max(int(limit) * 4, 1200)
-    edges = _rows(
-        client,
+    edges_sql = (
         "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
         "       sum(bytes) AS bytes, count() AS flows, "
         "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
@@ -786,12 +817,25 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
-        "ORDER BY bytes DESC LIMIT %(n)s",
-        {**timewindow.w(hours), "n": scan},
-        "connection graph",
+        "ORDER BY bytes DESC LIMIT %(n)s"
     )
+    edges = None
+    used_hours = int(hours)
+    for attempt_hours, budget in _window_ladder(hours):
+        edges = _rows(
+            client, edges_sql, {**timewindow.w(attempt_hours), "n": scan},
+            "connection graph", settings={"max_execution_time": budget},
+        )
+        if edges is not None:
+            used_hours = attempt_hours
+            break
     if edges is None:
-        return _unavailable("the connection query failed (see the worker log for the reason)")
+        return _unavailable(
+            f"the connection query did not finish within {GRAPH_MAX_SECONDS}s for a {hours}h "
+            f"window, nor for the narrower windows tried after it, or it failed (the worker log "
+            f"names the query). The graph reads raw flows, so a wide window on a busy segment is "
+            f"expensive: narrow the window, or track specific hosts, and try again."
+        )
 
     # A conversation is the unordered port pair; the raw rows are its two directions.
     total_rows = _rows(
@@ -803,8 +847,9 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr "
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " ",
-        {**timewindow.w(hours)},
+        {**timewindow.w(used_hours)},
         "connection graph (total)",
+        settings={"max_execution_time": GRAPH_MAX_SECONDS},
     )
     total = int(total_rows[0][0] or 0) if total_rows else len(edges)
 
@@ -902,11 +947,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         node["degree_norm"] = node["degree"] / max_degree if max_degree else 0.0
         node["bytes_norm"] = node["bytes"] / max_bytes
 
-    status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=hours)
-    return {
+    status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=used_hours)
+    payload = {
         "available": True,
         "reason": "",
-        "hours": hours,
+        "hours": used_hours,
         "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
         "edges": out_edges,
         "total_edges": total,
@@ -914,6 +959,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "status_available": status_available,
         "status_reason": status_reason,
     }
+    if used_hours != int(hours):
+        # Named, not silent: the panel prints both windows so a narrowed graph is never mistaken
+        # for the one the operator asked for.
+        payload["narrowed_from"] = int(hours)
+    return payload
 
 
 
@@ -1120,8 +1170,7 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     if not addrs:
         return _unavailable("no hosts selected (an empty selection shows the whole graph)",
                             nodes=[], edges=[])
-    edges = _rows(
-        client,
+    tracked_sql = (
         "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
         "       sum(bytes) AS bytes, count() AS flows, "
         "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
@@ -1133,12 +1182,26 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
-        "ORDER BY bytes DESC LIMIT %(n)s",
-        {**timewindow.w(hours), "n": limit, "a": tuple(addrs)},
-        "tracked-host edges",
+        "ORDER BY bytes DESC LIMIT %(n)s"
     )
+    # THE SAME LADDER AS THE WHOLE GRAPH. A tracked query is not cheap: the address filter cannot
+    # prune an ORDER BY (timestamp, src_addr) table, so it still scans the window (measured 52s for
+    # one host over 24h).
+    edges = None
+    used_hours = int(hours)
+    for attempt_hours, budget in _window_ladder(hours):
+        edges = _rows(
+            client, tracked_sql, {**timewindow.w(attempt_hours), "n": limit, "a": tuple(addrs)},
+            "tracked-host edges", settings={"max_execution_time": budget},
+        )
+        if edges is not None:
+            used_hours = attempt_hours
+            break
     if edges is None:
-        return _unavailable("the tracked-host query failed")
+        return _unavailable(
+            f"the tracked-host query did not finish within {GRAPH_MAX_SECONDS}s for a {hours}h "
+            f"window, nor for the narrower windows tried after it. Narrow the window and try again."
+        )
 
     nodes: dict[str, dict] = {}
 
@@ -1183,11 +1246,14 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
             src_node["hops"] = hops
             src_node["ttl"] = e["ttl_max"]
 
-    status_available, status_reason = attach_host_status(client, nodes, out, hours=hours)
-    return {"available": True, "reason": "", "hours": hours, "tracked": list(addrs),
-            "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
-            "edges": out, "status_available": status_available,
-            "status_reason": status_reason}
+    status_available, status_reason = attach_host_status(client, nodes, out, hours=used_hours)
+    payload = {"available": True, "reason": "", "hours": used_hours, "tracked": list(addrs),
+               "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
+               "edges": out, "status_available": status_available,
+               "status_reason": status_reason}
+    if used_hours != int(hours):
+        payload["narrowed_from"] = int(hours)
+    return payload
 
 
 def _iso(value: Any) -> str:
@@ -1215,10 +1281,40 @@ def _asset_change_coverage(client, hours: int) -> dict:
         span,
         "asset-change observations",
     )
+    # ── COVERAGE IS A QUESTION ABOUT THE MONITORED POPULATION (operator directive, 2026-11-12) ──
+    #
+    # `assets` used to be `count()` over the whole registry, so the percentage was computed over
+    # every row the box had ever seen -- internet peers, scanners, one-off lookups. A number
+    # diluted by hosts nobody monitors answers no question an operator has: "have we scanned the
+    # network we said we were watching" is the question, and it needs that network as the
+    # denominator.
+    #
+    # The scope decision is the SAME one scoring and training use (`networks.is_monitored`), so
+    # the two cannot drift apart: a host that is not alertable is not part of scanner coverage
+    # either. Three states, kept distinct:
+    #
+    #   no scopes declared      -> `basis: all`, legacy, everything counts (an upgrade must not
+    #                              silently report 0% before anyone has declared a network)
+    #   scopes, none monitored  -> `basis: none`, an explicit no-monitoring configuration
+    #   monitored scopes exist  -> `basis: monitored`, the real denominator
+    scopes = networks.load_scopes(client)
+    monitored = [s for s in scopes if networks.is_monitored(s)]
+    if not scopes:
+        basis = "all"
+        cond = "1"
+    elif not monitored:
+        basis = "none"
+        cond = "0"
+    else:
+        basis = "monitored"
+        cond = " OR ".join(f"isIPAddressInRange(ip, '{s.cidr}')" for s in monitored)
+
     registry = _rows(
         client,
         "SELECT count() AS assets, countIf(scan_state = 'done') AS scanned, "
-        "       max(last_scan_at) AS last_scan "
+        "       max(last_scan_at) AS last_scan, "
+        f"      countIf({cond}) AS in_scope, "
+        f"      countIf(({cond}) AND scan_state = 'done') AS in_scope_scanned "
         "FROM weirvern.asset_registry FINAL",
         {},
         "asset-change registry coverage",
@@ -1226,17 +1322,27 @@ def _asset_change_coverage(client, hours: int) -> dict:
     if history is None or registry is None:
         return {"available": False, "reason": "the coverage query failed",
                 "observations": 0, "observed_assets": 0, "assets": 0, "scanned": 0,
+                "basis": "all", "in_scope": 0, "in_scope_scanned": 0,
                 "last_observation": "", "last_scan": ""}
     h = history[0] if history else (0, 0, None)
-    r = registry[0] if registry else (0, 0, None)
+    r = registry[0] if registry else (0, 0, 0, 0, 0)
+    total_assets = int(r[0] or 0)
+    total_scanned = int(r[1] or 0)
+    in_scope = int(r[3] or 0)
+    in_scope_scanned = int(r[4] or 0)
     return {
         "available": True,
         "reason": "",
         "observations": int(h[0] or 0),
         "observed_assets": int(h[1] or 0),
         "last_observation": _iso(h[2]),
-        "assets": int(r[0] or 0),
-        "scanned": int(r[1] or 0),
+        # WHAT THE PERCENTAGE IS A PERCENTAGE OF. `assets`/`scanned` stay as the registry-wide
+        # truth so a reader can see the dilution; the UI quotes the in-scope pair.
+        "basis": basis,
+        "assets": total_assets,
+        "scanned": total_scanned,
+        "in_scope": in_scope,
+        "in_scope_scanned": in_scope_scanned,
         "last_scan": _iso(r[2]),
     }
 

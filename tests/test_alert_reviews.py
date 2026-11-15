@@ -243,16 +243,28 @@ def test_the_review_route_exists_and_goes_through_the_operator_gate():
         "the review route does not consult the operator token, so anyone on the LAN "
         "could mark alerts as handled"
     )
-    assert "VALID_REVIEW_STATES" in body, (
+    assert "review_state_refusal(" in body, (
+        "the route does not ask the shared state validator, so the two surfaces can disagree "
+        "about which states exist"
+    )
+
+    # THE VOCABULARY CHECK MOVED into payloads.review_state_refusal with the port; it must still
+    # be the ONE tuple the UI and the database share.
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    guard = payloads[payloads.index("def review_state_refusal("):]
+    guard = guard[:guard.index("\ndef ")]
+    assert "VALID_REVIEW_STATES" in guard, (
         "the route no longer validates the state against the one tuple, so the UI and "
         "the database can disagree about the vocabulary"
     )
 
 
 def test_the_anomalies_route_merges_reviews_and_filters_only_when_readable():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    body = src[src.index("def _anomalies(self,"):]
-    body = body[:body.index("\n        def _models")]
+    """The merge moved into payloads.anomalies when the route crossed to Flask; the intent is
+    unchanged, and it is asserted where the merge now lives."""
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    body = src[src.index("def anomalies("):]
+    body = body[:body.index("\ndef ")]
     # The merge is the GROUPED one since 2026-10-16 (the count column); the intent is unchanged.
     assert "review_index" in body and "attach_group_reviews" in body
     # THE SUBTLE ONE: the unreviewed filter must not run on a FAILED read.

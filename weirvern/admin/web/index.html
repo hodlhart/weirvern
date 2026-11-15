@@ -1297,9 +1297,21 @@
            primary verb is this view's own New rule button, which installViewHeaders moves
            into the header. No second heading. -->
       <div class="controls">
+        <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
+                aria-expanded="false" title="what this view shows">i</button>
         <button id="sl2-new" class="primary" type="button">New rule</button>
       </div>
     </div>
+    <div class="info-text hidden" id="sl-info">
+  <p><strong>What it is.</strong> Two gates on one page: the Domain Gate answers DNS names through
+  blocklists and domain rules; the Traffic Gate drops packets on a weirling that sits in path.</p>
+  <p><strong>What writes it.</strong> Rules you create here, rules the detection ensemble files, and
+  the DNS blocklists imported in Settings.</p>
+  <p><strong>Last changed.</strong> A rule changes when you create, park or delete it; a gate's
+  state changes as the weirling enforcing it reports.</p>
+  <p><strong>Where to see it.</strong> Blocks lists the recorded hits behind the Domain Gate, and
+  Weirlings shows whether each sensor is still reporting.</p>
+</div>
     <!-- The header count is synced from this source by VIEW_HEADER_META. It is hidden because
          the visible copy lives in the view header, not in the body. -->
     <span id="sl2-count" class="hidden"></span>

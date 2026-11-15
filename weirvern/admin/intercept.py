@@ -31,6 +31,7 @@ accepted responsibility for undoing it.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import ipaddress
 import logging
 import os
@@ -303,11 +304,32 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
         # comes from _drain_window so the total budget is divided across the batches
         # rather than repeated per batch.
         drain_s = _drain_window(timeout_s, len(targets))
+        # ONLY THE HOSTS WE ASKED (WV1-30). The socket sees EVERY ARP frame on the segment and this
+        # loop recorded the sender of each reply without checking it was one of `targets`. A
+        # gratuitous reply, a device announcing itself, or a reply to somebody else's request
+        # became a host IN THE PLAN -- and on the whole-segment path there is no `only` filter, so
+        # the intercept could poison a host outside the CIDR the operator named and report it as
+        # coverage of that CIDR. Asking is not the same as being answered by the host you asked.
+        target_set = set(targets)
+        # COUNT WHAT WAS ASKED AND WHAT FAILED (WV1-26). Every per-send failure was dropped with no
+        # count, so a sweep where ALL sends failed -- interface down mid-sweep, ENOBUFS, a sandbox
+        # without raw sockets -- fell through to the kernel neighbour table, which on a fresh
+        # interface is empty, and returned a result indistinguishable from "nobody answered".
+        # `find_free_addresses` then offers every address on a populated segment as free, and the
+        # CLI tells the operator the segment may be empty. The docstring above calls a false empty
+        # "the worst lie" and fixed it for the empty-SOURCE case; this is the same shape one level
+        # down, at the send site.
+        attempted = 0
+        send_failures = 0
+        last_send_error = ""
         for start in range(0, len(targets), ARP_BATCH):
             for ip in targets[start:start + ARP_BATCH]:
+                attempted += 1
                 try:
                     sock.send(request_tmpl(ip))
-                except OSError:
+                except OSError as exc:
+                    send_failures += 1
+                    last_send_error = str(exc) or type(exc).__name__
                     continue
             end = time.time() + drain_s
             while time.time() < end:
@@ -326,6 +348,10 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
                     continue
                 sender_ip = socket.inet_ntoa(frame[28:32])
                 sender_mac = ":".join(f"{b:02x}" for b in frame[22:28])
+                if sender_ip not in target_set:
+                    # Not a host we asked about: another station's reply, a gratuitous
+                    # announcement, or a device the operator did not name.
+                    continue
                 if sender_mac != "00:00:00:00:00:00":
                     found[sender_ip] = sender_mac
     finally:
@@ -338,6 +364,23 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
             mac = read_neighbour_mac(iface, ip)
             if mac:
                 found[ip] = mac
+
+    # A SWEEP THAT COULD NOT ASK IS NOT AN EMPTY SEGMENT (WV1-26). Same refusal, same shape and the
+    # same reason as the unusable-source case above: there is no honest empty answer to "I could not
+    # ask", and the caller cannot tell the difference.
+    if attempted and send_failures == attempted:
+        raise ValueError(
+            f"refusing to report {iface} as empty: all {attempted} ARP request(s) failed to send "
+            f"(last error: {last_send_error}). Nothing was asked, so an empty result would mean "
+            f"'this segment is empty' when it means 'this interface could not transmit' -- and "
+            f"find_free_addresses would then offer every address on a populated segment as free. "
+            f"Check that the interface is up and that this process can open a raw socket on it."
+        )
+    if send_failures:
+        logger.warning(
+            "ARP sweep on %s: %d of %d request(s) failed to send (last error: %s); the result "
+            "covers what was actually asked", iface, send_failures, attempted, last_send_error,
+        )
     return found
 
 
@@ -365,6 +408,29 @@ def _arp_request_builder(our_mac: str, our_ip: str):
 # ---------------------------------------------------------------------------
 # the intercept
 # ---------------------------------------------------------------------------
+
+
+# ── ONE INTERCEPT PER (INTERFACE, TABLE) (WV1-29) ───────────────────────────────────────────
+#
+# The supervised path gives each interface its own policy table, but every caller that does not
+# pass one shares POLICY_TABLE = 100: this module's own default, the CLI's `--policy-table 0`, and
+# the legacy supervisor config. `ensure_forwarding_path` FLUSHES the table and
+# `remove_forwarding_path` DELETES every rule selecting it, so two intercepts on one table -- two
+# manual runs on different interfaces, or a manual run beside a supervised child an older config
+# gave table 100 -- take each other down: the second flush wipes the first's routes and either
+# teardown deletes the other's rule.
+#
+# Nothing coordinated this: there was no lock, and the table was not part of any identity check.
+# The lock is per (iface, table) with flock, so it is released by the kernel if the process dies,
+# which a PID file alone would not be.
+
+INTERCEPT_LOCK_DIR = os.environ.get("WEIRVERN_LOCK_DIR", "/run")
+
+
+def _intercept_lock_path(iface: str, table: int) -> str:
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in iface)
+    return os.path.join(INTERCEPT_LOCK_DIR, f"weirvern-intercept-{safe}-{table}.lock")
+
 
 
 @dataclass
@@ -485,8 +551,18 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     # every real segment. So these roles are EXCLUDED from the candidate set, and the exclusion is
     # REPORTED, because a silently-smaller intercept would look like full coverage.
     if not only:
+        # parse_cidr IS INSIDE THE ERROR HANDLING (WV1-31). It was called here, above the try/except
+        # that guards the very same call 20 lines later, so an IPv6 segment or one larger than the
+        # host cap raised straight out of build_plan -- breaking this docstring's promise that it
+        # "Returns None (with a reason logged) rather than raising", which the named-host path keeps
+        # for the same input. The refusal text parse_cidr builds never reached the operator.
+        try:
+            _segment_hosts = [str(h) for h in parse_cidr(segment)]
+        except ValueError as exc:
+            logger.error("bad segment %r: %s", segment, exc)
+            return None
         role_ips = set(never_intercept_hits(
-            [str(h) for h in parse_cidr(segment)],
+            _segment_hosts,
             our_ip=our_ip, gateway_ip=gateway_ip,
         ))
         # Our own address and the gateway are already skipped; excluding them here as well is
@@ -635,6 +711,7 @@ class Intercept:
         self.max_runtime_s = max_runtime_s
         self._started = False
         self.started_at: float = 0.0
+        self._lock_fd: int | None = None
         # AN EXPLICIT ESCAPE HATCH FOR THE MANAGEMENT-INTERFACE REFUSAL (audit F033).
         #
         # Default False, so the check fires unless a caller deliberately opts out. A single-NIC
@@ -693,6 +770,52 @@ class Intercept:
         return problems
 
     # -- lifecycle -------------------------------------------------------------
+    # ── the (interface, table) lock (WV1-29) ──────────────────────────────────────────────────
+
+    def _acquire_lock(self) -> None:
+        """Take the exclusive lock for this (iface, table), or refuse naming the holder."""
+        if self._lock_fd is not None:
+            return
+        path = _intercept_lock_path(self.plan.iface, self.table)
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError as exc:
+            # A read-only /run must not make a host un-interceptable. The lock is coordination,
+            # not a safety gate, so failing to create it is logged and the run continues.
+            logger.warning(
+                "could not create the intercept lock %s (%s); running WITHOUT the "
+                "one-intercept-per-table guard", path, exc,
+            )
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            holder = ""
+            with contextlib.suppress(OSError):
+                holder = os.pread(fd, 128, 0).decode("utf-8", "replace").strip()
+            os.close(fd)
+            raise InterceptError(
+                f"refusing to start a second intercept on {self.plan.iface} with policy table "
+                f"{self.table}: {holder or 'another intercept'} already holds it. Both would "
+                f"share that table, so this run's install would FLUSH the other's routes and "
+                f"either teardown would DELETE the other's rule -- leaving traffic routed into a "
+                f"table with no live relay behind it. Stop the other intercept, or give this one "
+                f"a different --policy-table."
+            ) from None
+        with contextlib.suppress(OSError):
+            os.ftruncate(fd, 0)
+        self._lock_fd = fd
+
+    def _release_lock(self) -> None:
+        """Release the (iface, table) lock. Idempotent, never raises."""
+        if self._lock_fd is None:
+            return
+        with contextlib.suppress(OSError):
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(self._lock_fd)
+        self._lock_fd = None
+
     def start(self) -> None:
         """Arm the watchdog, THEN poison. The order is the safety property.
 
@@ -771,7 +894,21 @@ class Intercept:
             # Same contract as the path failure below: a refused start leaves NO trace, so the exit
             # cleans up before raising and the exception describes a node actually back to its
             # previous state.
-            withdrawn = remove_forwarding_path(self.plan.iface)
+            # THE TABLE THE INSTALL USED (WV1-23). `remove_forwarding_path` defaults to
+            # POLICY_TABLE (100), and a supervised intercept is never on 100:
+            # siphonnet.policy_table_for(iface) returns 100 + 1 + crc32(iface) % 900. So a
+            # refused start installed the rule and its routes into its own table and then
+            # cleaned table 100, which the install never touched. The table-100 commands
+            # succeed as absence, `withdrawn` comes back empty, and the raised error told
+            # the operator the node was back to its previous state while
+            # `iif <iface> lookup <table>` and the table's routes were still installed.
+            # That leftover sends matching traffic into a table with a gateway route and
+            # no live relay behind it -- the blackhole the forwarding-path checks exist to
+            # prevent, and silent in the exact place these comments promise it is not.
+            # install (793-801) and stop() (885-886) both already branch this way.
+            self._release_lock()
+            withdrawn = (remove_forwarding_path(self.plan.iface) if self.table == POLICY_TABLE
+                         else remove_forwarding_path(self.plan.iface, table=self.table))
             unrestored = self._sysctls.restore()
             detail = ""
             if withdrawn or unrestored:
@@ -791,6 +928,10 @@ class Intercept:
         # THE SEGMENT, so the policy table gets a connected route and return traffic for a
         # host ON the segment is delivered on-link instead of being sent back at the gateway.
         if self.table == POLICY_TABLE:
+            # ONE INTERCEPT PER (IFACE, TABLE) (WV1-29). Taken immediately before the install,
+            # because `ensure_forwarding_path` FLUSHES the table -- that flush is the destructive
+            # step two intercepts share.
+            self._acquire_lock()
             path_problems = ensure_forwarding_path(
                 self.plan.iface, self.plan.gateway_ip,
                 gateway_mac=self.plan.gateway_mac, segment=self.plan.segment)
@@ -812,7 +953,20 @@ class Intercept:
             # The failure is still reported as an error (the caller must know the intercept did
             # not arm), but the cleanup happens FIRST so the raised exception describes a node that
             # is actually back to its previous state.
-            withdrawn = remove_forwarding_path(self.plan.iface)
+            # THE TABLE THE INSTALL USED (WV1-23). `remove_forwarding_path` defaults to
+            # POLICY_TABLE (100), and a supervised intercept is never on 100:
+            # siphonnet.policy_table_for(iface) returns 100 + 1 + crc32(iface) % 900. So a
+            # refused start installed the rule and its routes into its own table and then
+            # cleaned table 100, which the install never touched. The table-100 commands
+            # succeed as absence, `withdrawn` comes back empty, and the raised error told
+            # the operator the node was back to its previous state while
+            # `iif <iface> lookup <table>` and the table's routes were still installed.
+            # That leftover sends matching traffic into a table with a gateway route and
+            # no live relay behind it -- the blackhole the forwarding-path checks exist to
+            # prevent, and silent in the exact place these comments promise it is not.
+            # install (793-801) and stop() (885-886) both already branch this way.
+            withdrawn = (remove_forwarding_path(self.plan.iface) if self.table == POLICY_TABLE
+                         else remove_forwarding_path(self.plan.iface, table=self.table))
             unrestored = self._sysctls.restore()
             detail = ""
             if withdrawn or unrestored:
@@ -866,7 +1020,19 @@ class Intercept:
         and worse problem than a rule that cannot be deleted, and one must not skip the other.
         """
         if self.watchdog is not None:
-            self.watchdog.stop()
+            # THE RETURN IS READ (WV1-27). Its two neighbours here -- remove_forwarding_path below
+            # and _sysctls.restore() after it -- were both fixed to read their results; the
+            # watchdog was the one that restores the forged ARP mappings, and it was the one whose
+            # outcome nobody looked at. The watchdog logs the detail; this warns once, here, because
+            # a caller reading teardown output should not have to parse another module's log lines.
+            restored = self.watchdog.stop()
+            if restored == 0 and getattr(self.watchdog, "restore_attempted", 0) > 0:
+                logger.warning(
+                    "NO ARP mapping was restored on %s: every restore frame failed to send, so "
+                    "host(s) still believe this box is their gateway. Their entries expire on their "
+                    "own, but until then traffic may be relayed or dropped. Do not report this "
+                    "segment as clean.", self.plan.iface,
+                )
         # The policy rule must go too: left behind, it sends ALL traffic arriving on this
         # interface to a table that has no routes once the address is removed, which would
         # break traffic the operator never asked us to touch.
@@ -882,6 +1048,9 @@ class Intercept:
         close = getattr(self._sender, "close", None)
         if callable(close):
             close()
+
+        # The table is free again only after the rules are gone (WV1-29).
+        self._release_lock()
 
         # LAST, and never before the rules: with rp_filter back at its original value, any packet
         # still being routed through table 100 would be dropped by the reverse-path check. Order
@@ -1030,6 +1199,8 @@ class Intercept:
             "running": self.active,
             "uptime_s": round(time.time() - self.started_at, 1) if self.started_at else 0.0,
             "watchdog_restores": self.watchdog.restored_count if self.watchdog else 0,
+            "watchdog_restore_attempted": (self.watchdog.restore_attempted
+                                           if self.watchdog else 0),
             "watchdog_refreshes": self.watchdog.refresh_count if self.watchdog else 0,
             "watchdog_failures": list(self.watchdog.failures) if self.watchdog else [],
             "watchdog_failures_overflow": self.watchdog.failures_overflow if self.watchdog else 0,

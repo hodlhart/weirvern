@@ -142,6 +142,17 @@ function dnRenderFacets(d) {
   const box = document.getElementById("dn-facets");
   if (!box) return;
   box.replaceChildren();
+  // ── A FAILED READ MUST NOT LEAVE AN EMPTY FACET PANEL (WV1-09) ────────────────────────────
+  //
+  // This file's own comment says the empty-versus-unavailable conflation was removed from the DNS
+  // view, and two panels still had it. An empty facet strip reads as "no domains and no clients
+  // in this window", which is a claim about the network; the read may simply have failed. The
+  // siblings already branch this way (summary, histogram, rows) and the wording is theirs.
+  if (d.available === false) {
+    box.appendChild(el("p", { class: "muted",
+      text: `Cannot list these: ${d.reason || "the query did not run"}.` }));
+    return;
+  }
   const f = d.facets || {};
   dnFacetChips(box, f.domains || [], DN_FACET_SHOWN, Number(f.domains_total || 0),
                "dn-domain", "filter to this domain");
@@ -311,6 +322,17 @@ function dnRenderRows(d) {
 function dnRenderPager(d) {
   const page = document.getElementById("dn-page");
   if (!page) return;
+  // "0-0 of 0" IS WHAT A GENUINELY EMPTY RESULT PRINTS (WV1-09). Printing it for a failed read
+  // makes a broken query look like a quiet window. The line is suppressed and both nav buttons are
+  // disabled, because there is no range to navigate.
+  if (d.available === false) {
+    page.textContent = "";
+    for (const id of ["dn-newer", "dn-older"]) {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = true;
+    }
+    return;
+  }
   const from = d.total ? Number(d.offset || 0) + 1 : 0;
   const to = Number(d.offset || 0) + (d.rows || []).length;
   page.textContent = `${from}\u2013${to} of ${Number(d.total || 0).toLocaleString()}`;

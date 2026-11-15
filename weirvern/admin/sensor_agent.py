@@ -538,8 +538,25 @@ def required_iface() -> str:
     return iface
 
 
-def capture_port_check(iface: str) -> str:
-    """Prove the capture port exists and is NOT the management NIC. Returns the port.
+def _truthy(raw: object) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def capture_port_check(iface: str, *, allow_management: bool | None = None) -> str:
+    """Prove the capture port exists, and decide what to do about the management NIC.
+
+    PREFER AN INDEPENDENT PORT, SUPPORT A SINGLE-NIC HOST. The default-route interface is
+    still the wrong place to capture, and it is still refused by default -- but a host with
+    one NIC has no other port, and a sensor that will not start there is not a sensor. So the
+    rule is now: refuse unless the operator says, explicitly and once, that this box has no
+    second port (`--allow-management-nic` at deploy time, `ZEEK_ALLOW_MGMT_IFACE=1` at run
+    time). When allowed, the cost is PRINTED, because a single-NIC sensor is a materially
+    different instrument and the operator should not discover that from an empty dashboard.
+
+    ENFORCEMENT IS EXEMPT AND MUST STAY THAT WAY. Capturing on the management NIC is a read.
+    Blocking on it is the box's own uplink, so it is an outage of the machine doing the
+    blocking. The gate refuses that unconditionally; see deploy-weirling.sh, where its refusal
+    deliberately does not consult this flag.
 
     Raises SystemExit when the port cannot be used. Reuses `probe_local()` -- the product's
     own probe for this host, the same program `weirvern interfaces` runs -- so what counts as
@@ -549,8 +566,10 @@ def capture_port_check(iface: str) -> str:
     project's test box is an LXC) every port reads as 'virtual', and often as a bridge
     member -- the measured caveat the product's own interface guidance already documents --
     so the verdict is logged for the operator while the HARD rules stay: the port must
-    exist, and it must never be the default-route (management) NIC.
+    exist, and the management NIC needs the explicit permission above.
     """
+    if allow_management is None:
+        allow_management = _truthy(os.environ.get("ZEEK_ALLOW_MGMT_IFACE"))
     from weirvern.admin.interfaces import probe_local, validate_capture_iface  # noqa: PLC0415
 
     probe = probe_local()
@@ -568,10 +587,33 @@ def capture_port_check(iface: str) -> str:
             f"sensor unit: {iface!r} does not exist on this host; interfaces present: {names}"
         )
     if info.is_default_route:
-        raise SystemExit(
-            f"sensor unit: REFUSING to capture on {iface!r} -- it carries the default route, "
-            f"which is the management path. Point the unit at a dedicated capture port."
+        if not allow_management:
+            raise SystemExit(
+                f"sensor unit: REFUSING to capture on {iface!r} -- it carries the default route, "
+                f"which is the management path. Point the unit at a dedicated capture port, or, "
+                f"if this host has only one NIC, deploy with --allow-management-nic (or set "
+                f"ZEEK_ALLOW_MGMT_IFACE=1) to accept a degraded sensor."
+            )
+        # ALLOWED, AND IT MUST NOT BE QUIET. Every sentence below is a thing this sensor will
+        # not do, stated where the operator will see it while the unit is starting rather than
+        # inferring it later from a thin dashboard.
+        logger.warning(
+            "capture port %r is the MANAGEMENT NIC (default route). This sensor is DEGRADED and "
+            "was accepted explicitly:",
+            iface,
         )
+        for line in (
+            "it sees only traffic to and from THIS HOST, plus broadcast and multicast -- not the "
+            "segment, and not other machines' traffic",
+            "on a wireless port it does not even see other stations' unicast frames, because the "
+            "access point does not forward them to the client",
+            "it captures this host's OWN traffic, including the DNS names it resolves and the "
+            "hosts it connects to -- treat this sensor's logs as host telemetry, not network "
+            "telemetry",
+            "do NOT add --gate to this unit: enforcement on the management NIC is the box's own "
+            "uplink, and that refusal is not affected by this flag",
+        ):
+            logger.warning("  - %s", line)
     try:
         verdict = validate_capture_iface(probe, iface, mgmt_iface=probe.default_route_iface)
         logger.info("capture port verdict: %s", verdict.summary())

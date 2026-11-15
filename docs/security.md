@@ -70,6 +70,12 @@ Local Root CA**; install that root once on each managed device. Renewal is autom
 break-glass and for a development workstation, but it is not the user path. It has no TLS
 listener and must be firewalled off the management segment once the ingress is healthy.
 
+**The dashboard runs on Flask behind waitress**, and its rendered pages sign a session cookie with
+`WEIRVERN_FLASK_SECRET` (a Secret key, declared as required on the GUI container). That cookie is
+`HttpOnly` and `SameSite=Strict`, and the JSON API never uses it: automation authenticates by
+header, so it keeps working with no browser session and no signing key. Rotating the key does not
+touch any token; it signs every browser out.
+
 The two older paths remain valid for recovery:
 
 **1. Alternate reverse proxy.** The shipped ingress is Traefik; if you deliberately run a

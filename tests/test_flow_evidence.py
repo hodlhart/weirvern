@@ -67,13 +67,15 @@ def test_zeek_evidence_says_why_when_dark():
 
 
 def test_the_payload_attaches_evidence_and_remote_zeek_is_unknown():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split("def _weirlings(self, query: dict) -> None:", 1)[1].split("def _weirlings_", 1)[0]
+    # THE FLEET FETCH MOVED into payloads.weirlings with the port; the helpers stayed in web.py.
+    src = (PY / "admin" / "payloads.py").read_text()
+    seg = src.split("def weirlings(", 1)[1].split("\ndef ", 1)[0]
     assert "flow_evidence(" in seg and "flow_series(" in seg and "zeek_evidence(" in seg
     # The exporter mapping is owned by _flow_exporters: a LOCAL sensor's goflow2 writes
     # loopback even when its heartbeat carries a management address.
     assert "_flow_exporters(" in seg
-    helper = src.split("def _flow_exporters(", 1)[1].split("def _attach_anomaly_locations", 1)[0]
+    web = (PY / "admin" / "web.py").read_text()
+    helper = web.split("def _flow_exporters(", 1)[1].split("def _attach_anomaly_locations", 1)[0]
     assert "127.0.0.1" in helper and "::1" in helper
     assert 'row["flow_series"] = merged_series' in seg
     assert "only the hub runs Zeek" in seg, \
@@ -91,8 +93,9 @@ def test_the_row_is_a_scan_line_not_a_fact_dump():
 
 
 def test_netflow_chip_names_the_feed_and_the_active_nic_owns_it():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split("def _weirlings(self, query: dict) -> None:", 1)[1].split("def _weirlings_", 1)[0]
+    # THE FETCH MOVED into payloads.weirlings with the port; the chip vocabulary is unchanged.
+    src = (PY / "admin" / "payloads.py").read_text()
+    seg = src.split("def weirlings(", 1)[1].split("\ndef ", 1)[0]
     assert '"scope": "sensor"' in seg
     assert '"scope_label": "netflow"' in seg
     assert "attribute it to this NIC" in seg

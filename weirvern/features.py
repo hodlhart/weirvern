@@ -83,7 +83,7 @@ DBSCAN_FEATURES = [
 # feature. The vector changes from 50 to 63 Zeek columns (the full IF vector grows by the same
 # thirteen); v3 artifacts are refused at load, so every detector retrains into `_v4.pkl` rather
 # than scoring a vector whose tail it was never fitted on. The previous artifacts remain on disk.
-FEATURE_SCHEMA_VERSION = 4
+FEATURE_SCHEMA_VERSION = 5
 
 
 def _safe_log1p(v: float) -> float:

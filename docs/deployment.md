@@ -100,8 +100,10 @@ Run it from a checkout (`sudo ./install.sh [--siphon] [--zeek-iface X --mgmt-ifa
 and it uses that checkout instead of cloning.
 
 A fresh install enables **k3s secrets encryption** (`--secrets-encryption`). The base manifest
-still serves the console on plain HTTP NodePort 30088 for break-glass; the supported user path is
-the local HTTPS ingress. After creating the internal CA Secret, apply `k8s/tls` and browse
+serves the dashboard on plain HTTP NodePort 30088 for break-glass; the supported user path is the
+local HTTPS ingress. The dashboard is a Flask app served by waitress, and its rendered pages need
+`WEIRVERN_FLASK_SECRET` in `weirvern-secrets` (the installer generates it; the GUI container declares
+it as required, so a Secret without it refuses to start the pod). After creating the internal CA Secret, apply `k8s/tls` and browse
 `https://sensor.example`; the TLS detail is in
 [Transport and the trust boundary](security.md#transport-and-the-trust-boundary). The
 Secrets-at-rest behaviour, and what an existing cluster must do, is in

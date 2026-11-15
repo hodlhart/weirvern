@@ -632,6 +632,25 @@ else
     ok "created weirvern-secrets (ClickHouse password and break-glass operator token generated; Pushover left empty = log-only)"
 fi
 
+# ── THE FLASK SIGNING KEY ──────────────────────────────────────────────────────────────────────
+#
+# The dashboard runs `gui --flask` and its rendered pages sign a session cookie with this key. The
+# deployment DECLARES the variable (k8s/34-gui.yaml), so a cluster whose Secret lacks the key refuses
+# the GUI container at start with a message naming it -- deliberately, because the alternative is a
+# pod that reports Ready while every page says "the rendered UI is disabled".
+#
+# BACKFILLED ON AN EXISTING SECRET, not only on a fresh one: a deployment installed before the switch
+# has a Secret without this key, and the re-apply below would roll a pod that cannot start. The patch
+# is a merge patch, so it adds the one key and leaves every other credential alone.
+if kubectl -n "$NAMESPACE" get secret weirvern-secrets \
+        -o jsonpath='{.data.WEIRVERN_FLASK_SECRET}' 2>/dev/null | grep -q .; then
+    ok "WEIRVERN_FLASK_SECRET already set -- left untouched"
+else
+    kubectl -n "$NAMESPACE" patch secret weirvern-secrets --type merge \
+        -p "{\"data\":{\"WEIRVERN_FLASK_SECRET\":\"$(openssl rand -base64 32 | base64 -w0)\"}}" >/dev/null
+    ok "generated WEIRVERN_FLASK_SECRET (signs the dashboard's session cookie)"
+fi
+
 # The schema Job and the pods that mount the Secret were applied before it existed,
 # so the Job must be replaced (Jobs are immutable once created -- a plain re-apply of
 # a CHANGED job fails while the rest of the apply silently succeeds, which is how a

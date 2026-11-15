@@ -19,6 +19,18 @@ dependencies = [
     # Certificate signing for the mTLS weirling gateway. It was deliberately not a
     # dependency of the read-only console; the gateway needs CSR parsing and signing.
     "cryptography>=44,<47",
+    # THE SECOND FRONT DOOR (see weirvern/admin/flask_app.py). Flask is NOT a replacement for the
+    # console's http.server handler and does not touch a line of its JavaScript: it is the standard
+    # WSGI stack in front, so routing, TLS and proxy handling stop being hand-rolled, and new routes
+    # can be written against the same payload layer. Bounded like the others so a major bump is a
+    # deliberate act rather than something CI resolves overnight.
+    "flask>=3.0,<4",
+    # THE WSGI SERVER THE DEPLOYMENT ACTUALLY RUNS. Flask ships no server of its own, and Werkzeug's
+    # is single-process and documented as not for production; `gui --flask` used it in front of a
+    # handful of routes and was fine, but this is now the dashboard's entry point, so the server is a
+    # declared dependency rather than an assumption. waitress is pure Python with no transitive
+    # dependencies, so it costs nothing at image size and nothing at runtime.
+    "waitress>=3,<4",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +60,10 @@ include = ["weirvern*"]
 # k8s/50-schema-job.yaml). Declaring it here is what makes that work; without
 # this line the .sql file is absent from an installed package and the schema
 # step silently does nothing.
-weirvern = ["schema/*.sql", "admin/web/*", "data/*.json"]
+weirvern = ["schema/*.sql", "admin/web/*", "admin/templates/*", "data/*.json"]
+# The rendered UI's templates ship for the same class of reason as the web assets: Flask reads
+# them at request time from weirvern/admin/templates, so a wheel without them answers 500 on
+# /login rather than failing at build time.
 # The web GUI's assets must ship inside the wheel for the same class of reason:
 # the GUI Server reads them at request time from weirvern/admin/web. Without this
 # the page returns a 500 naming the missing file (the handler is explicit about

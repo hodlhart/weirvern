@@ -25,7 +25,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern import __version__
 from weirvern.clock import utcnow
-from weirvern.config import Settings
+from weirvern.config import FUSED_MODEL, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,23 @@ class Calibration:
     p95: float
     p99: float
     statistic: str = "conformal"
+    # THE CEILING IS THE POINT. A target FAR is only expressible down to 1/(n+1) of the reference:
+    # with 6,489 scores and a 1% target the threshold lands on the top few samples, and when it
+    # lands AT the maximum nothing in the population can ever exceed it. Recording the ceiling lets
+    # a caller tell "no alerts because the network is quiet" from "no alerts because the bar is
+    # above every score the detector produces", which is the same defect shape this project keeps
+    # finding: a failure rendered as a benign state.
+    ceiling: float = float("nan")
+
+    @property
+    def saturated(self) -> bool:
+        """True when the fitted threshold is at or above every reference score.
+
+        The target false-alarm rate is then below what this sample can express, and a decision
+        that uses this threshold will fire on nothing until the population grows or the target is
+        relaxed. It is not an error: it is a measurement that has run out of resolution.
+        """
+        return bool(math.isfinite(self.ceiling) and self.threshold >= self.ceiling)
 
 
 def _clean(scores: Iterable[float]) -> np.ndarray:
@@ -100,6 +117,7 @@ def fit(reference: Iterable[float], target_far: float) -> Calibration | None:
         p50=float(np.percentile(ref, 50)),
         p95=float(np.percentile(ref, 95)),
         p99=float(np.percentile(ref, 99)),
+        ceiling=float(ref.max()),
     )
 
 
@@ -112,6 +130,10 @@ def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str,
     """
     out: dict[str, bool] = {}
     for model, observed, target in rows:
+        if str(model) == FUSED_MODEL:
+            # The fused score is the decision's own number, not a detector: it can never be
+            # "barred from the fused score" without making the gate circular.
+            continue
         try:
             obs = float(observed)
             tgt = float(target if target is not None else target_far)
@@ -208,18 +230,29 @@ def record_population(client: Client, population: Iterable[dict], *,
     return len(rows)
 
 
-def _population_scores(client: Client, days: int) -> dict[str, list[float]]:
+def _population_scores(client: Client, days: int,
+                       model_version: str | None = None) -> dict[str, list[float]]:
     """All scored host-window scores per model, deduped by the Replacing table.
+
+    SCOPED TO `model_version` WHEN GIVEN, and that scoping is a correctness requirement rather than
+    a tidiness one. A reference that spans a model or aggregation change calibrates today's detector
+    against an older engine's distribution, so the threshold it produces is a mixture of two regimes
+    and belongs to neither. Measured on the live engine: the population carried rows from eight
+    distinct versions inside one rolling week, and restricting the reference to post-change scores
+    moved the 1% threshold from 0.8165 to 0.7327 while the highest score the current engine had
+    produced was 0.853, which is the difference between an engine that can alert and one that cannot.
 
     A deployment that has not applied 038 yet has no population; return an empty mapping so
     `run` takes its named fallback instead of failing the whole shadow pass.
     """
+    sql = ("SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
+           "WHERE computed_at >= now() - INTERVAL %(d)s DAY")
+    params: dict[str, object] = {"d": int(days)}
+    if model_version:
+        sql += " AND model_version = %(v)s"
+        params["v"] = str(model_version)
     try:
-        res = client.query(
-            "SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
-            "WHERE computed_at >= now() - INTERVAL %(d)s DAY",
-            parameters={"d": int(days)},
-        )
+        res = client.query(sql, parameters=params)
     except Exception as exc:  # noqa: BLE001
         logger.warning("calibration population unavailable (%s); using named fallback", exc)
         return {}
@@ -256,11 +289,12 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
     target = float(getattr(settings, "ml_target_far", 0.01) or 0.01)
     window_days = int(days if days is not None else
                       getattr(settings, "ml_calibration_days", 7) or 7)
-    population = _population_scores(client, window_days)
+    population = _population_scores(client, window_days, __version__)
     rows: list[dict] = []
     for model_name, column in MODEL_COLUMNS:
         scores = population.get(model_name) or []
-        source = f"all scored host-windows (ml_window_scores), last {window_days} days"
+        source = (f"all scored host-windows (ml_window_scores), model {__version__}, "
+                  f"last {window_days} days")
         subject = "all scored host-windows"
         if len(scores) < 20:
             scores = _score_rows(client, column, days=30)
@@ -269,6 +303,11 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         cal = fit(scores, target)
         if cal is None:
             continue
+        if cal.saturated:
+            # Say so where an operator reads it, rather than storing a threshold that silently
+            # cannot be crossed and leaving the cause to be rediscovered.
+            source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target FAR "
+                       f"is below what {cal.sample_count} samples can express")
         rows.append({
             "model_name": model_name,
             "scope": "global",
@@ -285,6 +324,31 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
             "reference_source": source,
             "model_version": __version__,
         })
+    fused = population.get(FUSED_MODEL) or []
+    if len(fused) >= 20:
+        cal = fit(fused, target)
+        if cal is not None:
+            source = (f"the fused score itself (ml_window_scores), model {__version__}, "
+                      f"last {window_days} days")
+            if cal.saturated:
+                source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target "
+                           f"FAR is below what {cal.sample_count} samples can express")
+            rows.append({
+                "model_name": FUSED_MODEL,
+                "scope": "global",
+                "subject": "the fused score the decision compares",
+                "statistic": cal.statistic,
+                "target_far": cal.target_far,
+                "threshold": cal.threshold,
+                "p50": cal.p50,
+                "p95": cal.p95,
+                "p99": cal.p99,
+                "sample_count": cal.sample_count,
+                "validation_count": cal.validation_count,
+                "observed_far": cal.observed_far,
+                "reference_source": source,
+                "model_version": __version__,
+            })
     if not rows:
         return []
     columns = ["model_name", "scope", "subject", "statistic", "target_far", "threshold",
@@ -306,3 +370,39 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
 
 __all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold",
            "eligibility", "eligibility_from_rows", "fit", "record_population", "run"]
+
+
+def calibrated_bar(client: Client, settings: Settings) -> float | None:
+    """The calibrated threshold for the fused score, or None when there is not a usable one.
+
+    RETURNS NONE RATHER THAN A GUESS. A missing, stale, saturated or unreadable calibration means the
+    caller falls back to its own threshold; inventing a number here would put an unmetered bar in
+    front of every alert while looking exactly like a calibrated one.
+    """
+    max_age_h = float(getattr(settings, "ml_calibration_max_age_hours", 24) or 24)
+    try:
+        res = client.query(
+            "SELECT threshold, reference_source FROM weirvern.ml_calibration FINAL "
+            "WHERE model_name = %(m)s AND computed_at >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY computed_at DESC LIMIT 1",
+            parameters={"m": FUSED_MODEL, "h": int(max_age_h)},
+        )
+        rows = res.result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibrated bar unavailable (%s); the decision keeps its own threshold", exc)
+        return None
+    if not rows:
+        return None
+    try:
+        value = float(rows[0][0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    source = str(rows[0][1] or "")
+    if "SATURATED" in source.upper():
+        # A threshold at the reference ceiling cannot be crossed, so using it would silence the
+        # engine and report a met budget. Fall back and let the saturation be visible in the row.
+        logger.warning("calibrated bar ignored: the calibration is saturated (%s)", source)
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value

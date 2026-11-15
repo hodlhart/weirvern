@@ -318,10 +318,21 @@ def test_the_summary_distinguishes_no_runs_from_no_anomalies():
 
 
 def test_the_models_route_is_registered():
-    web_py = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" / "web.py").read_text()
+    """The route delegates, and there is still exactly ONE serialiser.
+
+    THE ASSERTION MOVED WITH THE CODE. `models_payload` used to be called inside the handler; the
+    port moved the whole fetch-and-format into `payloads.models`, so demanding the name in web.py
+    would now demand a second implementation. The properties that must survive are that the route
+    exists, that its handler uses the shared fetcher, and that the one serialiser is still
+    `web_api.models_payload`.
+    """
+    admin = Path(__file__).resolve().parents[1] / "weirvern" / "admin"
+    web_py = (admin / "web.py").read_text()
+    payloads_py = (admin / "payloads.py").read_text()
     assert '"/api/models"' in web_py, "no route for /api/models"
     assert "def _models(" in web_py, "the route has no handler"
-    assert "models_payload" in web_py, "the handler does not serialise through web_api"
+    assert "payloads.models(" in web_py, "the handler does not use the shared fetcher"
+    assert "web_api.models_payload" in payloads_py, "the fetcher does not serialise through web_api"
 
 
 def test_the_models_route_does_not_require_the_health_probe_path_to_change():

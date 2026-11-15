@@ -55,6 +55,15 @@ logger = logging.getLogger(__name__)
 # drift that produced the defect -- the two durations were equal and looked independent.
 AGG_BUCKET_S = 300  # toStartOfFiveMinute in weirvern/schema/001_weirvern.sql
 
+# THE MOST BUCKETS ONE SWEEP MAY EXAMINE while draining a backlog. Measured 2026-11-12: the ingest
+# pipeline died, the cursor correctly refused to advance on an empty read, and by the next day
+# `since` sat 17 hours back -- roughly 37,000 host-windows in a single pass. The worker was
+# OOMKilled at a 6 Gi limit before it could reach `_save_detect_cursor`, so the cursor could not
+# advance, so the next cycle did exactly the same thing. A stalled cursor became a crash loop.
+# 12 buckets is one hour of aggregates, about 2,200 host-windows at fleet scale, and drains an
+# 18-hour backlog in 18 cycles: 90 minutes at the shipped 300s cadence.
+MAX_CATCHUP_BUCKETS = 12
+
 
 # The gate's supervisor lives at module scope so its `last_ok` SURVIVES BETWEEN PASSES. Rebuilding
 # it each time would reset the age that `healthy()` uses to distinguish "holding" from "held the
@@ -1373,6 +1382,33 @@ def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime,
         )
         since = floor
 
+    # ── ONE CYCLE MUST NOT TRY TO COVER THE WHOLE BACKLOG (measured 2026-11-12) ────────────────
+    #
+    # The two clamps above bound HOW FAR BACK the window reaches. Neither bounds HOW MUCH one
+    # cycle examines, and those are different numbers. MEASURED: `since` reached 17 hours back,
+    # roughly 37,000 host-windows in one pass, the worker was OOMKilled before it could save the
+    # cursor, so the cursor never advanced and the next cycle repeated it exactly.
+    #
+    # A CHUNK, NOT A NARROWER WINDOW. `since` is left where it is, so nothing is dropped and the
+    # backlog is still covered in full; only the CURSOR is held to one chunk, so successive sweeps
+    # walk forward and each one is bounded. Returning a cursor of `now` while reading only a chunk
+    # would mark the unread remainder as covered, which is the silent-skip defect this file has
+    # already fixed twice.
+    #
+    # THE CALLER MUST APPLY THE SAME UPPER BOUND TO ITS READS, or this changes nothing.
+    cap = timedelta(seconds=MAX_CATCHUP_BUCKETS * AGG_BUCKET_S)
+    if now - since > cap:
+        chunk_end = since + cap
+        logger.warning(
+            "Detection is %.1fh behind and is draining in bounded chunks of %.1fh, so no single "
+            "cycle can OOM. About %d cycle(s) to reach the present. Nothing is skipped: each "
+            "cycle resumes at the chunk boundary.",
+            (now - since).total_seconds() / 3600,
+            cap.total_seconds() / 3600,
+            int((now - since).total_seconds() / cap.total_seconds() + 0.999),
+        )
+        return since, chunk_end
+
     return since, now
 
 
@@ -1683,6 +1719,10 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     # measured live: cursor 23:45Z while aggregates reached 21:30 local. Convert to the worker's
     # local zone, which is the same host zone ClickHouse uses, before formatting.
     since = _since_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    # THE UPPER BOUND IS WHAT MAKES THE CHUNK REAL. `_covered_through` holds the cursor to one
+    # chunk of MAX_CATCHUP_BUCKETS; without this the reads below ignore that and pull the whole
+    # backlog anyway, which is precisely how a capped cursor still OOMed.
+    until = _new_cursor.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     agg_cols, agg_rows = db.fetch_rows_named(
         client,
@@ -1694,36 +1734,57 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # DBSCAN 0.7178 in one and 0.6487 in the other for the same host -- a detection flipped out
         # by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
         # below still does the arithmetic.
-        "SELECT * FROM weirvern.flows_aggregated WHERE window_start >= %(since)s AND "
+        "SELECT window_start, window_start + INTERVAL 5 MINUTE AS window_end, src_addr, "
+        "countMerge(flow_count) AS flow_count, sumMerge(total_bytes) AS total_bytes, "
+        "sumMerge(total_packets) AS total_packets, uniqMerge(unique_dst_ips) AS unique_dst_ips "
+        "FROM weirvern.flows_window WHERE window_start >= %(since)s "
+        "AND window_start < %(until)s AND "
         # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
         # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
         + addressing.sql_host("src_addr") + " "
+        + "GROUP BY window_start, src_addr "
         "ORDER BY window_start, src_addr",
-        since=since,
+        since=since, until=until,
     )
     if not agg_rows:
         # A cursor advanced here would be WRONG: an empty aggregate table means the window was not
         # examined because there was nothing in it, and `_covered_through` must re-cover it next
         # cycle in case rows arrive late. Only a sweep that actually ran records coverage.
+        #
+        # IT MUST SAY SO (measured 2026-11-12). This used to return in complete silence, so a
+        # dead NetFlow path looked exactly like a quiet network: the cursor never advanced, the
+        # pod stayed green, and detection was dark for sixteen hours with nothing in the log.
+        # An empty read is the most important thing this function can report, so it is a
+        # warning, not an info, and it carries what to check.
+        logger.warning(
+            "Detection sweep examined NOTHING: no host-windows in weirvern.flows_window at or "
+            "after %s (the cursor would advance to %s). Detection is dark this cycle. Check "
+            "whether flows are landing with: SELECT max(time_flow_start) FROM weirvern.flows. "
+            "If the NetFlow summariser has died, tcpdump keeps writing pcap segments and "
+            "nothing reaches IPFIX.",
+            since, _new_cursor.isoformat(),
+        )
         return []
 
     div_cols, div_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s AND "
+        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s "
+        "AND window_start < %(until)s AND "
         # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
         # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
         + addressing.sql_host("src_addr") + " "
         "ORDER BY window_start, src_addr",
-        since=since,
+        since=since, until=until,
     )
     tmp_cols, tmp_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s AND "
+        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s "
+        "AND window_start < %(until)s AND "
         # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
         # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
         + addressing.sql_host("src_addr") + " "
         "ORDER BY window_start, src_addr",
-        since=since,
+        since=since, until=until,
     )
 
     # THE ZEEK SIDE OF SCORING, which is what makes the Zeek features real rather than
@@ -1742,7 +1803,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     zeek_idx: dict[tuple, dict] = {}
     try:
-        z_cols, z_rows = db.fetch_rows_named(client, zeek_window_sql(since))
+        z_cols, z_rows = db.fetch_rows_named(client, zeek_window_sql(since, until))
         zeek_idx = index(z_cols, z_rows)
         if not zeek_idx:
             logger.warning(
@@ -1754,6 +1815,15 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     div_idx = index(div_cols, div_rows)
     tmp_idx = index(tmp_cols, tmp_rows)
+
+    # WHAT THIS CYCLE ACTUALLY READ, stated once per sweep. Without it an operator cannot tell a
+    # sweep that examined one window from one that examined forty thousand, and that difference
+    # is precisely what turns a stalled cursor into an OOM kill. Every number here is a count
+    # that could have been zero, which is the point.
+    logger.info(
+        "Detection sweep: window from %s, %d host-window(s), diversity %d, temporal %d, zeek %d",
+        since, len(agg_rows), len(div_rows), len(tmp_rows), len(zeek_idx),
+    )
 
     # ── THE OTHER TWO SIDE-TABLES NEED THE SAME VOICE THE ZEEK ONE HAS ────────────────────────
     #
@@ -1907,9 +1977,29 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # A failed eligibility read must not stop detection. It DOES mean the gate did not
             # run this sweep; say so rather than silently behaving as if it passed.
             logger.warning("ML eligibility read failed (detection continues, gate skipped): %s", exc)
+    # THE BAR COMES FROM THE CALIBRATION WHEN THERE IS ONE, because a conformal threshold is the
+    # only construction here whose value IS the chosen alerts-per-day. A missing or saturated row
+    # returns None and the decision keeps its own threshold, so this cannot fail closed into a
+    # silent engine without saying so in the log.
+    calibrated_bar = None
+    if getattr(settings, "ml_calibrated_threshold", False):
+        try:
+            from weirvern.models import calibration as _cal  # noqa: PLC0415
+            calibrated_bar = _cal.calibrated_bar(client, settings)
+            logger.info("Alert bar: %s",
+                        f"calibrated {calibrated_bar:.4f}" if calibrated_bar is not None
+                        else f"uncalibrated, base_threshold {settings.base_threshold}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("calibrated bar read failed (using base_threshold): %s", exc)
     score_population: list[dict] = []
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses,
-                                      eligible=eligible, score_population=score_population)
+                                      eligible=eligible, score_population=score_population,
+                                      calibrated_bar=calibrated_bar)
+    logger.info(
+        "Detection sweep: scored %d host-window(s), %d near miss(es), %d verdict(s) above "
+        "threshold",
+        len(flows), len(near_misses), len(verdicts),
+    )
     if near_misses:
         # BEST-EFFORT, and deliberately so: a failure to record near misses must not cost a
         # real alert. They are a tuning aid, not the product.
@@ -1945,6 +2035,14 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # The aggregates WERE read and scored here; there was simply nothing above threshold, so
         # coverage is real and must be recorded -- otherwise a quiet network would look like the
         # loop was stuck and every sweep would re-read the same window.
+        #
+        # SAID OUT LOUD, because "scored 4,000 windows and nothing crossed the bar" and "read
+        # nothing at all" are opposite diagnoses that used to produce the same empty result and
+        # the same silent return.
+        logger.info(
+            "Detection sweep: %d host-window(s) scored, none above threshold; cursor advanced "
+            "to %s", len(flows), _new_cursor.isoformat(),
+        )
         _save_detect_cursor(settings, _new_cursor)
         return []
 

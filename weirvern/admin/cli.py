@@ -830,6 +830,45 @@ def cmd_tune(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int) -> int:
+    """Serve the Flask surface. This IS the console: every API route, read and write, lives here.
+
+    THE LEGACY SERVER IS GONE, not merely idle. It used to run on loopback inside this process and
+    answer whatever Flask had not taken over -- correct while the migration was half done, and a
+    liability afterwards: a route Flask does not serve would be answered by a second implementation
+    nobody was testing, and the two would drift in exactly the places nobody looked. The last family
+    (`/api/models/retrain/<action>`) is ported, so there is nothing left to forward, and a passthrough
+    kept "just in case" is a fallback nobody exercises.
+
+    THE SIGNING KEY IS REQUIRED for the cookie the rendered pages need. Without it the pages refuse
+    and say so, and the JSON routes still work because they authenticate by header -- which is why the
+    deployment declares the key rather than leaving it absent.
+    """
+    from weirvern.admin import flask_app, web
+
+    if not os.environ.get("WEIRVERN_FLASK_SECRET"):
+        print(_c("dim", "    flask: no WEIRVERN_FLASK_SECRET set -- the rendered pages will refuse "
+                        "to sign a session cookie and will say so. The JSON routes still work."))
+
+    ctx = web.build_context(admin_client, settings, pdir, namespace)
+    app = flask_app.create_app(ctx)
+    print(_c("bold", f"Weirvern on http://{host}:{port}"))
+    print(_c("dim", "    rendered pages: /login /register /home /block"))
+    print(_c("dim", "    every API route is served by this app; nothing is passed through"))
+    # WAITRESS WHEN AVAILABLE. Werkzeug's server is single-process and documented as not for
+    # production; it stays as the fallback so the surface can still be started without that
+    # dependency, and says which server answered.
+    try:
+        from waitress import serve  # type: ignore[import-untyped]  # noqa: PLC0415
+    except ImportError:
+        print(_c("dim", "    waitress is not installed; using Werkzeug's development server"))
+        app.run(host=host, port=port, threaded=True, use_reloader=False)
+        return EXIT_OK
+    print(_c("dim", "    serving with waitress (threaded, one process)"))
+    serve(app, host=host, port=port, threads=8)
+    return EXIT_OK
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     """Serve the web dashboard.
 
@@ -885,6 +924,8 @@ def cmd_gui(args: argparse.Namespace) -> int:
                         "report cluster access as unavailable"))
 
     try:
+        if getattr(args, "flask", False):
+            return _run_flask(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
         return web.run(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
     except OSError as exc:
         # The common case is a port already in use, and saying which port is far
@@ -1451,11 +1492,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="check this interface as the management port")
     s.set_defaults(func=cmd_interfaces)
 
-    s = sub.add_parser("gui", help="serve the read-only web dashboard")
+    s = sub.add_parser("gui", help="serve the web dashboard (the console, writes included)")
     s.add_argument("--host", default=None,
                    help="bind address (default 127.0.0.1, or $GUI_HOST)")
     s.add_argument("--port", type=int, default=None,
                    help="port (default 8088, or $GUI_PORT)")
+    s.add_argument("--flask", action="store_true",
+                   help="serve the Flask surface. This is the console now: every API route lives "
+                        "there, so this is the deployment's entry point")
     s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("prune", help="apply the per-component disk caps")
@@ -1846,8 +1890,16 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         # capture interface keeps a route and keeps accepting traffic for a segment the
         # operator never asked to be involved in.
         if addr_added:
-            siphonnet.remove_address(iface, our_ip, segment)
-            print(f"  withdrew {our_ip} from {iface}")
+            # "withdrew" IS A CLAIM ABOUT THE HOST (WV1-24). It was printed unconditionally, so a
+            # failed `ip addr del` -- lost CAP_NET_ADMIN, interface gone -- read as a clean
+            # withdrawal while the address stayed on the capture interface with its route.
+            _unwithdrawn = siphonnet.remove_address(iface, our_ip, segment)
+            if _unwithdrawn:
+                _warn(f"{our_ip} is STILL on {iface}: the withdrawal failed. This host keeps a "
+                      f"route and keeps accepting traffic for {segment} until it is removed by "
+                      f"hand. Details: {'; '.join(_unwithdrawn)}")
+            else:
+                print(f"  withdrew {our_ip} from {iface}")
 
 
 def _effective_max_runtime(args: argparse.Namespace) -> int | None:
@@ -1918,8 +1970,16 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
         stack.close()
 
     st = runner.status()
-    print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
-          f"{st['watchdog_refreshes']} refresh(es)")
+    # "restored." IS A CLAIM ABOUT THE SEGMENT (WV1-27). It was printed unconditionally, so a
+    # teardown whose restore frames all failed still told the operator the network was clean.
+    _restored = int(st.get("watchdog_restores") or 0)
+    _attempted = int(st.get("watchdog_restore_attempted") or 0)
+    if _restored or not _attempted:
+        print(f"\n  restored. watchdog: {_restored} restore(s), "
+              f"{st['watchdog_refreshes']} refresh(es)")
+    else:
+        _warn(f"NOT RESTORED: 0 of {_attempted} ARP mapping(s) could be sent. Hosts may still "
+              f"treat this box as their gateway until their ARP entries expire.")
     # The deadline firing is the orphaned-session case: no signal arrived, no caller asked
     # for the stop, and the mappings were withdrawn anyway. It must not read like a normal end.
     if st.get("deadline_reached"):
@@ -1974,7 +2034,16 @@ def _iface_has_address(iface: str, address: str) -> bool:
                       capture_output=True, text=True).stdout
     except OSError:
         return False
-    return address in out
+    # EXACT TOKEN COMPARE, NOT A SUBSTRING (WV1-25). `address in out` answers True for the wrong
+    # question: asking about 198.51.100.1 found the interface's 198.51.100.19, and .100 matched .100
+    # in either direction. The consequence was the one siphonnet.py:880-883 warns about -- the
+    # caller then SKIPPED adding the address and armed the intercept with its our_ip unassigned, so
+    # the poisoning ran without an address to receive the traffic, which takes hosts off the network
+    # instead of relaying them. The real owner of that address also ended up in the skip set.
+    #
+    # `ip -o addr show` prints `inet 198.51.100.19/24 ...`, so compare the address with any prefix
+    # stripped, token by token. Same parse management_addresses uses at intercept.py:156.
+    return any(tok.split("/")[0] == address for tok in out.split())
 
 def _has_cap(name: str) -> bool:
     """Whether this process holds a Linux capability, read from CapEff.

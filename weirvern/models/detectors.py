@@ -29,7 +29,7 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from weirvern import networks
+from weirvern import flow_windows, networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
@@ -181,7 +181,7 @@ class IsolationForestDetector(BaseDetector):
                 coalesce(d.bytes_stddev, 0) / NULLIF(a.total_bytes, 0),
                 coalesce(d.unique_connections, a.flow_count) / NULLIF(a.flow_count, 1),
 {zeek_cols}
-            FROM weirvern.flows_aggregated a
+            FROM {flow_windows.folded(flow_windows.between(s, e))}
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
             {zeek_join}
@@ -190,8 +190,11 @@ class IsolationForestDetector(BaseDetector):
               AND (
                   sipHash64(a.src_addr, a.window_start) % 10 < 7
                   OR a.total_bytes IN (
-                      SELECT total_bytes FROM weirvern.flows_aggregated
-                      WHERE window_start BETWEEN '{s}' AND '{e}'
+                      SELECT total_bytes FROM (
+                          SELECT window_start, src_addr, sumMerge(total_bytes) AS total_bytes
+                          FROM weirvern.flows_window
+                          WHERE window_start BETWEEN '{s}' AND '{e}'
+                          GROUP BY window_start, src_addr)
                       ORDER BY total_bytes DESC LIMIT {int(self.cfg.if_extremes)})
                   OR coalesce(d.unique_dst_ports, 0) IN (
                       SELECT unique_dst_ports FROM weirvern.flows_aggregated_diversity
@@ -356,6 +359,12 @@ class DBSCANDetector(BaseDetector):
         super().__init__(model_dir)
         self.cfg = cfg or ModelConfig()
         self.cluster_centers: list[np.ndarray] = []
+        # WHY the last train() returned what it did (WV1-22). train() returns a bare bool, and it
+        # returns False for two unrelated reasons -- too few rows, or enough rows with no dense
+        # region. Callers could not tell them apart, so the detection-quality gate explained a
+        # 195-row failure with "DBSCAN needs >=100 rows", a cause its own log line contradicted.
+        # "" = never trained, "ok", "insufficient-rows", "no-dense-structure".
+        self.train_outcome = ""
         self.preprocessor = RobustPreprocessor()
         # Percentile calibration of training distances to the nearest centre (set at
         # train time). See calibrate_distance for why the old fixed /5.0 had to go.
@@ -387,7 +396,7 @@ class DBSCANDetector(BaseDetector):
                 coalesce(t.activity_regularity, 1.0),
                 coalesce(t.burstiness, 1.0),
 {zeek_cols}
-            FROM weirvern.flows_aggregated a
+            FROM {flow_windows.folded(flow_windows.between(s, e))}
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
             LEFT JOIN weirvern.flows_aggregated_temporal t
@@ -403,7 +412,13 @@ class DBSCANDetector(BaseDetector):
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
         if len(data) < 100:
-            logger.warning("Not enough data for %s (%d rows)", self.name, len(data))
+            self.train_outcome = "insufficient-rows"
+            # The floor belongs in the message: a reader who sees only "not enough data" cannot
+            # tell 12 rows from 99, and the remedy (a longer seed) depends on the gap.
+            logger.warning(
+                "Not enough data for %s: %d rows after the 1-in-5 host sampling, floor 100. A "
+                "longer seed window is what adds them.", self.name, len(data),
+            )
             return False
         Xs = self.preprocessor.fit_transform(np.asarray(data, dtype=float))
         labels = DBSCAN(eps=self.cfg.dbscan_eps, min_samples=self.cfg.dbscan_min_samples).fit_predict(Xs)
@@ -457,6 +472,7 @@ class DBSCANDetector(BaseDetector):
         # artifact -- the metrics retain clusters=0 -- but every score is "no opinion", so
         # returning True made reports and ml_models history count a detector that cannot
         # score. This is the same "trained" lie F023 fixed for the other detectors.
+        self.train_outcome = "ok" if self.cluster_centers else "no-dense-structure"
         return bool(self.cluster_centers)
 
     def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
@@ -645,7 +661,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                 sqrt(varPop(coalesce(z.zeek_s0_ratio, 0)
                     * coalesce(z.zeek_conn_count, 0)))                  AS zeek_s0_count_sd,
                 sqrt(varPop(coalesce(z.zeek_notice_count, 0)))          AS zeek_notice_sd
-            FROM weirvern.flows_aggregated a
+            FROM {flow_windows.folded(flow_windows.between(s, e))}
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}{scope_filter}
             GROUP BY a.src_addr
@@ -707,7 +723,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                     avg(coalesce(t.activity_regularity, 1)), sqrt(varPop(coalesce(t.activity_regularity, 1))),
                     avg(coalesce(t.burstiness, 1)), sqrt(varPop(coalesce(t.burstiness, 1))),
                     count(d.window_start) AS div_n, count(t.window_start) AS temp_n
-                FROM weirvern.flows_aggregated a
+                FROM {flow_windows.folded(flow_windows.between(s, e))}
                 LEFT JOIN weirvern.flows_aggregated_diversity d
                     ON d.window_start = a.window_start AND d.src_addr = a.src_addr
                 LEFT JOIN weirvern.flows_aggregated_temporal t

@@ -210,12 +210,20 @@ def _reverse_direction_flags(client, rows: list[dict], params: dict) -> dict[tup
         query_params[f"d{i}b"] = dst
         query_params[f"d{i}dp"] = dport
         query_params[f"d{i}p"] = proto
+    # ONE ROW PER KEY, NOT ONE PER PACKET. A page of 50 rows can name a 5-tuple that appears
+    # MILLIONS of times in a day (measured on this deployment: 276M flows/24h, and this query
+    # returned 1,999,786 rows for one page, driving the GUI process to ~730 MiB and getting it
+    # OOMKilled at its 512Mi limit). The evidence the caller needs is WHICH TCP roles the reverse
+    # half showed, not how many packets carried them, so the distinct flag values are aggregated
+    # SERVER-SIDE: at most one row per key, with an array of the distinct flags seen. The role set
+    # derived from that array is identical to the one derived from every row.
     sql = (
         "/* flow-direction reverse halves */ SELECT src_addr, src_port, dst_addr, dst_port, "
-        "proto, tcp_flags FROM weirvern.flows "
+        "proto, groupUniqArray(tcp_flags) AS flags FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "AND (src_addr, src_port, dst_addr, dst_port, proto) IN ("
-        + ", ".join(parts) + ")")
+        + ", ".join(parts) + ") "
+        "GROUP BY src_addr, src_port, dst_addr, dst_port, proto")
     try:
         result = client.query(sql, parameters=query_params).result_rows
     except Exception as exc:  # noqa: BLE001
@@ -227,12 +235,13 @@ def _reverse_direction_flags(client, rows: list[dict], params: dict) -> dict[tup
     for r in result:
         try:
             key = (str(r[0]), int(r[1] or 0), str(r[2]), int(r[3] or 0), int(r[4] or 0))
-            flags = int(r[5] or 0)
+            flags = [int(f or 0) for f in (r[5] or [])]
         except (IndexError, TypeError, ValueError):
             # A reverse row is evidence, not the page's reason to exist. A malformed one is
             # dropped; the direct flags/ports still classify the row it belonged to.
             continue
-        out.setdefault(key, []).append(flags)
+        if flags:
+            out[key] = flags
     return out
 
 

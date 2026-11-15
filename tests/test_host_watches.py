@@ -116,16 +116,23 @@ def test_the_watch_route_exists_and_goes_through_the_operator_gate():
         "the watch route does not consult the operator token, so anyone on the LAN "
         "could rewrite the tracking list"
     )
-    assert "write_watch" in body and "watch_index" in body, (
+    assert "payloads.watch(" in body, "the route does not use the shared fetcher"
+
+    # THE MUTATION MOVED into payloads.watch with the port; it must still WRITE and READ BACK.
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    fetcher = payloads[payloads.index("def watch("):]
+    fetcher = fetcher[:fetcher.index("\ndef ")]
+    assert "write_watch" in fetcher and "watch_index" in fetcher, (
         "the route must WRITE and READ BACK -- render what landed, not what was asked"
     )
 
 
 def test_the_anomalies_route_merges_watches_and_filters_only_when_readable():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    body = src[src.index("def _anomalies(self,"):]
-    body = body[:body.index("\n        def _models")]
-    assert "watch_index" in body and "r[\"watched\"]" in body
+    """The watch merge moved into payloads.anomalies with the port; the guard moved with it."""
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    body = src[src.index("def anomalies("):]
+    body = body[:body.index("\ndef ")]
+    assert "watch_index" in body and 'r["watched"]' in body
     assert "watch_err is None" in body, (
         "the watched filter no longer guards on the read; filtering a failed read "
         "answers 'nothing is watched' from a query that returned nothing"

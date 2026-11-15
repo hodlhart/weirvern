@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Block proposals - Weirvern{% endblock %}
+{% block body %}
+  <h1>Block proposals</h1>
+  <p class="lede">
+    Nothing on this page is enforced. A proposal is a record of what should be blocked and why;
+    the queue below is where a person decides. That split is the reason an agent can propose a
+    block at all.
+  </p>
+
+  {% if error %}<p class="bad" role="alert">{{ error }}</p>{% endif %}
+  {% if message %}<p class="ok" role="status">{{ message }}</p>{% endif %}
+
+  <h2>Propose a block</h2>
+  <div class="card">
+    <form method="post" action="{{ url_for("block") }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label for="host">Host or domain</label>
+      <input id="host" name="host" required value="{{ form.host if form else "" }}"
+             placeholder="192.0.2.10 or ads.example.com">
+      <label for="reason">Why</label>
+      <textarea id="reason" name="reason" rows="3" required
+                placeholder="What you saw, in the words you would use to defend it">{{ form.reason if form else "" }}</textarea>
+      <label for="evidence">Evidence</label>
+      <input id="evidence" name="evidence" value="{{ form.evidence if form else "" }}"
+             placeholder="an anomaly window, a rule id, a URL, or the word manual">
+      <label for="ttl_minutes">Duration in minutes (0 means indefinite)</label>
+      <input id="ttl_minutes" name="ttl_minutes" type="number" min="0" step="1"
+             value="{{ form.ttl_minutes if form else 0 }}">
+      <button type="submit">Propose</button>
+    </form>
+  </div>
+
+  <h2>Awaiting a decision</h2>
+  {% if pending %}
+    <div class="card">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="text-align:left;color:var(--muted);font-size:13px">
+            <th style="padding:6px 8px">Host</th>
+            <th style="padding:6px 8px">Why</th>
+            <th style="padding:6px 8px">By</th>
+            <th style="padding:6px 8px">Duration</th>
+            <th style="padding:6px 8px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pending %}
+            <tr style="border-top:1px solid var(--line)">
+              <td style="padding:8px"><code>{{ p.host }}</code></td>
+              <td style="padding:8px">
+                {{ p.reason }}
+                {% if p.evidence %}<br><span class="note">evidence: {{ p.evidence }}</span>{% endif %}
+              </td>
+              <td style="padding:8px">{{ p.proposed_by }}</td>
+              <td style="padding:8px">
+                {% if p.ttl_minutes %}{{ p.ttl_minutes }} min{% else %}indefinite{% endif %}
+              </td>
+              <td style="padding:8px;white-space:nowrap">
+                <form method="post" action="{{ url_for('apply_proposal', proposal_id=p.proposal_id) }}"
+                      style="display:inline">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button type="submit">Block it</button>
+                </form>
+                <form method="post" action="{{ url_for('dismiss_proposal', proposal_id=p.proposal_id) }}"
+                      style="display:inline">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="quiet" type="submit">Dismiss</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="note">Nothing is awaiting a decision.</p>
+  {% endif %}
+
+  {% if decided %}
+    <h2>Decided</h2>
+    <div class="card">
+      <table style="width:100%;border-collapse:collapse">
+        <tbody>
+          {% for p in decided %}
+            <tr style="border-top:1px solid var(--line)">
+              <td style="padding:8px"><code>{{ p.host }}</code></td>
+              <td style="padding:8px">{{ p.reason }}</td>
+              <td style="padding:8px" class="{{ 'ok' if p.status == 'applied' else 'note' }}">
+                {{ p.status }}{% if p.rule_id %} as <code>{{ p.rule_id }}</code>{% endif %}
+              </td>
+              <td style="padding:8px">{{ p.decided_by }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

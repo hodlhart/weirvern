@@ -102,6 +102,61 @@ async function loadSluice() {
 
 /* ── Gate state ─────────────────────────────────────────────────────────────────────────────── */
 function renderSluiceGates(d) {
+  // ── A FAILED READ MUST NOT RENDER AS "off" (WV1-07) ─────────────────────────────────────────
+  //
+  // MEASURED LIVE with no database: /api/sluice answered
+  // {"available": false, "reason": "cannot read the gate: FileNotFoundError"} and this card still
+  // rendered chip "off" with the sentence "The packet gate is off. Rules still record hits, but no
+  // packet is dropped." -- while the Rules panel ON THE SAME SCREEN said "Reach unavailable". One
+  // screen claiming both that the gate is off and that its state is unknown.
+  //
+  // Why this one matters more than the other conflations in this file: "the packet gate is off" is
+  // the single most reassuring sentence in the console, and it was reachable from a failure. The
+  // chips below derive from SETTINGS, which is a different read and can succeed while this payload
+  // fails, so nothing here is a measurement of the gate.
+  //
+  // The Domain Gate's on/off chip is left alone on purpose: it comes from SETTINGS, not from this
+  // payload, so it is still a real answer. Its COUNTS come from the failed payload, so they are
+  // suppressed rather than shown as zero.
+  if (d.available === false) {
+    const why = String(d.reason || "").trim() || "the gate state could not be read";
+    const trafChip = document.getElementById("sl2-traf-chip");
+    if (trafChip) {
+      trafChip.className = "chip bad";
+      trafChip.textContent = "unavailable";
+    }
+    const trafLine = document.getElementById("sl2-traf-line");
+    if (trafLine) {
+      trafLine.textContent =
+        `Cannot read the gate state: ${why} This card makes no claim about whether traffic is ` +
+        `being blocked.`;
+    }
+    const domLine = document.getElementById("sl2-dom-line");
+    if (domLine && domLine.textContent) {
+      domLine.textContent += " List counts are unavailable: the same read failed.";
+    }
+    const warning = document.getElementById("sl-gate-warning");
+    if (warning) {
+      warning.textContent = why;
+      warning.classList.remove("hidden");
+    }
+    for (const id of ["sl2-traf-stats", "sl2-dom-stats"]) {
+      const stats = document.getElementById(id);
+      if (stats) stats.replaceChildren();
+    }
+    for (const id of ["sl2-traf-toggle", "sl2-dom-toggle"]) {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.disabled = true;
+        btn.title = "the gate state could not be read, so this control would act blind";
+      }
+    }
+    const autoEl = document.getElementById("sl2-auto");
+    if (autoEl) autoEl.classList.add("hidden");
+    renderSluiceFleet(d.gates || []);
+    return;
+  }
+
   const gate = d.gate || {};
   const gateOn = sl2On("SLUICE_ENABLED");
   const domOn = sl2On("SLUICE_BLOCK_DOMAINS");
@@ -194,6 +249,11 @@ function renderSluiceGates(d) {
 
   // The one automatic enforcement threshold; visible and stoppable.
   const auto = Number(sl2Setting("SLUICE_AUTO_SCORE") || 0) || 0;
+  // THE HEADER PILL IS THE OTHER HALF OF THIS CONTROL, and it used to refresh only at boot, so
+  // arming the threshold from Settings left the loud signal off screen until a reload. Passing the
+  // value here keeps the card and the pill in step, which is the contract the pill's own comment
+  // states.
+  if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(auto);
   const autoEl = document.getElementById("sl2-auto");
   if (autoEl) {
     autoEl.classList.toggle("hidden", !(auto > 0));
@@ -202,9 +262,18 @@ function renderSluiceGates(d) {
         el("span", { class: "chip bad", text: "auto-block on" }),
         el("span", { class: "muted", text: `detections at or above ${auto.toFixed(2)} are blocked without review` }),
       );
+      // ── THE PAUSE NEEDED SOMEWHERE TO SPEAK (WV1-11) ───────────────────────────────────────
+      //
+      // This used to pass `autoEl` (a DIV built with replaceChildren) as the note element, and
+      // applySluiceSetting deliberately writes nothing when `note.tagName === "DIV"`. So the pause
+      // produced no confirmation, and after the POST neither the server's note nor an error was
+      // shown anywhere: a refused pause was indistinguishable from a slow one, and the banner
+      // stayed on screen either way. A dedicated span gives it a place to answer.
       const pause = el("button", { class: "quiet", attrs: { type: "button" }, text: "Pause auto-block" });
-      pause.onclick = () => applySluiceSetting("SLUICE_AUTO_SCORE", "0", pause, autoEl);
+      const pauseNote = el("span", { class: "muted", text: "" });
+      pause.onclick = () => applySluiceSetting("SLUICE_AUTO_SCORE", "0", pause, pauseNote);
       autoEl.appendChild(pause);
+      autoEl.appendChild(pauseNote);
     }
   }
   renderSluiceFleet(d.gates || []);
@@ -362,21 +431,33 @@ function renderSluiceRules(d) {
 
 /** US-3: an audit receipt or palette result lands on the rule row. */
 let SL2_FLASH_PENDING = "";
+let SL2_FLASH_TIMER = null;
 function sluiceHighlightRule(ruleId) {
   SL2_FLASH_PENDING = String(ruleId);
   sluiceApplyFlash();
-  setTimeout(() => { if (SL2_FLASH_PENDING === String(ruleId)) SL2_FLASH_PENDING = ""; }, 2500);
+  // A RELOAD CAN LAND AFTER THIS CALL and replace the rows, so the id has to outlive the render
+  // that will consume it. It used to be dropped after 2.5s whether or not a row had been
+  // painted, so a fix clicked from the audit could visibly do nothing: the highlight landed on
+  // rows that a load already in flight then replaced.
+  if (SL2_FLASH_TIMER) clearTimeout(SL2_FLASH_TIMER);
+  SL2_FLASH_TIMER = setTimeout(() => { SL2_FLASH_PENDING = ""; }, 8000);
 }
 
 function sluiceApplyFlash() {
   if (!SL2_FLASH_PENDING) return;
-  const row = [...document.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")]
-    .find((tr) => tr.getAttribute("data-rule-id") === SL2_FLASH_PENDING);
+  const all = [...document.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")];
+  const row = all.find((tr) => tr.getAttribute("data-rule-id") === SL2_FLASH_PENDING);
   if (!row) return;
   row.classList.add("flash-hit");
   try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* optional */ }
-  setTimeout(() => row.classList.remove("flash-hit"), 1800);
-  SL2_FLASH_PENDING = "";
+  // THE PENDING ID SURVIVES THE PAINT. Clearing it here was the defect: the class went onto one
+  // set of rows, and the reload already in flight replaced them with no id left for the new
+  // rows to inherit.
+  if (SL2_FLASH_TIMER) clearTimeout(SL2_FLASH_TIMER);
+  SL2_FLASH_TIMER = setTimeout(() => {
+    SL2_FLASH_PENDING = "";
+    row.classList.remove("flash-hit");
+  }, 1800);
 }
 
 /* ── Rule sheet ─────────────────────────────────────────────────────────────────────────────── */
@@ -421,6 +502,9 @@ function sl2SyncKind() {
 }
 
 let SL_CREATE_ARM_TIMER = null;
+// One per two-step action, so arming one control cannot disarm another (WV1-12, WV1-14).
+let SL_PARK_ARM_TIMER = null;
+let SL_BL_ARM_TIMER = null;
 function slCreateDisarm() {
   if (SL_CREATE_ARM_TIMER) { clearTimeout(SL_CREATE_ARM_TIMER); SL_CREATE_ARM_TIMER = null; }
   const btn = document.getElementById("sl2-create-submit");
@@ -493,12 +577,30 @@ function sl2OpenDetail(rule) {
   if (park) {
     park.textContent = rule.disabled ? "Restore rule" : "Park rule";
     park.disabled = Boolean(rule.revoked || rule.not_live);
+    // A pending confirm belongs to the sheet it was armed in. Without this, opening another rule
+    // shows "Park rule" while the button is still armed, so the next click would post (WV1-12).
+    delete park.dataset.confirm;
+    if (SL_PARK_ARM_TIMER) { clearTimeout(SL_PARK_ARM_TIMER); SL_PARK_ARM_TIMER = null; }
   }
   const note = document.getElementById("sl2-detail-note");
   if (note) {
-    note.textContent = rule.revoked
-      ? "This rule is revoked. Its record is kept for audit; it cannot be edited."
-      : (rule.not_live ? "This rule is not in the live store; it is shown as a record only." : "");
+    // ── A FAILED LOOKUP MUST NOT BE SHOWN AS A REVOCATION (WV1-08) ──────────────────────────
+    //
+    // `blocked.js:blOpenRuleById` opens this sheet for a rule id it could not find in the lists
+    // the page holds, and it used to set `revoked: true` on that fabricated record. So a transient
+    // read failure, or a rule simply absent from a capped list, told the operator "This rule is
+    // revoked ... it cannot be edited" -- i.e. that enforcement had ended, when the rule may have
+    // been live and blocking.
+    //
+    // The failed state is checked FIRST, because it is the only one of the three that is a
+    // statement about our knowledge rather than about the rule.
+    note.textContent = rule.lookup_failed
+      ? "Cannot confirm this rule's state: the rule list could not be read, or this rule is not "
+        + "in the list the page holds. Nothing is being claimed about whether it is live. This "
+        + "sheet is read-only because there is no record to edit."
+      : (rule.revoked
+        ? "This rule is revoked. Its record is kept for audit; it cannot be edited."
+        : (rule.not_live ? "This rule is not in the live store; it is shown as a record only." : ""));
   }
   for (const id of ["sl2-mode-save", "sl-rule-delete", "sl-rule-delete-reason", "sl2-detail-mode"]) {
     const field = document.getElementById(id);
@@ -604,6 +706,32 @@ async function sl2Park() {
   if (!rule) return;
   const btn = document.getElementById("sl2-park");
   const note = document.getElementById("sl2-detail-note");
+  // ── TWO STEP (WV1-12) ─────────────────────────────────────────────────────────────────────
+  //
+  // One click here flipped a rule's enforcement. Parking a live block rule RE-OPENS the path it
+  // was blocking, and restoring re-arms it, so this was the most consequential single click in the
+  // sheet and the only destructive one without a confirm -- `sl2Create` (block mode) and
+  // `sl2Delete` both had one. Worse, the button sits next to Delete and reads like a status chip.
+  const parking = !rule.disabled;
+  if (!btn.dataset.confirm) {
+    btn.dataset.confirm = "1";
+    btn.textContent = parking ? "Confirm: park rule" : "Confirm: restore rule";
+    note.textContent = parking
+      ? "Parking stops this rule's enforcement: whatever it blocks becomes reachable again until "
+        + "you restore it. The rule is kept and still records. Click again to confirm."
+      : "Restoring re-arms this rule and whatever it blocks is blocked again. Click again to "
+        + "confirm.";
+    if (SL_PARK_ARM_TIMER) clearTimeout(SL_PARK_ARM_TIMER);
+    SL_PARK_ARM_TIMER = setTimeout(() => {
+      if (SL_PARK_ARM_TIMER === null) return;
+      SL_PARK_ARM_TIMER = null;
+      delete btn.dataset.confirm;
+      btn.textContent = parking ? "Park rule" : "Restore rule";
+    }, 6000);
+    return;
+  }
+  delete btn.dataset.confirm;
+  if (SL_PARK_ARM_TIMER) { clearTimeout(SL_PARK_ARM_TIMER); SL_PARK_ARM_TIMER = null; }
   btn.disabled = true;
   try {
     const out = await postJSON("/api/sluice/rule/disabled", { rule_id: rule.rule_id, disabled: !rule.disabled });
@@ -667,17 +795,28 @@ function renderBlocklists(d) {
     const state = s.last_error
       ? el("span", { class: "chip bad", text: "last sync failed" })
       : (s.fetched_at ? el("span", { class: "chip ok", text: "ok" }) : el("span", { class: "chip muted", text: "never fetched" }));
-    const tr = el("tr", { class: "clickable", attrs: { title: s.enabled
-      ? "click to turn this list off — its names leave the watch set"
-      : "click to turn this list on — its names join the watch set" } }, [
+    // ── THE ROW IS INERT; A BUTTON CARRIES THE TOGGLE (WV1-14) ──────────────────────────────
+    //
+    // The whole <tr> used to be the toggle, and one of its cells is `s.last_error.slice(0, 90)`.
+    // Clicking that error text to READ it, or to select it for a bug report, silently disabled a
+    // DNS blocklist and changed enforcement. The hover title was the only warning, which does not
+    // exist on touch and was not announced for keyboard.
+    //
+    // Extending `tr.clickable` keyboard activation to these rows made it worse rather than better:
+    // tabbing through this pane and pressing Enter would toggle a list. A row whose whole surface
+    // performs a state change cannot be made safe by adding a key handler; the action has to move
+    // into a control that says what it does.
+    const toggle = el("button", { class: "quiet", attrs: { type: "button" },
+      text: s.enabled ? "Turn off" : "Turn on" });
+    toggle.addEventListener("click", () => slToggleSource(s, toggle).catch(showError));
+    const tr = el("tr", {}, [
       el("td", {}, [el("span", { class: "chip " + (s.enabled ? "ok" : "muted"), text: s.enabled ? "on" : "off" }),
         el("span", { text: " " + s.name })]),
-      el("td", {}, [state]),
+      el("td", {}, [state, el("span", { text: " " }), toggle]),
       el("td", { class: "mono", text: String(s.domain_count || 0) }),
       el("td", { class: "muted", text: s.fetched_at ? fmtTime(new Date(s.fetched_at)) : "—" }),
       el("td", { class: "muted", text: s.last_error ? s.last_error.slice(0, 90) : "—" }),
     ]);
-    tr.addEventListener("click", () => slToggleSource(s));
     body.appendChild(tr);
   }
 }
@@ -700,9 +839,33 @@ async function loadBlocklistPane() {
   renderBlocklists({ blocklists: (d && d.sources) || [] });
 }
 
-async function slToggleSource(s) {
+async function slToggleSource(s, btn) {
   const note = document.getElementById("sl-bl-note");
   const want = !s.enabled;
+  // TWO STEP (WV1-14). Enabling or disabling a source changes which names get answered from the
+  // block list, so it names the effect before it happens.
+  if (btn && !btn.dataset.confirm) {
+    btn.dataset.confirm = "1";
+    const label = btn.textContent;
+    btn.textContent = want ? "Confirm: on" : "Confirm: off";
+    if (note) {
+      note.textContent = want
+        ? `Turning ${s.name} on adds its names to the watch set. Click again to confirm.`
+        : `Turning ${s.name} off removes its names from the watch set, so queries for them stop `
+          + "being answered from this list. Click again to confirm.";
+    }
+    if (SL_BL_ARM_TIMER) clearTimeout(SL_BL_ARM_TIMER);
+    SL_BL_ARM_TIMER = setTimeout(() => {
+      SL_BL_ARM_TIMER = null;
+      delete btn.dataset.confirm;
+      btn.textContent = label;
+    }, 6000);
+    return;
+  }
+  if (btn) {
+    delete btn.dataset.confirm;
+    if (SL_BL_ARM_TIMER) { clearTimeout(SL_BL_ARM_TIMER); SL_BL_ARM_TIMER = null; }
+  }
   if (note) note.textContent = `${want ? "enabling" : "disabling"} ${s.name}…`;
   try {
     const out = await postJSON("/api/blocklists/enable", { source_id: s.source_id, enabled: want });

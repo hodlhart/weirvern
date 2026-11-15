@@ -75,7 +75,7 @@ def matrix_sql(limit: int, *, scope_filter: str = "", start: str | None = None,
         "  SELECT window_start, src_addr, sum(total_bytes) AS total_bytes, "
         "         sum(total_packets) AS total_packets, sum(unique_dst_ips) AS unique_dst_ips, "
         "         sum(flow_count) AS flow_count "
-        "  FROM weirvern.flows_aggregated "
+        "  FROM weirvern.flows_window "
         "  WHERE window_start >= '" + start + "' AND window_start <= '" + end + "' "
         "  GROUP BY window_start, src_addr"
         ") a "

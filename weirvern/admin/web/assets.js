@@ -582,7 +582,13 @@ function renderNetwork() {
   const win = document.getElementById("nw-window");
   if (win) {
     const h = d.hours || ASSETS_STATE.hours;
-    win.textContent = `${h}h window` + (d.truncated ? `, ${d.total_edges} total connections` : "");
+    // A GRAPH DRAWN OVER A NARROWER WINDOW SAYS SO. The server reports the window it could afford
+    // (`hours`) beside the one that was asked for (`narrowed_from`); the pair is printed because a
+    // 24h request that silently drew 1h would misreport how far back the map reaches.
+    const narrowed = d.narrowed_from
+      ? ` (the ${d.narrowed_from}h aggregate did not finish, showing the last ${h}h)` : "";
+    win.textContent = `${h}h window` + narrowed
+      + (d.truncated ? `, ${d.total_edges} total connections` : "");
   }
 
   const nodes0 = d.nodes || [];
@@ -1734,11 +1740,32 @@ function renderAssetChanges() {
     const scanAge = cov.last_scan
       ? fmtAge(Math.max(0, (Date.now() - Date.parse(cov.last_scan)) / 1000)) + " ago"
       : "never";
-    coverage.textContent = `Coverage: ${cov.scanned}/${cov.assets} assets scanned; ` +
+    // ── THE PERCENTAGE IS OF THE MONITORED NETWORK, NOT OF EVERY ADDRESS (operator, 2026-11-12) ──
+    //
+    // The old line read "Coverage: scanned/assets assets scanned" with `assets` counting every row
+    // in the registry, internet peers included, so the number fell as the box saw more of the
+    // world and answered nothing anyone asked. The question is "have we scanned the network we said
+    // we were watching", and that needs the monitored population as the denominator.
+    //
+    // The basis is STATED, because the same number means different things in the three cases: an
+    // upgrade with nothing declared (legacy, everything counts), a declaration set with no
+    // monitored scope (an explicit no-monitoring configuration), and the normal case.
+    const scope = cov.in_scope === undefined ? cov.assets : cov.in_scope;
+    const scopeHits = cov.in_scope_scanned === undefined ? cov.scanned : cov.in_scope_scanned;
+    const basis = String(cov.basis || "all");
+    const pct = scope > 0 ? Math.round((scopeHits / scope) * 100) : 0;
+    const coverageOf = basis === "monitored"
+      ? `${scopeHits}/${scope} monitored hosts scanned (${pct}%)`
+      : (basis === "none"
+        ? "no monitored scope is declared, so scanner coverage has no denominator"
+        : `${scopeHits}/${scope} hosts scanned (${pct}%); no network scopes are declared yet, so ` +
+          "this counts every address in the registry");
+    coverage.textContent = `Coverage: ${coverageOf}; ` +
       `${cov.observations} observations across ${cov.observed_assets} hosts in this window; ` +
       `last scan ${scanAge}.`;
   } else {
-    coverage.textContent = `Coverage unavailable: ${cov.reason || "the scanner did not report a baseline"}.`;
+    coverage.textContent = `Coverage unavailable: ` +
+      `${cov.reason || "the scanner did not report a baseline"}.`;
   }
   summary.textContent = rows.length
     ? `${rows.length} in the window`

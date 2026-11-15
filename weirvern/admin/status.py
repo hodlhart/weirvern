@@ -482,85 +482,131 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
     # stopped arriving. Both are failures here, but the detail says which.
     # ── TWO INDEPENDENT SIGNALS, NOT ONE ───────────────────────────────────────────────────────
     #
-    # `baseline_history.computed_at` is written by the baseline detector's train(), and
-    # `near_misses.replaced_at` is written by the sweep when a host-window scores. They are
-    # different code paths that both run inside a cycle, so a single signal going quiet for a
-    # benign reason (nothing scored this window; the baseline had too few samples) must not be
-    # read as a stopped loop. THE LOOP RAN IF EITHER IS FRESH -- and `detect_loop` reports both
-    # ages so an operator can see which one carried the evidence rather than trusting a verdict
-    # with no visible basis.
-    def detect_loop():
-        # ── THE AGE IS COMPUTED IN SQL, DELIBERATELY ──────────────────────────────────────────
+    # ── DETECTION LIVENESS IS TWO FACTS, AND THE WEAKER ONE DECIDES ──────────────────────────────
+    #
+    # MEASURED OUTAGE (2026-11-12): detection wrote no scores for sixteen hours while every probe
+    # read green. THIS PROBE EXISTED AND SAID HEALTHY, because it passed if EITHER of two ages was
+    # fresh, and the two are not interchangeable:
+    #
+    #   * `baseline_history.computed_at` is written by TRAINING, which runs on its own schedule.
+    #   * SCORING IS THE PRODUCT. Nothing is analysed if it stops, however often training runs.
+    #
+    # During the outage training kept firing, so the freshest of the two ages was minutes old and
+    # the verdict was green. A verdict that picks the healthiest signal is not a measurement.
+    #
+    # THE SCORING SIGNAL IS `ml_window_scores`, which records EVERY scored host-window before the
+    # threshold. That is what removes the original reason for "either": `near_misses` only moves
+    # when something scores abnormally, so on a quiet network it legitimately goes stale, and the
+    # author widened the check to avoid crying wolf. The population table moves on a quiet network
+    # too, so the false-alarm reason is gone and the weak-signal reason is not.
+    #
+    # BOTH FAILURE DIRECTIONS ARE NAMED, because they have different causes and an operator should
+    # not have to work out which one they are looking at:
+    #
+    #   scoring stale, flows STILL arriving  -> the loop is broken; the data was there to score
+    #   scoring stale, flows ALSO stale      -> nothing was scored because nothing arrived
+    def _age(sql: str) -> float | None:
+        # ── THE AGE IS COMPUTED IN SQL, DELIBERATELY ─────────────────────────────────────────
         #
         # Computing it in Python mixes two clocks and two timezones (`datetime.now()` is naive
-        # local; ClickHouse returns aware values) -- the trap `_aware()` exists for, and a helper
-        # defined far below this probe. Letting the database subtract its own timestamps from its
-        # own `now()` avoids the whole class of problem and needs no conversion at all.
+        # local; ClickHouse returns aware values) -- the trap `_aware()` exists for. Letting the
+        # database subtract its own timestamps from its own `now()` avoids the class entirely.
         #
         # MEASURED, because the first version of this got it wrong: `dateDiff` against an EMPTY
         # subquery does NOT return 0 or NULL -- it returns the difference from ClickHouse's
         # default datetime, 1790165466 seconds, about 56 years. A guard for `age == 0` was dead
-        # code, and a fresh deployment would have been reported as "last cycle 56 years ago"
-        # rather than "has never run". So the COUNT decides, and the age is read only when there
-        # is something to measure. Verified against the live server:
-        #
-        #     dateDiff('second', (SELECT max(computed_at) FROM ... WHERE 0), now())  ->  1790165466
-        #     dateDiff('second', (SELECT null), now())                              ->  \N
-        def one(sql: str) -> float | None:
-            rows = client.query(sql).result_rows
-            if not rows or not rows[0] or rows[0][0] is None:
-                return None
-            n = int(rows[0][0])
-            if n == 0:
-                return None
-            age = rows[0][1]
-            return None if age is None else float(age)
+        # code, and a fresh deployment was reported as "last cycle 56 years ago" rather than
+        # "has never run". So the COUNT decides, and the age is read only when there is something
+        # to measure.
+        rows = client.query(sql).result_rows
+        if not rows or not rows[0] or rows[0][0] is None:
+            return None
+        if int(rows[0][0]) == 0:
+            return None
+        age = rows[0][1]
+        return None if age is None else float(age)
 
-        base_age = one(
+    def detect_loop():
+        scoring_age = _age(
+            "SELECT count(), dateDiff('second', max(computed_at), now()) "
+            "FROM weirvern.ml_window_scores"
+        )
+        training_age = _age(
             "SELECT count(), dateDiff('second', max(computed_at), now()) "
             "FROM weirvern.baseline_history"
         )
-        near_age = one(
-            "SELECT count(), dateDiff('second', max(replaced_at), now()) "
-            "FROM weirvern.near_misses"
-        )
-        return base_age, near_age
+        return scoring_age, training_age
 
     d_ages, ms, err = _timed(detect_loop)
     if err is None:
         cadence = int(getattr(settings, "detect_interval_s", 300) or 300)
         limit_s = max(cadence * 3, 60)
-        base_age, near_age = d_ages if d_ages else (None, None)
-        fresh = [a for a in (base_age, near_age) if a is not None]
+        scoring_age, training_age = d_ages if d_ages else (None, None)
+
         parts = []
-        if base_age is not None:
-            parts.append(f"baseline {_human_age(base_age)}")
-        if near_age is not None:
-            parts.append(f"scores {_human_age(near_age)}")
-        evidence = ", ".join(parts) if parts else "no signal at all"
-        if not fresh:
+        if scoring_age is not None:
+            parts.append(f"last scored {_human_age(scoring_age)} ago")
+        if training_age is not None:
+            parts.append(f"trained {_human_age(training_age)} ago")
+        evidence = ", ".join(parts) if parts else "no cycle has ever written anything"
+
+        # The ingest probe runs before this one, so its verdict is available to say WHICH fault
+        # this is. `ok` is tri-state there too: None means "not measurable", not "fine".
+        ingest_probe = report.by_name("ingest_freshness")
+        flows_fresh = None if ingest_probe is None else ingest_probe.ok
+
+        if scoring_age is None:
+            if training_age is not None:
+                report.add(Probe(
+                    "detect_loop", ok=False, latency_ms=ms,
+                    detail=(
+                        "TRAINING IS RUNNING BUT NOTHING HAS EVER BEEN SCORED: no host-window has "
+                        "reached the ensemble. Flows may be arriving and every other probe can "
+                        "read green. Check that a monitored network scope is declared, and whether "
+                        "the worker log says 'Detection sweep examined NOTHING'"
+                    ),
+                ))
+            else:
+                report.add(Probe(
+                    "detect_loop", ok=False, latency_ms=ms,
+                    detail=(
+                        "the detection loop has NEVER run: no baseline row exists and no "
+                        "host-window has been scored, so nothing is being analysed. On a fresh "
+                        "deployment this clears once flows arrive; if flows are arriving and this "
+                        "stays, the loop is failing before its first write -- check the worker log "
+                        "for 'Worker loop error'"
+                    ),
+                ))
+        elif scoring_age <= limit_s:
             report.add(Probe(
-                "detect_loop", ok=False, latency_ms=ms,
-                detail=(
-                    "the detection loop has NEVER run: no baseline row exists and no host-window "
-                    "has been scored, so nothing is being analysed. On a fresh deployment this "
-                    "clears once flows arrive; if flows are arriving and this stays, the loop is "
-                    "failing before its first write -- check the worker log for "
-                    "'Worker loop error'"
-                ),
+                "detect_loop", ok=True, latency_ms=ms, value=scoring_age,
+                detail=f"last cycle {_human_age(scoring_age)} ago ({evidence})",
             ))
         else:
-            best = min(fresh)
+            if flows_fresh is False:
+                why = (
+                    "flows are NOT arriving either, so nothing was scored because there was "
+                    "nothing to score -- the fault is upstream, in ingest"
+                )
+            elif flows_fresh is True:
+                why = (
+                    "flows ARE still arriving, so the loop is broken rather than idle: the sweep "
+                    "has rows to read and is not scoring them. The worker log now names why -- "
+                    "look for 'Detection sweep' lines"
+                )
+            else:
+                why = (
+                    "ingest freshness is not measurable here, so this may be a quiet network "
+                    "rather than a stopped loop -- confirm whether flows are arriving before "
+                    "reading this as a fault"
+                )
             report.add(Probe(
-                "detect_loop", ok=best <= limit_s,
+                "detect_loop", ok=False, latency_ms=ms, value=scoring_age,
                 detail=(
-                    f"last cycle {_human_age(best)} ago ({evidence})"
-                    + ("" if best <= limit_s else
-                       f" -- PAST {_human_age(float(limit_s))}, which is 3x the {cadence}s "
-                       f"cadence, so the loop has stopped. Data may still be arriving and every "
-                       f"other probe can still read green, because nothing else measures detection")
+                    f"NOTHING SCORED for {_human_age(scoring_age)}, past "
+                    f"{_human_age(float(limit_s))} (3x the {cadence}s cadence): {why}. "
+                    f"Evidence: {evidence}"
                 ),
-                value=best, latency_ms=ms,
             ))
     else:
         _probe_failed(report, "detect_loop", err, ms)

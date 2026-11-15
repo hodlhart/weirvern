@@ -47,14 +47,22 @@ def test_no_model_no_clause():
 
 
 def test_the_route_reads_and_passes_the_model_filter():
-    """UI seam pin: the route must accept ?model= and hand it to the grouped builder."""
+    """UI seam pin: the route must accept ?model= and hand it to the grouped builder.
+
+    THE SEAM MOVED when the route crossed to Flask, so the assertion follows both halves: the shared
+    parser reads the parameter, and the shared fetcher passes it to the grouped query. An assertion
+    on the old handler body would demand the copy stay there and forbid the port.
+    """
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" / "web.py").read_text()
-    seg = src.split("def _anomalies(self, query: dict) -> None:", 1)[1].split("def ", 1)[0]
-    assert 'query.get("model")' in seg, "the route no longer reads ?model="
-    assert "model=model_f" in seg, "the route reads ?model= but drops it before the query"
-    assert "implausibly long" in seg
+    admin = Path(__file__).resolve().parents[1] / "weirvern" / "admin"
+    web = (admin / "web.py").read_text()
+    parser = web.split("def anomalies_args(", 1)[1].split("\ndef ", 1)[0]
+    assert '"model"' in parser, "the route no longer reads ?model="
+    assert "implausibly long" in parser
+    payloads = (admin / "payloads.py").read_text()
+    fetcher = payloads.split("def anomalies(", 1)[1].split("\ndef ", 1)[0]
+    assert "model=model" in fetcher, "the route reads ?model= but drops it before the query"
 
 
 def test_grouping_counts_windows_not_detection_passes():

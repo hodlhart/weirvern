@@ -299,6 +299,8 @@ class FailOpenWatchdog:
         self.failures: list[str] = []
         self.failures_overflow = 0
         self.restored_count = 0
+        # What stop() was asked to restore, so a caller can tell "nothing to do" from "all failed".
+        self.restore_attempted = 0
         self.refresh_count = 0
 
     MAX_FAILURES_RECORDED = 20
@@ -491,8 +493,16 @@ class FailOpenWatchdog:
             return
 
     # -- stopping --------------------------------------------------------------
-    def stop(self) -> None:
+    def stop(self) -> int:
         """Restore every mapping. Idempotent and safe to call from any thread.
+
+        RETURNS THE NUMBER OF RESTORE FRAMES THAT WERE ACTUALLY SENT (WV1-27). It used to return
+        None and set `restored_count = len(items)` -- the number of mappings it TRIED, not the
+        number that went out. A restore frame can fail to send (`_send` returns False on OSError),
+        and in that case this method still reported the full count while logging "traffic is no
+        longer through Weirvern". That is the one sentence a teardown must never print on a
+        failure, because the host keeps believing this box is its gateway.
+
 
         Ordering matters: stop the loops FIRST, then restore. Restoring while the
         refresh loop is still running would let it re-poison the caches immediately
@@ -500,7 +510,7 @@ class FailOpenWatchdog:
         """
         with self._lock:
             if self._restored:
-                return
+                return self.restored_count
             self._stop.set()
             items = list(self._interceptions.values())
             self._interceptions.clear()
@@ -510,13 +520,26 @@ class FailOpenWatchdog:
             self._deadline_handle.cancel()
             self._deadline_handle = None
 
+        sent = 0
         for ic in items:
-            self._send(ic.restore_frame(), "restore")
-        self.restored_count = len(items)
+            if self._send(ic.restore_frame(), "restore"):
+                sent += 1
+        self.restore_attempted = len(items)
+        self.restored_count = sent
         with self._lock:
             self._restored = True
-        logger.info("restored %d ARP mapping(s); traffic is no longer through Weirvern",
-                    len(items))
+        if sent == len(items):
+            logger.info("restored %d ARP mapping(s); traffic is no longer through Weirvern", sent)
+        else:
+            # NOT a normal teardown: hosts whose restore never left still point at this box.
+            logger.error(
+                "restored ONLY %d of %d ARP mapping(s) on %s: %d host(s) may still believe this "
+                "box is their gateway. Their ARP entries expire on their own, but until then that "
+                "traffic is being relayed or dropped. The send failures are recorded; check "
+                "`weirvern intercept status` before assuming the segment is clean.",
+                sent, len(items), self.iface, len(items) - sent,
+            )
+        return sent
 
     # -- io --------------------------------------------------------------------
     def _send(self, frame: bytes, kind: str) -> bool:

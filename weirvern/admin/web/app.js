@@ -346,9 +346,15 @@ function refreshAccountCard() {
   const pw = document.getElementById("st-account-pw");
   if (!note) return;
   if (!AUTH.accounts) {
-    note.textContent = "This deployment has no accounts provisioned: the operator token "
-      + "below is the credential that changes settings. An admin account is created "
-      + "automatically on the deployment's first startup.";
+    // WORDED FROM THE NOTE (WV1-17). "no accounts provisioned" describes a benign first run; an
+    // unreadable store is a different situation that happens to look identical from here.
+    const authWhy = String(AUTH.note || "").trim();
+    note.textContent = authWhy
+      ? `${authWhy} Until the store can be read, reads are served without a session and the `
+        + "operator token below is what changes settings."
+      : "This deployment has no accounts provisioned: the operator token "
+        + "below is the credential that changes settings. An admin account is created "
+        + "automatically on the deployment's first startup.";
     if (pw) pw.classList.add("hidden");
     return;
   }
@@ -3927,14 +3933,13 @@ function showDataError(msg) {
   }));
 }
 function clearError() {
-  // BOTH banners, not just one. showError() creates #err-banner and showDataError() creates
-  // #data-banner, but this only removed the first -- so a data error stayed pinned to the top of
-  // the page after the operator moved to another view, describing a tab they had left. Either id
-  // may or may not exist, hence the loop rather than two lookups.
-  for (const id of ["err-banner", "data-banner"]) {
-    const b = document.getElementById(id);
-    if (b) b.remove();
-  }
+  // THE FETCH BANNER ONLY. #data-banner belongs to showDataError, and every view loader calls
+  // this on a successful read, so clearing both here deleted the outage banner a DIFFERENT view
+  // had just raised for a read it could not complete -- measured: an unreadable registry raised
+  // its warning and lost it again inside the same refresh, once per cycle, while staying
+  // unreadable. A view that can read again clears its own data banner with showDataError(null).
+  const b = document.getElementById("err-banner");
+  if (b) b.remove();
 }
 
 /**
@@ -4202,6 +4207,24 @@ function markFilterCells() {
     const title = cell.getAttribute("title");
     if (title && !cell.getAttribute("aria-label")) cell.setAttribute("aria-label", title);
   }
+  // ── ROW OPENERS TOO (WV1-10) ──────────────────────────────────────────────────────────────
+  //
+  // `tr.clickable` opens a hit's detail or a DNS row's answers, and there was no keyboard path to
+  // it anywhere in this directory: `.clickable` had no handler and a <tr> is not focusable, so
+  // reviewing a hit without a mouse was impossible. The filter cells INSIDE those rows were already
+  // fine, which is why the gap survived review -- the row looked wired.
+  //
+  // Deliberately NOT role="button": a <tr> is a table row, and overriding that role breaks table
+  // navigation for a screen reader (row and column counts, cell reading). `tabindex` plus the
+  // delegated Enter/Space in filterCellWiring makes it reachable and operable while leaving the
+  // semantics alone. The better long-term shape is a real <button> in the first cell, the way the
+  // Sluice rule rows do it; that is a per-view change, and this covers every row that exists now.
+  for (const row of document.querySelectorAll("tr.clickable:not([data-kb])")) {
+    row.dataset.kb = "1";
+    row.setAttribute("tabindex", "0");
+    const rowTitle = row.getAttribute("title");
+    if (rowTitle && !row.getAttribute("aria-label")) row.setAttribute("aria-label", rowTitle);
+  }
 }
 
 function filterCellWiring() {
@@ -4216,11 +4239,19 @@ function filterCellWiring() {
     queueMicrotask(() => { queued = false; markFilterCells(); });
   }).observe(main, { childList: true, subtree: true });
   document.addEventListener("keydown", (e) => {
-    const cell = e.target && e.target.closest ? e.target.closest(".dcell") : null;
-    if (!cell) return;
-    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    if (!(e.key === "Enter" || e.key === " " || e.key === "Spacebar")) return;
+    if (!(e.target && e.target.closest)) return;
+    // A filter cell first, then a row opener. Both are activated the same way.
+    const cell = e.target.closest(".dcell");
+    if (cell) {
       e.preventDefault();
       cell.click();
+      return;
+    }
+    const row = e.target.closest("tr.clickable");
+    if (row) {
+      e.preventDefault();
+      row.click();
     }
   });
 }
@@ -5167,6 +5198,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // answer. A wrong token simply leaves the gate up (the next read refuses), so nothing
     // here claims success on the browser's behalf.
     try {
+      // A CREDENTIAL RETRY MUST NOT READ A CACHED REFUSAL. The wrong-token attempt cached the
+      // session answer for eight seconds, so entering the RIGHT token straight after it was
+      // refused by the cache rather than by the server -- the one screen where a stale "no" is
+      // most costly.
+      clearGetCache();
       await loadSession();
       if (AUTH.authenticated) {
         await bootAuthed();
@@ -5337,9 +5373,41 @@ async function boot() {
   showGate("auth", AUTH.note || "Sign in to view this dashboard.");
 }
 
+/**
+ * Show the server's own `/api/session` note when the console is running without accounts (WV1-17).
+ *
+ * The note says things like "the user store could not be read; no accounts were created this
+ * startup". It reached the screen from exactly one place: the sign-in gate's text. But the gate is
+ * only shown when accounts EXIST and the visitor is not signed in, so the one state that produces
+ * the note -- no readable store -- was the one state that never displayed it. Measured live:
+ * /api/session returned that note and the console showed no trace of it, while Settings said "This
+ * deployment has no accounts provisioned", which describes a benign first run.
+ *
+ * WHY IT MATTERS, and it is not cosmetic: with no readable store `_accounts_on` is False, so
+ * `_require_read` serves every READ without a session (writes stay token-gated). Measured:
+ * /api/settings, /api/system and /api/sluice all returned 200 unauthenticated; /api/users returned
+ * 403. Failing open for reads is a defensible trade only if the operator is told it is happening.
+ */
+function showSessionNote() {
+  if (AUTH.accounts) return;  // there is a gate, and the note belongs to its prompt
+  const note = String(AUTH.note || "").trim();
+  if (!note) return;  // a genuine first run has nothing to report
+  if (document.getElementById("auth-note-banner")) return;
+  const main = document.querySelector("main");
+  if (!main) return;
+  main.prepend(el("div", {
+    class: "banner",
+    attrs: { id: "auth-note-banner", role: "status" },
+    text: "No account store: reads are open. " + note
+      + " Every view on this dashboard can be read without signing in; changing anything still "
+      + "requires the operator token.",
+  }));
+}
+
 /** What runs once there is (or may be) a usable identity: the pre-accounts posture or a
  *  signed-in account, with the forced-change gate in between. */
 async function bootAuthed() {
+  showSessionNote();
   installViewHeaders();
   if (window.MutationObserver && !window.__vhObserver) {
     window.__vhObserver = new MutationObserver(scheduleViewHeaderSync);

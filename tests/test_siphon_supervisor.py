@@ -30,10 +30,14 @@ from weirvern.admin import siphon_supervisor as sup
 class FakeChild:
     """A stand-in for subprocess.Popen with scriptable death."""
 
-    def __init__(self, argv, exit_after_polls: int | None = None, exit_code: int = 0):
+    def __init__(self, argv, exit_after_polls: int | None = None, exit_code: int = 0,
+                 ignore_term: bool = False):
         self.argv = argv
         self.pid = 4242
         self.terminated = False
+        self.killed = False
+        # A wedged child: SIGTERM is delivered and silently not honoured.
+        self.ignore_term = ignore_term
         self._exit_after = exit_after_polls
         self._exit_code = exit_code
         self._polls = 0
@@ -41,7 +45,9 @@ class FakeChild:
 
     def poll(self):
         self._polls += 1
-        if self.terminated:
+        if self.killed:
+            return -9
+        if self.terminated and not self.ignore_term:
             return 0
         if self._exit_after is not None and self._polls >= self._exit_after:
             return self._exit_code
@@ -49,6 +55,69 @@ class FakeChild:
 
     def terminate(self):
         self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
+# ── WV1-28: A CHILD THAT WILL NOT DIE MUST NOT BE LEFT RUNNING ────────────────────────────────
+#
+# stop() SIGTERMed the child, waited, and then only LOGGED that the child's own self-destruct
+# deadline would restore the mappings. That deadline is run_seconds + 120s -- an hour by default --
+# so the segment stayed poisoned for up to an hour AFTER an operator asked for a stop, with an
+# in-path intercept relaying traffic and nobody supervising it.
+
+
+def test_a_child_that_IGNORES_SIGTERM_is_KILLED_not_left_running():
+    child = FakeChild([], ignore_term=True)
+    s = sup.SiphonSupervisor(_cfg(), spawn=lambda a: child, readiness=_ready,
+                             poll_s=0.01, stop_timeout_s=0.2)
+    s._child = child
+    s.stop()
+
+    assert child.terminated, "SIGTERM should still be the first attempt"
+    assert child.killed, (
+        "a child that ignores SIGTERM must be escalated to SIGKILL; leaving it running means an "
+        "in-path intercept with nobody supervising it until its own deadline"
+    )
+    assert child.poll() == -9, "stop() must return only once the child is actually gone"
+
+
+def test_a_well_behaved_child_is_never_killed():
+    """The escalation must not fire on the normal path -- a killed child cannot restore."""
+    child = FakeChild([])
+    s = sup.SiphonSupervisor(_cfg(), spawn=lambda a: child, readiness=_ready,
+                             poll_s=0.01, stop_timeout_s=0.2)
+    s._child = child
+    s.stop()
+
+    assert child.terminated
+    assert not child.killed, "SIGKILL was sent to a child that had already exited cleanly"
+
+
+def test_a_stop_during_the_SPAWN_WINDOW_still_terminates_the_child():
+    """The race. stop() sets _stop and reads _child under the lock; that assignment happens AFTER
+    the spawn returns, so a stop() landing in the window signals nothing and returns. The run loop
+    then saw _stop set and simply broke, on the stated assumption that stop() owned the signalling.
+    The child ran, poisoned and unsupervised, until its own deadline.
+    """
+    made = []
+
+    def spawn(argv):
+        child = FakeChild(argv)  # a healthy child: it WOULD honour SIGTERM
+        made.append(child)
+        s._stop.set()  # stop() lands here, inside the window, before publication
+        return child
+
+    s = sup.SiphonSupervisor(_cfg(), spawn=spawn, readiness=_ready, poll_s=0.01)
+    s._run()
+
+    assert made, "the child was never spawned, so this test proves nothing"
+    assert made[0].terminated, (
+        "a child spawned into a stop window must be terminated by the loop; it was left running "
+        "with nobody supervising it"
+    )
+    assert s._child is None, "the loop must not leave a terminated child published"
 
 
 def _cfg(**over):

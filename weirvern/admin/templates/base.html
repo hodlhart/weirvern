@@ -1,0 +1,81 @@
+{#- The layout every rendered page extends.
+
+    NO CDN, and no external font or stylesheet. The console vendors its assets for the same reason:
+    a monitoring UI that cannot render while the internet is down is useless exactly when it is
+    needed, and this project runs on isolated class boxes and home networks.
+
+    The style is deliberately small. This is a second surface for the parts of the product a form
+    suits, not a replacement for the console.
+-#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Weirvern{% endblock %}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12151a; --card: #1a1f27; --line: #2a313c;
+      --fg: #e6e9ee; --muted: #98a2b3; --accent: #5aa9e6; --bad: #e6685a; --ok: #59c98a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px;
+      padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card);
+    }
+    header .brand { font-weight: 600; letter-spacing: .02em; }
+    header .who { color: var(--muted); font-size: 13px; }
+    header .spacer { flex: 1; }
+    main { max-width: 720px; margin: 32px auto; padding: 0 20px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 24px 0 8px; }
+    p.lede { color: var(--muted); margin: 0 0 20px; }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid var(--accent); outline-offset: 1px;
+    }
+    label { display: block; margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
+    input, select, textarea {
+      width: 100%; padding: 9px 11px; border-radius: 6px;
+      border: 1px solid var(--line); background: #0e1116; color: var(--fg);
+      font: inherit;
+    }
+    button {
+      margin-top: 18px; padding: 9px 16px; border-radius: 6px; border: 0;
+      background: var(--accent); color: #08131c; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+    .note { margin-top: 16px; font-size: 13px; color: var(--muted); }
+    .bad { color: var(--bad); }
+    .ok { color: var(--ok); }
+    .row { display: flex; gap: 12px; }
+    .row > * { flex: 1; }
+    dl { display: grid; grid-template-columns: 160px 1fr; gap: 6px 16px; margin: 0; }
+    dt { color: var(--muted); font-size: 13px; }
+    dd { margin: 0; }
+    code { background: #0e1116; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">Weirvern</span>
+    {% if current_user %}
+      <span class="who">{{ current_user }} &middot; {{ role }}</span>
+    {% endif %}
+    <span class="spacer"></span>
+    {% if current_user %}
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="quiet" type="submit">Sign out</button>
+      </form>
+    {% endif %}
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+</body>
+</html>

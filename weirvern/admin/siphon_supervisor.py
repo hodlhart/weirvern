@@ -86,6 +86,7 @@ PUBLISH_AFTER_QUIET_S = 45.0
 # A run shorter than this counts as a failure for backoff purposes: something is
 # wrong with the environment, not with the schedule.
 MIN_HEALTHY_RUN_S = 60.0
+KILL_GRACE_S = 5.0  # how long a SIGKILLed child gets to die
 READINESS_RETRY_S = 30.0
 STOP_TIMEOUT_S = 15.0
 # The most target addresses one INTERCEPT_TARGETS list may name. Matches the segment
@@ -369,6 +370,10 @@ class ChildProcess(Protocol):
 
     def poll(self) -> int | None: ...
     def terminate(self) -> None: ...
+    # SIGTERM is a request. A child that does not honour it has to be killed, or it keeps the
+    # segment poisoned (WV1-28). Optional on the wire -- both call sites use getattr -- so a
+    # stand-in without kill() degrades to the old behaviour instead of raising.
+    def kill(self) -> None: ...
 
 
 def _spawn(argv: list[str]) -> subprocess.Popen:
@@ -569,14 +574,50 @@ class SiphonSupervisor:
             while time.time() < deadline and child.poll() is None:
                 time.sleep(0.1)
             if child.poll() is None:
+                # ── ESCALATE (WV1-28) ───────────────────────────────────────────────────────
+                #
+                # This used to only LOG that the child's own self-destruct deadline would restore
+                # the mappings. That deadline is run_seconds + 120s, so by default the segment stays
+                # poisoned for up to an hour AFTER an operator asked for a stop -- an in-path
+                # intercept relaying traffic with nobody supervising it, which is the orphan
+                # scenario this project has already had one false-negative incident over.
+                #
+                # SIGKILL is the safer failure of the two. A killed child cannot restore, so its
+                # forged ARP entries are left to expire on their own (about a minute, measured
+                # earlier in this project), and an expired entry is a working segment. A live
+                # child is not.
                 logger.warning(
-                    "siphon supervisor: the intercept did not exit after SIGTERM; its "
-                    "own self-destruct deadline will restore the mappings"
+                    "siphon supervisor: the intercept did not exit after SIGTERM; escalating to "
+                    "SIGKILL. A killed child cannot restore its mappings, so they expire on their "
+                    "own within about a minute -- that is better than a live in-path intercept "
+                    "with nobody supervising it."
                 )
+                self._signal_quietly(child, "kill")
+                hard_deadline = time.time() + KILL_GRACE_S
+                while time.time() < hard_deadline and child.poll() is None:
+                    time.sleep(0.1)
+                if child.poll() is None:
+                    logger.error(
+                        "siphon supervisor: the intercept survived SIGKILL (pid %s). Its forged "
+                        "mappings stand until ARP expiry. In this container that should not be "
+                        "possible, so treat the supervisor's view of this child as untrustworthy.",
+                        getattr(child, "pid", "?"),
+                    )
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=2.0)
         self._thread = None
         _set_note("")
+
+    @staticmethod
+    def _signal_quietly(child, method: str) -> None:
+        """Send `method` to the child, tolerating everything about it being unavailable."""
+        send = getattr(child, method, None)
+        if not callable(send):
+            return
+        try:
+            send()
+        except Exception:  # noqa: BLE001
+            logger.debug("siphon supervisor: could not %s the child", method, exc_info=True)
 
     # -- the loop --------------------------------------------------------------
 
@@ -630,7 +671,26 @@ class SiphonSupervisor:
                     break
                 self._stop.wait(self._poll_s)
             if self._stop.is_set():
-                # stop() owns the teardown and signalling; fall through and end.
+                # ── STOP() MAY HAVE MISSED THIS CHILD ENTIRELY (WV1-28) ──────────────────────
+                #
+                # stop() sets _stop and then reads self._child under the lock. That assignment
+                # happens AFTER _spawn returns, so a stop() landing in that window reads None,
+                # signals nothing, and returns. This branch then saw _stop set and simply broke, on
+                # the stated assumption that stop() owns the signalling -- which is exactly what the
+                # race invalidates. The child would run, poisoned and unsupervised, until its own
+                # deadline.
+                #
+                # So: whoever notices the stop first does the teardown. If stop() already
+                # signalled, poll() is not None and this is a no-op.
+                if child.poll() is None:
+                    logger.warning(
+                        "siphon supervisor: stop arrived before this intercept was published, so "
+                        "stop() could not signal it; terminating it here (pid %s)",
+                        getattr(child, "pid", "?"),
+                    )
+                    self._signal_quietly(child, "terminate")
+                with self._child_lock:
+                    self._child = None
                 break
 
             ran_for = time.time() - started

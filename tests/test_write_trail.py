@@ -32,21 +32,32 @@ def test_read_audit_filters_by_action_too():
 
 
 def test_the_trail_route_is_filterable_and_self_guarding():
+    """The filters are parsed in ONE place and applied in ONE place, after the port.
+
+    THE PROPERTY, NOT THE LOCATION. The parser moved to `web.write_trail_args` and the fetch to
+    `payloads.write_trail` when the route crossed to Flask, so the old single-segment assertion
+    would have demanded the old copy stay in the handler. What must remain true is what the test was
+    for: all three filters are read, the audit read receives them, the payload carries
+    available/reason, and the menus come from DISTINCT queries on the table itself.
+    """
     src = (PY / "admin" / "web.py").read_text()
-    seg = src.split("def _write_trail(self, query: dict) -> None:", 1)[1].split("def _audit(", 1)[0]
-    for key in ('query.get("scope")', 'query.get("action")', 'query.get("target")'):
-        assert key in seg
-    assert "read_audit(" in seg and "action=action_f" in seg
-    assert "available" in seg and "reason" in seg, \
+    parser = src.split("def write_trail_args(", 1)[1].split("def window_arg(", 1)[0]
+    for key in ('"scope"', '"action"', '"target"'):
+        assert key in parser, f"the shared parser does not read {key}"
+    fetcher = (PY / "admin" / "payloads.py").read_text().split("def write_trail(", 1)[1]
+    fetcher = fetcher.split("\ndef ", 1)[0]
+    assert "read_audit(" in fetcher and "scope=scope" in fetcher and "action=action" in fetcher
+    assert '"available"' in fetcher and '"reason"' in fetcher, \
         "an unreadable trail must say so, never read as a quiet history"
-    assert "DISTINCT scope" in seg and "DISTINCT action" in seg, \
+    assert "DISTINCT scope" in fetcher and "DISTINCT action" in fetcher, \
         "the filter menus must come from the table itself"
 
 
 def test_a_settings_apply_writes_one_audit_row_PER_KEY():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split('# US-10: THE TRAIL GETS THE SETTINGS WRITE TOO.', 1)[1].split("self._json({", 1)[0]
-    assert 'action = "revert" if body.get("revert") else "apply"' in seg
+    # THE TRAIL MOVED into payloads.settings_apply with the port; it is asserted where it lives.
+    src = (PY / "admin" / "payloads.py").read_text()
+    seg = src.split('# US-10: THE TRAIL GETS THE SETTINGS WRITE TOO', 1)[1].split('return 200, {', 1)[0]
+    assert 'action = "revert" if revert else "apply"' in seg
     assert "for key in raw_changes:" in seg, (
         "one row per key keeps a single-key provenance link an EXACT match; derived keys "
         "such as the reconciled ZEEK_IFACES are real writes and must be audited too")
@@ -55,8 +66,9 @@ def test_a_settings_apply_writes_one_audit_row_PER_KEY():
 
 
 def test_the_settings_payload_carries_provenance():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split("def _settings(self, query: dict) -> None:", 1)[1].split("def _settings_plan", 1)[0]
+    src = (PY / "admin" / "payloads.py").read_text()
+    # THE PROVENANCE READ MOVED into payloads.settings_payload with the port.
+    seg = src.split("def settings_payload(", 1)[1].split("\ndef ", 1)[0]
     assert "GUI_WRITE_ANNOTATION" in seg
     assert 'payload["provenance"] = provenance' in seg
 

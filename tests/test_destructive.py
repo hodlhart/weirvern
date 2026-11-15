@@ -60,28 +60,51 @@ def test_the_write_trail_table_is_a_shipped_schema():
 
 
 def test_enabling_siphon_in_settings_demands_a_reason():
+    """THE GUARD MOVED into payloads.settings_apply with the port; the handler must still ask it."""
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert 'enabling siphon puts this deployment in the traffic path' in src
-    assert 'siphon_now and not reason' in src
+    assert "payloads.settings_apply(" in src, "the apply route no longer uses the shared fetcher"
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    guard = payloads.split("def settings_apply(", 1)[1].split("\ndef ", 1)[0]
+    assert 'enabling siphon puts this deployment in the traffic path' in guard
+    assert 'siphon_now and not reason' in guard
 
 
 def test_a_siphon_plan_write_demands_a_reason():
+    """The guard MOVED into payloads.weirling_apply with the port; the handler must still ask it.
+
+    Asserting the console handler's text would demand the check be duplicated on the second surface,
+    which is the defect this port keeps removing.
+    """
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert 'merged.mode == "siphon" and not reason' in src
+    assert "payloads.weirling_apply(" in src, "the apply route no longer uses the shared fetcher"
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    guard = payloads.split("def weirling_apply(", 1)[1].split("\ndef ", 1)[0]
+    assert 'merged.mode == "siphon" and not reason' in guard, (
+        "the in-path reason guard vanished from the write path, so a plan that puts the sensor in "
+        "the traffic path can be applied without recording why"
+    )
 
 
 def test_revoke_demands_a_reason_on_both_surfaces():
     """The GUARD is what is pinned, not just the message: a flipped condition would leave the
     message in place while the write sails through (learned by mutating exactly that)."""
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    # the weirling-revoke guard: the condition, then the refusal JSON naming the requirement
+    # THE WEIRLING-REVOKE GUARD MOVED into web.weirling_revoke_args with the port; the handler must
+    # still ask it, and the condition and sentence are pinned where they now live.
     rev = src.split("def _weirlings_revoke", 1)[1].split("def ", 1)[0]
-    assert 'if not reason:' in rev, "the weirling-revoke reason guard vanished"
-    assert 'revoking a registration is a decision' in rev, "the refusal stopped naming why"
+    assert "weirling_revoke_args(" in rev, "the weirling-revoke route no longer asks the guard"
+    guard = src.split("def weirling_revoke_args(", 1)[1].split("\ndef ", 1)[0]
+    assert 'if not reason:' in guard, "the weirling-revoke reason guard vanished"
+    assert 'revoking a registration is a decision' in guard, "the refusal stopped naming why"
     # the sluice-revoke guard, on its own handler
     sl = src.split("def _sluice_revoke", 1)[1].split("def ", 1)[0]
-    assert 'if not reason:' in sl, "the sluice-revoke reason guard vanished"
-    assert 'a reason is required to revoke a rule' in sl, "the refusal stopped naming why"
+    # THE GUARD MOVED into web.sluice_revoke_args when the Flask surface began serving the route;
+    # asserting the handler's text would demand the logic be duplicated again. The handler must still
+    # ASK the shared guard, and the condition and sentence are pinned where they now live.
+    assert "sluice_revoke_args(" in sl, "the sluice-revoke route no longer asks the shared guard"
+    guard = src.split("def sluice_revoke_args(", 1)[1].split("\ndef ", 1)[0]
+    assert 'if not reason:' in guard, "the sluice-revoke reason guard vanished"
+    assert 'a reason is required to revoke a rule' in guard, "the refusal stopped naming why"
 
 
 def test_keep_and_trash_demand_a_note():

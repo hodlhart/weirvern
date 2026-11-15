@@ -1469,17 +1469,43 @@ def test_the_open_gate_is_a_WARNING_not_a_debug_line(caplog):
 
 # ── 4. the audit trail records authentication without the credential ───────────────────────
 
-def test_login_and_logout_append_auth_audit_rows():
+def test_login_and_logout_append_auth_audit_rows(monkeypatch):
     """A sign-in is a privileged action; the trail must not depend on the process log surviving.
 
-    The route cannot be driven over a socket in this suite, so the property is asserted on the
-    shipped source in the narrowest way: both the success/failure login path and logout call the
-    auth audit helper, and the helper writes scope="auth" with no password argument.
+    THIS USED TO GREP THE SOURCE. It asserted that `_login`'s body contained the literal call
+    `self._audit_auth("login", username, "rejected")`. The credential check now lives in
+    `requestauth.authenticate`, shared with the Flask form, so a source grep would have demanded
+    that the logic stay duplicated -- the wrong direction. The property is asserted by DRIVING the
+    shared function instead, which is both stronger and independent of where the code sits.
     """
-    src = WEB.read_text()
-    assert 'self._audit_auth("login", username, "rejected")' in src
-    assert 'self._audit_auth("login", record.username, "signed in")' in src
-    assert 'self._audit_auth("logout", ident.username, "signed out")' in src
-    helper = src[src.index("def _audit_auth"):src.index("def _login")]
-    assert 'scope="auth"' in helper
-    assert "password" not in helper.lower(), "the auth audit helper must never receive a password"
+    from weirvern.admin import requestauth
+
+    written: list[dict] = []
+
+    def fake_audit(ctx, action, username, reason):
+        written.append({"action": action, "username": username, "reason": reason})
+
+    monkeypatch.setattr(requestauth, "audit_auth", fake_audit, raising=True)
+
+    store = _store_with()
+    store.create_user("sam", users_mod.ROLE_VIEWER, "correct horse battery staple")
+    ctx = _ctx(store, token=None)
+
+    # a rejected attempt is audited, and the credential never reaches the trail
+    requestauth.authenticate(ctx, "sam", "wrong password entirely")
+    assert written and written[-1]["action"] == "login", written
+    assert written[-1]["reason"] == "rejected", written[-1]
+    assert all("password" not in k.lower() for k in written[-1]), written[-1]
+
+    # a successful one is audited under the account's OWN canonical name
+    requestauth.authenticate(ctx, "SAM", "correct horse battery staple")
+    assert written[-1]["reason"] == "signed in", written[-1]
+    assert written[-1]["username"] == "sam", written[-1]
+
+    # and the helper itself writes scope="auth" with no password parameter
+    from pathlib import Path
+
+    src = Path(requestauth.__file__).read_text(encoding="utf-8")
+    block = src[src.index("def audit_auth"):src.index("def authenticate")]
+    assert 'scope="auth"' in block
+    assert "password" not in block.lower(), "the auth audit helper must never receive a password"

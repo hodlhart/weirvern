@@ -1190,6 +1190,80 @@ def test_a_quiet_network_does_not_trip_the_watchdog():
     assert w._quiet_samples == 5
 
 
+# ── THE TEARDOWN MUST NOT CLAIM A RESTORE IT DID NOT SEND (WV1-27) ───────────────────────────
+#
+# `Watchdog.stop()` used to return None and set `restored_count = len(items)` -- the number of
+# mappings it TRIED, not the number whose restore frame went out. `_send` returns False on an
+# OSError, so a teardown where every send failed still reported the full count and logged "traffic
+# is no longer through Weirvern". That is the one sentence a teardown must never print on a
+# failure: the hosts involved keep believing this box is their gateway.
+
+def _armed(sender):
+    from weirvern.admin import watchdog as wd
+
+    w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:ff", sender=sender)
+    w._interceptions[(("198.51.100.10"), "192.0.2.1")] = wd.Interception(
+        host_ip="198.51.100.10", host_mac="00:00:5e:00:53:01",
+        claim_ip="192.0.2.1", real_mac="00:00:5e:00:53:02",
+        iface="eth1", our_mac="aa:bb:cc:dd:ee:ff")
+    return w
+
+
+def test_a_SUCCESSFUL_restore_counts_what_it_sent():
+    sent = []
+    w = _armed(lambda frame, kind: sent.append(kind))
+    assert w.stop() == 1
+    assert sent == ["restore"], f"expected one restore frame, got {sent}"
+    assert w.restored_count == 1
+    assert w.restore_attempted == 1
+
+
+def test_a_FAILED_restore_is_NOT_counted_as_restored(caplog):
+    """The defect. A sender that raises must leave the count at 0, record the attempt, and log at
+    ERROR rather than announcing that the network is clean."""
+    import logging
+
+    def boom(frame, kind):
+        raise OSError("network unreachable")
+
+    w = _armed(boom)
+    with caplog.at_level(logging.ERROR):
+        assert w.stop() == 0, "a restore that never sent must not be counted"
+    assert w.restored_count == 0, f"restored_count claimed {w.restored_count} restore(s) from zero sends"
+    assert w.restore_attempted == 1, (
+        "the attempt count is what lets a caller tell 'nothing to do' from 'every send failed'"
+    )
+    text = caplog.text
+    assert "ONLY 0 of 1" in text, f"a partial restore must say so: {text!r}"
+    assert "no longer through Weirvern" not in text, (
+        f"the success sentence was logged for a failed restore: {text!r}"
+    )
+
+
+def test_stop_is_IDEMPOTENT_and_returns_the_recorded_count():
+    """A second stop() must not report a fresh restore, and must not return None -- the old
+    signature did, which is why a caller had nothing to read."""
+    sent = []
+    w = _armed(lambda frame, kind: sent.append(kind))
+    assert w.stop() == 1
+    assert w.stop() == 1, "the idempotent branch must return the count it recorded"
+    assert sent == ["restore"], f"a second stop re-sent frames: {sent}"
+
+
+def test_nothing_to_restore_is_a_zero_attempt_not_a_failure(caplog):
+    """An intercept that never forged anything has nothing to undo. It must read as 0 attempted, so
+    the CLI does not warn about a restore failure that could not have happened."""
+    import logging
+
+    from weirvern.admin import watchdog as wd
+
+    w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:ff", sender=lambda *a: True)
+    with caplog.at_level(logging.ERROR):
+        assert w.stop() == 0
+    assert w.restore_attempted == 0
+    assert "ONLY" not in caplog.text
+
+
 # ── the self-destruct deadline (siphon-2's third layer) ───────────────────────────
 #
 # The case this exists for: a `kubectl exec` client that is SIGKILLed leaves the in-pod

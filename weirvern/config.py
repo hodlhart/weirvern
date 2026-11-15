@@ -28,6 +28,14 @@ def _int_env(name: str, default: int) -> int:
 
 
 
+# THE SCORE THE DECISION ACTUALLY COMPARES. `ensemble.detect_flows` fuses the per-model scores into
+# one number and thresholds THAT, so a calibrator fitted only on the individual detectors calibrates a
+# value nothing alerts on. The fused score is recorded into the calibration population under this
+# reserved name and fitted like any other, and the decision reads its threshold back. It lives in
+# config because both modules that need it already import config, and neither imports the other.
+FUSED_MODEL = "__fused__"
+
+
 def _env_int(name: str, default: int) -> int:
     raw = _clean_env(os.environ.get(name))
     if raw is None or raw == "":
@@ -141,6 +149,24 @@ class Settings:
     # ML_ELIGIBILITY=false is the kill switch. A missing/empty calibration leaves every model
     # eligible (the gate cannot invent a quarantine from no evidence).
     ml_eligibility: bool = field(default_factory=lambda: _env_bool("ML_ELIGIBILITY", True))
+    # MODELS REMOVED FROM THE FUSION, BY NAME, COMMA SEPARATED. This is a second rail beside
+    # eligibility, because the two exclusions fail differently. Eligibility bars a model whose
+    # measured false-alarm rate is out of budget, and a structural signature is DELIBERATELY
+    # allowed to override it, since the barred model may be the only one that saw the scan.
+    # A fusion exclusion is different in kind: the model is removed because it makes the fused
+    # score unmeasurable, so nothing should restore it. Measured on 4,770 host-windows: the
+    # Gradient Boosting student sits on a point mass at 0.99 covering 3.04% of windows and equals
+    # the fused maximum on 69.6% of them, so `max` fusion inherits its quantization and a
+    # conformal threshold returns 0.99 for every target from 1% to 0.2%, which stops the alert
+    # budget from controlling the alert count at all. Empty string restores the old fusion.
+    ml_fusion_exclude: str = field(
+        default_factory=lambda: _env_str("ML_FUSION_EXCLUDE", "Gradient Boosting"))
+    # WHEN ON, the alert bar is the calibrated threshold for the fused score rather than
+    # `base_threshold` reduced per window. The point of a conformal calibrator is that the
+    # threshold IS the chosen alerts-per-day, and an adaptive reduction applied on top of it
+    # silently spends a budget nobody chose. Off restores the previous decision exactly.
+    ml_calibrated_threshold: bool = field(
+        default_factory=lambda: _env_bool("ML_CALIBRATED_THRESHOLD", True))
     ml_eligibility_multiple: float = field(
         default_factory=lambda: _env_float("ML_ELIGIBILITY_MULTIPLE", 3.0)
     )

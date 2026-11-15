@@ -23,10 +23,13 @@ without a browser or a cluster.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from pathlib import Path
 
 import pytest
+
+from weirvern.admin import assets
 
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
 
@@ -182,26 +185,40 @@ def test_the_route_paths_match_what_the_frontend_fetches():
 
 
 def test_each_new_route_validates_its_input_before_querying():
-    """The handlers must reject bad input rather than pass it into a query.
+    """The routes must reject bad input rather than pass it into a query.
 
     `/api/zeeklog` is the one that matters most: its log label selects a TABLE NAME, so an
-    unvalidated value would be interpolated into SQL. The check is that the handler resolves
-    the label through ZEEK_LOGS rather than using it directly.
+    unvalidated value would be interpolated into SQL.
+
+    THE CHECK MOVED WITH THE PARSER. When the routes crossed to Flask the validation was extracted
+    into `zeeklog_args` and `graph_hosts`, which BOTH surfaces call, so asserting on the handler body
+    would now demand the old copy stay there and forbid the port. The property is unchanged: the
+    label is resolved through ZEEK_LOGS, and the tracked-host list is validated and capped.
     """
     src = (WEB.parent / "web.py").read_text()
-    i = src.find("def _zeeklog")
-    assert i > 0, "_zeeklog handler not found"
-    body = src[i : i + 1800]
-    assert "ZEEK_LOGS" in body, (
+
+    i = src.find("def zeeklog_args(")
+    assert i > 0, "the zeeklog parser not found"
+    parser = src[i:src.index("\ndef ", i + 10)]
+    assert "ZEEK_LOGS" in parser, (
         "the log label must be resolved through soc.ZEEK_LOGS, not interpolated into the SQL: "
         "the table name reaches an f-string in soc.zeek_log_hosts"
     )
-    assert "allowed.get(label)" in body, "the label is not looked up in the allow-list"
+    assert "allowed.get(label)" in parser, "the label is not looked up in the allow-list"
 
-    j = src.find("def _graph")
-    graph = src[j : j + 1800]
+    j = src.find("def graph_hosts(")
+    assert j > 0, "the graph parser not found"
+    graph = src[j:src.index("\ndef ", j + 10)]
     assert "too many hosts" in graph, "the tracked-host list must be capped"
     assert "does not look like an address" in graph, "tracked hosts must be validated"
+
+    # And the handlers must still go THROUGH the parsers: a shared helper nobody calls is no guard.
+    for handler_name, parser_name in (("def _zeeklog", "zeeklog_args("),
+                                      ("def _graph", "graph_hosts(")):
+        k = src.find(handler_name)
+        assert k > 0, f"{handler_name} not found"
+        body = src[k:src.index("\n        def ", k + 12)]
+        assert parser_name in body, f"{handler_name} does not use its shared parser"
 
 
 def test_soc_refuses_a_label_and_table_that_disagree():
@@ -325,12 +342,16 @@ def test_the_flow_drilldown_demands_a_filter_and_the_route_enforces_it():
         assert word in d["reason"], f"the refusal does not name {word!r}: {d['reason']}"
 
     src = (WEB.parent / "web.py").read_text()
-    i = src.find("def _flows")
-    assert i > 0, "_flows handler not found"
-    # Sliced to the handler's END, not a fixed window: a growing handler must not silently
-    # outrun the assertion (issue #31 grew it, and the window would have done exactly that).
-    body = src[i:src.index("\n        def ", i + 10)]
-    assert "port, proto or src is required" in body, "the route does not require a filter"
+    # THE REFUSAL MOVED to the shared parser when the route crossed to Flask, so the sentence lives
+    # in `flows_args` now and BOTH surfaces call it. The handler must still use it: an assertion on
+    # the handler's own text would demand the old copy stay and forbid the port.
+    i = src.find("def flows_args(")
+    assert i > 0, "the shared flows parser not found"
+    parser = src[i:src.index("\ndef ", i + 10)]
+    assert "port, proto or src is required" in parser, "the route does not require a filter"
+    handler = src[src.find("def _flows"):]
+    handler = handler[:handler.index("\n        def ", 12)]
+    assert "flows_args(" in handler, "the handler does not use the shared parser"
 
 
 def test_the_flow_drilldown_reports_truncation_and_the_total():
@@ -518,7 +539,7 @@ def test_connection_graph_derives_hops_from_outbound_ttls_only():
         def __init__(self, edges, total):
             self._edges, self._total = edges, total
 
-        def query(self, sql, parameters=None):
+        def query(self, sql, parameters=None, settings=None):
             return _Result(self._edges if "GROUP BY src_addr, dst_addr" in sql else self._total)
 
     ts = _dt.datetime(2026, 1, 1)
@@ -813,3 +834,88 @@ def test_the_flow_drill_accepts_a_destination_filter_and_binds_it():
     c2 = _C()
     soc.flows_matching(c2, dst="198.51.100.9", port=443)
     assert "dst_addr = %(dst)s" in c2.sqls[0] and "dst_port = %(port)s" in c2.sqls[0], c2.sqls[0]
+
+class _SlowClient:
+    """A client whose query never returns in time, the way a saturated ClickHouse behaves."""
+
+    def __init__(self):
+        self.seen_settings = []
+
+    def query(self, sql, parameters=None, settings=None):
+        self.seen_settings.append(settings)
+        if "uniqExact" in sql:
+            return type("R", (), {"result_rows": [(5,)]})()
+        raise RuntimeError("Code: 159. DB::Exception: Timeout exceeded: elapsed 25.1 seconds")
+
+
+def test_the_connection_graph_is_bounded_and_says_so():
+    """A WIDE GRAPH QUERY MUST END IN A NAMED REFUSAL, NOT A HELD WORKER THREAD.
+
+    MEASURED ON THE LIVE DEPLOYMENT (2026-11-15): `/api/graph?hours=24` took 103s and 108s on two
+    consecutive requests, and 0.3s minutes earlier on the same SQL, because the raw-flows aggregate
+    competes with ingestion (276M flows/day). Nothing bounded it, so every such request kept one of
+    the eight waitress threads for up to two minutes.
+
+    The limit is pushed to ClickHouse, and the refusal tells the operator the one thing that helps:
+    narrow the window.
+    """
+    client = _SlowClient()
+    out = assets.connection_graph(client, hours=24)
+    assert out["available"] is False, out
+    limit = client.seen_settings[0]
+    assert limit and limit.get("max_execution_time") == assets.GRAPH_MAX_SECONDS, limit
+    # The sentence names the limit AND the action, or the operator is left staring at a blank panel.
+    assert f"{assets.GRAPH_MAX_SECONDS}s" in out["reason"], out["reason"]
+    assert "narrow the window" in out["reason"], out["reason"]
+
+class _TimingOutOnWide:
+    """Answers only when the window is narrow enough, the way a loaded ClickHouse behaves."""
+
+    def __init__(self, widest_failing_hours=24):
+        self.widest_failing_hours = widest_failing_hours
+        self.attempts = []
+
+    def query(self, sql, parameters=None, settings=None):
+        since = (parameters or {}).get("since")
+        self.attempts.append((since, (settings or {}).get("max_execution_time")))
+        if len(self.attempts) == 1:
+            raise RuntimeError("Code: 159. DB::Exception: Timeout exceeded")
+        if "uniqExact" in sql:
+            return type("R", (), {"result_rows": [(2,)]})()
+        if "GROUP BY src_addr, dst_addr" in sql:
+            ts = _dt.datetime(2026, 1, 1)
+            return type("R", (), {"result_rows": [
+                ("198.51.100.10", "198.51.100.20", 51515, 443, 6,
+                 1000, 4, ts, ts, 64, 64),
+            ]})()
+        return type("R", (), {"result_rows": []})()
+
+
+def test_a_graph_that_cannot_afford_the_window_draws_a_narrower_one_and_says_so():
+    """A 24h aggregate that will not finish must not leave the panel empty.
+
+    MEASURED (2026-11-15): the same 24h query took 103s and 108s on consecutive requests. The
+    operator asked for 24h, so answering 1h silently would misreport the network; answering
+    nothing leaves a dead panel. The payload names BOTH windows, and the panel prints the pair.
+    """
+    client = _TimingOutOnWide()
+    out = assets.connection_graph(client, hours=24)
+    assert out["available"] is True, out
+    assert out["hours"] == 6, out
+    assert out["narrowed_from"] == 24, out
+    # The second attempt used a smaller budget AND a different window.
+    assert client.attempts[0][1] == assets.GRAPH_MAX_SECONDS
+    assert len(client.attempts) > 1
+    assert "narrowed_from" in ASSETS_JS, "the panel never prints the window it actually drew"
+
+
+def test_the_tracked_graph_climbs_the_same_ladder():
+    """A tracked query cannot prune either: the address filter sits beside an ORDER BY timestamp.
+
+    Measured at 52s for ONE tracked host over 24h, so it takes the same ladder rather than a
+    separate policy that would drift from the whole-graph one.
+    """
+    client = _TimingOutOnWide()
+    out = assets.top_edges_for(client, ["198.51.100.10"], hours=24)
+    assert out["available"] is True, out
+    assert out["hours"] == 6 and out["narrowed_from"] == 24, out

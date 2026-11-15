@@ -202,3 +202,36 @@ def test_the_deployment_surfaces_carry_the_gate_and_ship_it_disabled():
 
     worker = (ROOT / "weirvern/worker.py").read_text()
     assert "derive=False" in worker and "_is_gate_only(settings)" in worker
+
+
+def test_permitting_capture_on_the_management_NIC_never_permits_ENFORCEMENT():
+    """PREFER AN INDEPENDENT PORT, SUPPORT A SINGLE-NIC HOST -- without weakening the gate.
+
+    `--allow-management-nic` exists because a laptop with one NIC otherwise cannot run a sensor
+    at all. Capture on the management NIC is a READ: it misses most traffic, and the operator is
+    told so. ENFORCEMENT there is the box's own uplink, so it takes the machine doing the
+    blocking out of the network. The permission must therefore not reach the gate, and this test
+    pins that at the only place it could leak -- the shell conditional that decides.
+
+    It is a source test because the deploy script is shell, and the invariant is about which
+    variable a refusal reads. A behavioural test would need a target host with one NIC, which is
+    the situation being supported rather than the situation being tested.
+    """
+    script = (ROOT / "scripts/deploy-weirling.sh").read_text()
+
+    # The permission exists, is parsed, and is documented.
+    assert "--allow-management-nic" in script
+    assert "ALLOW_MGMT=1" in script, "the flag must actually be parsed"
+
+    # The gate's refusal must NOT consult the permission.
+    gate_at = script.index("REFUSING to enforce on")
+    gate_block = script[gate_at - 400:gate_at + 200]
+    assert "ALLOW_MGMT" not in gate_block, (
+        "the gate's management-NIC refusal now reads ALLOW_MGMT, so permitting capture has "
+        "silently permitted enforcement on the box's own uplink"
+    )
+
+    # And the two together are refused outright, rather than left to the check above.
+    assert "--gate cannot be combined with --allow-management-nic" in script, (
+        "a single-NIC host must not be able to arm a gate on its management port"
+    )
