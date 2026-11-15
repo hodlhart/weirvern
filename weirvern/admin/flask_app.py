@@ -908,6 +908,32 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         return jsonify(payloads.update_meta(ctx.backend,
                                            refresh=web.update_refresh(request.args)))
 
+    @app.post("/api/models/retrain")
+    @app.post("/api/models/retrain/<tail>")
+    def models_retrain_write(tail: str = ""):
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.model_action_args(body, tail)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with _connect() as client:
+                code, payload = payloads.model_action(
+                    client, by=(ident.username if ident else "operator"), **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = 502, {"error": f"could not record the request: "
+                                           f"{type(exc).__name__}", "code": 502}
+        return jsonify(payload), code
+
     @app.get("/api/overview")
     @gated
     def overview():

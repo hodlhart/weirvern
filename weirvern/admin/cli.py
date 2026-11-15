@@ -830,21 +830,19 @@ def cmd_tune(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int,
-               proxy_legacy: bool = False) -> int:
-    """Serve the Flask surface. This IS the console now: every API route lives here.
+def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int) -> int:
+    """Serve the Flask surface. This IS the console: every API route, read and write, lives here.
 
-    THE LEGACY SERVER IS NO LONGER STARTED BY DEFAULT. It used to run on loopback inside this process
-    and answer whatever Flask had not taken over -- correct while the migration was half done, and a
+    THE LEGACY SERVER IS GONE, not merely idle. It used to run on loopback inside this process and
+    answer whatever Flask had not taken over -- correct while the migration was half done, and a
     liability afterwards: a route Flask does not serve would be answered by a second implementation
-    nobody was testing, and the two would drift in exactly the places nobody looked. Every one of the
-    console's 83 API paths is ported, so the passthrough is now OPT-IN (`--proxy-legacy`) and exists
-    only for the one remaining prefix family, `/api/models/retrain/<id>`.
+    nobody was testing, and the two would drift in exactly the places nobody looked. The last family
+    (`/api/models/retrain/<action>`) is ported, so there is nothing left to forward, and a passthrough
+    kept "just in case" is a fallback nobody exercises.
 
     THE SIGNING KEY IS REQUIRED for the cookie the rendered pages need. Without it the pages refuse
-    and say so, and the JSON routes still work because they authenticate by header -- which is
-    exactly the state a deployment is in between applying this image and adding the key to its
-    Secret, and why the deployment declares the key explicitly rather than letting it be absent.
+    and say so, and the JSON routes still work because they authenticate by header -- which is why the
+    deployment declares the key rather than leaving it absent.
     """
     from weirvern.admin import flask_app, web
 
@@ -853,16 +851,10 @@ def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port:
                         "to sign a session cookie and will say so. The JSON routes still work."))
 
     ctx = web.build_context(admin_client, settings, pdir, namespace)
-    proxy_to = ""
-    if proxy_legacy:
-        legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
-        proxy_to = f"http://127.0.0.1:{legacy.port}"
-        print(_c("dim", f"    --proxy-legacy: routes this app does not serve go to {proxy_to}"))
-
-    app = flask_app.create_app(ctx, proxy_to=proxy_to)
+    app = flask_app.create_app(ctx)
     print(_c("bold", f"Weirvern on http://{host}:{port}"))
     print(_c("dim", "    rendered pages: /login /register /home /block"))
-    print(_c("dim", "    the JSON API is served by this app; nothing is passed through by default"))
+    print(_c("dim", "    every API route is served by this app; nothing is passed through"))
     # WAITRESS WHEN AVAILABLE. Werkzeug's server is single-process and documented as not for
     # production; it stays as the fallback so the surface can still be started without that
     # dependency, and says which server answered.
@@ -1508,9 +1500,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--flask", action="store_true",
                    help="serve the Flask surface. This is the console now: every API route lives "
                         "there, so this is the deployment's entry point")
-    s.add_argument("--proxy-legacy", action="store_true",
-                   help="with --flask: also start the old handler on loopback and pass it whatever "
-                        "this app does not serve (only /api/models/retrain/<id> remains)")
     s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("prune", help="apply the per-component disk caps")

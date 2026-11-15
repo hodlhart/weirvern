@@ -711,6 +711,9 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/settings/apply": ("settings_apply", "weirvern.admin.payloads.settings_apply"),
     "/api/settings/test": ("settings_test", "weirvern.admin.payloads.settings_test"),
     "/api/settings/sonar": ("settings_sonar", "weirvern.admin.payloads.settings_sonar"),
+    # THE ONE PREFIX FAMILY: the console matches /api/models/retrain/<action> and takes the tail as
+    # the action, so the registry key is a template and the guard looks for that literal decorator.
+    "/api/models/retrain/<tail>": ("model_action", "weirvern.admin.payloads.model_action"),
 }
 
 
@@ -727,7 +730,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 32, (
+    assert len(PORTED_WRITES) >= 33, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1853,3 +1856,81 @@ def test_the_settings_test_and_sonar_answer_identically(surfaces, monkeypatch):
     assert console_lines[0] == {"progress": {"step": "dhcp"}}, console_lines
     assert console_lines[-1]["result"]["ok"] is True, console_lines
     assert cc, "the patches above must target the real module"
+
+
+def test_the_retrain_family_answers_identically(surfaces, monkeypatch):
+    """The LAST family: /api/models/retrain and its /<action> sibling.
+
+    THREE THINGS THAT DECIDE WHAT WATCHES THE NETWORK. A retrain files a candidate and changes nothing
+    live; a keep installs it; a trash discards it. The note is required for the last two and, exactly
+    as the console has always done, NOT recorded on the request row. And a keep with no retrain to
+    judge answers 400 rather than filing an action with an empty target, which the worker would then
+    have to guess about.
+    """
+    import types
+
+    from weirvern.models import actions
+
+    legacy, app = surfaces()
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    def _same(path, payload, expected):
+        raw = json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:220]!r} / {fb[:220]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:260]!r}\n  flask:   {fb[:260]!r}")
+        return json.loads(fb)
+
+    filed: list = []
+    latest: dict = {"action_id": ""}
+    _patch(monkeypatch, "weirvern.models.actions.request",
+           lambda client, **kw: (filed.append(kw) or "act-1"))
+    _patch(monkeypatch, "weirvern.models.actions.latest",
+           lambda client, action: {"action_id": latest["action_id"]})
+
+    # 1. An unknown action is refused with the vocabulary.
+    body = _same("/api/models/retrain", {"action": "delete"}, 400)
+    assert body["error"] == "action must be retrain, keep or trash", body
+
+    # 2. keep and trash need a note; retrain does not.
+    body = _same("/api/models/retrain", {"action": "keep"}, 400)
+    assert "a note is required for keep and trash" in body["error"], body
+    assert filed == [], filed
+
+    body = _same("/api/models/retrain", {"action": "retrain"}, 200)
+    assert body == {"ok": True, "action": "retrain", "action_id": "act-1",
+                    "note": "filed; the worker builds a candidate on its next cycle and NOTHING "
+                            "live changes until you keep it"}, body
+
+    # 3. A keep with nothing to judge is a 400, not a request with an empty target.
+    body = _same("/api/models/retrain", {"action": "keep", "note": "it looks better"}, 400)
+    assert body == {"error": "there is no retrain to judge yet", "code": 400}, body
+
+    # 4. With a retrain to judge, the target is the LATEST one and the note is NOT recorded.
+    latest["action_id"] = "act-0"
+    del filed[:]
+    body = _same("/api/models/retrain", {"action": "keep", "note": "it looks better"}, 200)
+    assert body == {"ok": True, "action": "keep", "action_id": "act-1",
+                    "note": "filed; the worker applies it on its next cycle"}, body
+    assert filed[0]["target_id"] == "act-0" and filed[0]["note"] == "", filed
+    assert filed[0]["action"] == actions.KEEP, filed
+
+    # 5. THE ACTION MAY RIDE IN THE URL, and the body wins over it.
+    del filed[:]
+    body = _same("/api/models/retrain/trash", {"note": "stale candidate"}, 200)
+    assert body["action"] == "trash", body
+    assert filed[0]["action"] == actions.TRASH, filed
+
+    del filed[:]
+    body = _same("/api/models/retrain/trash", {"action": "retrain"}, 200)
+    assert body["action"] == "retrain", body
+    assert filed[0]["action"] == actions.RETRAIN, filed
+
+    # 6. A named target wins over the latest.
+    del filed[:]
+    _same("/api/models/retrain", {"action": "trash", "note": "x", "target_id": "act-7"}, 200)
+    assert filed[0]["target_id"] == "act-7", filed

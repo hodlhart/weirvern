@@ -39,8 +39,7 @@ def test_the_gui_deployment_starts_the_flask_surface():
         "dashboard answers from the legacy handler"
     )
     assert "--proxy-legacy" not in command, (
-        "the deployment asks for the passthrough, which would answer unported paths from a second "
-        "implementation instead of failing visibly"
+        "the deployment asks for a passthrough that no longer exists"
     )
 
 
@@ -102,18 +101,14 @@ def test_the_installer_creates_the_signing_key_on_a_fresh_and_an_existing_secret
     assert "openssl rand" in block, "the key is not random"
 
 
-def test_the_flask_entry_point_does_not_start_the_console_by_default():
-    """THE PASSTHROUGH IS OPT-IN. Reading this from the source is deliberate: the defect it prevents
-    is a second surface answering a route nobody tested, and that is a wiring fact, not a behaviour one
-    request can show."""
+def test_the_flask_entry_point_does_not_start_the_console_at_all():
+    """THE PASSTHROUGH IS GONE, not switched off. Reading this from the source is deliberate: the
+    defect it prevents is a second surface answering a route nobody tested, and a fallback kept "just
+    in case" is exactly the dead path that makes an unported route look served."""
     src = (ROOT / "weirvern" / "admin" / "cli.py").read_text()
     body = src.split("def _run_flask(", 1)[1].split("\n\ndef ", 1)[0]
-    assert "proxy_legacy: bool = False" in body, "the legacy server is still started unconditionally"
-    guard = body.split("if proxy_legacy:", 1)
-    assert len(guard) == 2, "the legacy server is not guarded by proxy_legacy"
-    assert "GuiServer(" in guard[1].split("\n    app =", 1)[0], (
-        "the guard does not wrap the legacy server's construction"
-    )
+    assert "GuiServer(" not in body, "the entry point still starts the console on loopback"
+    assert "proxy_to" not in body, "the entry point still configures a passthrough"
     assert "waitress" in body, (
         "the deployment serves with Werkzeug's development server, which is single-process and "
         "documented as not for production"
@@ -177,4 +172,4 @@ def test_the_cli_parser_builds_and_every_command_has_a_handler():
     ns = parser.parse_args(["status"])
     assert callable(ns.func), "the status subcommand carries no callable"
     gui = parser.parse_args(["gui", "--flask"])
-    assert callable(gui.func) and gui.flask is True and gui.proxy_legacy is False, gui
+    assert callable(gui.func) and gui.flask is True, gui

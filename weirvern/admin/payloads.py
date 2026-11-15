@@ -2237,6 +2237,45 @@ def settings_sonar(ctx: Any, connect: Any, *, sensor_id: str, iface: str, mgmt: 
     return 200, result
 
 
+def model_action(client: Client, *, action: str, note: str, target_id: str,
+                 by: str) -> tuple[int, dict[str, Any]]:
+    """File a retrain, keep or trash request, and say what happens next.
+
+    NOTHING LIVE CHANGES ON REQUEST. A retrain files a candidate the worker builds on its next cycle;
+    a keep or a trash is a DECISION the worker applies then. The note on the request says which of
+    those the caller just did, because "filed" alone reads as done.
+
+    THE TARGET OF A KEEP OR TRASH IS THE LATEST RETRAIN unless one is named, and a deployment with no
+    retrain to judge answers 400 rather than filing an action with an empty target -- which the worker
+    would then have to guess about.
+
+    `note` IS REQUIRED FOR keep AND trash (checked by the caller) AND NOT RECORDED: the request is
+    filed with an empty note, exactly as the console has always done. Preserved rather than fixed here,
+    because whether the note belongs on the action row or in the write trail is a product decision.
+    """
+    from weirvern.models import actions  # noqa: PLC0415
+
+    try:
+        if action == actions.RETRAIN:
+            action_id = actions.request(client, action=actions.RETRAIN, by=by, note=note)
+            note_out = ("filed; the worker builds a candidate on its next cycle and NOTHING live "
+                        "changes until you keep it")
+        else:
+            target = target_id
+            if not target:
+                latest = actions.latest(client, actions.RETRAIN) or {}
+                target = str(latest.get("action_id") or "")
+            if not target:
+                return 400, {"error": "there is no retrain to judge yet", "code": 400}
+            action_id = actions.request(client, action=action, by=by, target_id=target, note="")
+            note_out = ("filed; the worker applies it on its next cycle" if action == actions.KEEP
+                        else "filed; the worker discards the candidate on its next cycle")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("model action failed: %s", exc)
+        return 502, {"error": f"could not record the request: {type(exc).__name__}", "code": 502}
+    return 200, {"ok": True, "action": action, "action_id": action_id, "note": note_out}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

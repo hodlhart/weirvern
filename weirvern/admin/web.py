@@ -961,58 +961,32 @@ def _build_handler(ctx: GuiContext):
             action in the URL. The request is a ROW in ClickHouse because the worker (which owns the
             model artifacts) is a different pod; this handler only files it and says what it filed.
             The response is explicit about that: nothing has happened yet when it returns 200.
+
+            THE DECISION LIVES IN payloads.model_action, shared with the Flask surface: the action's
+            resolution, the note required for keep and trash, the target defaulting to the latest
+            retrain, and the sentence that says what the worker will do next.
             """
             if not self._authorize():
                 return
-            from weirvern.models import actions  # noqa: PLC0415
-
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            action = str(body.get("action") or "").strip().lower()
-            if not action:
-                # The action may ride in the URL (`/api/models/retrain/keep`), which is the shape a
-                # reader would guess from the route table.
-                tail = str(getattr(self, "path", "")).split("?")[0].rsplit("/", 1)[-1]
-                action = tail if tail in (actions.RETRAIN, actions.KEEP, actions.TRASH) else ""
-            if action not in (actions.RETRAIN, actions.KEEP, actions.TRASH):
-                return self._error(400, "action must be retrain, keep or trash")
-
-            # BF-9: choosing the model this deployment will serve (or discarding the candidate)
-            # is a decision like any other -- the note is required for keep and trash and is
-            # recorded with the actor and the time on the same row.
+            tail = str(getattr(self, "path", "")).split("?")[0].rsplit("/", 1)[-1]
+            try:
+                args = model_action_args(body, tail)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             ident = self._identity()
-            by = ident.username if ident else "operator"
-            note_in = str(body.get("note") or "").strip()
-            if action in (actions.KEEP, actions.TRASH) and not note_in:
-                return self._error(400, "choosing the model to serve is a decision; a note is "
-                                        "required for keep and trash and is recorded with your "
-                                        "name")
             try:
                 with self._with_client() as client:
-                    if action == actions.RETRAIN:
-                        action_id = actions.request(client, action=actions.RETRAIN, by=by,
-                                                    note=str(body.get("note") or "").strip())
-                        note = ("filed; the worker builds a candidate on its next cycle and "
-                                "NOTHING live changes until you keep it")
-                    else:
-                        target = str(body.get("target_id") or "").strip()
-                        if not target:
-                            latest = actions.latest(client, actions.RETRAIN) or {}
-                            target = str(latest.get("action_id") or "")
-                        if not target:
-                            return self._error(400, "there is no retrain to judge yet")
-                        action_id = actions.request(client, action=action, by=by, target_id=target,
-                                                    note="")
-                        note = ("filed; the worker applies it on its next cycle"
-                                if action == actions.KEEP
-                                else "filed; the worker discards the candidate on its next cycle")
+                    code, payload = payloads.model_action(
+                        client, by=(ident.username if ident else "operator"), **args)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("model action failed: %s", exc)
-                return self._error(502, f"could not record the request: {type(exc).__name__}")
-            self._json({"ok": True, "action": action, "action_id": action_id, "note": note})
+                code, payload = 502, {"error": f"could not record the request: "
+                                               f"{type(exc).__name__}", "code": 502}
+            self._json(payload, code)
 
         def _window_arg(self, query: dict, default: int, lo: int, hi: int) -> int | None:
             """The request's time window: `hours` (relative) or `from`/`to` (absolute).
@@ -3466,6 +3440,29 @@ def sonar_args(body: dict) -> dict:
     return {"sensor_id": str(body.get("sensor") or "").strip(),
             "iface": str(body.get("interface") or "").strip(),
             "mgmt": str(body.get("mgmt_interface") or "").strip()}
+
+
+def model_action_args(body: dict, tail: str = "") -> dict:
+    """The action, the note and the target. `tail` is the URL's last segment, if any.
+
+    THE BODY WINS OVER THE URL: `/api/models/retrain/keep` is the shape a reader guesses from the route
+    table, and a body naming a different action must not be silently overridden by it.
+    """
+    from weirvern.models import actions  # noqa: PLC0415
+
+    action = str(body.get("action") or "").strip().lower()
+    if not action and tail in (actions.RETRAIN, actions.KEEP, actions.TRASH):
+        action = tail
+    if action not in (actions.RETRAIN, actions.KEEP, actions.TRASH):
+        raise ValueError("action must be retrain, keep or trash")
+    note = str(body.get("note") or "").strip()
+    # BF-9: choosing the model this deployment will serve (or discarding the candidate) is a decision
+    # like any other -- the note is required for keep and trash.
+    if action in (actions.KEEP, actions.TRASH) and not note:
+        raise ValueError("choosing the model to serve is a decision; a note is required for keep and "
+                         "trash and is recorded with your name")
+    return {"action": action, "note": note,
+            "target_id": str(body.get("target_id") or "").strip()}
 
 
 def sensor_addresses(ctx) -> list[str]:
