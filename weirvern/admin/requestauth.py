@@ -16,6 +16,7 @@ The handler keeps its methods; they delegate here.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from weirvern.admin import gui_auth
@@ -305,5 +306,13 @@ def write_refusal(ctx: Any, headers: Any, *,
         return False, (403, getattr(auth, "reason", "") or "write access is disabled")
 
     # A token is configured but this request did not present a usable one. The response never
-    # distinguishes absent, empty and wrong.
-    return False, (403, "a valid operator token or an admin sign-in is required to change settings")
+    # distinguishes absent, empty and wrong, and the delay is applied HERE rather than at each
+    # call site: two copies of a security control are free to disagree about the escalation.
+    try:
+        delay = float(auth.delay_for(addr) or 0)
+    except Exception:  # noqa: BLE001
+        delay = 0.0
+    if delay:
+        time.sleep(delay)
+    logger.warning("rejected an unauthenticated settings write from %s", addr or "unknown")
+    return False, (401, "a valid admin session or operator token is required to change settings")

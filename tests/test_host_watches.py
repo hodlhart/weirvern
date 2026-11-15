@@ -116,7 +116,13 @@ def test_the_watch_route_exists_and_goes_through_the_operator_gate():
         "the watch route does not consult the operator token, so anyone on the LAN "
         "could rewrite the tracking list"
     )
-    assert "write_watch" in body and "watch_index" in body, (
+    assert "payloads.watch(" in body, "the route does not use the shared fetcher"
+
+    # THE MUTATION MOVED into payloads.watch with the port; it must still WRITE and READ BACK.
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    fetcher = payloads[payloads.index("def watch("):]
+    fetcher = fetcher[:fetcher.index("\ndef ")]
+    assert "write_watch" in fetcher and "watch_index" in fetcher, (
         "the route must WRITE and READ BACK -- render what landed, not what was asked"
     )
 

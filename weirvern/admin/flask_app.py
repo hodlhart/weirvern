@@ -1023,6 +1023,35 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             lambda: ctx.connect_factory(ctx.settings), settings=ctx.settings,
             **web.weirlings_args(request.args)))
 
+    # ── the write surface, one route at a time ──────────────────────────────────────────────────
+    #
+    # EVERY write takes `requestauth.write_refusal` FIRST, before the body is even read: the gate
+    # decides whether this caller may write at all, and the body cannot change that answer.
+
+    @app.post("/api/watch")
+    def watch():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.watch_body(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.watch(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.watch_failure(exc)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 

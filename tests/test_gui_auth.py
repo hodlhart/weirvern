@@ -513,10 +513,15 @@ def test_the_failure_delay_is_bounded():
 
 
 def test_the_response_never_says_whether_a_token_is_configured():
-    """Distinguishing 'no token' from 'wrong token' helps an attacker, not an operator."""
-    src = WEB.read_text()
-    i = src.index("def _authorize(")
-    body = src[i:i + 4000]
+    """Distinguishing 'no token' from 'wrong token' helps an attacker, not an operator.
+
+    THE MESSAGE MOVED to `requestauth.write_refusal` when the console's `_authorize` began
+    delegating to it. The property is unchanged and is asserted where the one implementation now
+    lives; the console must not keep a second wording of its own.
+    """
+    auth_src = (WEB.parent / "requestauth.py").read_text()
+    i = auth_src.index("def write_refusal(")
+    body = auth_src[i:i + 4000]
     # The disabled case explains itself (the operator needs to know); the WRONG case must not
     # distinguish anything. The wording gained "admin session" when accounts landed -- a signed-in
     # admin is now the normal write credential and the token is the break-glass path -- but the
@@ -524,6 +529,12 @@ def test_the_response_never_says_whether_a_token_is_configured():
     assert "a valid admin session or operator token is required" in body
     assert "the token was wrong" not in body.lower()
     assert "did not match" not in body.lower()
+
+    console = WEB.read_text()
+    j = console.index("def _authorize(")
+    assert "a valid admin session or operator token is required" not in console[j:j + 1200], (
+        "the console keeps its own copy of the refusal wording, so the two surfaces can drift"
+    )
 
 
 def test_from_env_reads_the_named_variable():
@@ -561,10 +572,17 @@ def test_the_settings_page_states_the_no_TLS_boundary():
 
 
 def test_the_json_body_must_be_an_object():
-    """A list or a bare string would be indexed as a dict and fail deep inside a handler."""
+    """A list or a bare string would be indexed as a dict and fail deep inside a handler.
+
+    THE PARSE MOVED into `web.json_body` when the write surface began to be ported, so both surfaces
+    share its messages; `_read_body` reads the bytes and delegates rather than keeping a second
+    parser that could word the same failure differently.
+    """
     src = WEB.read_text()
-    i = src.index("def _read_body(")
+    i = src.index("def json_body(")
     assert "isinstance(parsed, dict)" in src[i:i + 900]
+    j = src.index("def _read_body(")
+    assert "json_body(" in src[j:j + 700]
 
 
 # ── the cluster-side grant the write path needs ────────────────────────────────────────────

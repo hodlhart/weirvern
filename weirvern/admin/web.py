@@ -50,7 +50,6 @@ import json
 import logging
 import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -2447,86 +2446,30 @@ def _build_handler(ctx: GuiContext):
         def _authorize(self) -> bool:
             """Whether this request may WRITE. Sends the refusal itself.
 
-            Two credentials open the write path, both admin-equivalent:
-              * a signed-in admin account session (the normal case), or
-              * the deployment operator token -- break-glass: it recovers a lost admin
-                password and drives automation, and it is why losing every password cannot
-                lock a deployment out of its own configuration.
-
-            ── ORDER: THE TOKEN IS CHECKED REGARDLESS OF THE SESSION (audit F049) ──────────────
-
-            This used to return the session's verdict FIRST, so a request carrying a viewer session
-            AND the valid token was refused as a viewer with the token never examined -- measured
-            against the real handler:
-
-                viewer session + VALID token  -> 403 "this account is a viewer"
-                no session     + VALID token  -> AUTHORIZED
-
-            Same credential, opposite answers, decided by whether the browser happened to be
-            signed in. The token is a deployment-wide credential that does not depend on the
-            account, so it is now evaluated first and `via="token"` records which one opened the
-            gate. Nothing is weakened by that ordering: a viewer without the token still gets the
-            viewer refusal below, which is the case that must keep working.
-
-            The TOKEN check is `gated=True` so a wrong token counts toward the escalating delay,
-            and a token that is merely ABSENT still falls through to the account path -- the
-            difference matters, because a read that carries no token must not be slowed down here.
+            ONE IMPLEMENTATION (see requestauth.write_refusal). The order, the five refusals and the
+            escalating delay all live there now, so the console and the Flask front door cannot
+            disagree about who may change something -- which they did: the two copies ended on a 403
+            and a 401 with different sentences for the same request.
             """
-            presented = gui_auth.token_from_request(self)
-            if presented and self._token_role(gated=True):
+            ok, refusal = requestauth.write_refusal(ctx, self, addr=self._client_addr())
+            if ok:
                 return True
-
-            ident = self._identity()
-            if ident is not None:
-                if ident.must_change:
-                    self._error(403, "change your password before changing anything else")
-                    return False
-                if ident.is_admin:
-                    return True
-                self._error(403, "this account is a viewer: it can read every view but cannot "
-                                 "change settings or manage accounts. Ask an admin.")
-                return False
-            auth = getattr(ctx, "auth", None)
-            if auth is None:
-                self._error(503, "write access is not available: the GUI started without an "
-                                 "authentication module")
-                return False
-            if not auth.enabled:
-                # No token configured and no session. When accounts exist, the useful thing to
-                # say is "sign in"; otherwise it is the token's own explanation.
-                if _accounts_on(ctx):
-                    self._error(403, "sign in with an admin account to change settings")
-                else:
-                    self._error(403, auth.reason)
-                return False
-            addr = self._client_addr()
-            # Escalating delay, bounded. The response never distinguishes absent, empty and wrong.
-            delay = auth.delay_for(addr)
-            if delay:
-                time.sleep(delay)
-            logger.warning("rejected an unauthenticated settings write from %s", addr or "unknown")
-            self._error(401, "a valid admin session or operator token is required to change "
-                             "settings")
+            code, message = refusal if refusal is not None else (403, "write access is refused")
+            self._error(code, message)
             return False
 
         def _read_body(self, limit: int = 65536) -> dict:
             """The request body as JSON, or raise ValueError.
 
-            Bounded: an unbounded read on a LAN port is a memory-growth path.
+            Bounded: an unbounded read on a LAN port is a memory-growth path. The PARSE is shared
+            (`web.json_body`), so the messages a caller sees are the same on both surfaces.
             """
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0:
                 raise ValueError("a JSON body is required")
             if length > limit:
                 raise ValueError(f"body too large ({length} bytes)")
-            raw = self.rfile.read(length)
-            try:
-                parsed = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise ValueError(f"body is not valid JSON: {exc}") from exc
-            if not isinstance(parsed, dict):
-                raise ValueError("body must be a JSON object")
-            return parsed
+            return json_body(self.rfile.read(length), limit=limit)
 
         def do_POST(self) -> None:  # noqa: N802
             if self._redirect_to_https():
@@ -3010,24 +2953,18 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            src_addr = str(body.get("src_addr") or "").strip()
-            if not src_addr:
-                return self._error(400, "'src_addr' is required")
-            on = body.get("on")
-            if not isinstance(on, bool):
-                return self._error(400, "'on' must be true or false")
             try:
-                with self._with_client() as client:
-                    status_mod.write_watch(client, src_addr=src_addr, watching=on)
-                    watched, err = status_mod.watch_index(client)
+                args = watch_body(body)
             except ValueError as exc:
                 return self._error(400, str(exc))
+            try:
+                with self._with_client() as client:
+                    # SHARED WITH THE FLASK SURFACE (payloads.watch), status included: the write
+                    # either lands and is read back, or answers why it did not.
+                    code, payload = payloads.watch(client, **args)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"could not record the watch: {exc}")
-            if err is not None:
-                return self._error(503, f"the watch was written but could not be read back: {err}")
-            self._json({"ok": True, "watching": src_addr in watched, "src_addr": src_addr})
+                code, payload = payloads.watch_failure(exc)
+            self._json(payload, code)
 
         def _settings_plan(self) -> None:
             """Validate and describe a proposed change WITHOUT touching anything.
@@ -4170,6 +4107,44 @@ def weirlings_args(query: dict) -> dict:
     """The fleet view's two booleans: problem sensors only, and include revoked rows."""
     return {"include_problems": _query_bool(query, "problems") is True,
             "include_revoked": _query_bool(query, "revoked") is True}
+
+
+def json_body(raw: bytes, *, limit: int = 65536) -> dict:
+    """The request body as a JSON OBJECT, or raise ValueError with the console's own sentence.
+
+    TAKES RAW BYTES, NOT A REQUEST. http.server hands over what it read from `rfile` and Flask hands
+    over `request.get_data()`, and the messages below are part of what a caller sees, so they live in
+    one place rather than in two parsers that would drift.
+
+    Bounded: an unbounded read on a LAN port is a memory-growth path.
+    """
+    length = len(raw)
+    if length <= 0:
+        raise ValueError("a JSON body is required")
+    if length > limit:
+        raise ValueError(f"body too large ({length} bytes)")
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"body is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("body must be a JSON object")
+    return parsed
+
+
+def watch_body(body: dict) -> dict:
+    """The watch toggle's validated fields, with the console's sentences.
+
+    `on` must be a BOOLEAN, not a truthy string: "off" is truthy, and a toggle that read it as
+    true would stop un-watching from ever working.
+    """
+    src_addr = str(body.get("src_addr") or "").strip()
+    if not src_addr:
+        raise ValueError("'src_addr' is required")
+    on = body.get("on")
+    if not isinstance(on, bool):
+        raise ValueError("'on' must be true or false")
+    return {"src_addr": src_addr, "on": on}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

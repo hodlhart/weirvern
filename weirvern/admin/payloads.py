@@ -1474,6 +1474,32 @@ def weirlings(with_client: Any, *, settings: Any, include_problems: bool,
     return payload
 
 
+def watch(client: Client, *, src_addr: str, on: bool) -> tuple[int, dict[str, Any]]:
+    """Toggle one host's place on the watch list, and read the state BACK from the store.
+
+    RETURNS (STATUS, PAYLOAD). The write either lands or it does not, and the answer is what the
+    store says afterwards -- the same read-back rule the review write follows. A 400 from the store
+    is a rejected value; anything else is a failed write.
+    """
+    try:
+        status_mod.write_watch(client, src_addr=src_addr, watching=on)
+        watched, err = status_mod.watch_index(client)
+    except ValueError as exc:
+        return 400, {"error": str(exc), "code": 400}
+    except Exception as exc:  # noqa: BLE001
+        return watch_failure(exc)
+    if err is not None:
+        return 503, {"error": f"the watch was written but could not be read back: {err}",
+                     "code": 503}
+    return 200, {"ok": True, "watching": src_addr in watched, "src_addr": src_addr}
+
+
+def watch_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """The console's own failure shape for a watch write that did not land."""
+    logger.warning("watch write failed: %s", exc)
+    return 503, {"error": f"could not record the watch: {exc}", "code": 503}
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415

@@ -207,6 +207,7 @@ class _CM:
 def _ctx(client):
     class _Auth:
         enabled = False
+        reason = "no token configured"
 
         def check(self, presented, client=""):
             return False
@@ -236,6 +237,25 @@ def _legacy_http(port: int, path: str):
 
 def _flask_http(app, path: str):
     resp = app.test_client().get(path)
+    return resp.status_code, resp.data
+
+
+def _post_legacy(port: int, path: str, raw: bytes, headers: dict | None = None):
+    """POST to the console, treating a refusal as an answer."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=raw, method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def _post_flask(app, path: str, raw: bytes, headers: dict | None = None):
+    resp = app.test_client().post(
+        path, data=raw,
+        headers={"Content-Type": "application/json", **(headers or {})})
     return resp.status_code, resp.data
 
 
@@ -641,3 +661,82 @@ def test_the_users_read_is_admin_gated_identically_and_answers_when_granted(surf
     assert fstatus == lstatus == 200, f"console {lstatus}, flask {fstatus}"
     assert json.loads(fbody) == json.loads(lbody)
 
+
+# ── the WRITE surface ───────────────────────────────────────────────────────────────────────
+#
+# Writes are a different contract from reads: the GATE answers before the body is read, several
+# routes answer with a status of their own, and a mutation's answer is what the store says AFTER it
+# landed. The registry below is the work list for the 34 POST entries; a route appears once it has
+# moved, and the count is a ratchet like the read one.
+
+PORTED_WRITES: dict[str, tuple[str, str]] = {
+    "/api/watch": ("watch", "weirvern.admin.payloads.watch"),
+}
+
+
+def test_every_write_port_has_a_fetcher_that_exists():
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    for path, (fetcher, _dotted) in PORTED_WRITES.items():
+        assert f"def {fetcher}(" in src, f"{path} names payloads.{fetcher}, which does not exist"
+
+
+def test_every_write_port_is_routed_by_flask():
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
+    for path in PORTED_WRITES:
+        assert f'@app.post("{path}")' in src, f"{path} is listed as ported but Flask does not route it"
+
+
+def test_the_ported_write_count_only_grows():
+    assert len(PORTED_WRITES) >= 1, (
+        f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
+
+
+def test_the_watch_write_answers_identically(surfaces, monkeypatch):
+    """The WRITE GATE, the body sentences and the read-back all match on both surfaces.
+
+    THE GATE IS THE POINT OF THIS TEST. The two write-gate implementations had already drifted: the
+    console answered 401 with its own sentence and applied the escalating delay, while
+    `requestauth.write_refusal` answered 403 with a different sentence and no delay. Both surfaces
+    now call the shared one, so this compares the refusal, the landed write and every malformed-body
+    case.
+    """
+    import types
+
+    legacy, app = surfaces()
+    raw = b'{"src_addr": "203.0.113.9", "on": true}'
+
+    # 1. Refused: no session and no token.
+    ls, lb = _post_legacy(legacy.port, "/api/watch", raw)
+    fs, fb = _post_flask(app, "/api/watch", raw)
+    assert fs == ls, f"console {ls}, flask {fs}"
+    assert json.loads(fb) == json.loads(lb), (
+        f"the write refusal differs.\n  console: {lb[:200]!r}\n  flask:   {fb[:200]!r}")
+
+    # 2. Granted: an admin session through the SHARED identity helper, then the write lands.
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+    calls = []
+    _patch(monkeypatch, "weirvern.admin.status.write_watch",
+           lambda client, *, src_addr, watching: calls.append((src_addr, watching)))
+    _patch(monkeypatch, "weirvern.admin.status.watch_index",
+           lambda client: ({"203.0.113.9"}, None))
+
+    ls, lb = _post_legacy(legacy.port, "/api/watch", raw)
+    fs, fb = _post_flask(app, "/api/watch", raw)
+    assert fs == ls == 200, f"console {ls}, flask {fs}: {lb[:160]!r} / {fb[:160]!r}"
+    assert json.loads(fb) == json.loads(lb)
+    assert calls == [("203.0.113.9", True), ("203.0.113.9", True)], (
+        f"the write did not land identically on both surfaces: {calls}")
+
+    # 3. Field validation and body parsing, worded the same.
+    for bad, expected in (
+        (b'{"on": true}', b"'src_addr' is required"),
+        (b'{"src_addr": "203.0.113.9", "on": "yes"}', b"'on' must be true or false"),
+        (b"[]", b"body must be a JSON object"),
+        (b"not json", b"body is not valid JSON"),
+    ):
+        ls, lb = _post_legacy(legacy.port, "/api/watch", bad)
+        fs, fb = _post_flask(app, "/api/watch", bad)
+        assert fs == ls == 400, f"{bad!r}: console {ls}, flask {fs}"
+        assert expected in lb and expected in fb, (bad, lb[:160], fb[:160])
+        assert json.loads(fb) == json.loads(lb), (bad, lb[:160], fb[:160])
