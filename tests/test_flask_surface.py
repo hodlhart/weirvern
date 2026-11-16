@@ -5,9 +5,12 @@ stack. The moment the two disagree -- about who is signed in, about whether the 
 an error body, about a window -- the project has the defect class it keeps removing: one fact derived
 twice, drifting, each copy looking correct on its own.
 
-So these tests are mostly EQUIVALENCE tests. They drive the real handler and the real Flask app over
-the same context and the same request and compare the bytes. A test that only asserted each surface
-in isolation would pass while they drifted.
+THE CONSOLE'S HTTP HANDLER IS GONE, so this file no longer compares two servers byte-for-byte on
+every route. The equivalence that still has meaning (and that these tests still assert) is between
+the route's answer and the SHARED implementation it is supposed to be a thin wrapper over:
+`requestauth.session_payload`, the gate's own refusal sentence, `payloads.episodes` and
+`web.read_failure`. A route that built any of those itself would disagree with the one copy that
+remains, which is the same drift the two-server comparison existed to catch.
 """
 
 
@@ -15,9 +18,8 @@ import pytest
 
 flask = pytest.importorskip("flask")
 
-from weirvern.admin import flask_app, requestauth  # noqa: E402
+from weirvern.admin import flask_app, payloads, requestauth  # noqa: E402
 from weirvern.admin import users as users_mod  # noqa: E402
-from weirvern.admin import web as web_mod  # noqa: E402
 
 # ── a context both surfaces can use ────────────────────────────────────────────────────────────
 
@@ -183,8 +185,11 @@ def test_the_episodes_route_uses_the_same_fetcher_and_hostname_enrichment(monkey
         seen.update(hours=hours, limit=limit)
         return {"episodes": [{"src_addr": "192.0.2.10"}], "incidents": [], "leads": [], "counts": {}}
 
-    monkeypatch.setattr(web_mod.status_mod, "episodes_recent", fake_episodes, raising=True)
-    monkeypatch.setattr(web_mod.web_api, "_hostname", lambda addr: "box.example", raising=False)
+    # The fetcher reads `status` and `web_api` through payloads' own module globals, which is where
+    # the route now gets them from; patching the old handler's module reached an import the route
+    # no longer makes.
+    monkeypatch.setattr(payloads.status_mod, "episodes_recent", fake_episodes, raising=True)
+    monkeypatch.setattr(payloads.web_api, "_hostname", lambda addr: "box.example", raising=False)
 
     ctx = _ctx(_Store(False))
 
@@ -213,7 +218,7 @@ def test_a_failed_read_is_worded_by_what_happened(monkeypatch):
     def boom(client, *, hours, limit):
         raise FileNotFoundError(2, "No such file or directory", "kubectl")
 
-    monkeypatch.setattr(web_mod.status_mod, "episodes_recent", boom, raising=True)
+    monkeypatch.setattr(payloads.status_mod, "episodes_recent", boom, raising=True)
     ctx = _ctx(_Store(False))
 
     class _CM:

@@ -329,11 +329,12 @@ def test_the_models_route_is_registered():
     `web_api.models_payload`.
     """
     admin = Path(__file__).resolve().parents[1] / "weirvern" / "admin"
-    web_py = (admin / "web.py").read_text()
+    flask_py = (admin / "flask_app.py").read_text()
     payloads_py = (admin / "payloads.py").read_text()
     assert routed("/api/models"), "no route for /api/models"
-    assert "def _models(" in web_py, "the route has no handler"
-    assert "payloads.models(" in web_py, "the handler does not use the shared fetcher"
+    assert "def models(" in flask_py, "the route has no handler"
+    assert "_soft_route(payloads.models" in flask_py, (
+        "the handler does not use the shared fetcher")
     assert "web_api.models_payload" in payloads_py, "the fetcher does not serialise through web_api"
 
 

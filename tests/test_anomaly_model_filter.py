@@ -101,9 +101,9 @@ def test_the_alert_queue_honours_the_global_time_window():
     assert c.params["since"] and c.params["until"]
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    web = (root / "weirvern/admin/web.py").read_text()
-    seg = web.split("def _anomalies(self, query: dict) -> None:", 1)[1].split("def ", 1)[0]
-    assert "_window_arg(query, 24" in seg
+    flask_py = (root / "weirvern/admin/flask_app.py").read_text()
+    seg = flask_py.split("def anomalies(", 1)[1].split("    @app.", 1)[0]
+    assert "web.window_arg(request.args, 24" in seg
     assert "hours=hours" in seg
     app = (root / "weirvern/admin/web/app.js").read_text()
     assert "&hours=${trHours()}" in app

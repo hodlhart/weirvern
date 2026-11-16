@@ -13,8 +13,6 @@ The fix has two halves and each is tested where it can fail:
 """
 
 import contextlib
-import importlib
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -40,14 +38,6 @@ class _Rec:
 
     def insert(self, *a, **k):
         pass
-
-
-class _Body:
-    def __init__(self, body):
-        self._raw = body.encode() if isinstance(body, str) else (body or b"")
-
-    def read(self, n=-1):
-        return self._raw
 
 
 def test_a_name_with_a_quote_is_refused_and_nothing_runs():
@@ -89,27 +79,46 @@ def test_a_wildcard_name_removes_exactly_as_it_was_stored():
 
 
 def test_the_route_refuses_an_injected_name_with_a_400_and_runs_no_sql():
-    """The real route method, the real validator, a recording client: a 400 whose body says
-    why, and ZERO statements -- not a sanitized statement, none at all."""
-    web_mod = importlib.import_module("weirvern.admin.web")
-    ctx = SimpleNamespace()   # the route is driven directly; ctx only has to exist
-    cls = web_mod._build_handler(ctx)
-    inst = cls.__new__(cls)
+    """The real route, the real validator, a recording client: a 400 whose body says why, and ZERO
+    statements -- not a sanitized statement, none at all.
 
-    body = json.dumps({"action": "remove", "domain": INJECTED}).encode()
-    inst.headers = {"Content-Length": str(len(body))}
-    inst.rfile = _Body(body)
-    inst.client_address = ("198.51.100.5", 1234)
+    THE ROUTE IS DRIVEN OVER HTTP, NOT THROUGH THE RETIRED HANDLER. `_build_handler` went with the
+    console's server; `/api/blocklists/custom` is a Flask route now, and a test that called
+    `blocklist_custom` directly would skip the gate, the body parse and the field parsing that sit
+    between a request and the store. The recording client is injected through `ctx.connect_factory`,
+    which is what the route actually uses.
+    """
+    from weirvern.admin import flask_app
 
     rec = _Rec()
-    inst._authorize = lambda: True
-    inst._with_client = lambda: contextlib.nullcontext(rec)
-    seen: dict = {}
-    inst._json = lambda payload, code=200: seen.update(payload=payload, code=code)
 
-    inst._blocklists_custom()
+    class _Auth:
+        enabled = True
+        reason = ""
 
-    assert seen.get("code") == 400, f"expected a 400 refusal, got {seen}"
-    err = seen["payload"].get("error") or ""
+        @staticmethod
+        def check(presented, client=""):
+            return presented == "test-token"
+
+    class _Ctx:
+        settings = None
+        backend = None
+        config_client = None
+        user_store = None
+        sessions = None
+        throttle = None
+        accounts_note = ""
+        capabilities = None
+        auth = _Auth()
+        connect_factory = staticmethod(lambda settings: contextlib.nullcontext(rec))
+
+    client = flask_app.create_app(_Ctx(), secret_key="blocklist-injection").test_client()
+
+    got = client.post("/api/blocklists/custom",
+                      json={"action": "remove", "domain": INJECTED},
+                      headers={"X-Weirvern-Token": "test-token"})
+
+    assert got.status_code == 400, f"expected a 400 refusal, got {got.status_code}: {got.data!r}"
+    err = (got.get_json() or {}).get("error") or ""
     assert "has no dot" in err, f"the 400 must say what was wrong with the name: {err!r}"
     assert rec.commands == [], "the rejected name still reached ClickHouse"

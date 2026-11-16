@@ -4,9 +4,9 @@ This is the anti-drift test for the extraction. Before it, the Flask route re-im
 episodes fetch and its hostname enrichment inline, which is the same defect as two auth
 implementations: two readers of one dataset, drifting, each looking right alone.
 
-A source-level guard is used for the "both surfaces call it" half because driving the console handler
-needs a socket, and the alternative -- asserting nothing -- is how a duplicated fetch survives. The
-narrowness is deliberate: it names the one function each surface must call, not the shape around it.
+A source-level guard is used for the "the route calls it" half because the alternative -- asserting
+nothing -- is how a duplicated fetch survives. It is cheap and it names the one function the route
+must call, not the shape around it; the fetchers themselves are driven below over a stub client.
 """
 
 from __future__ import annotations
@@ -63,19 +63,23 @@ def test_baselines_passes_availability_through(monkeypatch):
     assert "reason" in out
 
 
-def test_the_console_handler_calls_the_shared_fetcher():
-    """A handler that fetched inline again would be the second implementation this module removes."""
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+def test_the_routes_call_the_shared_fetcher():
+    """A route that fetched inline again would be the second implementation this module removes.
 
-    episodes = src.split("def _episodes(self", 1)[1].split("\n        def ", 1)[0]
-    assert "payloads.episodes(" in episodes, (
-        "the console's episodes route does not use the shared fetcher, so it can drift from the "
-        "Flask surface again"
+    THE CONSOLE'S HANDLER IS GONE. The remaining surface is Flask, and the property is that its
+    views delegate to `payloads.*` rather than reading ClickHouse themselves.
+    """
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
+
+    episodes = src.split("def episodes(", 1)[1].split("    @app.", 1)[0]
+    assert "_windowed(payloads.episodes)" in episodes, (
+        "the episodes route does not use the shared fetcher, so it can drift from the payload "
+        "layer again"
     )
 
-    baselines = src.split("def _baselines(self", 1)[1].split("\n        def ", 1)[0]
-    assert "payloads.baselines(" in baselines, (
-        "the console's baselines route does not use the shared fetcher"
+    baselines = src.split("def baselines(", 1)[1].split("    @app.", 1)[0]
+    assert "_soft_route(payloads.baselines" in baselines, (
+        "the baselines route does not use the shared fetcher"
     )
 
 

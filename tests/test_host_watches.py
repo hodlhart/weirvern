@@ -109,12 +109,14 @@ def test_a_missing_table_is_unavailable_not_empty():
 
 
 def test_the_watch_route_exists_and_goes_through_the_operator_gate():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert routed("/api/watch"), "the watch POST route is gone"
-    body = src[src.index("def _watch(self)"):]
-    body = body[:body.index("\n        def ", 10)]
-    assert "self._authorize()" in body, (
-        "the watch route does not consult the operator token, so anyone on the LAN "
+    body = src[src.index("def watch("):]
+    body = body[:body.index("\n    @app.", 10)]
+    # THE GATE IS `requestauth.write_refusal` (or the `_gate_write()` helper that is its only
+    # wrapper): the console's `self._authorize()` went with its handler, and the decision is shared.
+    assert "write_refusal(" in body or "_gate_write()" in body, (
+        "the watch route does not consult the operator gate, so anyone on the LAN "
         "could rewrite the tracking list"
     )
     assert "payloads.watch(" in body, "the route does not use the shared fetcher"

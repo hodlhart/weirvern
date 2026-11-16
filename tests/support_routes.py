@@ -37,6 +37,9 @@ class _Ctx:
     sessions = None
     throttle = None
     accounts_note = ""
+    # Read unconditionally by /api/overview: a context without it is not the shape create_app is
+    # handed in production, and the request would answer 500 rather than the route's payload.
+    capabilities = None
     connect_factory = staticmethod(lambda settings: _CM())
 
     class auth:

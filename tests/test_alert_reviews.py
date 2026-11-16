@@ -235,13 +235,13 @@ def test_attach_reviews_leaves_unmatched_rows_empty_when_read_succeeded():
 
 
 def test_the_review_route_exists_and_goes_through_the_operator_gate():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert routed("/api/review"), "the review POST route is gone"
-    # The gate must be consulted inside _review -- the check every write route owes.
-    body = src[src.index("def _review(self)"):]
-    body = body[:body.index("\n        def _settings_plan")]
-    assert "self._authorize()" in body, (
-        "the review route does not consult the operator token, so anyone on the LAN "
+    # The gate must be consulted inside the review view -- the check every write route owes.
+    body = src[src.index("def review("):]
+    body = body[:body.index("\n    @app.", 10)]
+    assert "write_refusal(" in body, (
+        "the review route does not consult the operator gate, so anyone on the LAN "
         "could mark alerts as handled"
     )
     assert "review_state_refusal(" in body, (

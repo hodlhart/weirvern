@@ -57,17 +57,55 @@ def test_the_overlay_closes_the_plaintext_nodeport():
 
 
 def test_the_app_redirects_only_when_the_ingress_says_http():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    """The redirect belongs to the application too, not only to the Traefik middleware: a request
+    that reaches the pod over plain HTTP still leaves for https, and a request that arrives with no
+    forwarded scheme (a probe, a port-forward) is never bounced to a name that may not resolve."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from tests.support_routes import _Ctx
+    from weirvern.admin import flask_app
+
+    client = flask_app.create_app(_Ctx(), secret_key="tls-edge").test_client()
+
+    plain = client.get("/api/healthz", headers={"X-Forwarded-Proto": "http"})
+    assert plain.status_code == 308, plain.status_code
+    assert plain.headers["Location"].startswith("https://"), plain.headers["Location"]
+
+    secure = client.get("/api/healthz", headers={"X-Forwarded-Proto": "https"})
+    assert secure.status_code == 200, secure.status_code
+
+    direct = client.get("/api/healthz")
+    assert direct.status_code == 200, (
+        "a request with no forwarded scheme was redirected; a probe or a port-forward would break")
+
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert "def _redirect_to_https" in src
-    assert 'self._forwarded_proto() != "http"' in src
-    assert 'self.send_header("Location", location)' in src
-    assert 'if self._forwarded_proto() != "http"' in src
+    assert 'if _forwarded_proto() != "http"' in src, (
+        "the redirect is not conditional on the ingress reporting http")
 
 
 def test_the_app_adds_hsts_only_when_the_ingress_says_https():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from tests.support_routes import _Ctx
+    from weirvern.admin import flask_app
+
+    client = flask_app.create_app(_Ctx(), secret_key="tls-edge").test_client()
+
+    secure = client.get("/api/healthz", headers={"X-Forwarded-Proto": "https"})
+    assert secure.status_code == 200
+    assert "Strict-Transport-Security" in secure.headers, (
+        "no HSTS header on a request the ingress says arrived over https")
+
+    plain = client.get("/api/healthz")
+    assert "Strict-Transport-Security" not in plain.headers, (
+        "HSTS over a connection that is not known to be https would poison the browser")
+
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert "def _security_headers" in src
-    assert 'self._forwarded_proto() == "https"' in src or 'proto == "https"' in src
+    assert '_forwarded_proto() == "https"' in src
     assert "Strict-Transport-Security" in src
 
 

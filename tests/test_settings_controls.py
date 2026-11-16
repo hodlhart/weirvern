@@ -212,9 +212,7 @@ def test_the_settings_route_emits_controls_under_row_keys():
     shipped the raw registry, every lookup would miss and every control would fall back to a
     text box -- passing every server-side test while the page the operator sees is unchanged.
     """
-    import importlib
-
-    web = importlib.import_module("weirvern.admin.web")
+    from weirvern.admin import flask_app
 
     class _Auth:
         enabled = True
@@ -223,13 +221,21 @@ def test_the_settings_route_emits_controls_under_row_keys():
     class _Ctx:
         settings = None
         backend = None
+        config_client = None
+        user_store = None
+        sessions = None
+        throttle = None
+        accounts_note = ""
+        capabilities = None
         auth = _Auth()
+        connect_factory = staticmethod(lambda settings: None)
 
-    handler_cls = web._build_handler(_Ctx())
-    emitted: dict = {}
-    inst = handler_cls.__new__(handler_cls)
-    inst._json = lambda payload, code=200: emitted.update(payload)
-    inst._settings({})
+    # THE ROUTE IS DRIVEN, NOT A HANDLER: `_build_handler` went with the console's HTTP server, so
+    # `/api/settings` is reached through `create_app(ctx)` -- the surface a client actually uses.
+    got = flask_app.create_app(_Ctx(), secret_key="settings-controls").test_client().get(
+        "/api/settings")
+    assert got.status_code == 200, got.data
+    emitted = got.get_json()
 
     controls = emitted.get("controls")
     assert controls, "the settings route does not ship the control registry; the UI would fall back to text boxes"

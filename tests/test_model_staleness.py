@@ -135,12 +135,17 @@ def test_the_web_route_passes_its_settings_through():
     from pathlib import Path
 
     admin = Path(__file__).resolve().parent.parent / "weirvern" / "admin"
-    web = (admin / "web.py").read_text()
+    flask_py = (admin / "flask_app.py").read_text()
     payloads = (admin / "payloads.py").read_text()
-    assert "payloads.models(client, hours=hours, settings=ctx.settings)" in web, (
+    # THE CALL MOVED with the route: the Flask view hands the fetcher the settings object it runs
+    # with, and the fetcher threads them to `model_overview`. Whitespace is normalised because the
+    # keyword pair is wrapped across lines -- a formatting change must not read as a defect.
+    view = flask_py.split("def models(", 1)[1].split("    @app.", 1)[0]
+    call = " ".join(view.split())
+    assert "payloads.models" in call and "settings=ctx.settings" in call, (
         "the /api/models route does not pass settings to the shared fetcher"
     )
-    assert "model_overview(client, hours=hours, settings=settings)" in payloads, (
+    assert "model_overview(client, hours=hours, settings=settings)" in " ".join(payloads.split()), (
         "the fetcher does not pass settings, so the panel falls back to the default "
         "interval and can disagree with the worker"
     )

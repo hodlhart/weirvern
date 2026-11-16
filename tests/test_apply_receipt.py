@@ -67,7 +67,7 @@ def test_the_route_emits_the_receipt_on_both_paths():
     Both paths still owe one: a failed write must say which keys landed, and that means re-reading
     rather than guessing.
     """
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert "payloads.settings_apply(" in src, "the apply route no longer uses the shared fetcher"
     body = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
     body = body[body.index("def settings_apply("):]

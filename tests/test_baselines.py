@@ -116,16 +116,20 @@ def test_the_payload_resolves_only_the_rows_the_card_renders(monkeypatch):
 
 
 def test_the_route_reads_through_the_context_manager():
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert routed("/api/baselines"), "the baselines route is not registered"
-    seg = src.split("def _baselines(self)", 1)[1].split("\n        def ", 1)[0]
-    assert "with self._with_client() as client:" in seg, \
-        "the handler must read through the shared client context, like its neighbours"
-    # THE FETCHER MOVED, THE PROPERTY DID NOT. It used to be called inline here; it now lives in
-    # `payloads.baselines`, shared with the Flask surface, so the handler delegates. Asserting the
-    # old name would demand the duplication back. What this test still must catch is a handler that
-    # bypasses the shared fetcher, so either shape is accepted.
-    assert "baselines_overview" in seg or "payloads.baselines(" in seg
+    # THE HANDLER IS THE FLASK VIEW NOW. It delegates to `_soft_route`, which is the helper that
+    # opens `ctx.connect_factory(ctx.settings)` -- the shared client context -- and hands the
+    # fetcher a client. Asserting `with self._with_client()` would pin the retired transport.
+    seg = src.split("def baselines(", 1)[1].split("    @app.", 1)[0]
+    assert "_soft_route(" in seg, (
+        "the baselines route must read through the shared client context helper")
+    helper = src.split("def _soft_route(", 1)[1].split("    def ", 1)[0]
+    assert "ctx.connect_factory(ctx.settings)" in helper, (
+        "the helper the route uses no longer opens the shared client context")
+    # THE FETCHER MOVED, THE PROPERTY DID NOT: the route delegates to `payloads.baselines`, shared
+    # with the one surface, instead of fetching inline.
+    assert "payloads.baselines" in seg
 
 
 def test_the_card_exists_and_its_header_matches_its_rows():

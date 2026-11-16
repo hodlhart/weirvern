@@ -200,14 +200,15 @@ def test_the_refusal_names_the_rule_that_was_broken():
 
 # ── THE ROUTE: the refusal an operator actually sees ─────────────────────────────────────────
 #
-# Tested by DRIVING THE REAL HANDLER, not by grepping web.py. A source-grep here would pin the
+# Tested by DRIVING THE REAL ROUTE, not by grepping web.py. A source-grep here would pin the
 # shape of the text rather than the behaviour -- the recurring failure mode in this project's
 # lowest-severity findings -- and it would keep passing if the check were moved behind an early
 # return or wired to the wrong variable.
 #
-# `_build_handler(ctx)` closes over ctx, so this factory is the only way to bind the handler to a
-# context a test controls. `_json` is replaced with a recorder, which is exactly where the handler
-# puts its answer.
+# The route lives on the Flask surface now, and `create_app(ctx)` closes over ctx, so a Flask test
+# client is the way to drive it against a context a test controls. The write gate is passed
+# through, exactly as the old driver passed `_authorize`: it has its own tests, and this file is
+# about the interface-name contract.
 
 class _Auth:
     enabled = True
@@ -224,23 +225,18 @@ class _Ctx:
 
 
 def _drive_sonar_route(body, monkeypatch):
-    """POST a body to the real handler; return (status, payload)."""
-    import importlib
+    """POST a body to the real Flask route; return (status, payload)."""
+    import json
 
-    web = importlib.import_module("weirvern.admin.web")
-    handler_cls = web._build_handler(_Ctx())
-    inst = handler_cls.__new__(handler_cls)          # no socket, no __init__
-    captured: dict = {}
+    from weirvern.admin import flask_app, requestauth
 
-    def _json(payload, code=200):
-        captured["code"] = code
-        captured["payload"] = payload
-
-    inst._json = _json
-    monkeypatch.setattr(inst, "_read_body", lambda: body, raising=False)
-    inst._authorize = lambda: True                   # the gate has its own tests
-    inst._settings_sonar()
-    return captured.get("code"), captured.get("payload", {})
+    # The gate has its own tests; this file is about the interface-name contract. Patched where
+    # the view looks it up, so the shipping view and the shared payload layer both still run.
+    monkeypatch.setattr(requestauth, "write_refusal", lambda *a, **kw: (True, None))
+    client = flask_app.create_app(_Ctx()).test_client()
+    resp = client.post("/api/settings/sonar", data=json.dumps(body),
+                       content_type="application/json")
+    return resp.status_code, resp.get_json()
 
 
 def test_the_route_refuses_a_traversal_interface_with_a_400(monkeypatch):

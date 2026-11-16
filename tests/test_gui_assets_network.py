@@ -32,6 +32,21 @@ import pytest
 from weirvern.admin import assets
 
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
+FLASK = WEB.parent / "flask_app.py"
+
+
+def _view_source(name: str) -> str:
+    """The body of the Flask view that serves a route, sliced to the next route decorator.
+
+    The console's methods were retired with its dispatch table. What a client reaches is a Flask
+    view, so a source assertion about "the handler" has to read the view -- otherwise it asserts a
+    string that no request can reach.
+    """
+    src = FLASK.read_text()
+    start = src.index(f"    def {name}(")
+    end = src.find("\n    @app.", start)
+    return src[start:end if end != -1 else len(src)]
+
 
 APP_JS = (WEB / "app.js").read_text()
 SOC_JS = (WEB / "soc.js").read_text()
@@ -170,17 +185,40 @@ def test_the_new_routes_are_registered_and_have_handlers():
 
 
 def test_every_route_method_actually_exists():
-    """A route pointing at a missing method raises AttributeError at request time, not at import.
+    """A route pointing at a missing method raises at request time, not at import.
 
     So the page loads, the tab clicks, and the panel fails with a 500 that the operator reads as
     a data problem.
+
+    THE QUESTION IS ASKED OF THE URL MAP AND A REAL REQUEST. It used to grep web.py for
+    `def _name(self)` because the dispatch table named its methods; Flask names its views, and a
+    view can be registered and still raise AttributeError on first call. So every path the route
+    map claims is DRIVEN (with the method the app allows) and must not answer 404 or 500. A 400 or
+    503 is a real answer -- bad input, or a read the stub context cannot serve -- and proves the
+    view ran.
     """
-    src = (WEB.parent / "web.py").read_text()
-    defined = set(re.findall(r"^\s+def (_\w+)\(", src, re.M))
-    missing = sorted(
-        f"{path} -> {handler}" for path, handler in _routes().items() if handler not in defined
-    )
-    assert not missing, f"routes point at methods that are not defined: {missing}"
+    from tests.support_routes import _Ctx, route_map
+    from weirvern.admin import flask_app
+
+    app = flask_app.create_app(_Ctx(), secret_key="route-surface")
+    client = app.test_client()
+    rules = {rule.rule: rule for rule in app.url_map.iter_rules()}
+    mapping_handlers = route_map()
+
+    missing_endpoints = sorted(p for p, endpoint in mapping_handlers.items()
+                               if endpoint not in app.view_functions)
+    assert not missing_endpoints, (
+        f"routes point at view functions that do not exist: {missing_endpoints}")
+
+    broken = []
+    for path in _routes():
+        rule = rules[path]
+        methods = (rule.methods or set()) - {"HEAD", "OPTIONS"}
+        method = "GET" if "GET" in methods else sorted(methods)[0]
+        got = client.open(path, method=method)
+        if got.status_code in (404, 500):
+            broken.append(f"{method} {path} -> {got.status_code}: {got.data[:120]!r}")
+    assert not broken, f"routes did not reach a working handler: {broken}"
 
 
 def test_the_route_paths_match_what_the_frontend_fetches():
@@ -224,12 +262,11 @@ def test_each_new_route_validates_its_input_before_querying():
     assert "does not look like an address" in graph, "tracked hosts must be validated"
 
     # And the handlers must still go THROUGH the parsers: a shared helper nobody calls is no guard.
-    for handler_name, parser_name in (("def _zeeklog", "zeeklog_args("),
-                                      ("def _graph", "graph_hosts(")):
-        k = src.find(handler_name)
-        assert k > 0, f"{handler_name} not found"
-        body = src[k:src.index("\n        def ", k + 12)]
-        assert parser_name in body, f"{handler_name} does not use its shared parser"
+    # The handler is the Flask view now.
+    for view_name, parser_name in (("zeeklog", "web.zeeklog_args("),
+                                   ("graph", "web.graph_hosts(")):
+        body = _view_source(view_name)
+        assert parser_name in body, f"the {view_name} route does not use its shared parser"
 
 
 def test_soc_refuses_a_label_and_table_that_disagree():
@@ -360,9 +397,8 @@ def test_the_flow_drilldown_demands_a_filter_and_the_route_enforces_it():
     assert i > 0, "the shared flows parser not found"
     parser = src[i:src.index("\ndef ", i + 10)]
     assert "port, proto or src is required" in parser, "the route does not require a filter"
-    handler = src[src.find("def _flows"):]
-    handler = handler[:handler.index("\n        def ", 12)]
-    assert "flows_args(" in handler, "the handler does not use the shared parser"
+    handler = _view_source("flows")
+    assert "web.flows_args(" in handler, "the handler does not use the shared parser"
 
 
 def test_the_flow_drilldown_reports_truncation_and_the_total():

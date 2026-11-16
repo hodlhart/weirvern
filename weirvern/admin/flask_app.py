@@ -85,6 +85,40 @@ def _truthy(raw: str | None) -> bool:
     return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _forwarded_proto() -> str:
+    """The scheme the INGRESS saw, lower-cased, or "" when it did not say.
+
+    The pod only ever speaks HTTP: TLS terminates at Traefik. Deciding the scheme from this process's
+    own hop would either redirect every request forever or never redirect at all, so the header is
+    the only source -- and its absence means "no opinion", not "http".
+    """
+    return (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+
+
+def _redirect_to_https():
+    """308 to the same URL over https, ONLY when the ingress says the request arrived as http.
+
+    A missing or unrecognised scheme returns None: an operator reaching the pod directly over HTTP
+    (a port-forward, a probe) must not be bounced to a name that does not resolve. A 308 preserves
+    the method and body, so a write is not silently turned into a GET by the redirect.
+    """
+    if _forwarded_proto() != "http":
+        return None
+    return redirect(request.url.replace("http://", "https://", 1), code=308)
+
+
+def _security_headers(response):
+    """HSTS only when the ingress says https: over plain http it would poison the browser.
+
+    The header is set here rather than at the edge so a deployment whose ingress does not add it
+    still gets one, and so the two cannot disagree about the max-age.
+    """
+    if _forwarded_proto() == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 def _json_error(code: int, message: str) -> tuple[Response, int]:
     """The console's own error shape, so a client cannot tell the two surfaces apart.
 
@@ -139,6 +173,19 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # Flask's default is to escape nothing and sort nothing; both defaults are fine here, but the
     # console expects compact JSON and no trailing newline stripping, so keep it literal.
     app.config["JSON_SORT_KEYS"] = False
+
+    # ── the HTTPS edge, enforced from the FORWARDED scheme ─────────────────────────────────────
+    #
+    # Traefik terminates TLS and forwards plain HTTP, so the pod's own scheme says nothing. These
+    # two hooks are the application's half of the edge: a redirect only when the ingress reports
+    # `http`, and HSTS only when it reports `https`. Both refuse to guess when the header is absent.
+    @app.before_request
+    def _https_redirect():
+        return _redirect_to_https()
+
+    @app.after_request
+    def _https_headers(response):
+        return _security_headers(response)
 
     root = static_dir if static_dir is not None else STATIC_DIR
 

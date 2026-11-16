@@ -785,9 +785,10 @@ def test_the_GUI_health_routes_pass_the_store():
             f"very process that HAS one: {ast.unparse(node)}"
         )
 
-    # 2. Each surface must hand it to the shared fetcher. In web.py that is a direct call; in
-    #    flask_app.py it is the first argument of `_soft_route`, so both shapes are matched.
-    for name in ("web.py", "flask_app.py"):
+    # 2. The surface must hand it to the shared fetcher. The console's handler was retired with its
+    #    HTTP server, so flask_app.py is the only surface left; `_soft_route` takes the fetcher as
+    #    its first argument, so both the callee and the first argument are matched.
+    for name in ("flask_app.py",):
         tree = ast.parse((admin / name).read_text())
         fetches = []
         for node in ast.walk(tree):

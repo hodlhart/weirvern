@@ -124,36 +124,31 @@ def test_a_boolean_setting_reads_as_enabled_or_disabled():
 
 
 def test_every_write_route_consults_A_GATE():
-    """The invariant changed shape twice, and this test changed with it.
+    """Every write route refuses an anonymous caller.
 
-    It used to assert there was NO write route at all -- right while the GUI had no
-    authentication. Then: every write route consults the auth gate. Now accounts exist, so
-    there are two legitimate shapes and every route must have one of them:
+    THE INVARIANT CHANGED SHAPE TWICE. It used to assert there was NO write route at all -- right
+    while the GUI had no authentication. Then: every write route consults the auth gate, checked by
+    grepping each handler for `self._authorize()`. The handler is retired, so the question is now
+    asked BEHAVIOURALLY: build the real app over a context with no token and no accounts, POST to
+    EVERY write route the URL map publishes, and require a refusal.
 
-      * an admin-gated write (`self._authorize()`), or
-      * a session-gated account route (`/api/logout`, `/api/password` -- every account may
-        sign out and change its own password), or
-      * the sign-in door itself (`/api/login`), which cannot require a session because it is
-        how a session is obtained; it carries its own throttle instead.
-
-    An `_authorize()`-less route that is none of those is the defect: an unauthenticated
-    configuration change. The allow-list is EXPLICIT so adding a new write route without a
-    gate fails this test rather than passing quietly.
+    WHY THIS IS STRONGER THAN THE GREP. A source search can be satisfied by a gate call in a branch
+    that is never reached, or by a route that parses its body before gating. This drives the route
+    in its most permissive deployment state -- the one where an unauthenticated write would be a
+    configuration change -- and fails on anything but a 401/403. The allow-list is implicit and
+    total: every POST is tested, so a new ungated write route fails here rather than passing
+    quietly.
     """
-    src = (WEB.parent / "web.py").read_text()
+    import re
 
-    # THERE MUST BE A WRITE SURFACE, AND IT MUST REFUSE THE UNSAFE VERBS. The old assertions looked
-    # for `do_POST`/`do_GET` methods on the retired HTTP handler; the transport is Flask's now, so the
-    # question is asked of the URL map, which is the thing that actually decides what a client may do.
-    # A PUT or DELETE accepted here would be an unaudited write path just as surely as it was there.
-    from tests.support_routes import flask_api_paths, flask_write_paths
+    from tests.support_routes import _Ctx, flask_api_paths, flask_write_paths
+    from weirvern.admin import flask_app
 
+    # THERE MUST BE A WRITE SURFACE, AND IT MUST REFUSE THE UNSAFE VERBS. A PUT or DELETE accepted
+    # here would be an unaudited write path.
     writes = flask_write_paths()
     assert writes, "no write surface exists"
     assert flask_api_paths(), "no read surface exists"
-
-    from tests.support_routes import _Ctx
-    from weirvern.admin import flask_app
 
     app = flask_app.create_app(_Ctx(), secret_key="verbs")
     allowed = set()
@@ -162,51 +157,42 @@ def test_every_write_route_consults_A_GATE():
     for unsafe in ("PUT", "DELETE", "PATCH"):
         assert unsafe not in allowed, f"{unsafe} would be an unaudited write path"
 
-    # Every POST route must be gated one way or another.
-    SESSION_GATED = {"_logout", "_password"}
-    DOOR = {"_login"}
-    # THE LIST COMES FROM THE MAP, NOT THE DISPATCH. route_map.json is what the dispatch used to
-    # say; the handlers still live in web.py and are still what this test inspects for a gate.
-    import json
-
-    mapping = json.loads((Path(__file__).resolve().parents[1] / "tests" / "route_map.json").read_text())
-    handlers = sorted(h for h, info in mapping.items() if info["verb"] == "POST")
-    assert handlers, "no POST routes parsed -- update this test"
-    for name in handlers:
-        body = src[src.index(f"        def {name}(self"):]
-        body = body[:body.index("\n        def ", 10)]
-        if name in DOOR:
-            # THE PROPERTY MOVED, IT DID NOT DISAPPEAR. The sign-in route used to contain the
-            # throttle inline; the credential check now lives in `requestauth.authenticate`, shared
-            # with the Flask form, so the throttle is there. Asserting the route's own text would
-            # demand that the logic be duplicated again. What this test still must catch is a sign-in
-            # route that reaches NO throttled path at all, so it accepts either shape and the
-            # behavioural test proves the throttle fires.
-            assert ("throttle" in body or "Throttle" in body
-                    or "requestauth.authenticate(" in body
-                    or "payloads.login(" in body), (
-                "the sign-in route carries no throttle and does not delegate to the shared "
-                "credential check, so passwords can be guessed at wire speed"
-            )
+    client = app.test_client()
+    unrefused = []
+    for rule in app.url_map.iter_rules():
+        if not rule.rule.startswith("/api/"):
             continue
-        if name in SESSION_GATED:
-            # THE DECISION MOVED into payloads.session_required when the Flask surface needed the
-            # same answer; `_require_session` is a thin adapter over it, so either call proves the
-            # route requires a session. What must not happen is a route that skips it entirely.
-            assert ("_require_session()" in body or "payloads.session_required(" in body), (
-                f"the account route {name} does not require a session"
-            )
+        if not (set(rule.methods or ()) - {"GET", "HEAD", "OPTIONS"}):
             continue
-        assert "self._authorize()" in body, (
-            f"the write route {name} does not consult the auth gate, so it accepts an "
-            f"unauthenticated configuration change"
-        )
+        # A parameterised rule is driven with a concrete value so it reaches its view; the body is
+        # empty because the gate must answer BEFORE the body is read.
+        path = re.sub(r"<[^>]+>", "probe", rule.rule)
+        got = client.post(path, json={})
+        if got.status_code not in (401, 403):
+            unrefused.append(f"{path} -> {got.status_code}: {got.data[:100]!r}")
+    assert not unrefused, (
+        f"these write routes answered an anonymous caller without refusing: {unrefused}. Each one "
+        f"must consult requestauth.write_refusal (or the _gate_write/_write_json helper that is "
+        f"its only wrapper) before doing anything else")
 
-    # And the settings READ stays a read.
-    i = src.find("def _settings")
-    assert i > 0, "the settings handler is gone"
-    body = src[i : i + 2200]
-    assert "_json(" in body, "the settings handler does not return a JSON payload"
+    # And the settings READ stays a read: a GET, answering the payload that carries the write state.
+    got = client.get("/api/settings")
+    assert got.status_code == 200, got.data
+    assert "writes" in (got.get_json() or {}), "the settings read does not return a JSON payload"
+
+    # THE SIGN-IN DOOR KEEPS ITS THROTTLE. It is the one route that cannot require a session, so a
+    # refusal alone would not prove anything about guess-rate: the credential check must go through
+    # `payloads.login`, which delegates to the shared, throttled `requestauth.authenticate`.
+    admin = Path(__file__).resolve().parent.parent / "weirvern" / "admin"
+    flask_py = (admin / "flask_app.py").read_text()
+    login_view = flask_py.split("def api_login(", 1)[1].split("    @app.", 1)[0]
+    assert "payloads.login(" in login_view, (
+        "the sign-in route does not delegate to the shared credential check, so there is no "
+        "throttle and passwords can be guessed at wire speed")
+    payloads_py = (admin / "payloads.py").read_text()
+    login_fetcher = payloads_py.split("def login(", 1)[1].split("\ndef ", 1)[0]
+    assert "requestauth.authenticate(" in login_fetcher, (
+        "the shared sign-in fetcher does not use requestauth.authenticate, where the throttle lives")
 
 
 def test_the_view_states_when_it_is_read_only_and_when_it_is_not():

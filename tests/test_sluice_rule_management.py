@@ -121,7 +121,7 @@ def test_the_schema_file_adds_the_column_idempotently():
 
 
 def test_the_routes_and_serializer_carry_the_new_state():
-    body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    body = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert routed("/api/sluice/rule/disabled")
     # THE REVOKE MOVED into payloads.sluice_revoke with the port; the route must still go through it
     # and the shared fetcher must still accept a selection.

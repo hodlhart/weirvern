@@ -59,10 +59,11 @@ def test_remote_survey_is_not_a_hub_job():
     """THE ORDER MOVED into payloads.settings_sonar with the port, and it is asserted where it lives.
 
     A named remote sensor must be handled BEFORE any ClusterConfig or Job creation, or a hub interface
-    with the same name would be surveyed and returned under the remote sensor's id. Asserting the
-    console handler's text would demand the branch be duplicated on the second surface.
+    with the same name would be surveyed and returned under the remote sensor's id. The ROUTE is on
+    the Flask surface now and delegates to the same fetcher, so its text is read there -- asserting
+    the deleted console handler's text would demand the branch be resurrected on a third surface.
     """
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     assert "payloads.settings_sonar(" in src, "the sonar route no longer uses the shared fetcher"
     body = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
     body = body.split("def settings_sonar(", 1)[1].split("\ndef ", 1)[0]

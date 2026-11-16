@@ -185,9 +185,12 @@ def test_paging_is_clamped_so_a_url_cannot_ask_for_everything():
 
 def test_the_discover_route_and_script_are_served():
     """A route without a served script (or the reverse) is a tab that renders nothing."""
-    web = (Path(soc.__file__).resolve().parents[1] / "admin" / "web.py").read_text()
-    html = (Path(soc.__file__).resolve().parents[1] / "admin" / "web" / "index.html").read_text()
-    assert routed("/api/discover") and "def _discover" in web
+    admin = Path(soc.__file__).resolve().parents[1] / "admin"
+    web = (admin / "web.py").read_text()
+    flask_py = (admin / "flask_app.py").read_text()
+    html = (admin / "web" / "index.html").read_text()
+    assert routed("/api/discover"), "no route for /api/discover"
+    assert "def discover(" in flask_py, "the route is registered but has no view"
     assert '"/discover.js"' in web, "the file is not in STATIC_FILES: the tab would 404 its code"
     assert '<script src="/discover.js">' in html
     assert 'data-view="discover"' in html

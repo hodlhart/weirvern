@@ -34,6 +34,37 @@ from weirvern.admin import status as status_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "weirvern" / "admin" / "web.py"
+FLASK = ROOT / "weirvern" / "admin" / "flask_app.py"
+
+
+def _settings_from_the_route(auth) -> dict:
+    """GET /api/settings through the surface that serves it, and return its JSON.
+
+    The handler that used to answer this route was retired with the rest of the console's HTTP
+    server; the route a client actually reaches is the Flask one, so that is what this drives. A
+    test that inspected `payloads.settings_payload` directly would pass while the route forgot to
+    pass the request-scoped facts it is given.
+    """
+    from weirvern.admin import flask_app
+
+    class _Ctx:
+        settings = None
+        backend = None
+        config_client = None
+        user_store = None
+        sessions = None
+        throttle = None
+        accounts_note = ""
+        capabilities = None
+        connect_factory = staticmethod(lambda settings: None)
+
+        def __init__(self):
+            self.auth = auth
+
+    client = flask_app.create_app(_Ctx(), secret_key="settings-route").test_client()
+    got = client.get("/api/settings")
+    assert got.status_code == 200, got.data
+    return got.get_json()
 
 def _code_only(text: str) -> str:
     """Source with DOCSTRINGS and comments removed.
@@ -185,30 +216,14 @@ def test_the_settings_ROUTE_actually_returns_the_write_state():
     editable fields at all, while every test stayed green. A source search cannot tell which method
     a line lives in, so this calls the real method and inspects what it emitted.
     """
-    import importlib
-
-    web = importlib.import_module("weirvern.admin.web")
-
     class _Auth:
         enabled = True
         reason = ""
 
-    class _Ctx:
-        settings = None
-        backend = None
-        auth = _Auth()
-
-    # `_build_handler(ctx)` CLOSES OVER ctx, so this factory is the only way to bind a handler to a
-    # context the test controls. Patching a module attribute would never reach the closure -- which
-    # is exactly the mistake that made the /api/settings bug invisible.
-    handler_cls = web._build_handler(_Ctx())
-    assert hasattr(handler_cls, "_settings"), "the handler no longer exposes _settings"
-
-    emitted: dict = {}
-    inst = handler_cls.__new__(handler_cls)          # no socket, no __init__
-    inst._json = lambda payload, code=200: emitted.update(payload)
-
-    inst._settings({})
+    # THE ROUTE IS DRIVEN, NOT THE HANDLER. `_build_handler` and its `_settings` method were
+    # retired with the console's HTTP server; `/api/settings` is served by Flask now, so the only
+    # way to bind a context the test controls is `create_app(ctx)`.
+    emitted = _settings_from_the_route(_Auth())
 
     assert "writes" in emitted, (
         f"the settings route emitted no 'writes' key, so the UI cannot know whether it may offer "
@@ -240,24 +255,11 @@ def test_the_settings_ROUTE_actually_returns_the_write_state():
 
 def test_the_settings_route_reports_writes_DISABLED_when_no_token_is_set():
     """The other half: an unconfigured deployment must render no editable fields and say why."""
-    import importlib
-
-    web = importlib.import_module("weirvern.admin.web")
-
     class _Auth:
         enabled = False
         reason = "write access is disabled: WEIRVERN_GUI_TOKEN is not set"
 
-    class _Ctx:
-        settings = None
-        backend = None
-        auth = _Auth()
-
-    emitted: dict = {}
-    handler_cls = web._build_handler(_Ctx())
-    inst = handler_cls.__new__(handler_cls)
-    inst._json = lambda payload, code=200: emitted.update(payload)
-    inst._settings({})
+    emitted = _settings_from_the_route(_Auth())
 
     assert emitted.get("writes", {}).get("enabled") is False
     assert "WEIRVERN_GUI_TOKEN" in emitted.get("writes", {}).get("reason", ""), (
@@ -344,7 +346,7 @@ def test_a_failed_restart_is_reported_as_a_failure_not_as_success():
     was an implicit budget that a growing function silently outran, and this assertion then read a
     truncated body and failed for a reason unrelated to what it checks.
     """
-    assert "payloads.settings_apply(" in WEB.read_text(), (
+    assert "payloads.settings_apply(" in FLASK.read_text(), (
         "the apply route no longer uses the shared fetcher, so this property is untested")
     src = (WEB.parent / "payloads.py").read_text()
     i = src.index("def settings_apply(")
@@ -374,10 +376,13 @@ def test_the_mode_change_reuses_mode_validate_rather_than_reimplementing_it():
     """Two copies of a safety check drift, and the one that drifts is the one nobody tests.
     Enabling in-path interception without forwarding working takes the segment down."""
     src = WEB.read_text()
-    # THE GATE MOVED to the module-level web.mode_gate when the Flask surface began serving the
-    # route; the console's method is a one-line adapter. Asserting it there would demand the check
-    # be duplicated again.
-    assert "mode_gate(ctx, changes)" in src.split("def _mode_gate(self", 1)[1].split("\n        def ", 1)[0]
+    # THE GATE IS module-level web.mode_gate, and the apply fetcher is its only caller now that the
+    # console's handler is gone. Both halves are asserted: the write path asks the gate, and the
+    # gate is `mode.validate` -- a GUI session must not be a way around the CLI's own check.
+    payloads = (WEB.parent / "payloads.py").read_text()
+    assert "web_mod.mode_gate(ctx, changes)" in payloads, (
+        "the settings apply no longer asks the shared mode gate, so siphon could be enabled "
+        "without the CLI's prerequisites being checked")
     i = src.index("def mode_gate(")
     body = src[i:]
     body = body[:body.index("\ndef ", 10)]
@@ -401,8 +406,14 @@ def test_the_gui_reads_sensor_capabilities_from_the_CLUSTER_and_defaults_to_ABSE
     the default is what keeps in-path interception from being enabled on a sensor that
     cannot forward."""
     src = WEB.read_text()
-    # THE PROBE MOVED to the module-level web.sensor_caps with the port; the method is an adapter.
-    assert "sensor_caps(ctx)" in src.split("def _sensor_caps(self", 1)[1].split("\n        def ", 1)[0]
+    # THE PROBE IS module-level web.sensor_caps, called by the mode gate (its only consumer since
+    # the console's adapter was retired). The invariant is unchanged: the gate must ask the CLUSTER,
+    # not this process.
+    gate = src[src.index("def mode_gate("):]
+    gate = gate[:gate.index("\ndef ", 10)]
+    assert "sensor_caps(ctx)" in gate, (
+        "the mode gate no longer asks the cluster capability probe, so it would decide from this "
+        "pod's own capabilities")
     i = src.index("def sensor_caps(")
     body = src[i:src.index("\ndef ", i + 10)]
     assert "get_json" in body and "deployments/weirvern-worker" in body, (
@@ -510,12 +521,24 @@ def test_restart_targets_are_deduplicated():
 
 
 def test_the_body_read_is_bounded():
-    """An unbounded read on a LAN port is a memory-growth path."""
+    """An unbounded read on a LAN port is a memory-growth path.
+
+    THE BOUND LIVES IN `web.json_body` NOW. The console's `_read_body` read the socket itself and
+    enforced its own Content-Length cap; that method went with the transport, and both surfaces feed
+    the bytes to the shared parser, which refuses anything over its `limit`. So the assertion follows
+    the bound to the one place it is enforced -- and checks the write routes actually go through it,
+    because a route that parsed its own body would bypass the cap.
+    """
     src = WEB.read_text()
-    i = src.index("def _read_body(")
-    body = src[i:i + 900]
-    assert "limit" in body and "Content-Length" in body
-    assert "65536" in body or "limit:" in body, body[:400]
+    i = src.index("def json_body(")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert "limit: int = 65536" in body, body[:400]
+    assert "length > limit" in body, "the shared parser does not enforce the bound"
+    assert "body too large" in body, "a refusal does not say the body was too large"
+
+    flask_src = FLASK.read_text()
+    assert "web.json_body(request.get_data(cache=False))" in flask_src, (
+        "the write routes do not go through the shared bound parser")
 
 
 def test_the_auth_state_never_exposes_the_token():
@@ -569,11 +592,11 @@ def test_the_response_never_says_whether_a_token_is_configured():
     assert "the token was wrong" not in body.lower()
     assert "did not match" not in body.lower()
 
-    console = WEB.read_text()
-    j = console.index("def _authorize(")
-    assert "a valid admin session or operator token is required" not in console[j:j + 1200], (
-        "the console keeps its own copy of the refusal wording, so the two surfaces can drift"
-    )
+    console = FLASK.read_text()
+    assert "requestauth.write_refusal(" in console, (
+        "the Flask write routes do not ask the shared gate, so they have no refusal at all")
+    assert "a valid admin session or operator token is required" not in console, (
+        "the Flask surface keeps its own copy of the refusal wording, so the two surfaces can drift")
 
 
 def test_from_env_reads_the_named_variable():
@@ -619,9 +642,10 @@ def test_the_json_body_must_be_an_object():
     """
     src = WEB.read_text()
     i = src.index("def json_body(")
-    assert "isinstance(parsed, dict)" in src[i:i + 900]
-    j = src.index("def _read_body(")
-    assert "json_body(" in src[j:j + 700]
+    assert "isinstance(parsed, dict)" in src[i:i + 1200]
+    # And every write route asks it: a second parser on the Flask side could word the same failure
+    # differently, which is the drift the shared parser exists to remove.
+    assert "web.json_body(request.get_data(cache=False))" in FLASK.read_text()
 
 
 # ── the cluster-side grant the write path needs ────────────────────────────────────────────

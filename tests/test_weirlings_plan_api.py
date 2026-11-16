@@ -18,9 +18,8 @@ And the survey route's `sensor` form: it must survey the WEIRLING's port, resolv
 the sensor's own report rather than the hub's ConfigMap, and refuse -- naming the candidates --
 when the answer is ambiguous. A confident survey of the wrong port is worse than no survey.
 
-The routes are driven through the REAL handler (the recipe `tests/test_gui_users.py` uses),
-against a duck-typed context and a stub ClickHouse client, so what is exercised is the shipping
-route code, not a paraphrase of it.
+The routes are driven through the REAL Flask surface, against a duck-typed context and a stub
+ClickHouse client, so what is exercised is the shipping route code, not a paraphrase of it.
 """
 from __future__ import annotations
 
@@ -88,43 +87,34 @@ def _row(sensor_id="unit-a", *, mode="loch", plan=None, address="", segment="", 
 
 
 class _Handler:
-    """Drives one route method of the real handler class with a faked transport."""
+    """Drives one route of the real Flask surface with a test client.
+
+    THE HANDLER THIS USED TO DRIVE IS GONE, and a test client is its faithful replacement: the
+    routes now live in `flask_app` over the SAME payload layer the console handler called, so this
+    still exercises the shipping view, the shared write gate and the shared body parsers rather
+    than a paraphrase of them.
+    """
+
+    # The handler method names this file was written against, and the route that owns each one.
+    ROUTES = {
+        "_weirlings_plan": "/api/weirlings/plan",
+        "_weirlings_apply": "/api/weirlings/apply",
+        "_weirlings_revoke": "/api/weirlings/revoke",
+        "_settings_sonar": "/api/settings/sonar",
+    }
 
     def __init__(self, ctx, headers=None, body=None):
-        web_mod = importlib.import_module("weirvern.admin.web")
-        cls = web_mod._build_handler(ctx)  # noqa: SLF001 -- the shipping handler
-        self.inst = cls.__new__(cls)
-        self.inst.headers = dict(headers or {})
-        if body is not None:
-            self.inst.headers["Content-Length"] = str(len(body))
-        self.inst.client_address = ("198.51.100.5", 1234)
-        self.inst.rfile = _Body(body)
-        self.emitted: dict = {}
-        self.status: int | None = None
-        self.inst._json = self._capture  # noqa: SLF001
+        from weirvern.admin import flask_app
 
-    def _capture(self, payload, code=200):
-        self.emitted = payload
-        self.status = code
+        self.client = flask_app.create_app(ctx).test_client()
+        self.headers = dict(headers or {})
+        self.body = body or ""
 
-    def call(self, name, query=None):
-        import inspect as _inspect
-
-        fn = getattr(self.inst, name)
-        params = [p for p in _inspect.signature(fn).parameters.values() if p.name != "self"]
-        if params:
-            fn(query or {})
-        else:
-            fn()
-        return self.emitted
-
-
-class _Body:
-    def __init__(self, body):
-        self._raw = (body or b"").encode() if isinstance(body, str) else (body or b"")
-
-    def read(self, n=-1):  # noqa: ANN001
-        return self._raw
+    def call(self, name):
+        assert name in self.ROUTES, f"{name} has no route on the Flask surface"
+        resp = self.client.post(self.ROUTES[name], data=self.body, headers=self.headers,
+                                content_type="application/json")
+        return resp.get_json()
 
 
 class _Settings:
@@ -309,13 +299,21 @@ def test_the_apply_step_refuses_the_hubs_own_sensor_too(monkeypatch, unit_ch):
 
 
 def test_both_write_routes_are_ADMIN_gated():
-    """Read from the source the way `test_every_write_route_consults_A_GATE` reads it: the
-    dispatch table must route to handlers that call `_authorize` before anything else."""
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    for route in ("_weirlings_plan", "_weirlings_apply"):
-        body = src[src.index(f"        def {route}(self"):]
-        body = body[:body.index("\n        def ", 10)]
-        assert "self._authorize()" in body, f"{route} is not admin-gated"
+    """Read from the source the way `test_every_write_route_consults_A_GATE` reads it: each view
+    must take the shared write gate BEFORE it reads the body, so a caller who may not write cannot
+    even get a payload parsed -- and the gate is the single `requestauth.write_refusal`, not a
+    second copy of the decision."""
+    src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
+    gate = src[src.index("    def _gate_write():"):]
+    gate = gate[:gate.index("\n    def ", 10)]
+    assert "requestauth.write_refusal" in gate, (
+        "_gate_write is not the shared write decision the console used")
+    for route in ("weirlings_plan", "weirlings_apply"):
+        body = src[src.index(f"    def {route}():"):]
+        body = body[:body.index("\n    def ", 10)]
+        assert "_gate_write()" in body, f"{route} is not admin-gated"
+        assert body.index("_gate_write()") < body.index("_body_or_refusal()"), (
+            f"{route} reads the body before the gate has decided")
 
 
 # ── the survey's `sensor` form ───────────────────────────────────────────────────────────────

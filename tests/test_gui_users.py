@@ -20,14 +20,13 @@ the single token it grew from:
      failure must never be read as "no accounts exist" -- that path ends with live accounts
      overwritten by a fresh document.
 
-Every test here drives the REAL module or the REAL handler; where a test cannot execute the
-shipped path (an HTTP route needs a socket) it asserts the property on the source in the
-narrowest way available, and says so.
+Every test here drives the REAL module or the REAL Flask surface; where a test cannot execute the
+shipped path (a decision that is not a route) it asserts the property on the narrowest real call that
+carries it, and says so.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from pathlib import Path
@@ -37,7 +36,6 @@ import pytest
 from weirvern.admin import users as users_mod
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB = ROOT / "weirvern" / "admin" / "web.py"
 
 
 # ── a fake cluster client, duck-typed to what UserStore uses ────────────────────────────────
@@ -293,7 +291,13 @@ def test_the_throttle_map_is_bounded():
     assert len(t._failures) <= users_mod.LoginThrottle._MAX_TRACKED + 1  # noqa: SLF001
 
 
-# ── 7. the routes: every property, driven through the real handler ─────────────────────────
+# ── 7. the routes: every property, driven through the real Flask surface ────────────────────
+#
+# THE CONSOLE HANDLER IS GONE. `flask_app.create_app` is the only surface, so these tests drive the
+# REAL app through Flask's own test client: the request carries headers, a body and a client address
+# exactly as it does over a socket, and the assertions read the status and the JSON the app actually
+# returns. Calling view functions directly would skip the routing, the gates and the response shape --
+# the parts a browser depends on.
 
 def _ctx(store, sessions=None, throttle=None, token=None, accounts_note="", config_client=None):
     """A duck-typed GuiContext carrying just what the account routes consult.
@@ -330,49 +334,126 @@ def _ctx(store, sessions=None, throttle=None, token=None, accounts_note="", conf
     return _Ctx()
 
 
+# The console handler's route methods, re-pointed at the Flask routes that now own them. The names
+# are kept so each test still says WHICH route it drives, and the mapping is the whole claim that
+# the same path exists on the new surface.
+_ROUTES = {
+    "_login": ("POST", "/api/login"),
+    "_password": ("POST", "/api/password"),
+    "_session": ("GET", "/api/session"),
+    "_settings": ("GET", "/api/settings"),
+    "_settings_apply": ("POST", "/api/settings/apply"),
+    "_settings_plan": ("POST", "/api/settings/plan"),
+    "_review": ("POST", "/api/review"),
+    "_users_list": ("GET", "/api/users"),
+    "_users_create": ("POST", "/api/users/create"),
+    "_users_role": ("POST", "/api/users/role"),
+    "_users_delete": ("POST", "/api/users/delete"),
+    "_users_reset": ("POST", "/api/users/reset"),
+}
+
+
+class _Inst:
+    """The handler-side helpers the tests still name, answered by whatever owns them now.
+
+    None of these was a route: `_sensor_caps`/`_mode_gate` live on `web` as module functions now,
+    `_token_role` is the passive probe in `requestauth`, and `_caller_role` is observable only
+    through the answer `/api/settings` gives the same request. Delegating rather than copying is the
+    point: a test that re-implemented any of them would assert its own arithmetic, not the product's.
+    """
+
+    def __init__(self, handler: _Handler):
+        self._h = handler
+
+    def _sensor_caps(self):
+        from weirvern.admin import web as web_mod
+
+        return web_mod.sensor_caps(self._h.ctx)
+
+    def _mode_gate(self, changes):
+        from weirvern.admin import web as web_mod
+
+        return web_mod.mode_gate(self._h.ctx, changes)
+
+    def _token_role(self):
+        from weirvern.admin import requestauth
+
+        return requestauth.token_role(self._h.ctx, self._h.headers)
+
+    def _caller_role(self):
+        """(role, via) as the REAL settings route reports it for this request."""
+        caller = self._h.get("/api/settings").get("caller") or {}
+        return caller.get("role", ""), caller.get("via", "")
+
+
 class _Handler:
-    """Drives one route method of the real handler class with a faked transport."""
+    """Drives one request through the real Flask app with a faked transport.
+
+    `headers`, `body` and `client` mean what they meant to the old socket-level harness: the
+    credentials ride in headers, the JSON body is the request's bytes, and the client address is what
+    the throttle and the gates record against. `emitted`/`status` are the response's own JSON and
+    status code, so an assertion on them is an assertion about what a browser would receive.
+    """
+
+    TEST_SECRET = "test-secret-not-a-deployment-key"
 
     def __init__(self, ctx, headers=None, body=None, client="198.51.100.5"):
-        web_mod = importlib.import_module("weirvern.admin.web")
-        cls = web_mod._build_handler(ctx)
-        self.inst = cls.__new__(cls)
-        self.inst.headers = dict(headers or {})
-        if body is not None:
-            # _read_body demands a Content-Length, exactly as a real request carries.
-            self.inst.headers["Content-Length"] = str(len(body))
-        self.inst.client_address = (client, 1234)
-        self.inst.rfile = _Body(body)
+        from weirvern.admin import flask_app
+
+        self.ctx = ctx
+        self.headers = dict(headers or {})
+        self.client = client
+        self._body = body
+        app = flask_app.create_app(ctx, secret_key=self.TEST_SECRET)
+        app.config.update(TESTING=True)
+        self._client = app.test_client()
         self.emitted: dict = {}
         self.status: int | None = None
-        self.inst._json = self._capture
+        self.inst = _Inst(self)
 
-    def _capture(self, payload, code=200):
-        self.emitted = payload
-        self.status = code
+    def _request(self, method, path, body=None):
+        kwargs = {"headers": self.headers, "environ_base": {"REMOTE_ADDR": self.client}}
+        if body is not None:
+            kwargs["data"] = body.encode() if isinstance(body, str) else body
+            kwargs["content_type"] = "application/json"
+        return getattr(self._client, method.lower())(path, **kwargs)
 
-    def call(self, name, query=None):
-        """Invoke a route method. Only the query-taking routes receive an argument."""
-        import inspect as _inspect
-
-        fn = getattr(self.inst, name)
-        params = [p for p in _inspect.signature(fn).parameters.values()
-                  if p.name != "self"]
-        if params:
-            fn(query or {})
-        else:
-            fn()
+    def _capture(self, response):
+        self.status = response.status_code
+        self.emitted = response.get_json(silent=True) or {}
         return self.emitted
 
+    def get(self, path):
+        """One read, for a helper that has to observe a route's answer."""
+        return self._capture(self._request("GET", path))
 
-class _Body:
-    def __init__(self, body):
-        self._raw = (body or b"")
-        if isinstance(self._raw, str):
-            self._raw = self._raw.encode()
+    def _authorize(self):
+        """The write gate for this request.
 
-    def read(self, n=-1):
-        return self._raw
+        `_authorize` was never a route: it was the console handler's one call into
+        `requestauth.write_refusal`, made before the body was read. The Flask write routes each make
+        that same call first, and it is now the only implementation left, so driving it here is
+        driving the gate BOTH surfaces use -- and the property under test (token before session) is
+        the ORDER inside that function, which no route-level assertion can see. The emitted shape
+        mirrors the console's `_json` convention the assertions were written against: nothing
+        emitted and no status means the request was allowed through.
+        """
+        from weirvern.admin import requestauth
+
+        ok, refusal = requestauth.write_refusal(self.ctx, self.headers, addr=self.client)
+        if ok:
+            return self.emitted
+        code, message = refusal if refusal is not None else (403, "write access is required")
+        self.emitted = {"error": message, "code": code}
+        self.status = code
+        return self.emitted
+
+    def call(self, name, query=None):
+        """Invoke one route by its legacy name. `query` is accepted for the old signature."""
+        if name == "_authorize":
+            return self._authorize()
+        method, path = _ROUTES[name]
+        return self._capture(self._request(method, path, self._body))
 
 
 def _authed(store, username="sam", role="admin", **ctx_kw):
@@ -631,7 +712,8 @@ class _DSCli:
 def test_the_caps_probe_reads_the_SENSOR_daemonset_from_the_cluster():
     """"I can't apply siphon mode" was structural: the probe was a stub answering False/False
     unconditionally, so the mode gate refused the in-path mode forever -- even on a sensor
-    that held the capabilities. It now asks the cluster for the zeek DaemonSet."""
+    that held the capabilities. It now asks the cluster for the workload that runs the
+    intercept (the worker Deployment) rather than assuming this process's own capabilities."""
     store = _store_with(exists=False)
     ctx = _ctx(store, config_client=_DSCli(["NET_RAW", "NET_ADMIN"]))
     assert _Handler(ctx).inst._sensor_caps() == (True, True)
@@ -1152,8 +1234,9 @@ def test_a_write_that_does_not_land_RAISES_rather_than_being_trusted():
 # break-glass credential from a browser they were already signed into, and the refusal said "ask an
 # admin", pointing at an account problem when the needed credential was already on the request.
 #
-# These tests drive `_authorize` itself rather than asserting the order on the source, because the
-# ORDER is exactly what a source-text check cannot verify.
+# These tests drive the write gate itself (`requestauth.write_refusal`, which every write route on
+# both surfaces calls first) rather than asserting the order on the source, because the ORDER is
+# exactly what a source-text check cannot verify.
 
 
 class _FullAuth:
@@ -1222,10 +1305,10 @@ def test_a_VIEWER_holding_the_token_is_AUTHORISED():
 
     h = _Handler(ctx, headers={gui_auth.SESSION_HEADER: viewer,
                                gui_auth.AUTH_HEADER: "break-glass-value"})
-    # `call` returns the EMITTED payload, and `_authorize` sends its refusal through `_json`: an
-    # empty payload is the authorised case. Asserting `is True` here asserted the harness's return
-    # convention rather than the gate's behaviour -- my first version of this test did exactly that
-    # and failed on a correctly authorised request.
+    # `call` returns the EMITTED refusal, and the gate emits nothing when it allows the request: an
+    # empty payload with no status is the authorised case. Asserting `is True` here asserted a
+    # harness return convention rather than the gate's behaviour -- my first version of this test did
+    # exactly that and failed on a correctly authorised request.
     h.call("_authorize")
     assert h.emitted == {} and h.status is None, (
         f"a viewer presenting the VALID operator token was refused: {h.emitted}. The token is "
