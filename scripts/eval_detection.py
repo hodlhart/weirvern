@@ -407,6 +407,81 @@ def drain_call_budget(*, covered: datetime | None, hi: datetime, lo: datetime,
     return int((behind_s + span_s) // chunk_s) + 4, behind_s
 
 
+def drain_until_covered(*, sweep, cursor_path: Path, hi: datetime, lo: datetime,
+                        chunk_s: float, budget_s: float) -> tuple[list[dict], str | None]:
+    """Run the bounded sweep until its cursor passes `hi`, or explain why it did not.
+
+    THE BUDGET IS MEASURED AFTER THE FIRST CALL, AND THAT IS THE WHOLE POINT. `detection_sweep`
+    caps a cycle at MAX_CATCHUP_BUCKETS of AGG_BUCKET_S (one hour), so a five-hour seed needs more
+    than one call -- and the cursor the budget depends on does not exist until the first call has
+    written it. Measured in CI 2026-11-16, twice:
+
+      * budgeting from the seed's SPAN alone: "did not cover the seed after 8 calls (4.9 chunks
+        needed for a 4.9h span)", in a run whose own log said "Detection is 19.7h behind";
+      * budgeting from a cursor read BEFORE the loop: "0.0h behind at the start, plus a 4.9h span"
+        -- because the cursor file is absent on a fresh MODEL_DIR, so the loop got 8 calls for a
+        19.7h backlog and sixteen verdicts, all ending fourteen hours before the attacks.
+
+    So: sweep once, read the cursor that call produced, THEN budget (hi - cursor) + span. Three
+    stops, each with its own sentence: reached, stopped advancing, out of wall clock.
+
+    Extracted from run_detection so it can be driven by fakes -- the read side of this loop has now
+    been wrong three times, and every one of those failures was invisible to a test that could not
+    run it.
+    """
+    verdicts: list[dict] = []
+    deadline = time.monotonic() + budget_s
+    previous = None
+    max_calls = None
+    call = 0
+    while True:
+        call += 1
+        verdicts.extend(sweep() or [])
+        covered = _read_cursor(cursor_path)
+        if _cursor_reached(covered, hi):
+            return verdicts, None
+        if max_calls is None:
+            # The first call created the cursor; this is the first honest reading of the backlog.
+            max_calls, behind_s = drain_call_budget(covered=covered, hi=hi, lo=lo, chunk_s=chunk_s)
+            print(
+                f"  drain budget: after call 1 the cursor is "
+                f"{('at ' + str(covered)) if covered else 'ABSENT'}, "
+                f"{behind_s / 3600:.1f}h behind {hi}; up to {max_calls} call(s) of "
+                f"{chunk_s / 3600:.1f}h, wall-clock cap {budget_s:.0f}s",
+                flush=True,
+            )
+        if covered is None and call >= 2:
+            # NO CURSOR AT ALL IS ITS OWN STATE, not "the sweep did not cover": the first call is
+            # allowed not to write one (it may legitimately examine nothing), but by the second the
+            # absence means the cursor was never persisted, and nothing has been examined.
+            return verdicts, (
+                f"the sweep wrote no cursor after {call} calls (expected at {cursor_path}); nothing "
+                f"was examined, so a detection reported missing anywhere in this window is "
+                f"unmeasured rather than absent."
+            )
+        if covered is not None and previous is not None and _as_utc(covered) == _as_utc(previous):
+            return verdicts, (
+                f"the sweep stopped advancing at {covered} after {call} call(s), with seeded "
+                f"windows up to {hi}; {len(verdicts)} verdict(s) were scored over the part it did "
+                f"reach. Windows past that point were NOT examined, so a detection reported missing "
+                f"there is unmeasured rather than absent."
+            )
+        if max_calls is not None and call >= max_calls:
+            return verdicts, (
+                f"the sweep did not cover the seed after {call} calls ({max_calls} budgeted for a "
+                f"backlog of {behind_s / 3600:.1f}h plus a "
+                f"{max(0.0, (hi - lo).total_seconds()) / 3600:.1f}h span, in "
+                f"{chunk_s / 3600:.1f}h chunks); {len(verdicts)} verdict(s) scored"
+            )
+        if time.monotonic() > deadline:
+            return verdicts, (
+                f"the sweep ran out of its {budget_s:.0f}s wall-clock budget after {call} call(s), "
+                f"covering up to {covered} of {hi}; {len(verdicts)} verdict(s) were scored over the "
+                f"part it reached. Windows past that point were NOT examined."
+            )
+        previous = covered
+
+
 def run_detection(client, cfg_settings, window_minutes: int,
                   attack_start_minute: int = 0, detectors=None):
     """The worker's REAL detection sweep, with the window widened to cover the seed.
@@ -468,48 +543,15 @@ def run_detection(client, cfg_settings, window_minutes: int,
     # generator runs forward from now, so the tail of the seed can sit in the FUTURE and no number of
     # calls will ever cover it.
     chunk_s = worker.MAX_CATCHUP_BUCKETS * worker.AGG_BUCKET_S
-    span_s = max(0.0, (hi - lo).total_seconds())
-
-    # Read the cursor FIRST: the loop below is budgeted for the distance it has to travel, and the
-    # no-progress stop still bounds it when the sweep genuinely cannot advance.
-    verdicts: list[dict] = []
-    cursor_path = Path(settings.model_dir) / "detect_cursor.json"
-    start_covered = _read_cursor(cursor_path)
-    max_calls, behind_s = drain_call_budget(covered=start_covered, hi=hi, lo=lo, chunk_s=chunk_s)
-    budget_s = float(os.environ.get("WEIRVERN_EVAL_DRAIN_BUDGET_S", "600"))
-    deadline = time.monotonic() + budget_s
-    print(
-        f"  drain budget: cursor {('at ' + str(start_covered)) if start_covered else 'ABSENT'}, "
-        f"{behind_s / 3600:.1f}h behind {hi}; {max_calls} call(s) of {chunk_s / 3600:.1f}h, "
-        f"wall-clock cap {budget_s:.0f}s",
-        flush=True,
+    verdicts, err = drain_until_covered(
+        sweep=lambda: detection_sweep(client, detectors, widened, cfg) or [],
+        cursor_path=Path(settings.model_dir) / "detect_cursor.json",
+        hi=hi,
+        lo=lo,
+        chunk_s=chunk_s,
+        budget_s=float(os.environ.get("WEIRVERN_EVAL_DRAIN_BUDGET_S", "600")),
     )
-    previous = start_covered
-    for call in range(1, max_calls + 1):
-        batch = detection_sweep(client, detectors, widened, cfg) or []
-        verdicts.extend(batch)
-        covered = _read_cursor(cursor_path)
-        if _cursor_reached(covered, hi):
-            return verdicts, None
-        if covered is not None and previous is not None and _as_utc(covered) == _as_utc(previous):
-            return verdicts, (
-                f"the sweep stopped advancing at {covered} after {call} call(s), with seeded windows "
-                f"up to {hi}; {len(verdicts)} verdict(s) were scored over the part it did reach. "
-                "Windows past that point were NOT examined, so a detection reported missing there "
-                "is unmeasured rather than absent."
-            )
-        previous = covered
-        if time.monotonic() > deadline:
-            return verdicts, (
-                f"the sweep ran out of its {budget_s:.0f}s wall-clock budget after {call} call(s), "
-                f"covering up to {covered} of {hi}; {len(verdicts)} verdict(s) were scored over the "
-                f"part it reached. Windows past that point were NOT examined."
-            )
-    return verdicts, (
-        f"the sweep did not cover the seed after {max_calls} calls "
-        f"({behind_s / 3600:.1f}h behind at the start, plus a {span_s / 3600:.1f}h span, in "
-        f"{chunk_s / 3600:.1f}h chunks); {len(verdicts)} verdict(s) scored"
-    )
+    return (None, err) if err else (verdicts, None)
 
 
 def _settle_table(client, table: str, *, timeout_s: int) -> tuple[int, str]:

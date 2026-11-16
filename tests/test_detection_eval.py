@@ -348,3 +348,72 @@ def test_the_drain_budget_covers_the_distance_the_cursor_travels():
     # A cursor already at `hi` needs no backlog allowance, only the slack.
     calls_ahead, _ = mod.drain_call_budget(covered=hi, hi=hi, lo=lo, chunk_s=3600.0)
     assert calls_ahead < calls, "a cursor at the last seeded window must not be budgeted as behind"
+
+def test_the_drain_loop_budgets_from_the_cursor_the_first_call_creates(tmp_path):
+    """THE BUDGET CANNOT BE READ BEFORE THE FIRST SWEEP RUNS, because the cursor does not exist yet.
+
+    Measured in CI 2026-11-16, after the span-only budget was fixed: the loop read the cursor BEFORE
+    its first call, found no file, computed "0.0h behind at the start, plus a 4.9h span", and gave
+    itself 8 calls for a 19.7h backlog -- then reported "the sweep did not cover the seed after 8
+    calls", with every one of its sixteen verdicts ending fourteen hours before the attacks.
+
+    This drives the extracted loop with fakes: each sweep advances the cursor by one chunk and
+    creates the file the first time, exactly like the real one.
+    """
+    import importlib.util
+    import json
+    import pathlib as _pathlib
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location("eval_detection_drain_under_test", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    cursor_path = tmp_path / "detect_cursor.json"
+    start = datetime(2026, 11, 16, 0, 0)          # first cursor lands nineteen hours behind `hi`
+    hi = start + timedelta(hours=19.7)
+    lo = hi - timedelta(hours=4.9)
+    state = {"n": 0, "written": False}
+
+    def sweep():
+        state["n"] += 1
+        cursor_path.write_text(json.dumps(
+            {"covered_through": (start + timedelta(hours=state["n"])).strftime("%Y-%m-%d %H:%M:%S")}))
+        state["written"] = True
+        return [{"v": state["n"]}]
+
+    mod._read_cursor = lambda path: datetime.fromisoformat(
+        json.loads(_pathlib.Path(path).read_text())["covered_through"]) \
+        if _pathlib.Path(path).exists() else None
+    mod._as_utc = lambda d: d.replace(tzinfo=UTC) if d.tzinfo is None else d
+
+    verdicts, err = mod.drain_until_covered(
+        sweep=sweep, cursor_path=cursor_path, hi=hi, lo=lo, chunk_s=3600.0, budget_s=30.0)
+
+    assert err is None, f"the drain gave up with a 19.7h backlog: {err}"
+    assert state["n"] >= 20, (
+        f"it took {state['n']} calls to cover a 19.7h backlog at 1h per call -- the budget was read "
+        f"before the cursor existed"
+    )
+    assert len(verdicts) == state["n"], (len(verdicts), state["n"])
+
+
+def test_the_drain_loop_stops_with_an_honest_sentence_when_the_cursor_stalls(tmp_path):
+    import importlib.util
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location("eval_detection_stall_under_test", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hi = datetime(2026, 11, 16, 20, 0)
+    lo = hi - timedelta(hours=5)
+    mod._as_utc = lambda d: d.replace(tzinfo=UTC) if d.tzinfo is None else d
+    # A sweep that never writes a cursor: nothing was examined, and the stop must say so.
+    verdicts, err = mod.drain_until_covered(
+        sweep=lambda: [], cursor_path=tmp_path / "absent.json", hi=hi, lo=lo,
+        chunk_s=3600.0, budget_s=30.0)
+    assert err is not None, "a sweep that covers nothing must not report success"
+    assert "unmeasured rather than absent" in err, (
+        f"the stop must say the uncovered windows were NOT examined, not that detection was absent: {err}"
+    )
