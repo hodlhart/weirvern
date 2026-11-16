@@ -1393,6 +1393,23 @@ def cmd_exporters(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+def cmd_demo_seed(args: argparse.Namespace) -> int:
+    """Fill ClickHouse with plausible demo traffic ending now.
+
+    The work lives in `weirvern.demo_seed` and this only forwards the arguments, so the module stays
+    runnable on its own (`python -m weirvern.demo_seed`) for a box where the CLI entry point is not on
+    PATH. Two front doors to one implementation is fine; two implementations is not.
+    """
+    from weirvern import demo_seed  # noqa: PLC0415
+
+    argv = ["--hours", str(args.hours), "--hosts", str(args.hosts), "--seed", str(args.seed)]
+    if args.force:
+        argv.append("--force")
+    if args.dry_run:
+        argv.append("--dry-run")
+    return demo_seed.main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="weirvern",
@@ -1567,6 +1584,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("version", help="show version and detected runtime")
     s.set_defaults(func=cmd_version)
+
+    # Seeding is a demo and testing tool, so it is named for that and refuses a live install unless
+    # --force. It generates records and pushes them through the real Zeek mappers rather than writing
+    # finished rows, because the mapper is the layer whose bugs actually reach production.
+    s = sub.add_parser("demo-seed", help="fill ClickHouse with plausible demo traffic ending now")
+    s.add_argument("--hours", type=int, default=6, help="hours of data to generate (default 6)")
+    s.add_argument("--hosts", type=int, default=22, help="internal hosts to simulate (default 22)")
+    s.add_argument("--seed", type=int, default=1337, help="RNG seed, so a demo is reproducible")
+    s.add_argument("--force", action="store_true", help="seed even though recent flow data exists")
+    s.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    s.set_defaults(func=cmd_demo_seed)
 
     return p
 
