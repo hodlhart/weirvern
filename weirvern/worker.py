@@ -1402,10 +1402,11 @@ def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime,
         logger.warning(
             "Detection is %.1fh behind and is draining in bounded chunks of %.1fh, so no single "
             "cycle can OOM. About %d cycle(s) to reach the present. Nothing is skipped: each "
-            "cycle resumes at the chunk boundary.",
+            "cycle resumes at the chunk boundary. THIS CHUNK: %s -> %s",
             (now - since).total_seconds() / 3600,
             cap.total_seconds() / 3600,
             int((now - since).total_seconds() / cap.total_seconds() + 0.999),
+            since, chunk_end,
         )
         return since, chunk_end
 
@@ -1458,6 +1459,12 @@ def _save_detect_cursor(settings, covered_through: datetime) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"covered_through": covered_through.isoformat()}))
+        # ONE LINE PER SAVE, WITH THE VALUE. A cursor that advances less than the chunk it was given
+        # is otherwise invisible: the drain loop can only report where it ended up, not which of the
+        # call sites wrote it or what it was handed. `aware` is in the line because a naive/aware
+        # mismatch here silently changes what the next `since` becomes.
+        logger.info("detect cursor -> %s (tzinfo=%s)", covered_through.isoformat(),
+                    "aware" if covered_through.tzinfo else "naive")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Could not record the detection cursor at %s (%s). A cycle longer than the lookback "
