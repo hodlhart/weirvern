@@ -306,3 +306,45 @@ def test_the_drain_compares_naive_and_aware_datetimes_without_dying():
     # A naive value is read as UTC, never as local time: one hour's difference must stay one hour.
     assert mod._as_utc(naive_same) == aware
     assert mod._as_utc(naive_same) - timedelta(hours=1) == mod._as_utc(naive_earlier)
+
+def test_the_drain_budget_covers_the_distance_the_cursor_travels():
+    """MEASURED IN CI 2026-11-16: "the sweep did not cover the seed after 8 calls (4.9 chunks needed
+    for a 4.9h span)" -- in the same run whose own log said Detection is 19.4h behind.
+
+    The seed is anchored to the most recent UTC midnight, so an evening CI run starts five hours of
+    seeded traffic nineteen hours in the past. The cursor has to travel ~19h at one 1h chunk per
+    call; the budget was computed from the seed's own 4.9h length. Sixteen verdicts were scored, all
+    over windows ending fourteen hours before the attacks, and the gate failed looking like a
+    coverage defect in the sweep.
+
+    These are the run's own numbers: 19.4h behind, 4.9h span, 1h chunks.
+    """
+    import importlib.util
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location("eval_detection_budget_under_test", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    hi = datetime(2026, 11, 16, 19, 24, tzinfo=UTC)
+    lo = hi - timedelta(hours=4.9)
+    cursor = hi - timedelta(hours=19.4)
+
+    calls, behind = mod.drain_call_budget(covered=cursor, hi=hi, lo=lo, chunk_s=3600.0)
+    assert abs(behind - 19.4 * 3600) < 60, f"the backlog was read as {behind / 3600:.1f}h"
+    assert calls >= 24, (
+        f"the budget is {calls} calls for a {behind / 3600:.1f}h backlog in 1h chunks -- the sweep "
+        f"cannot reach the seeded attacks, which is the failure this replaces"
+    )
+
+    # The old arithmetic, kept as the negative: span-only budgeting under-budgets by design.
+    old_calls = int(4.9) + 4
+    assert calls > old_calls, "budgeting from the span alone is what produced 8 calls for 19.4h"
+
+    # No cursor yet: fall back to the span plus slack rather than refusing to start.
+    calls_absent, behind_absent = mod.drain_call_budget(covered=None, hi=hi, lo=lo, chunk_s=3600.0)
+    assert behind_absent == 0 and calls_absent >= 8, (calls_absent, behind_absent)
+
+    # A cursor already at `hi` needs no backlog allowance, only the slack.
+    calls_ahead, _ = mod.drain_call_budget(covered=hi, hi=hi, lo=lo, chunk_s=3600.0)
+    assert calls_ahead < calls, "a cursor at the last seeded window must not be budgeted as behind"
