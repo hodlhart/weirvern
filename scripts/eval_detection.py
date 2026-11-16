@@ -537,10 +537,26 @@ def run_detection(client, cfg_settings, window_minutes: int,
         client, "SELECT min(window_start), max(window_start) FROM weirvern.flows_aggregated")[0]
     lo, hi = _as_datetime(lo), _as_datetime(hi)
 
-    # The sweep's `since = now - interval_s` must be <= lo so every seeded window is in
-    # scope, whether the seed sits in the past or the future relative to now.
-    interval_s = max(0, int((datetime.now() - lo).total_seconds())) + 1200
-    widened = dataclasses.replace(settings, detect_interval_s=interval_s)
+    # The sweep's `since = min(now - interval_s, cursor - bucket)` must reach `lo` on the FIRST call
+    # so every seeded window is in scope, whether the seed sits in the past or in the future.
+    #
+    # IT MUST NOT STAY THAT WIDE, AND THAT IS WHAT MADE THE DRAIN CRAWL (measured 2026-11-16).
+    # `since` takes the MIN of the lookback arm and the cursor arm, so a lookback widened to the
+    # whole seed keeps winning: default_since stayed pinned at the seed's start while the cursor
+    # advanced, `min()` kept returning the start, and every call re-covered the SAME first hour. The
+    # trace showed it exactly -- call 1 wrote 00:35, and calls 2..13 each wrote 00:35 plus the two
+    # seconds between them.
+    #
+    # So the lookback is recomputed per call from the cursor the previous call wrote: far enough back
+    # to include it, never far enough to override it. In production the interval is 300s and the
+    # cursor wins naturally; the harness's widening is what broke the arithmetic.
+    def _lookback_s(covered) -> int:
+        if covered is None:
+            return max(1200, int((datetime.now() - lo).total_seconds()) + 1200)
+        # A cursor is aware UTC; `lo` and `datetime.now()` are naive in ClickHouse's frame here.
+        covered_local = covered.astimezone().replace(tzinfo=None)
+        return max(1200, int((datetime.now() - covered_local).total_seconds()) + 1200)
+
 
     if detectors is None:
         detectors, err = train_detectors(client, cfg_settings, attack_start_minute)
@@ -590,7 +606,11 @@ def run_detection(client, cfg_settings, window_minutes: int,
           f"read back {_read_cursor(cursor_file)})", flush=True)
 
     verdicts, err = drain_until_covered(
-        sweep=lambda: detection_sweep(client, detectors, widened, cfg) or [],
+        sweep=lambda: detection_sweep(
+            client, detectors,
+            dataclasses.replace(settings,
+                                detect_interval_s=_lookback_s(_read_cursor(cursor_file))),
+            cfg) or [],
         cursor_path=Path(settings.model_dir) / "detect_cursor.json",
         hi=hi,
         lo=lo,
