@@ -149,8 +149,14 @@ def _flows_row(ts: float, src: str, dst: str, dport: int, orig_bytes: int, resp_
     A demo where the flow view and the Zeek view disagree is worse than one channel being empty: it
     reads as a defect in the product rather than in the seed.
     """
+    # EVERY COLUMN IS NAMED. An earlier version set 18 of the 24 and relied on `build` substituting 0
+    # for the rest, which means a column added to COLUMNS later would insert a silent zero instead of
+    # failing. The timestamp fields are filled by the caller.
     return {
+        "timestamp": None,
         "sampler_address": "192.0.2.1",
+        "time_flow_start": None,
+        "time_flow_end": None,
         "src_addr": src,
         "dst_addr": dst,
         "src_port": 0,
@@ -161,11 +167,28 @@ def _flows_row(ts: float, src: str, dst: str, dport: int, orig_bytes: int, resp_
         "packets": max(2, (orig_bytes + resp_bytes) // 200),
         "tcp_flags": 16,
         "sampling_rate": 1,
+        "src_as": 0,
+        "dst_as": 0,
+        "src_vlan": 0,
+        "dst_vlan": 0,
+        "in_if": 0,
+        "out_if": 0,
         "next_hop": "192.0.2.1",
         "ip_tos": 0,
         "ip_ttl": 64,
         "frag_offset": 0,
     }
+
+
+def _flow_values(flow: dict) -> list:
+    """Assemble a flow row BY KEY, so a column with no value raises instead of becoming 0.
+
+    Three call sites build flow rows (the segment loop, the beacon and the scan) and an earlier
+    version had `.get(c, 0)` at each of them. That is the silent-default shape this project keeps
+    finding: a schema column added later would insert a zero into a field nobody meant to leave at
+    zero, and the row would look valid. One helper means one place to be right.
+    """
+    return [flow[c] for c in COLUMNS["flows"]]
 
 
 def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
@@ -206,7 +229,7 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
                 flow["time_flow_start"] = w_start
                 flow["time_flow_end"] = w_start + timedelta(seconds=rng.uniform(1, 240))
                 flow["timestamp"] = w_start
-                out["flows"].append([flow.get(c, 0) for c in COLUMNS["flows"]])
+                out["flows"].append([flow[c] for c in COLUMNS["flows"]])
 
                 if dport == 53:
                     dns = ingester.map_zeek_dns(_dns(ts, host, rng.choice(DOMAINS), rng))
@@ -233,7 +256,7 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
         bflow["time_flow_start"] = w_start
         bflow["time_flow_end"] = w_start + timedelta(seconds=30)
         bflow["timestamp"] = w_start
-        out["flows"].append([bflow.get(c, 0) for c in COLUMNS["flows"]])
+        out["flows"].append(_flow_values(bflow))
 
         # ANOMALY 2: one window where a host sweeps ports on a single peer. A scan is high flow count
         # with near-zero bytes per flow, which the diversity channel and the volume models read very
@@ -251,7 +274,7 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
                 sflow["time_flow_start"] = w_start
                 sflow["time_flow_end"] = w_start + timedelta(seconds=2)
                 sflow["timestamp"] = w_start
-                out["flows"].append([sflow.get(c, 0) for c in COLUMNS["flows"]])
+                out["flows"].append(_flow_values(sflow))
 
     return out
 

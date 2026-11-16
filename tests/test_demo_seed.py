@@ -179,3 +179,23 @@ def test_dry_run_writes_nothing(monkeypatch):
 
     monkeypatch.setattr("weirvern.db.connect", explode)
     assert demo_seed.main(["--hours", "1", "--hosts", "2", "--dry-run"]) == 0
+
+
+def test_the_flow_row_names_every_column_the_schema_needs():
+    """A column with no value must FAIL, not quietly insert zero.
+
+    The seeder assembles flow rows by key, so this is what stops a future schema addition from
+    producing a silent 0 in a column nobody meant to leave at zero.
+    """
+    from datetime import datetime
+
+    row = demo_seed._flows_row(0.0, "192.0.2.10", "198.51.100.10", 443, 100, 200)
+    row["timestamp"] = row["time_flow_start"] = row["time_flow_end"] = datetime.now()
+    missing = [c for c in demo_seed.COLUMNS["flows"] if c not in row]
+    assert not missing, f"_flows_row leaves these columns to a default: {missing}"
+    # and the assembled rows carry real values for all of them
+    data = demo_seed.build(hours=1, hosts=2, seed=5)
+    width = len(demo_seed.COLUMNS["flows"])
+    assert all(len(r) == width for r in data["flows"])
+    assert all(v is not None for r in data["flows"] for v in r), "a flow value came out None"
+

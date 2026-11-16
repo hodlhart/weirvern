@@ -773,7 +773,7 @@ def _build_handler(ctx: GuiContext):
             """The pipeline's self-audit read (BF-13). Read-only like the rest of the surface."""
             try:
                 with self._with_client() as client:
-                    out = status_mod.pipeline_audit(client)
+                    out = payloads.audit(client)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
             self._json(out)
@@ -786,7 +786,7 @@ def _build_handler(ctx: GuiContext):
             """
             try:
                 with self._with_client() as client:
-                    out = status_mod.detectors_overview(client)
+                    out = payloads.detectors(client)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
             self._json(out)
@@ -795,17 +795,17 @@ def _build_handler(ctx: GuiContext):
             """Shadow calibration readout; a failed read is a 200 with available:false."""
             try:
                 with self._with_client() as client:
-                    data = status_mod.calibration_overview(client, ctx.settings)
+                    data = payloads.models_calibration(client, ctx.settings)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": read_failure(exc), "rows": []})
-            self._json(web_api.calibration_payload(data))
+            self._json(data)
 
         def _models_shadow(self) -> None:
             """Shadow ML channel counts; a failed read is a state, not an empty success."""
             try:
                 with self._with_client() as client:
-                    data = status_mod.shadow_overview(client)
+                    data = payloads.models_shadow(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": read_failure(exc), "rows": []})
@@ -848,8 +848,7 @@ def _build_handler(ctx: GuiContext):
             """OP-1: the operating numbers, with window/source and explicit not-measured states."""
             try:
                 with self._with_client() as client:
-                    from weirvern.models import quality  # noqa: PLC0415
-                    data = quality.report(client)
+                    data = payloads.ml_slo(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot read the ML SLO report: {exc}",
@@ -860,8 +859,7 @@ def _build_handler(ctx: GuiContext):
             """GT-3: the source/role truth report. Read-only and explicitly unavailable on failure."""
             try:
                 with self._with_client() as client:
-                    from weirvern.models import source_coverage  # noqa: PLC0415
-                    data = source_coverage.collect(client)
+                    data = payloads.ml_coverage(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot read source coverage: {exc}",
@@ -878,7 +876,7 @@ def _build_handler(ctx: GuiContext):
             """
             try:
                 with self._with_client() as client:
-                    data = status_mod.ripple_overview(client)
+                    data = payloads.ml_ripple(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": read_failure(exc),
@@ -896,8 +894,7 @@ def _build_handler(ctx: GuiContext):
             """
             try:
                 with self._with_client() as client:
-                    from weirvern.models import data_contract  # noqa: PLC0415
-                    data = data_contract.inventory(client)
+                    data = payloads.ml_data_contract(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot read the data contract: {exc}",
@@ -1085,7 +1082,7 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.discover_trends(client, hours=hours)
+                    payload = payloads.discover_trends(client, hours)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False, "feeds": {},
                                    "reason": read_failure(exc),
@@ -1166,7 +1163,7 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.dns_reverse_for(client, ip, hours=hours)
+                    payload = payloads.dns_reverse(client, ip, hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("reverse lookup unavailable: %s", exc)
                 return self._json({"available": False, "domains": [], "reason":
@@ -1282,7 +1279,7 @@ def _build_handler(ctx: GuiContext):
             """The shadow asset-posture scorer's state. Read-only and advisory."""
             try:
                 with self._with_client() as client:
-                    payload = assets_mod.asset_posture_overview(client)
+                    payload = payloads.asset_posture(client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("asset posture unavailable: %s", exc)
                 return self._json({"available": False, "reason": "the data could not be read",
@@ -1390,9 +1387,8 @@ def _build_handler(ctx: GuiContext):
         def _sluice_state(self) -> None:
             """Just the gate's state, for a cheap poll on a short interval."""
             try:
-                from weirvern import sluice_store  # noqa: PLC0415
                 with self._with_client() as client:
-                    state = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+                    state = payloads.sluice_state(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot read the gate: {type(exc).__name__}"})
