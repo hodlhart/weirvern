@@ -273,3 +273,36 @@ def test_a_detector_that_cannot_train_on_the_seed_is_reported_and_does_not_decid
     assert "Adaptive Baseline" in err and "DBSCAN" not in err, (
         f"the error blames the skipped detector: {err}"
     )
+
+def test_the_drain_compares_naive_and_aware_datetimes_without_dying():
+    """MEASURED IN CI 2026-11-16, after the detectors had trained and the sweep had run:
+
+        if covered is not None and covered >= hi:
+        TypeError: can't compare offset-naive and offset-aware datetimes
+
+    The cursor is written from a ClickHouse value (naive) and `hi` comes from the seed clock, which
+    is pinned to UTC and therefore aware. The whole eval was thrown away at its last step, on a
+    comparison the run could not fail more cheaply. ClickHouse stores UTC, so a naive value IS UTC
+    and saying so is the fix; treating "naive" as "unknown timezone" would silently shift the
+    comparison by the runner's offset.
+    """
+    import importlib.util
+    from datetime import UTC, datetime, timedelta
+
+    spec = importlib.util.spec_from_file_location("eval_detection_tz_under_test", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    aware = datetime(2026, 11, 16, 5, 0, tzinfo=UTC)
+    naive_same = datetime(2026, 11, 16, 5, 0)
+    naive_earlier = datetime(2026, 11, 16, 4, 0)
+    naive_later = datetime(2026, 11, 16, 6, 0)
+
+    assert mod._cursor_reached(naive_same, aware), "equal instants must compare equal across kinds"
+    assert mod._cursor_reached(aware, naive_same)
+    assert not mod._cursor_reached(naive_earlier, aware)
+    assert mod._cursor_reached(naive_later, aware)
+    assert not mod._cursor_reached(None, aware), "no cursor is not coverage"
+    # A naive value is read as UTC, never as local time: one hour's difference must stay one hour.
+    assert mod._as_utc(naive_same) == aware
+    assert mod._as_utc(naive_same) - timedelta(hours=1) == mod._as_utc(naive_earlier)

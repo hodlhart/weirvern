@@ -157,6 +157,24 @@ def _as_datetime(value) -> datetime | None:
         return None
 
 
+def _as_utc(value: datetime) -> datetime:
+    """A datetime comparable with the seed clock, which is pinned to UTC and therefore AWARE.
+
+    MEASURED IN CI 2026-11-16: the drain loop compared the coverage cursor (written by the worker
+    from a ClickHouse value, so NAIVE) against `hi` (built from the seed clock, so aware) and died
+    with `TypeError: can't compare offset-naive and offset-aware datetimes` -- after the detectors
+    trained and the sweep had already run, so the whole eval was thrown away at the last step.
+    A naive ClickHouse timestamp IS UTC here (the schema stores UTC); say so explicitly rather than
+    letting the two kinds meet in a comparison.
+    """
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _cursor_reached(covered: datetime | None, hi: datetime) -> bool:
+    """Did the sweep pass the last seeded window? Compares in UTC, whatever each side carried."""
+    return covered is not None and _as_utc(covered) >= _as_utc(hi)
+
+
 def scenario_results(by_host: dict[str, list[dict]], attack_dt: datetime) -> list[dict]:
     """One result per FND-3 scenario: severity, first detection and latency.
 
@@ -435,9 +453,9 @@ def run_detection(client, cfg_settings, window_minutes: int,
         batch = detection_sweep(client, detectors, widened, cfg) or []
         verdicts.extend(batch)
         covered = _read_cursor(cursor_path)
-        if covered is not None and covered >= hi:
+        if _cursor_reached(covered, hi):
             return verdicts, None
-        if covered is not None and covered == previous:
+        if covered is not None and previous is not None and _as_utc(covered) == _as_utc(previous):
             return verdicts, (
                 f"the sweep stopped advancing at {covered} after {call} call(s), with seeded windows "
                 f"up to {hi}; {len(verdicts)} verdict(s) were scored over the part it did reach. "
