@@ -924,9 +924,11 @@ def cmd_gui(args: argparse.Namespace) -> int:
                         "report cluster access as unavailable"))
 
     try:
-        if getattr(args, "flask", False):
-            return _run_flask(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
-        return web.run(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
+        # THE LEGACY HANDLER IS RETIRED, so there is one surface and nothing for `--flask` to
+        # select. The flag is still ACCEPTED and ignored, because the deployment manifest passes it
+        # and a flag that suddenly errors is a worse failure than a flag that does nothing.
+        del args
+        return _run_flask(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
     except OSError as exc:
         # The common case is a port already in use, and saying which port is far
         # more useful than the bare errno.

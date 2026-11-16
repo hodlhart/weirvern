@@ -17,6 +17,8 @@ Three properties are pinned, each because its failure mode is silent:
 from datetime import UTC
 from pathlib import Path
 
+from tests.support_routes import routed
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -94,14 +96,13 @@ def test_the_dashboard_reads_the_fields_the_api_writes():
     status_src = (ROOT / "weirvern/admin/status.py").read_text()
     app = (ROOT / "weirvern/admin/web/app.js").read_text()
     html = (ROOT / "weirvern/admin/web/index.html").read_text()
-    web = (ROOT / "weirvern/admin/web.py").read_text()
     api = (ROOT / "weirvern/admin/web_api.py").read_text()
 
     assert '"zeek_ssl": []' in status_src, "alert_evidence stopped writing the ssl section"
     assert "d.zeek_ssl" in app and 'id="ev-tls"' in html, (
         "the renderer and the payload disagree about the TLS section")
     assert '"zeek_ssl": evidence_rows' in api, "the API stopped serialising zeek_ssl"
-    assert '"/api/fingerprints"' in web, "the fingerprints route is gone"
+    assert routed("/api/fingerprints"), "the fingerprints route is gone"
     assert "API.fingerprints" in app, "the lookup no longer calls the route"
     assert "API.sluiceBlock" in app and 'sluiceBlock: "/api/sluice/block"' in app
 

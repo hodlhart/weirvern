@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support_routes import routed
 from weirvern.admin import status
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -235,7 +236,7 @@ def test_attach_reviews_leaves_unmatched_rows_empty_when_read_succeeded():
 
 def test_the_review_route_exists_and_goes_through_the_operator_gate():
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert '"/api/review"' in src, "the review POST route is gone"
+    assert routed("/api/review"), "the review POST route is gone"
     # The gate must be consulted inside _review -- the check every write route owes.
     body = src[src.index("def _review(self)"):]
     body = body[:body.index("\n        def _settings_plan")]

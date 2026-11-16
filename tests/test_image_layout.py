@@ -92,8 +92,9 @@ def test_gui_tolerates_a_missing_project_dir(monkeypatch, tmp_path):
         captured["project_dir"] = project_dir
         return 0
 
-    from weirvern.admin import web
-    monkeypatch.setattr(web, "run", fake_run)
+    # The legacy `web.run` entry point is retired; `cmd_gui` always starts the Flask surface now, so
+    # that is the function to intercept if the test is not to bind a port.
+    monkeypatch.setattr(cli_mod, "_run_flask", fake_run)
 
     code = cli_mod.cmd_gui(_gui_args())
     assert code == 0, "cmd_gui must not fail when there is no project checkout"
@@ -195,40 +196,49 @@ def test_missing_gui_assets_produce_an_explanatory_500(monkeypatch, tmp_path):
     reports as a failure instead of wedging the suite -- a hanging test is worse
     than a failing one, because CI times out with no message.
     """
-    import threading
-    import urllib.error
-    import urllib.request
-
-    from weirvern.admin import web
+    import weirvern.admin.web as web
 
     monkeypatch.setattr(web, "STATIC_DIR", tmp_path / "nonexistent")
-    ctx = web.GuiContext(connect_factory=lambda s: None, settings=None)
-    server = web.GuiServer(ctx, "127.0.0.1", 0)
 
-    result: dict = {}
+    # DRIVEN THROUGH THE SURVIVING SURFACE. This test used to start the legacy HTTP server and fetch
+    # "/" over a socket. That server is retired, and the behaviour under test -- a missing asset
+    # directory must be a loud 500 naming the fix, not a 200 and not a hang -- belongs to whichever
+    # surface serves the console, so it now asks Flask the same question.
+    class _CM:
+        def __enter__(self):
+            return None
 
-    def fetch():
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=5)
-            result["unexpected"] = True
-        except urllib.error.HTTPError as exc:
-            result["code"] = exc.code
-            result["body"] = exc.read().decode()
-        except Exception as exc:  # noqa: BLE001
-            result["error"] = f"{type(exc).__name__}: {exc}"
+        def __exit__(self, *_a):
+            return False
 
-    try:
-        server.start_background()
-        t = threading.Thread(target=fetch, daemon=True)
-        t.start()
-        t.join(timeout=10)
-        assert not t.is_alive(), "the request handler hung; it must respond or fail"
-    finally:
-        server.stop()
+    class _Ctx:
+        settings = None
+        backend = None
+        config_client = None
+        user_store = None
+        sessions = None
+        throttle = None
+        accounts_note = ""
+        connect_factory = staticmethod(lambda settings: _CM())
 
-    assert "unexpected" not in result, "a missing asset must not return 200"
-    assert result.get("code") == 500, f"expected 500, got {result}"
-    assert "missing from the package" in result.get("body", "")
-    assert "package-data" in result.get("body", ""), (
+        class auth:
+            enabled = False
+            reason = ""
+
+            @staticmethod
+            def check(presented, client=""):
+                return False
+
+    from weirvern.admin import flask_app
+
+    app = flask_app.create_app(_Ctx(), secret_key="image-layout")
+    app.config.update(TESTING=True)
+    resp = app.test_client().get("/")
+
+    assert resp.status_code != 200, "a missing asset must not return 200"
+    assert resp.status_code == 500, f"expected 500, got {resp.status_code}"
+    body = resp.get_data(as_text=True)
+    assert "missing from the package" in body
+    assert "package-data" in body, (
         "the error must name the FIX, not just the symptom"
     )

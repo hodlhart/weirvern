@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support_routes import routed
+
 SCHEMA = Path(__file__).resolve().parent.parent / "weirvern" / "schema" / "001_weirvern.sql"
 
 
@@ -266,8 +268,7 @@ def test_evidence_route_is_registered_and_validates_input():
 
     from weirvern.admin import web
 
-    src = inspect.getsource(web)
-    assert '"/api/evidence"' in src, "the evidence route is not registered"
+    assert routed("/api/evidence"), "the evidence route is not registered"
     handler_src = inspect.getsource(web)
     assert "start is required" in handler_src, "a missing window is not rejected"
     assert "addr is required" in handler_src

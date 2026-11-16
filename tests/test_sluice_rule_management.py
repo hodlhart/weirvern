@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support_routes import routed
+
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "weirvern" / "admin" / "web"
 
@@ -120,7 +122,7 @@ def test_the_schema_file_adds_the_column_idempotently():
 
 def test_the_routes_and_serializer_carry_the_new_state():
     body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert '"/api/sluice/rule/disabled"' in body
+    assert routed("/api/sluice/rule/disabled")
     # THE REVOKE MOVED into payloads.sluice_revoke with the port; the route must still go through it
     # and the shared fetcher must still accept a selection.
     assert "payloads.sluice_revoke(" in body, "the revoke route must use the shared fetcher"

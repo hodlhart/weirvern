@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.support_routes import routed
 from weirvern.models import quality
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,9 +62,8 @@ def test_a_window_the_episode_source_cannot_cover_is_not_measured():
 
 
 def test_slo_is_exposed_on_the_models_surface():
-    web = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
-    assert "/api/ml/slo" in web
+    assert routed("/api/ml/slo"), "the SLO route is not registered"
     assert "renderMlSlo" in js and "m-slo" in js
     assert "ML quality SLO" in html and "m-slo" in html

@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support_routes import routed
+
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
 SOC_JS = WEB / "soc.js"
 APP_JS = WEB / "app.js"
@@ -292,8 +294,7 @@ def test_soc_js_is_served_and_loaded_after_app_js():
 @pytest.mark.parametrize("endpoint", ["/api/netflow", "/api/zeek", "/api/health"])
 def test_each_new_endpoint_is_routed(endpoint):
     """A view whose endpoint is not routed gets the 404 page, not an empty chart."""
-    src = (WEB.parent / "web.py").read_text()
-    assert f'"{endpoint}"' in src, f"{endpoint} is not routed in weirvern/admin/web.py"
+    assert routed(endpoint), f"{endpoint} is not routed by the application"
 
 
 def test_the_deep_health_endpoint_is_not_the_liveness_probe():
@@ -305,9 +306,10 @@ def test_the_deep_health_endpoint_is_not_the_liveness_probe():
     either the probe starts restarting the GUI or the operator loses the only view that says
     whether data is still arriving.
     """
-    src = (WEB.parent / "web.py").read_text()
-    healthz_block = src.split('"/api/healthz"', 1)[1].split("return self._error", 1)[0]
-    assert "_json({\"ok\": True})" in healthz_block, (
+    # The probe now lives on the surviving surface; its body is what must stay free of ClickHouse.
+    src = (WEB.parent / "flask_app.py").read_text()
+    healthz_block = src.split('@app.get("/api/healthz")', 1)[1].split("@app.", 1)[0]
+    assert 'jsonify({"ok": True})' in healthz_block, (
         "the liveness probe no longer returns a bare ok -- check it has not been wired to "
         "ClickHouse, which would let a slow database restart the GUI"
     )

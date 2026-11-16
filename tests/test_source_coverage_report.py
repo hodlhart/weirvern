@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tests.support_routes import routed
 from weirvern.models import evaluation
 from weirvern.models.source_coverage import summarise
 
@@ -61,10 +62,9 @@ def test_promote_refuses_when_coverage_is_not_usable():
 
 
 def test_coverage_is_exposed_on_the_models_surface():
-    web = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
-    assert "/api/ml/coverage" in web
+    assert routed("/api/ml/coverage"), "the coverage route is not registered"
     assert "renderSourceCoverage" in js and "m-cov" in js
     assert "Source coverage" in html and "m-cov" in html
 

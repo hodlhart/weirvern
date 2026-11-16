@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.support_routes import routed
 from weirvern.admin import status
 
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
@@ -141,20 +142,35 @@ def test_every_write_route_consults_A_GATE():
     """
     src = (WEB.parent / "web.py").read_text()
 
-    # There must be a write surface, and it must be a POST (never a GET, which browsers and
-    # prefetchers issue without intent).
-    assert "def do_POST" in src, "no write surface exists"
-    assert "def do_GET" in src
-    for unsafe in ("def do_PUT", "def do_DELETE"):
-        assert unsafe not in src, f"{unsafe} would be an unaudited write path"
+    # THERE MUST BE A WRITE SURFACE, AND IT MUST REFUSE THE UNSAFE VERBS. The old assertions looked
+    # for `do_POST`/`do_GET` methods on the retired HTTP handler; the transport is Flask's now, so the
+    # question is asked of the URL map, which is the thing that actually decides what a client may do.
+    # A PUT or DELETE accepted here would be an unaudited write path just as surely as it was there.
+    from tests.support_routes import flask_api_paths, flask_write_paths
+
+    writes = flask_write_paths()
+    assert writes, "no write surface exists"
+    assert flask_api_paths(), "no read surface exists"
+
+    from tests.support_routes import _Ctx
+    from weirvern.admin import flask_app
+
+    app = flask_app.create_app(_Ctx(), secret_key="verbs")
+    allowed = set()
+    for rule in app.url_map.iter_rules():
+        allowed |= set(rule.methods or ())
+    for unsafe in ("PUT", "DELETE", "PATCH"):
+        assert unsafe not in allowed, f"{unsafe} would be an unaudited write path"
 
     # Every POST route must be gated one way or another.
     SESSION_GATED = {"_logout", "_password"}
     DOOR = {"_login"}
-    route = src[src.index("        def _route_post(self"):]
-    route = route[:route.index("\n        def ", 10)]
-    handlers = [ln.split("return self.")[1].strip().rstrip("()") for ln in route.splitlines()
-                if "return self." in ln]
+    # THE LIST COMES FROM THE MAP, NOT THE DISPATCH. route_map.json is what the dispatch used to
+    # say; the handlers still live in web.py and are still what this test inspects for a gate.
+    import json
+
+    mapping = json.loads((Path(__file__).resolve().parents[1] / "tests" / "route_map.json").read_text())
+    handlers = sorted(h for h, info in mapping.items() if info["verb"] == "POST")
     assert handlers, "no POST routes parsed -- update this test"
     for name in handlers:
         body = src[src.index(f"        def {name}(self"):]
@@ -287,8 +303,7 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert 'id="view-settings"' in index, "the Settings section does not exist"
     app_js = (WEB / "app.js").read_text()
     assert "loadSettings" in app_js, "nothing loads the Settings view"
-    src = (WEB.parent / "web.py").read_text()
-    assert '"/api/settings"' in src, "there is no /api/settings route"
+    assert routed("/api/settings"), "there is no /api/settings route"
 
 
 def test_the_local_weirlings_sheet_owns_its_settings_and_settings_does_not():

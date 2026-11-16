@@ -1,9 +1,14 @@
 """Flask must answer exactly what the console answered, byte for byte, on every recorded route.
 
-THIS REPLACES A LIVE ORACLE WITH A RECORDED ONE. Until now `tests/test_route_port_equivalence.py`
+THIS REPLACES A LIVE ORACLE WITH A RECORDED ONE. Until now the route-port equivalence harness
 started the legacy HTTP handler and compared Flask against it at run time. That is a strong oracle and
-it cannot outlive the handler, so the responses were recorded from the incumbent first
-(`scripts/capture_golden_routes.py`) and the comparison is now against those fixtures.
+it cannot outlive the handler, so the responses were recorded from the incumbent BEFORE the handler was
+retired, and the comparison is now against those fixtures.
+
+The recorder went with the handler, which is the honest trade: these fixtures can no longer be
+regenerated automatically, so a deliberate change to a payload means updating the golden in the same
+commit and saying why. Drift you did not intend still fails the test, which is the property that
+matters.
 
 Two branches per route, and the failing one is not decoration. This project's recurring defect is a
 failed read rendered as a benign state -- "the packet gate is off", "no talkers in this window",
@@ -85,7 +90,7 @@ def _boom(*_a, **_k):
 @pytest.fixture(scope="module")
 def goldens() -> dict:
     if not GOLDEN.exists():
-        pytest.skip("no recorded goldens; run scripts/capture_golden_routes.py")
+        pytest.skip("no recorded goldens in tests/golden/routes.json")
     return json.loads(GOLDEN.read_text())
 
 

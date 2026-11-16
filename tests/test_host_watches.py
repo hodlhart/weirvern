@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support_routes import routed
 from weirvern.admin import status
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,7 +110,7 @@ def test_a_missing_table_is_unavailable_not_empty():
 
 def test_the_watch_route_exists_and_goes_through_the_operator_gate():
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert '"/api/watch"' in src, "the watch POST route is gone"
+    assert routed("/api/watch"), "the watch POST route is gone"
     body = src[src.index("def _watch(self)"):]
     body = body[:body.index("\n        def ", 10)]
     assert "self._authorize()" in body, (

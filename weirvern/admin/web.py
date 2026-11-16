@@ -47,12 +47,9 @@ import contextlib
 import ipaddress
 import json
 import logging
-import os
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -438,211 +435,7 @@ def _build_handler(ctx: GuiContext):
             self._json({"error": message, "code": code}, code)
 
         # -- routing -------------------------------------------------------
-        def do_GET(self) -> None:  # noqa: N802
-            if self._redirect_to_https():
-                return
-            # The time window a request sets (from/to, absolute) lives in a ContextVar that
-            # query builders read. A thread serves many requests, so a window left over from
-            # the previous one would answer this request against the wrong stretch of time:
-            # cleared here, set again by `_window_arg` only when the request asks for one.
-            timewindow.clear_window()
-            try:
-                self._route()
-            except BrokenPipeError:
-                # The browser navigated away mid-response. Common and harmless.
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("GUI request failed for %s: %s", self.path, exc)
-                # The response may already be partly written, in which case
-                # sending a 500 would corrupt it. Failing to report the error is
-                # acceptable here; the log line above is the primary signal.
-                with contextlib.suppress(Exception):
-                    self._error(500, f"internal error: {exc}")
 
-        def do_HEAD(self) -> None:  # noqa: N802
-            self.do_GET()
-
-        def _route(self) -> None:
-            parsed = urlparse(self.path)
-            path = parsed.path.rstrip("/") or "/"
-            query = parse_qs(parsed.query)
-
-            if path in STATIC_FILES or path == "/":
-                return self._static(parsed.path)
-            # THE READ GATE. Static files stay open (the sign-in screen is built from them and
-            # they carry no data), and so do two API routes: the liveness probe, which cannot
-            # present a header, and the session probe, which is how the UI learns that a gate
-            # is needed at all. Every other API route requires a signed-in account -- or the
-            # break-glass token -- once accounts are provisioned. When they are NOT provisioned
-            # the gate passes everything, which is the pre-accounts posture: a workstation
-            # running `weirvern gui` has no store to sign in against, and locking its operator
-            # out of their own dashboard would be a bug, not a policy.
-            if path not in READ_EXEMPT and not self._require_read():
-                return
-            if path == "/api/overview":
-                return self._overview()
-            if path == "/api/audit":
-                return self._audit()
-            # US-10: THE WRITE TRAIL. The fleet_audit table was append-only and invisible;
-            # this is its read surface (newest first, filterable by scope / action / target).
-            if path == "/api/write-trail":
-                return self._write_trail(query)
-            if path == "/api/detectors":
-                return self._detectors()
-            if path == "/api/anomalies":
-                return self._anomalies(query)
-            if path == "/api/episodes":
-                return self._episodes(query)
-            # Who the caller is, and whether the sign-in gate is armed. Exempt above; returns
-            # the CALLER'S OWN state and nothing about anyone else.
-            if path == "/api/session":
-                return self._session()
-            # Account management. A read route by method, but admin-only by content: the user
-            # list is account data, not monitoring data.
-            if path == "/api/users":
-                return self._users_list()
-            if path == "/api/host":
-                return self._host(query)
-            if path == "/api/evidence":
-                return self._evidence(query)
-            if path == "/api/incident":
-                return self._incident(query)
-            if path == "/api/fingerprints":
-                return self._fingerprints(query)
-            if path == "/api/models":
-                return self._models(query)
-            if path == "/api/ml/coverage":
-                return self._ml_coverage()
-            if path == "/api/ml/ripple":
-                return self._ml_ripple()
-            if path == "/api/ml/data-contract":
-                return self._ml_data_contract()
-            if path == "/api/ml/slo":
-                return self._ml_slo()
-            if path == "/api/ml/review":
-                return self._ml_review()
-            if path == "/api/ml/eval-report":
-                return self._ml_eval_report()
-            if path == "/api/ml/ledger":
-                return self._ml_ledger()
-            if path == "/api/models/calibration":
-                return self._models_calibration()
-            if path == "/api/models/shadow":
-                return self._models_shadow()
-            # AB-1: the per-host adaptive baselines -- what each host normally does, and
-            # what the baseline has flagged. A read, like the rest of the monitoring data.
-            if path == "/api/baselines":
-                return self._baselines()
-            # The operator's FORCED RETRAIN: the state of the last request and the report it
-            # produced. The write that files one is on the POST side, admin-gated like every other
-            # mutation -- but this GET is a read of the fleet's own record, so it stays open to
-            # viewers like the rest of the monitoring data.
-            if path == "/api/models/retrain":
-                return self._model_retrain()
-            if path == "/api/netflow":
-                return self._netflow(query)
-            if path == "/api/zeek":
-                return self._zeek(query)
-            # Click-through from the Netflow charts: the hosts behind one port or one protocol.
-            # DISCOVER: the raw-flow browser (Kibana's Discover, over `flows`). A GET with a
-            # filter bar -- flow type, address, port, sensor -- and paging.
-            if path == "/api/discover":
-                return self._discover(query)
-            # Three header sparklines (operator, 2026-10-19): feed health at a glance,
-            # without paging three raw feeds through the browser.
-            if path == "/api/discover/trends":
-                return self._discover_trends(query)
-            # DNS ON PORT 53, MADE READABLE: the operator's ask ("can we view dns"). Rows are
-            # Q/A pairs out of `zeek_dns`; the reverse side (address -> names) comes from the
-            # materialized map in schema/016, which is also what domain rules resolve through.
-            if path == "/api/dns":
-                return self._dns(query)
-            if path == "/api/dns/reverse":
-                return self._dns_reverse(query)
-            # THE BLOCKED LEDGER (the operator's ask: "We need a blocked tab too"): recorded
-            # hits plus the live rules split by what they do now, with the gate's state along.
-            if path == "/api/blocked":
-                return self._blocked(query)
-            if path == "/api/flows":
-                return self._flows(query)
-            # The asset inventory and the connection graph. Separate endpoints from /api/host
-            # because /api/host answers "tell me about THIS address" while these answer "what
-            # hosts exist" and "how are they wired" -- and the graph needs different tables
-            # (raw `flows` for per-edge facts, which the aggregate cannot provide).
-            if path == "/api/assets":
-                return self._assets(query)
-            # The other half of the inventory: what CHANGED between scans. Read-only; the
-            # posture score is shadow data and never gates traffic.
-            if path == "/api/findings":
-                return self._findings(query)
-            if path == "/api/asset-changes":
-                return self._asset_changes(query)
-            if path == "/api/asset-posture":
-                return self._asset_posture()
-            # Manual scans are a read here (the queue) and a write below (the request). The
-            # scanner claims the row; this route never runs Nmap in the web process.
-            if path == "/api/scan-jobs":
-                return self._scan_jobs(query)
-            if path == "/api/graph":
-                return self._graph(query)
-            if path == "/api/zeeklog":
-                return self._zeeklog(query)
-            # PASSIVE HOST IDENTIFICATION: what each host IS, from traffic already seen.
-            if path == "/api/identity":
-                return self._host_identity()
-            # ── SLUICE GATE ─────────────────────────────────────────────────────────────────
-            # GET reads (the tab's payload and a cheap state poll). The writes are POST below and
-            # pass the operator gate like every other mutation, so a viewer cannot block a host.
-            # Reads stay open: looking at what is blocked never requires a password.
-            if path == "/api/sluice":
-                return self._sluice(query)
-            if path == "/api/blocklists":
-                return self._blocklists_get()
-            if path == "/api/sluice/state":
-                return self._sluice_state()
-            # ── WEIRLINGS (the fleet) ───────────────────────────────────────────────────────
-            # GET reads the fleet. Reads stay open like every other tab: an operator checking
-            # whether a sensor is reporting should not need a password. The writes are POST
-            # below and pass the operator gate, so a viewer cannot register or retire a sensor.
-            if path == "/api/weirlings":
-                return self._weirlings(query)
-            if path == "/api/scanner":
-                return self._scanner()
-            if path == "/api/weirlings/detail":
-                return self._weirlings_detail(query)
-            if path == "/api/weirlings/probe":
-                return self._weirlings_probe_get(query)
-            # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
-            # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
-            # restart the GUI and hide the real problem); this one exists precisely to answer
-            # "is data still arriving", which requires reading it.
-            if path == "/api/health":
-                return self._health(query)
-            # Host CPU/memory and interface counters. A reading surface, not a write route;
-            # it reads the host's procfs mounted read-only at /host-proc.
-            if path == "/api/system":
-                return self._system(query)
-            # RELEASE METADATA, read-only. The Settings card may check whether a newer
-            # release exists; it never applies one. See weirvern/admin/update.py.
-            if path == "/api/update":
-                return self._update(query)
-            # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
-            if path == "/api/settings":
-                return self._settings(query)
-            # OPERATOR-DECLARED NETWORK SCOPES. A read like settings: viewers may see what is
-            # monitored; only an admin may change it (the POST routes below enforce write authorization).
-            if path == "/api/networks":
-                return self._networks(query)
-            if path == "/panic":
-                return self._panic()
-            if path == "/api/healthz":
-                # Liveness for the Kubernetes probe. Deliberately does NOT touch
-                # ClickHouse: a probe that fails when the database is slow would
-                # restart the GUI and hide the real problem.
-                return self._json({"ok": True})
-            self._error(404, f"no route for {path}")
-
-        # -- static --------------------------------------------------------
         def _static(self, raw_path: str) -> None:
             name, ctype = STATIC_FILES.get(raw_path, STATIC_FILES["/"])
             target = STATIC_DIR / name
@@ -1954,152 +1747,6 @@ def _build_handler(ctx: GuiContext):
                 raise ValueError(f"body too large ({length} bytes)")
             return json_body(self.rfile.read(length), limit=limit)
 
-        def do_POST(self) -> None:  # noqa: N802
-            if self._redirect_to_https():
-                return
-            """The only write surface. Every route here is token-gated.
-
-            Reads stay on GET and stay open. This exists so an operator can manage settings from
-            the GUI; it is deliberately narrow (a key allow-list, staged apply,
-            stated blast radius) because the port has no TLS and the token is the only control.
-            """
-            try:
-                self._route_post()
-            except BrokenPipeError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("GUI write failed for %s: %s", self.path, exc)
-                with contextlib.suppress(Exception):
-                    self._error(500, f"internal error: {exc}")
-
-        def _route_post(self) -> None:
-            parsed = urlparse(self.path)
-            path = parsed.path.rstrip("/") or "/"
-
-            # THE SIGN-IN DOOR. The only write route reachable without a session, because it
-            # is how a session is obtained. Its own throttle (per client address) stands in
-            # for the gate.
-            if path == "/api/login":
-                return self._login()
-            if path == "/api/logout":
-                return self._logout()
-            # The password change. Session-gated, not admin-gated: it is how a `must_change`
-            # account -- which every OTHER route refuses -- gets out of the gate.
-            if path == "/api/password":
-                return self._password()
-            # Account management. Admin-gated: creating, promoting and deleting accounts.
-            if path == "/api/users/create":
-                return self._users_create()
-            if path == "/api/users/role":
-                return self._users_role()
-            if path == "/api/users/delete":
-                return self._users_delete()
-            if path == "/api/users/reset":
-                return self._users_reset()
-            if path == "/api/settings/plan":
-                return self._settings_plan()
-            if path == "/api/settings/apply":
-                return self._settings_apply()
-            # SONAR. A survey of the capture interface's segment, launched as a one-shot
-            # Job. A POST rather than a GET because it CREATES a cluster object and spends
-            # seconds of the sensor node's time -- a read that must not be repeated by a
-            # prefetcher or a refresh. Admin-gated like every other write.
-            if path == "/api/settings/sonar":
-                return self._settings_sonar()
-            # TEST RUN. Flips the configured mode to siphon for a bounded window (default
-            # 30s), then reverts to loch -- a probe through the REAL supervision path, so
-            # the operator can watch an intercept run without committing to it. This is the
-            # most consequential write on the page (while it runs, the sensor is in the
-            # traffic path), so it is admin-gated like the rest and its revert runs in a
-            # finally (see admin/siphon_probe.py for the full contract).
-            if path == "/api/settings/test":
-                return self._settings_test()
-            # ── NETWORK SCOPES ─────────────────────────────────────────────────────────────
-            # These decide which hosts are eligible for per-host baselines and alerts, so
-            # they are configuration writes and go through the same admin gate as Settings.
-            if path == "/api/networks/autofill":
-                self._networks_autofill()
-                return
-            if path == "/api/networks/save":
-                return self._networks_save()
-            if path == "/api/networks/delete":
-                return self._networks_delete()
-            # SOC-1: the alert review write. A write like the settings routes, so it goes
-            # through the same operator-token gate -- an unauthenticated port must not let
-            # anyone on the LAN mark alerts as handled.
-            if path == "/api/review":
-                return self._review()
-            # THE ALERT ACTION CELL'S WATCH TOGGLE. Gated like every other write: an
-            # unauthenticated port must not let anyone on the LAN rewrite the operator's
-            # tracking list.
-            if path == "/api/watch":
-                return self._watch()
-            # ── SLUICE GATE writes ────────────────────────────────────────────────────────
-            if path == "/api/sluice/block":
-                return self._sluice_block()
-            # A manual scan is a request, not a scan run in the GUI process. The scanner
-            # claims it under a lease; the Assets row polls the result through the queue read.
-            if path == "/api/scan-jobs":
-                return self._scan_job_create()
-            # ── FORCED RETRAIN writes ───────────────────────────────────────────────────────
-            # `retrain` trains a CANDIDATE and changes nothing live; `keep` installs it over the
-            # live artifacts (archiving them); `trash` deletes the candidate. All three are
-            # admin-gated: the last two decide what is watching the network.
-            if path == "/api/models/retrain" or path.startswith("/api/models/retrain/"):
-                # No argument, like every other write route here: the dispatcher's own parser (and
-                # the test that reads it) looks up handlers by `def name(self`, and the route is
-                # available on `self.path` anyway.
-                return self._model_retrain_write()
-            if path == "/api/sluice/revoke":
-                return self._sluice_revoke()
-            # An EDIT, not a delete-and-recreate: the rule keeps its id, its reason and its
-            # history (see sluice_store.update_rule_mode).
-            if path == "/api/sluice/rule/mode":
-                return self._sluice_rule_mode()
-            # A rule's NAME is editable too -- "modify it like adding a *" (the operator,
-            # 2026-10-16). Same in-place semantics as the mode edit.
-            if path == "/api/sluice/rule/domain":
-                return self._sluice_rule_domain()
-            # Park a rule or put it back -- one rule or a checkbox selection (the operator,
-            # 2026-10-16). Not an edit of what it matches; a change of whether it applies.
-            if path == "/api/sluice/rule/disabled":
-                return self._sluice_rule_disabled()
-            # ── BLOCKLISTS ──────────────────────────────────────────────────────────────────
-            # Both admin-gated: importing a list decides what this deployment WATCHES (and,
-            # once a rule blocks, what it stops), which is a change to the configuration.
-            if path == "/api/blocklists/sync":
-                return self._blocklists_sync()
-            if path == "/api/blocklists/source":
-                return self._blocklists_source()
-            if path == "/api/blocklists/custom":
-                return self._blocklists_custom()
-            # Clicking a list to turn it on or off (the operator, 2026-10-16). A write: what the
-            # deployment WATCHES changes, and off drops the list's names from the watch set.
-            if path == "/api/blocklists/enable":
-                return self._blocklists_enable()
-            # ── WEIRLINGS writes ─────────────────────────────────────────────────────────
-            # Admin-gated like every other mutation. Registering a sensor decides what this hub
-            # will EXPECT and therefore what it raises as missing, so it is a write even though
-            # it touches no remote box.
-            if path == "/api/weirlings/register":
-                return self._weirlings_register()
-            if path == "/api/weirlings/enable":
-                return self._weirlings_enable()
-            if path == "/api/weirlings/revoke":
-                return self._weirlings_revoke()
-            # THE PER-SENSOR INTERCEPT PLAN, staged then applied, exactly like the Settings tab's
-            # ConfigMap writes: the plan step validates and reports the blast radius, the apply
-            # step writes the sensor's own row. Separate routes because the browser must never
-            # be able to skip the preview.
-            if path == "/api/weirlings/plan":
-                return self._weirlings_plan()
-            if path == "/api/weirlings/apply":
-                return self._weirlings_apply()
-            if path == "/api/weirlings/probe":
-                return self._weirlings_probe_post()
-            self._error(404, f"no write route at {path}")
-
-        # -- accounts -------------------------------------------------------
 
         def _session(self) -> None:
             """Who the caller is; whether the sign-in gate is armed. NEVER anyone else's data.
@@ -2112,6 +1759,7 @@ def _build_handler(ctx: GuiContext):
             # the same payload from the same function, because the console JS renders the `note`
             # as a banner when accounts are off and two payload builders could disagree about it.
             self._json(requestauth.session_payload(ctx, self))
+
 
         def _audit_auth(self, action: str, username: str, reason: str) -> None:
             """Append the authentication fact without ever touching the credential.
@@ -3540,32 +3188,6 @@ def _query_bool(query: dict, name: str) -> bool | None:
     return str(raw if raw is not None else "").strip().lower() in ("1", "true", "yes", "on", "")
 
 
-class GuiServer:
-    """Threaded HTTP server with a clean stop() for tests and signal handlers."""
-
-    def __init__(self, ctx: GuiContext, host: str = DEFAULT_HOST,
-                 port: int = DEFAULT_PORT):
-        self._httpd = ThreadingHTTPServer((host, port), _build_handler(ctx))
-        # daemon_threads so a request in flight cannot block interpreter exit.
-        self._httpd.daemon_threads = True
-        self.host = host
-        self.port = self._httpd.server_address[1]
-        self._thread: threading.Thread | None = None
-
-    def serve_forever(self) -> None:
-        self._httpd.serve_forever()
-
-    def start_background(self) -> GuiServer:
-        self._thread = threading.Thread(target=self.serve_forever, daemon=True,
-                                        name="weirvern-gui")
-        self._thread.start()
-        return self
-
-    def stop(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
-
-
 def build_context(connect_factory, settings, project_dir: Path,
                   namespace: str | None = None) -> GuiContext:
     """Assemble the context the handler needs, tolerating a missing cluster.
@@ -3646,18 +3268,3 @@ def build_context(connect_factory, settings, project_dir: Path,
                       sessions=sessions, throttle=throttle, accounts_note=accounts_note)
 
 
-def run(connect_factory, settings, project_dir: Path, namespace: str,
-        host: str | None = None, port: int | None = None) -> int:
-    """Serve until interrupted. Returns a process exit code."""
-    host = host or os.environ.get("GUI_HOST", DEFAULT_HOST)
-    port = port or int(os.environ.get("GUI_PORT", str(DEFAULT_PORT)))
-    ctx = build_context(connect_factory, settings, project_dir, namespace)
-    server = GuiServer(ctx, host, port)
-    logger.info("Weirvern GUI on http://%s:%d", host, server.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("GUI stopping")
-    finally:
-        server.stop()
-    return 0

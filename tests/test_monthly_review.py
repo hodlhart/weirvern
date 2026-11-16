@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tests.support_routes import routed
 from weirvern.models import review
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,11 +72,10 @@ def test_missing_or_weak_verification_fails_the_review():
 
 
 def test_the_archive_and_review_surface_are_exposed():
-    web = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     api = (ROOT / "weirvern" / "admin" / "web_api.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
-    assert "/api/ml/review" in web
+    assert routed("/api/ml/review"), "the review route is not registered"
     assert "latest_report" in api
     assert "renderReview" in js and "m-review" in js
     assert "Program review" in html and "m-review" in html

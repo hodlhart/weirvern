@@ -137,11 +137,22 @@ def test_the_new_scripts_load_after_the_helpers_they_use():
 
 
 def _routes() -> dict[str, str]:
-    src = (WEB.parent / "web.py").read_text()
-    # path -> handler name, from the `if path == "/api/x": return self._handler(query)` shape.
-    # The leading underscore is part of the method name, so the capture must keep it: without
-    # it the route is recorded as `assets` and the comparison below fails against `_assets`.
-    return dict(re.findall(r'if path == "(/api/[\w/-]+)":\s*\n\s*return self\.(_\w+)', src))
+    """path -> handler method, from the map preserved when the dispatch table was retired.
+
+    The map lives in tests/route_map.json because it is knowledge, not decoration: it was the
+    dispatch. What it cannot do on its own is stay true, so every path in it is also required to be
+    routed by the application -- a stale entry fails loudly instead of silently describing a route
+    nobody serves.
+    """
+    import json
+
+    from tests.support_routes import routed
+
+    mapping = json.loads((Path(__file__).resolve().parents[1] / "tests" / "route_map.json").read_text())
+    out = {info["path"]: handler for handler, info in mapping.items()}
+    unserved = sorted(p for p in out if not routed(p))
+    assert not unserved, f"route_map.json lists paths the application does not serve: {unserved}"
+    return out
 
 
 def test_the_new_routes_are_registered_and_have_handlers():

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.support_routes import routed
+
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "weirvern" / "admin" / "web"
 
@@ -115,7 +117,7 @@ def test_the_payload_resolves_only_the_rows_the_card_renders(monkeypatch):
 
 def test_the_route_reads_through_the_context_manager():
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
-    assert 'if path == "/api/baselines":' in src
+    assert routed("/api/baselines"), "the baselines route is not registered"
     seg = src.split("def _baselines(self)", 1)[1].split("\n        def ", 1)[0]
     assert "with self._with_client() as client:" in seg, \
         "the handler must read through the shared client context, like its neighbours"
