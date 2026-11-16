@@ -583,8 +583,11 @@ def run_detection(client, cfg_settings, window_minutes: int,
     # Writing the cursor is the harness using the worker's own contract -- `_save_detect_cursor`
     # persists `covered_through`, and each cycle resumes at that boundary -- rather than inventing a
     # second way to reach old data.
-    _seed_cursor(Path(settings.model_dir) / "detect_cursor.json",
-                 lo - timedelta(seconds=worker.AGG_BUCKET_S))
+    cursor_file = Path(settings.model_dir) / "detect_cursor.json"
+    seeded_value = lo - timedelta(seconds=worker.AGG_BUCKET_S)
+    _seed_cursor(cursor_file, seeded_value)
+    print(f"  seeded cursor {seeded_value.isoformat()} (lo={lo.isoformat()}, "
+          f"read back {_read_cursor(cursor_file)})", flush=True)
 
     verdicts, err = drain_until_covered(
         sweep=lambda: detection_sweep(client, detectors, widened, cfg) or [],
