@@ -407,6 +407,17 @@ def drain_call_budget(*, covered: datetime | None, hi: datetime, lo: datetime,
     return int((behind_s + span_s) // chunk_s) + 4, behind_s
 
 
+def _seed_cursor(path: Path, covered_through: datetime) -> None:
+    """Place the sweep's resume cursor at the start of the seeded span.
+
+    Same file, same key, same ISO format the worker writes in `_save_detect_cursor`; the sweep is
+    what reads it. Naive local time is what the worker stores (it converts with `astimezone()` on
+    read), so a value built from an aware datetime is written as its local form.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"covered_through": covered_through.astimezone().isoformat()}))
+
+
 def drain_until_covered(*, sweep, cursor_path: Path, hi: datetime, lo: datetime,
                         chunk_s: float, budget_s: float) -> tuple[list[dict], str | None]:
     """Run the bounded sweep until its cursor passes `hi`, or explain why it did not.
@@ -552,6 +563,29 @@ def run_detection(client, cfg_settings, window_minutes: int,
     # generator runs forward from now, so the tail of the seed can sit in the FUTURE and no number of
     # calls will ever cover it.
     chunk_s = worker.MAX_CATCHUP_BUCKETS * worker.AGG_BUCKET_S
+
+    # PLACE THE CURSOR AT THE START OF THE SEED BEFORE DRAINING, or nothing is drained at all.
+    #
+    # THE TRACE THAT PROVED IT (CI, 2026-11-16, after three budget fixes):
+    #
+    #   drain call 1: cursor -> 00:35:00Z (target 04:55:00), 14 verdict(s)
+    #   drain call 2: cursor -> 00:35:01Z, 2 verdict(s)
+    #   drain call 3: cursor -> 00:35:02Z, 0 verdict(s)
+    #   ... one SECOND per call, forever
+    #
+    # The sweep does not walk backwards through history; it resumes from its cursor and covers the
+    # next chunk. With no cursor it takes the default lookback (the last ten minutes), sets the
+    # cursor to NOW, and from then on every call re-covers `cursor - one bucket` -- so the seeded
+    # span, nineteen hours earlier, is never in the window at all, and the cursor crawls forward by
+    # the wall-clock gap between calls. Every "did not cover the seed" message before this one was
+    # that crawl, not a coverage defect in the sweep.
+    #
+    # Writing the cursor is the harness using the worker's own contract -- `_save_detect_cursor`
+    # persists `covered_through`, and each cycle resumes at that boundary -- rather than inventing a
+    # second way to reach old data.
+    _seed_cursor(Path(settings.model_dir) / "detect_cursor.json",
+                 lo - timedelta(seconds=worker.AGG_BUCKET_S))
+
     verdicts, err = drain_until_covered(
         sweep=lambda: detection_sweep(client, detectors, widened, cfg) or [],
         cursor_path=Path(settings.model_dir) / "detect_cursor.json",
