@@ -145,6 +145,10 @@ def run(client: Client, *, limit_hosts: int = 25, days: int = 3) -> dict:
             # averaging, bounded index j covers original rows [j*buckets, (j+1)*buckets).
             bucket = max(1, int(math.ceil(len(values) / MAX_POINTS)))
 
+            if len(values) > 4_294_967_295:   # UInt32 ceiling; a series longer than that is a bug
+                raise ValueError(
+                    f"the {host}/{metric} series has {len(values)} points, beyond the UInt32 column; "
+                    f"the writer is refusing rather than letting the store report it as a null")
             client.insert(
                 "weirvern.ml_temporal_scores",
                 [[_source_row(rows, bucket, idx), host, metric, score,
