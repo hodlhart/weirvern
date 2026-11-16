@@ -7813,11 +7813,25 @@ check("...a contradicted segment names BOTH segments on the issues list",
         if (receipt) {
           receipt.click();
           await sleep(300);
-          check("...and clicking it lands on that rule in Sluice",
-                needEl("view-sluice").classList.contains("active")
-                && !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
-                && /r-filed-1/.test(needEl("sl-rule-id").textContent),
-                "rule id=" + needEl("sl-rule-id").textContent);
+          // THE DETAIL NAMES EACH CONJUNCT. Reporting only the rule id cannot distinguish "the
+          // view never switched" from "the sheet stayed hidden" from "the wrong rule loaded", and all
+          // three have different causes. A check that fails without saying which part failed sends
+          // the next reader back to the beginning.
+          // RE-AUTHORED, because the product's design changed and this check still described the old
+          // one. The receipt handler (app.js, "US-3") calls showView("blocked") and then
+          // blOpenRuleById, which opens the rule sheet when the rule is not in the blocked lists --
+          // sluice.js:589 documents exactly that hand-off. So the landing page is BLOCKED, not
+          // Sluice, and asserting view-sluice tested a design that no longer exists rather than a
+          // defect. The behaviour worth pinning is the one the code promises: the receipt lands on
+          // the created rule, whatever page owns the card.
+          const blockedActive = needEl("view-blocked").classList.contains("active");
+          const sheetEl = doc.getElementById("sl-rule-sheet");
+          const sheetOpen = !!sheetEl && !sheetEl.classList.contains("hidden");
+          const sheetId = needEl("sl2-sheet-id").textContent;
+          check("...and clicking it lands on that rule",
+                blockedActive && sheetOpen && /r-filed-1/.test(sheetId),
+                `blocked-view-active=${blockedActive} sheet-open=${sheetOpen} `
+                + `rule id=${sheetId || "(empty)"}`);
         }
       }
     }
@@ -8102,9 +8116,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
       const sheet = needEl("sl-rule-sheet");
       check("JOB investigate-anomaly: the evidence Block verb opens the SLUICE rule sheet",
             !!sheet && !sheet.classList.contains("hidden")
-            && (needEl("sl-src").value || "") === "198.51.100.5",
+            && (needEl("sl2-src").value || "") === "198.51.100.5",
             sheet ? `hidden=${sheet.classList.contains("hidden")}` : "no sheet");
-      const create = needEl("sl-block");
+      const create = needEl("sl2-create-submit");
       if (create) {
         C(create); await sleep(100);              // 2: arm the block rule
         C(create); await sleep(320);              // 3: file it
@@ -8136,7 +8150,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       const sheet = needEl("sl-rule-sheet");
       check("JOB block-domain: the row's verb opens the rule sheet with the name filled in",
             !!sheet && !sheet.classList.contains("hidden")
-            && (needEl("sl-domain").value || "").includes("ads.example.com"),
+            && (needEl("sl2-domain").value || "").includes("ads.example.com"),
             "the composer did not open on the sheet");
       const modeSel = needEl("sl-mode");
       if (modeSel) {
@@ -8145,7 +8159,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       }
       check("JOB block-domain: choosing block mode is not a click (a select, not a step)",
             clicks === 1, `clicks=${clicks}`);
-      const createBtn = needEl("sl-block");
+      const createBtn = needEl("sl2-create-submit");
       if (createBtn) {
         C(createBtn);                            // 2: arms -- the retained BF-9 echo
         await sleep(100);
@@ -8808,13 +8822,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
             .some((tr) => tr.textContent.includes("ads.example.com")));
     await H.blOpenRuleById("r1");
     await new Promise((r) => setTimeout(r, 160));
-    const modeSel = needEl("sl-rule-mode");
+    const modeSel = needEl("sl2-detail-mode");
     check("clicking a hit's rule opens the Sluice sheet with the real rule",
           !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
-          && needEl("sl-rule-id").textContent === "r1"
+          && needEl("sl2-sheet-id").textContent === "r1"
           && !!modeSel && !modeSel.disabled && modeSel.value === "block"
-          && /ads\.example\.com/.test(needEl("sl-rule-facts").textContent),
-          `id=${needEl("sl-rule-id").textContent} mode=${modeSel ? modeSel.value : "missing"}`);
+          && /ads\.example\.com/.test(needEl("sl2-facts").textContent),
+          `id=${needEl("sl2-sheet-id").textContent} mode=${modeSel ? modeSel.value : "missing"}`);
     check("the payload was fetched ON DEMAND, exactly once",
           BLOCKED_FETCHES === fetches0 + 1,
           `${BLOCKED_FETCHES - fetches0} fetch(es)`);
@@ -8822,13 +8836,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await new Promise((r) => setTimeout(r, 160));
     check("opening a second rule does not refetch it",
           BLOCKED_FETCHES === fetches0 + 1
-          && needEl("sl-rule-id").textContent === "r2",
-          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${needEl("sl-rule-id").textContent}`);
+          && needEl("sl2-sheet-id").textContent === "r2",
+          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${needEl("sl2-sheet-id").textContent}`);
     await H.blOpenRuleById("r-revoked");         // not among the live sets
     await new Promise((r) => setTimeout(r, 160));
     check("a genuinely non-live rule opens the sheet read-only, not as a live decision",
-          needEl("sl-rule-id").textContent === "r-revoked"
-          && needEl("sl-rule-mode").disabled === true);
+          needEl("sl2-sheet-id").textContent === "r-revoked"
+          && needEl("sl2-detail-mode").disabled === true);
     const ruleClose = needEl("sl-rule-close");
     if (ruleClose) ruleClose.click();
     H.BLOCKED_STATE.data = savedBlocked;
