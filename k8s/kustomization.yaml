@@ -126,7 +126,11 @@ images:
   #
   # scripts/verify_versions.sh accepts either form, so a release build tagged with the semver still
   # passes; what it no longer allows is a number that disagrees with the code.
+  #
+  # WHO UPDATES IT: whoever rolls the workloads. One owner, one line, changed in the same push as the
+  # image that is now running -- otherwise two people roll the same cluster and the pin names
+  # whichever build finished last.
   - name: weirvern-worker
-    newTag: "sha-4c8f51c"
+    newTag: "sha-7c77cf0f1"
   - name: weirvern-scanner
     newTag: "0.14.14"
