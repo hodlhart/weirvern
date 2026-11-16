@@ -9,23 +9,34 @@ def _scope(cidr: str, label: str, monitored: bool = True):
 
 
 class _FakeClient:
+    """Answers the ONE per-peer grouping the reader now issues, per direction.
+
+    THE FIXTURE IS ROWS AT PEER GRAIN, NOT PRE-AGGREGATED ANSWERS. That is what the production query
+    returns (`GROUP BY peer, prefix`), and it makes the test check the arithmetic the reader does --
+    peers, totals, concentration, prefix rollup -- instead of restating constants the old three-query
+    version returned from three different SQL shapes.
+    """
+
     def __init__(self):
         self.calls: list[str] = []
+        self.inbound = [
+            # (peer, prefix, bytes, flows) -- the biggest peer carries three quarters of the bytes
+            ("203.0.113.7", "203.0.113", 750, 4),
+            ("203.0.113.9", "203.0.113", 150, 1),
+            ("198.51.100.4", "198.51.100", 100, 2),
+        ]
+        self.outbound = [
+            ("198.51.100.20", "198.51.100", 1400, 5),
+            ("198.51.100.21", "198.51.100", 400, 1),
+            ("203.0.113.30", "203.0.113", 200, 1),
+        ]
 
     def query(self, sql: str, parameters=None, **_kw):
         self.calls.append(sql)
-        if "GROUP BY prefix" in sql and "splitByChar('.', dst_addr)" in sql:
-            rows = [("198.51.100", 3, 2000)]
-        elif "GROUP BY prefix" in sql and "splitByChar('.', src_addr)" in sql:
-            rows = [("203.0.113", 2, 1000)]
-        elif "uniqExact(src_addr) AS peers" in sql:
-            rows = [(2, 1000, 5)]
-        elif "uniqExact(dst_addr) AS peers" in sql:
-            rows = [(3, 2000, 7)]
-        elif "max(peer_bytes)" in sql and "src_addr AS peer" in sql:
-            rows = [(0.75,)]
-        elif "max(peer_bytes)" in sql and "dst_addr AS peer" in sql:
-            rows = [(0.25,)]
+        if "src_addr AS peer" in sql:
+            rows = self.inbound
+        elif "dst_addr AS peer" in sql:
+            rows = self.outbound
         else:
             rows = []
         return type("Result", (), {"result_rows": rows})()
@@ -37,12 +48,32 @@ def test_external_overview_counts_both_directions_without_creating_entities():
     out = external.overview(client, scopes=scopes, hours=24)
     assert out["available"] is True
     assert out["observed_only"] is True
-    assert out["inbound"]["peers"] == 2
+    assert out["inbound"]["peers"] == 3
+    assert out["inbound"]["bytes"] == 1000
+    assert out["inbound"]["flows"] == 7
     assert out["inbound"]["top_peer_share"] == 0.75
-    assert out["inbound"]["top_prefixes"][0]["prefix"] == "203.0.113"
+    assert out["inbound"]["top_prefixes"][0] == {"prefix": "203.0.113", "peers": 2, "bytes": 900}
+    assert out["inbound"]["top_prefixes"][1] == {"prefix": "198.51.100", "peers": 1, "bytes": 100}
     assert out["outbound"]["peers"] == 3
-    assert out["outbound"]["top_peer_share"] == 0.25
+    assert out["outbound"]["top_peer_share"] == 0.7
     assert out["outbound"]["top_prefixes"][0]["prefix"] == "198.51.100"
+    assert out["outbound"]["top_prefixes"][0]["bytes"] == 1800
+    # ONE SCAN PER DIRECTION, not three: the route held six full scans of a day of flows before.
+    assert len(client.calls) == 2, client.calls
+
+
+def test_an_empty_external_range_reads_as_zero_not_as_a_failure():
+    """No peers is a measurement of zero; `None` is reserved for "could not read", which the UI
+    renders as unavailable. The two must not share a shape."""
+    class _Empty(_FakeClient):
+        def query(self, sql, parameters=None, **_kw):
+            self.calls.append(sql)
+            return type("Result", (), {"result_rows": []})()
+
+    scopes = [_scope("192.0.2.0/24", "internal")]
+    out = external.overview(_Empty(), scopes=scopes, hours=24)
+    assert out["inbound"] == {"peers": 0, "bytes": 0, "flows": 0, "top_peer_share": 0.0,
+                              "top_prefixes": [], "error": ""}
 
 
 def test_external_overview_does_not_claim_a_reading_without_monitored_scopes():

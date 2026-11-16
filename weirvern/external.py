@@ -69,9 +69,28 @@ def _int(value: Any) -> int | None:
 def _query_counts(client: Client, *, peer: str, local: str, scopes: list[networks.Scope],
                   params: dict[str, str], hours: int,
                   local_addr: str = "") -> dict[str, Any]:
-    """Peers/bytes/flows for one direction, with a top-peer concentration share."""
-    # Both directions are "an external peer touching a monitored local endpoint". Only the
-    # columns swap: inbound peer=src/local=dst, outbound peer=dst/local=src.
+    """Peers/bytes/flows, concentration and prefixes for one direction, from ONE scan.
+
+    WHY ONE SCAN. This used to run three separate aggregates over the same raw range -- a
+    uniqExact/sum/count, a per-peer share, and a per-prefix breakdown -- for each direction, so a
+    single /api/networks request issued SIX full scans of a day of `weirvern.flows` (276M rows/day
+    here). Measured live 2026-11-16: the route took 41.6s under light load and 105s under heavy, on
+    a tab that only draws five rows per direction.
+
+    The three answers come from one grouping instead. `GROUP BY peer, prefix` keeps the peer grain
+    (every row is one external peer) and carries the prefix alongside it, so:
+      * peers = row count            (exact; each peer appears once)
+      * bytes/flows = column sums    (additive across peers)
+      * share = max / sum            (still per-peer, because the grain IS the peer)
+      * prefixes = regrouped in Python, which costs nothing next to a second table scan
+    A peer's prefix is a function of its own address, so no peer can contribute to two prefixes and
+    the totals stay exact.
+
+    THE ROW COUNT IS BOUNDED BY THE PEER COUNT, which is the number the payload already reports:
+    measured 3,474 inbound and 4,126 outbound peers over 24h on this deployment. A segment with
+    millions of external peers would want this aggregated server-side twice instead, and the
+    `peers` reading is what would say so.
+    """
     where = f"{_external_clause(peer, scopes, 'e')} AND ({_monitored_clause(local, scopes, 'm')})"
     if local_addr:
         where += f" AND {local} = %(addr)s"
@@ -83,38 +102,45 @@ def _query_counts(client: Client, *, peer: str, local: str, scopes: list[network
     out: dict[str, Any] = {"peers": None, "bytes": None, "flows": None,
                            "top_peer_share": None, "top_prefixes": [], "error": ""}
     try:
-        row = client.query(
-            f"SELECT uniqExact({peer}) AS peers, sum(bytes) AS bytes, count() AS flows {base}",
+        rows = client.query(
+            f"SELECT {peer} AS peer, {_prefix_expr(peer)} AS prefix, "
+            f"sum(bytes) AS bytes, count() AS flows {base} "
+            "GROUP BY peer, prefix",
             parameters=params,
         ).result_rows
-        if row:
-            out["peers"], out["bytes"], out["flows"] = (
-                _int(row[0][0]), _int(row[0][1]), _int(row[0][2]))
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"{type(exc).__name__}: {exc}"[:200]
         return out
-    try:
-        share = client.query(
-            "SELECT max(peer_bytes) / sum(peer_bytes) AS share FROM ("
-            f"SELECT {peer} AS peer, sum(bytes) AS peer_bytes {base} GROUP BY peer)",
-            parameters=params,
-        ).result_rows
-        if share and share[0][0] is not None:
-            out["top_peer_share"] = float(share[0][0])
-    except Exception as exc:  # noqa: BLE001
-        out["error"] = f"concentration {type(exc).__name__}: {exc}"[:200]
-    try:
-        rows = client.query(
-            f"SELECT {_prefix_expr(peer)} AS prefix, uniqExact({peer}) AS peers, "
-            f"sum(bytes) AS bytes {base} GROUP BY prefix ORDER BY bytes DESC LIMIT 5",
-            parameters=params,
-        ).result_rows
-        out["top_prefixes"] = [
-            {"prefix": str(r[0]), "peers": _int(r[1]), "bytes": _int(r[2])}
-            for r in rows
-        ]
-    except Exception as exc:  # noqa: BLE001
-        out["error"] = f"prefixes {type(exc).__name__}: {exc}"[:200]
+
+    if not rows:
+        # An empty range is a READING of zero, not a failure: say so with numbers.
+        out.update({"peers": 0, "bytes": 0, "flows": 0, "top_peer_share": 0.0, "top_prefixes": []})
+        return out
+
+    by_prefix: dict[str, dict[str, int]] = {}
+    total_bytes = 0
+    total_flows = 0
+    largest_peer = 0
+    for r in rows:
+        # `_int` answers None for a value it cannot parse; a missing byte count is zero bytes here,
+        # not an arithmetic error that would take the whole panel out.
+        peer_bytes = _int(r[2]) or 0
+        peer_flows = _int(r[3]) or 0
+        total_bytes += peer_bytes
+        total_flows += peer_flows
+        largest_peer = max(largest_peer, peer_bytes)
+        bucket = by_prefix.setdefault(str(r[1]), {"peers": 0, "bytes": 0})
+        bucket["peers"] += 1
+        bucket["bytes"] += peer_bytes
+
+    out["peers"] = len(rows)
+    out["bytes"] = total_bytes
+    out["flows"] = total_flows
+    out["top_peer_share"] = (largest_peer / total_bytes) if total_bytes else 0.0
+    out["top_prefixes"] = [
+        {"prefix": prefix, "peers": v["peers"], "bytes": v["bytes"]}
+        for prefix, v in sorted(by_prefix.items(), key=lambda kv: kv[1]["bytes"], reverse=True)[:5]
+    ]
     return out
 
 
