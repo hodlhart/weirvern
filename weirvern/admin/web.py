@@ -54,7 +54,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from weirvern.admin import assets as assets_mod
 from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
@@ -814,33 +813,21 @@ def _build_handler(ctx: GuiContext):
         def _ml_ledger(self) -> None:
             """PR-3: the append-only decision trail, read-only."""
             try:
-                from pathlib import Path  # noqa: PLC0415
-
-                from weirvern.models import ledger  # noqa: PLC0415
-                path = Path(__file__).resolve().parents[2] / "docs" / "ledger" / "ml-decisions.jsonl"
-                rows = ledger.read(path)
-                self._json({"available": bool(rows), "path": str(path), "rows": rows[-20:]})
+                self._json(payloads.ml_ledger())
             except Exception as exc:  # noqa: BLE001
                 self._json({"available": False, "reason": f"cannot read the decision ledger: {exc}"})
 
         def _ml_eval_report(self) -> None:
             """CE-3: the archived fixed-budget report, read-only."""
             try:
-                from pathlib import Path  # noqa: PLC0415
-
-                from weirvern.models import eval_report  # noqa: PLC0415
-                self._json(eval_report.latest_report(Path(__file__).resolve().parents[2]))
+                self._json(payloads.ml_eval_report())
             except Exception as exc:  # noqa: BLE001
                 self._json({"available": False, "reason": f"cannot read the evaluation report: {exc}"})
 
         def _ml_review(self) -> None:
             """OP-3: the archived review is read from disk, never recomputed in the GUI."""
             try:
-                from pathlib import Path  # noqa: PLC0415
-
-                from weirvern.models import review  # noqa: PLC0415
-                root = Path(__file__).resolve().parents[2]
-                self._json(review.latest_report(root))
+                self._json(payloads.ml_review())
             except Exception as exc:  # noqa: BLE001
                 self._json({"available": False, "reason": f"cannot read the archived review: {exc}"})
 
