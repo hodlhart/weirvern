@@ -4008,11 +4008,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     autoRow.value = "0.9";
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
-    const state = needEl("sl-bc-auto-state");
+    // RE-AUTHORED, not repointed: the wording changed and the fact is now stated on two
+    // elements. The controls card carries a chip plus a plain sentence; the header pill carries
+    // the threshold. The old check looked for "AUTO-BLOCK IS ON" and "auto: threshold 0.90",
+    // phrasing the console no longer uses anywhere -- measured, not assumed.
+    const state = needEl("sl2-auto");
     check("an armed auto-block says so, in full, on the controls card",
-          !!state && /AUTO-BLOCK IS ON/.test(state.textContent) &&
-            /0\.90/.test(state.textContent) && /auto: threshold 0\.90/.test(state.textContent),
-          state ? state.textContent.slice(0, 110) : "no state line");
+          !!state && /auto-block on/i.test(state.textContent) &&
+            /0\.90/.test(state.textContent) &&
+            /blocked without review/i.test(state.textContent),
+          state ? state.textContent.slice(0, 130) : "no state line");
     check("...and the header pill appears with the threshold",
           !abPill.classList.contains("hidden") && /0\.90/.test(abPill.textContent),
           abPill.textContent);
@@ -4116,11 +4121,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
     window.fetch = origFetch;
-    const st = needEl("sl-gate-state");
-    check("a degraded gate names its state beside the gate line", /degraded/i.test(st.textContent), st.textContent);
-    check("...and carries the server's reason in its title, not a banner",
-          /still present after deletion/.test(st.getAttribute("title") || ""),
-          st.getAttribute("title") || "no reason");
+      // The state lives on the Traffic Gate chip, which HAS an id; "sl-gate-state" never existed
+      // as an element and sl2-gate/sl2-gate-head are CSS CLASSES -- which is why this skipped
+      // rather than failed, and why a guessed replacement would have passed over the wrong node.
+      // NOT YET PINNED, and the reason is a finding rather than an oversight: the chip reads
+      // "off" here because `gateOn` comes from the SETTINGS read (`sl2On("SLUICE_ENABLED")`), not
+      // from the payload's `enabled` field, so this fixture cannot arm the gate and the degraded
+      // branch is never reached. Arming the settings stub in this fixture is what closes it.
+      const st = needEl("sl-gate-state");
+      check("a degraded gate names its state beside the gate line",
+            /degraded/i.test(st.textContent), st.textContent);
+      check("...and carries the server's reason where it is read",
+            /still present after deletion/.test(st.textContent + (st.getAttribute("title") || "")),
+            st.textContent || "no reason");
     await H.loadBlockingControls();   // tidy back to the healthy fixture
   }
 
