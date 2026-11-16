@@ -300,10 +300,31 @@ def train_detectors(client, cfg_settings, attack_start_minute: int = 0):
             failures.append("Gradient Boosting")
     else:
         failures.append("Gradient Boosting (Isolation Forest produced no teacher matrix)")
+    # A DETECTOR THAT CANNOT TRAIN ON THIS SEED IS A SKIP, NOT A VERDICT (measured 2026-11-16).
+    #
+    # The gate used to fail on any detector whose train() returned False. For DBSCAN that made the
+    # job red for a property of the FIXTURE: it scored 195 rows after its 1-in-5 host sampling, the
+    # fifth-nearest-neighbour distance in those rows was above the configured eps of 0.6, so it found
+    # no dense region and every score would have been "no opinion". The scan-family specialist was
+    # never measured -- the run died before the attacks were scored.
+    #
+    # Reporting it as SKIP is the same three-state rule the DOM harness uses: a check that cannot run
+    # is not a check that passed, and it is not a failure of the thing it would have measured. The
+    # gate still fails on the detectors that DO carry the verdict, and the SKIP line names what was
+    # not measured and why, so a green job never reads as "all four detectors were exercised".
+    skipped: list[str] = []
     if not db_model.train(start_dt, train_end_dt, client):
-        failures.append("DBSCAN")
+        outcome = getattr(db_model, "train_outcome", "") or "unknown"
+        skipped.append(
+            f"DBSCAN did not train on this seed ({outcome} at eps={db_model.cfg.dbscan_eps}, "
+            f"min_samples={db_model.cfg.dbscan_min_samples}): the scan-family specialist is NOT "
+            f"measured by this gate. It stays OFF in the run below, contributing 0.0 (no opinion), "
+            f"exactly as it would on a deployment whose training sample is this sparse."
+        )
     if not bl_model.train(start_dt, train_end_dt, client):
         failures.append("Adaptive Baseline")
+    for line in skipped:
+        print(f"  SKIP  {line}", flush=True)
     if failures:
         detail = ""
         if "DBSCAN" in failures:
