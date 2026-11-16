@@ -69,8 +69,21 @@ def _ctx():
 
 
 def _patch(dotted: str, value):
+    """Set a target and return a function that puts the original back.
+
+    The restore matters as much as the patch. Leaving every stub applied would mean the last route is
+    measured with all 23 stubs in force, which is not the condition the replay test sets up, and the
+    two would then disagree for reasons that have nothing to do with the port.
+    """
     module, _, attr = dotted.rpartition(".")
-    setattr(importlib.import_module(module), attr, value)
+    mod = importlib.import_module(module)
+    original = getattr(mod, attr)
+    setattr(mod, attr, value)
+
+    def restore():
+        setattr(mod, attr, original)
+
+    return restore
 
 
 def _get(port: int, path: str) -> tuple[int, str]:
@@ -95,8 +108,11 @@ def capture(stub_value) -> dict:
         # ONE SERVER, PATCHED PER ROUTE. The payload functions read `status_mod.X` at call time, so
         # patching the module attribute is visible to both surfaces and no restart is needed.
         for path, spec in sorted(targets.items()):
-            _patch(spec["target"], stub_value)
-            status, body = _get(port, path)
+            restore = _patch(spec["target"], stub_value)
+            try:
+                status, body = _get(port, path)
+            finally:
+                restore()
             recorded[path] = {"verb": spec["verb"], "target": spec["target"],
                               "status": status, "body": body}
     finally:

@@ -63,15 +63,19 @@ def _ctx():
     return _Ctx()
 
 
-def _patch(dotted: str, value):
-    """Patch a dotted target, failing loudly when it has moved.
+def _patched(monkeypatch, dotted: str, value):
+    """A context manager that stubs one target for ONE route and then puts it back.
 
-    `raising=True` matters: a silently created attribute would leave the route reading its real
-    dependency while the fixture believed it had been stubbed, and the comparison would pass over
-    behaviour nobody controlled.
+    THE UNDO IS THE POINT. `pytest.MonkeyPatch()` constructed by hand is never reverted, so every stub
+    stayed applied for the rest of the session and broke 39 unrelated tests -- the instrument corrupting
+    the system under test, which is the pattern this project keeps finding in its own harnesses.
+    `monkeypatch.context()` reverts on exit, so each route is measured under its own stub only.
+
+    `raising=True` still matters: a silently created attribute would leave the route reading its real
+    dependency while the fixture believed it had been stubbed.
     """
     module, _, attr = dotted.rpartition(".")
-    pytest.MonkeyPatch().setattr(importlib.import_module(module), attr, value, raising=True)
+    return monkeypatch.context(), importlib.import_module(module), attr
 
 
 def _boom(*_a, **_k):
@@ -95,7 +99,7 @@ BRANCHES = {"ok": (lambda *_a, **_k: {}), "fail": _boom}
 
 
 @pytest.mark.parametrize("branch", sorted(BRANCHES))
-def test_every_recorded_route_answers_identically(branch, goldens):
+def test_every_recorded_route_answers_identically(branch, goldens, monkeypatch):
     """One test per branch, looping the routes, so a failure names the route and the branch."""
     expected = goldens.get(branch, {})
     assert expected, f"no goldens recorded for the {branch} branch"
@@ -115,8 +119,10 @@ def test_every_recorded_route_answers_identically(branch, goldens):
 
     mismatches = []
     for path, want in sorted(expected.items()):
-        _patch(want["target"], BRANCHES[branch])
-        resp = _app().test_client().get(path)
+        ctx, module, attr = _patched(monkeypatch, want["target"], BRANCHES[branch])
+        with ctx:
+            monkeypatch.setattr(module, attr, BRANCHES[branch], raising=True)
+            resp = _app().test_client().get(path)
         got = {"status": resp.status_code, "body": resp.get_data(as_text=True)}
         if got["status"] != want["status"] or _as_seen(got["body"]) != _as_seen(want["body"]):
             mismatches.append(
