@@ -1,0 +1,282 @@
+{
+  "fail": {
+    "/api/asset-changes": {
+      "body": "{\"available\": false, \"changes\": [], \"count\": 0, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"data_error\": \"[Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_changes",
+      "verb": "GET"
+    },
+    "/api/asset-posture": {
+      "body": "{\"available\": false, \"reason\": \"the data could not be read\", \"model_version\": \"asset-posture-1\", \"scored\": 0, \"total_changes\": 0, \"bands\": {}, \"last_scored\": \"\"}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_posture_overview",
+      "verb": "GET"
+    },
+    "/api/assets": {
+      "body": "{\"available\": false, \"hosts\": [], \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"data_error\": \"[Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_inventory",
+      "verb": "GET"
+    },
+    "/api/audit": {
+      "body": "{\"error\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"code\": 503}",
+      "status": 503,
+      "target": "weirvern.admin.status.pipeline_audit",
+      "verb": "GET"
+    },
+    "/api/baselines": {
+      "body": "{\"available\": false, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.status.baselines_overview",
+      "verb": "GET"
+    },
+    "/api/blocked": {
+      "body": "{\"available\": false, \"hits\": [], \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"data_error\": \"[Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.soc.blocked_view",
+      "verb": "GET"
+    },
+    "/api/detectors": {
+      "body": "{\"error\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"code\": 503}",
+      "status": 503,
+      "target": "weirvern.admin.status.detectors_overview",
+      "verb": "GET"
+    },
+    "/api/discover/trends": {
+      "body": "{\"available\": false, \"feeds\": {}, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"data_error\": \"[Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.soc.discover_trends",
+      "verb": "GET"
+    },
+    "/api/dns": {
+      "body": "{\"available\": false, \"rows\": [], \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"data_error\": \"[Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.soc.dns_rows",
+      "verb": "GET"
+    },
+    "/api/dns/reverse": {
+      "body": "{\"error\": \"give an address: /api/dns/reverse?ip=...\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.dns_reverse_for",
+      "verb": "GET"
+    },
+    "/api/episodes": {
+      "body": "{\"error\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"code\": 503}",
+      "status": 503,
+      "target": "weirvern.admin.status.episodes_recent",
+      "verb": "GET"
+    },
+    "/api/evidence": {
+      "body": "{\"error\": \"addr is required, e.g. /api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.alert_evidence",
+      "verb": "GET"
+    },
+    "/api/findings": {
+      "body": "{\"available\": false, \"findings\": [], \"count\": 0, \"counts\": {}, \"reason\": \"the data could not be read\"}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_findings_list",
+      "verb": "GET"
+    },
+    "/api/fingerprints": {
+      "body": "{\"error\": \"ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.fingerprint_hosts",
+      "verb": "GET"
+    },
+    "/api/flows": {
+      "body": "{\"error\": \"port, proto or src is required (dst is also accepted), e.g. /api/flows?port=443\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.flows_matching",
+      "verb": "GET"
+    },
+    "/api/identity": {
+      "body": "{\"available\": false, \"hosts\": [], \"count\": 0, \"coverage\": null, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\"}",
+      "status": 200,
+      "target": "weirvern.admin.status.host_identity_view",
+      "verb": "GET"
+    },
+    "/api/incident": {
+      "body": "{\"error\": \"addr and start are required, e.g. /api/incident?addr=198.51.100.5&start=2026-10-30T00:00:00\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.incident_detail",
+      "verb": "GET"
+    },
+    "/api/ml/ripple": {
+      "body": "{\"available\": false, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"rows\": [], \"pageable\": false, \"counts\": {}, \"contributors\": [], \"scales\": [], \"families\": [], \"unknown\": []}",
+      "status": 200,
+      "target": "weirvern.admin.status.ripple_overview",
+      "verb": "GET"
+    },
+    "/api/models/calibration": {
+      "body": "{\"available\": false, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"rows\": []}",
+      "status": 200,
+      "target": "weirvern.admin.status.calibration_overview",
+      "verb": "GET"
+    },
+    "/api/models/shadow": {
+      "body": "{\"available\": false, \"reason\": \"could not read the data: FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'\", \"rows\": []}",
+      "status": 200,
+      "target": "weirvern.admin.status.shadow_overview",
+      "verb": "GET"
+    },
+    "/api/scan-jobs": {
+      "body": "{\"available\": false, \"reason\": \"the scan-job table is not readable\", \"jobs\": [], \"count\": 0}",
+      "status": 200,
+      "target": "weirvern.scan_jobs.list_jobs",
+      "verb": "GET"
+    },
+    "/api/settings": {
+      "body": "{\"available\": false, \"groups\": {}, \"reason\": \"could not read the configuration: FileNotFoundError\"}",
+      "status": 200,
+      "target": "weirvern.admin.status.settings_overview",
+      "verb": "GET"
+    },
+    "/api/zeeklog": {
+      "body": "{\"error\": \"log is required, e.g. /api/zeeklog?log=ssl\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.zeek_log_hosts",
+      "verb": "GET"
+    }
+  },
+  "ok": {
+    "/api/asset-changes": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_changes",
+      "verb": "GET"
+    },
+    "/api/asset-posture": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_posture_overview",
+      "verb": "GET"
+    },
+    "/api/assets": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_inventory",
+      "verb": "GET"
+    },
+    "/api/audit": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.pipeline_audit",
+      "verb": "GET"
+    },
+    "/api/baselines": {
+      "body": "{\"available\": true, \"host_count\": 0, \"refreshed_at\": null, \"refreshed_age_s\": null, \"behavioural_hosts\": null, \"fingerprint_hosts\": null, \"last_trained\": null, \"fired_24h\": null, \"last_fired\": null, \"hosts\": [], \"errors\": null}",
+      "status": 200,
+      "target": "weirvern.admin.status.baselines_overview",
+      "verb": "GET"
+    },
+    "/api/blocked": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.soc.blocked_view",
+      "verb": "GET"
+    },
+    "/api/detectors": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.detectors_overview",
+      "verb": "GET"
+    },
+    "/api/discover/trends": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.soc.discover_trends",
+      "verb": "GET"
+    },
+    "/api/dns": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.soc.dns_rows",
+      "verb": "GET"
+    },
+    "/api/dns/reverse": {
+      "body": "{\"error\": \"give an address: /api/dns/reverse?ip=...\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.dns_reverse_for",
+      "verb": "GET"
+    },
+    "/api/episodes": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.episodes_recent",
+      "verb": "GET"
+    },
+    "/api/evidence": {
+      "body": "{\"error\": \"addr is required, e.g. /api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.alert_evidence",
+      "verb": "GET"
+    },
+    "/api/findings": {
+      "body": "{\"filter\": {\"ip\": \"\", \"severity\": \"\"}}",
+      "status": 200,
+      "target": "weirvern.admin.assets.asset_findings_list",
+      "verb": "GET"
+    },
+    "/api/fingerprints": {
+      "body": "{\"error\": \"ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.fingerprint_hosts",
+      "verb": "GET"
+    },
+    "/api/flows": {
+      "body": "{\"error\": \"port, proto or src is required (dst is also accepted), e.g. /api/flows?port=443\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.flows_matching",
+      "verb": "GET"
+    },
+    "/api/identity": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.host_identity_view",
+      "verb": "GET"
+    },
+    "/api/incident": {
+      "body": "{\"error\": \"addr and start are required, e.g. /api/incident?addr=198.51.100.5&start=2026-10-30T00:00:00\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.status.incident_detail",
+      "verb": "GET"
+    },
+    "/api/ml/ripple": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.ripple_overview",
+      "verb": "GET"
+    },
+    "/api/models/calibration": {
+      "body": "{\"available\": false, \"reason\": \"\", \"rows\": []}",
+      "status": 200,
+      "target": "weirvern.admin.status.calibration_overview",
+      "verb": "GET"
+    },
+    "/api/models/shadow": {
+      "body": "{}",
+      "status": 200,
+      "target": "weirvern.admin.status.shadow_overview",
+      "verb": "GET"
+    },
+    "/api/scan-jobs": {
+      "body": "{\"available\": true, \"reason\": \"\", \"jobs\": [], \"count\": 0}",
+      "status": 200,
+      "target": "weirvern.scan_jobs.list_jobs",
+      "verb": "GET"
+    },
+    "/api/settings": {
+      "body": "{\"provenance\": {}, \"writes\": {\"enabled\": false, \"reason\": \"\"}, \"caller\": {\"username\": \"\", \"role\": \"\", \"via\": \"\"}, \"editable_keys\": [\"base_threshold\", \"min_agreement\", \"strong_signal\", \"detect_interval_s\", \"retrain_every_h\", \"retrain_window_h\", \"pushover_enabled\", \"pushover_cooldown_s\", \"pushover_max_per_hour\", \"zeek_iface\", \"zeek_ifaces\", \"capture_iface\", \"interface_networks\", \"mgmt_iface\", \"reverse_dns\", \"intercept_targets\", \"intercept_segment\", \"intercept_addr\", \"intercept_gateway\", \"intercept_plans\", \"channel_upstream\", \"channel_downstream\", \"channel_netflow\", \"siphon_netflow\", \"netflow_mode\", \"netflow_iface\", \"blocklist_sync_hours\", \"sluice_enabled\", \"sluice_block_domains\", \"sluice_iface\", \"sluice_criticality\", \"sluice_auto_score\", \"sluice_max_block_s\", \"sluice_interval_s\", \"sensor_mode\", \"exclude_cidrs\", \"capture_exclude_cidrs\"], \"controls\": {\"base_threshold\": {\"control\": \"number\", \"min\": 0.0, \"max\": 1.0, \"step\": 0.01, \"unit\": \"a score fraction\"}, \"min_agreement\": {\"control\": \"number\", \"min\": 0.0, \"max\": 1.0, \"step\": 0.01, \"unit\": \"a fraction of models\"}, \"strong_signal\": {\"control\": \"number\", \"min\": 0.0, \"max\": 1.0, \"step\": 0.01, \"unit\": \"a score fraction\"}, \"detect_interval_s\": {\"control\": \"number\", \"min\": 30, \"max\": 86400, \"step\": 1, \"unit\": \"seconds\"}, \"retrain_every_h\": {\"control\": \"number\", \"min\": 1, \"max\": 720, \"step\": 1, \"unit\": \"hours\"}, \"retrain_window_h\": {\"control\": \"number\", \"min\": 1, \"max\": 8760, \"step\": 1, \"unit\": \"hours\"}, \"pushover_cooldown_s\": {\"control\": \"number\", \"min\": 0, \"max\": 86400, \"step\": 1, \"unit\": \"seconds\"}, \"pushover_max_per_hour\": {\"control\": \"number\", \"min\": 0, \"max\": 1000, \"step\": 1, \"unit\": \"alerts per hour\"}, \"blocklist_sync_hours\": {\"control\": \"number\", \"step\": 1, \"min\": 1, \"max\": 168}, \"sluice_max_block_s\": {\"control\": \"number\", \"min\": 60, \"max\": 604800, \"step\": 60, \"unit\": \"seconds\"}, \"sluice_interval_s\": {\"control\": \"number\", \"min\": 5, \"max\": 3600, \"step\": 5, \"unit\": \"seconds\"}, \"sluice_auto_score\": {\"control\": \"number\", \"min\": 0.0, \"max\": 1.0, \"step\": 0.05, \"unit\": \"a score fraction (0 disables)\"}, \"pushover_enabled\": {\"control\": \"toggle\"}, \"sensor_mode\": {\"control\": \"select\", \"options\": [\"loch\", \"siphon\"]}, \"reverse_dns\": {\"control\": \"select\", \"options\": [\"private\", \"all\", \"off\"]}, \"zeek_iface\": {\"control\": \"text\"}, \"zeek_ifaces\": {\"control\": \"text\"}, \"capture_iface\": {\"control\": \"text\"}, \"interface_networks\": {\"control\": \"text\"}, \"mgmt_iface\": {\"control\": \"text\"}, \"intercept_targets\": {\"control\": \"text\"}, \"intercept_segment\": {\"control\": \"text\"}, \"intercept_addr\": {\"control\": \"text\"}, \"intercept_gateway\": {\"control\": \"text\"}, \"intercept_plans\": {\"control\": \"text\"}, \"channel_upstream\": {\"control\": \"text\"}, \"channel_downstream\": {\"control\": \"text\"}, \"channel_netflow\": {\"control\": \"toggle\", \"on_value\": \"upstream\", \"off_value\": \"off\"}, \"sluice_enabled\": {\"control\": \"toggle\"}, \"sluice_block_domains\": {\"control\": \"toggle\"}, \"siphon_netflow\": {\"control\": \"toggle\"}, \"netflow_mode\": {\"control\": \"select\", \"options\": [\"auto\", \"passive\", \"active\"]}, \"netflow_iface\": {\"control\": \"text\"}, \"sluice_iface\": {\"control\": \"text\"}, \"sluice_criticality\": {\"control\": \"select\", \"options\": [\"off\", \"high\", \"medium\", \"strict\"]}, \"exclude_cidrs\": {\"control\": \"text\"}, \"capture_exclude_cidrs\": {\"control\": \"text\"}}, \"gui_written\": []}",
+      "status": 200,
+      "target": "weirvern.admin.status.settings_overview",
+      "verb": "GET"
+    },
+    "/api/zeeklog": {
+      "body": "{\"error\": \"log is required, e.g. /api/zeeklog?log=ssl\", \"code\": 400}",
+      "status": 400,
+      "target": "weirvern.admin.soc.zeek_log_hosts",
+      "verb": "GET"
+    }
+  }
+}

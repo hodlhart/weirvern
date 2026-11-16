@@ -1,0 +1,334 @@
+{
+  "_anomalies": {
+    "verb": "GET",
+    "path": "/api/anomalies"
+  },
+  "_asset_changes": {
+    "verb": "GET",
+    "path": "/api/asset-changes"
+  },
+  "_asset_posture": {
+    "verb": "GET",
+    "path": "/api/asset-posture"
+  },
+  "_assets": {
+    "verb": "GET",
+    "path": "/api/assets"
+  },
+  "_audit": {
+    "verb": "GET",
+    "path": "/api/audit"
+  },
+  "_baselines": {
+    "verb": "GET",
+    "path": "/api/baselines"
+  },
+  "_blocked": {
+    "verb": "GET",
+    "path": "/api/blocked"
+  },
+  "_blocklists_custom": {
+    "verb": "POST",
+    "path": "/api/blocklists/custom"
+  },
+  "_blocklists_enable": {
+    "verb": "POST",
+    "path": "/api/blocklists/enable"
+  },
+  "_blocklists_get": {
+    "verb": "GET",
+    "path": "/api/blocklists"
+  },
+  "_blocklists_source": {
+    "verb": "POST",
+    "path": "/api/blocklists/source"
+  },
+  "_blocklists_sync": {
+    "verb": "POST",
+    "path": "/api/blocklists/sync"
+  },
+  "_detectors": {
+    "verb": "GET",
+    "path": "/api/detectors"
+  },
+  "_discover": {
+    "verb": "GET",
+    "path": "/api/discover"
+  },
+  "_discover_trends": {
+    "verb": "GET",
+    "path": "/api/discover/trends"
+  },
+  "_dns": {
+    "verb": "GET",
+    "path": "/api/dns"
+  },
+  "_dns_reverse": {
+    "verb": "GET",
+    "path": "/api/dns/reverse"
+  },
+  "_episodes": {
+    "verb": "GET",
+    "path": "/api/episodes"
+  },
+  "_evidence": {
+    "verb": "GET",
+    "path": "/api/evidence"
+  },
+  "_findings": {
+    "verb": "GET",
+    "path": "/api/findings"
+  },
+  "_fingerprints": {
+    "verb": "GET",
+    "path": "/api/fingerprints"
+  },
+  "_flows": {
+    "verb": "GET",
+    "path": "/api/flows"
+  },
+  "_graph": {
+    "verb": "GET",
+    "path": "/api/graph"
+  },
+  "_health": {
+    "verb": "GET",
+    "path": "/api/health"
+  },
+  "_host": {
+    "verb": "GET",
+    "path": "/api/host"
+  },
+  "_host_identity": {
+    "verb": "GET",
+    "path": "/api/identity"
+  },
+  "_incident": {
+    "verb": "GET",
+    "path": "/api/incident"
+  },
+  "_login": {
+    "verb": "POST",
+    "path": "/api/login"
+  },
+  "_logout": {
+    "verb": "POST",
+    "path": "/api/logout"
+  },
+  "_ml_coverage": {
+    "verb": "GET",
+    "path": "/api/ml/coverage"
+  },
+  "_ml_data_contract": {
+    "verb": "GET",
+    "path": "/api/ml/data-contract"
+  },
+  "_ml_eval_report": {
+    "verb": "GET",
+    "path": "/api/ml/eval-report"
+  },
+  "_ml_ledger": {
+    "verb": "GET",
+    "path": "/api/ml/ledger"
+  },
+  "_ml_review": {
+    "verb": "GET",
+    "path": "/api/ml/review"
+  },
+  "_ml_ripple": {
+    "verb": "GET",
+    "path": "/api/ml/ripple"
+  },
+  "_ml_slo": {
+    "verb": "GET",
+    "path": "/api/ml/slo"
+  },
+  "_model_retrain": {
+    "verb": "GET",
+    "path": "/api/models/retrain"
+  },
+  "_models": {
+    "verb": "GET",
+    "path": "/api/models"
+  },
+  "_models_calibration": {
+    "verb": "GET",
+    "path": "/api/models/calibration"
+  },
+  "_models_shadow": {
+    "verb": "GET",
+    "path": "/api/models/shadow"
+  },
+  "_netflow": {
+    "verb": "GET",
+    "path": "/api/netflow"
+  },
+  "_networks": {
+    "verb": "GET",
+    "path": "/api/networks"
+  },
+  "_networks_delete": {
+    "verb": "POST",
+    "path": "/api/networks/delete"
+  },
+  "_networks_save": {
+    "verb": "POST",
+    "path": "/api/networks/save"
+  },
+  "_overview": {
+    "verb": "GET",
+    "path": "/api/overview"
+  },
+  "_password": {
+    "verb": "POST",
+    "path": "/api/password"
+  },
+  "_review": {
+    "verb": "POST",
+    "path": "/api/review"
+  },
+  "_scan_job_create": {
+    "verb": "POST",
+    "path": "/api/scan-jobs"
+  },
+  "_scan_jobs": {
+    "verb": "GET",
+    "path": "/api/scan-jobs"
+  },
+  "_scanner": {
+    "verb": "GET",
+    "path": "/api/scanner"
+  },
+  "_session": {
+    "verb": "GET",
+    "path": "/api/session"
+  },
+  "_settings": {
+    "verb": "GET",
+    "path": "/api/settings"
+  },
+  "_settings_apply": {
+    "verb": "POST",
+    "path": "/api/settings/apply"
+  },
+  "_settings_plan": {
+    "verb": "POST",
+    "path": "/api/settings/plan"
+  },
+  "_settings_sonar": {
+    "verb": "POST",
+    "path": "/api/settings/sonar"
+  },
+  "_settings_test": {
+    "verb": "POST",
+    "path": "/api/settings/test"
+  },
+  "_sluice": {
+    "verb": "GET",
+    "path": "/api/sluice"
+  },
+  "_sluice_block": {
+    "verb": "POST",
+    "path": "/api/sluice/block"
+  },
+  "_sluice_revoke": {
+    "verb": "POST",
+    "path": "/api/sluice/revoke"
+  },
+  "_sluice_rule_disabled": {
+    "verb": "POST",
+    "path": "/api/sluice/rule/disabled"
+  },
+  "_sluice_rule_domain": {
+    "verb": "POST",
+    "path": "/api/sluice/rule/domain"
+  },
+  "_sluice_rule_mode": {
+    "verb": "POST",
+    "path": "/api/sluice/rule/mode"
+  },
+  "_sluice_state": {
+    "verb": "GET",
+    "path": "/api/sluice/state"
+  },
+  "_system": {
+    "verb": "GET",
+    "path": "/api/system"
+  },
+  "_update": {
+    "verb": "GET",
+    "path": "/api/update"
+  },
+  "_users_create": {
+    "verb": "POST",
+    "path": "/api/users/create"
+  },
+  "_users_delete": {
+    "verb": "POST",
+    "path": "/api/users/delete"
+  },
+  "_users_list": {
+    "verb": "GET",
+    "path": "/api/users"
+  },
+  "_users_reset": {
+    "verb": "POST",
+    "path": "/api/users/reset"
+  },
+  "_users_role": {
+    "verb": "POST",
+    "path": "/api/users/role"
+  },
+  "_watch": {
+    "verb": "POST",
+    "path": "/api/watch"
+  },
+  "_weirlings": {
+    "verb": "GET",
+    "path": "/api/weirlings"
+  },
+  "_weirlings_apply": {
+    "verb": "POST",
+    "path": "/api/weirlings/apply"
+  },
+  "_weirlings_detail": {
+    "verb": "GET",
+    "path": "/api/weirlings/detail"
+  },
+  "_weirlings_enable": {
+    "verb": "POST",
+    "path": "/api/weirlings/enable"
+  },
+  "_weirlings_plan": {
+    "verb": "POST",
+    "path": "/api/weirlings/plan"
+  },
+  "_weirlings_probe_get": {
+    "verb": "GET",
+    "path": "/api/weirlings/probe"
+  },
+  "_weirlings_probe_post": {
+    "verb": "POST",
+    "path": "/api/weirlings/probe"
+  },
+  "_weirlings_register": {
+    "verb": "POST",
+    "path": "/api/weirlings/register"
+  },
+  "_weirlings_revoke": {
+    "verb": "POST",
+    "path": "/api/weirlings/revoke"
+  },
+  "_write_trail": {
+    "verb": "GET",
+    "path": "/api/write-trail"
+  },
+  "_zeek": {
+    "verb": "GET",
+    "path": "/api/zeek"
+  },
+  "_zeeklog": {
+    "verb": "GET",
+    "path": "/api/zeeklog"
+  }
+}

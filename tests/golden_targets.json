@@ -1,0 +1,117 @@
+{
+  "/api/asset-changes": {
+    "verb": "GET",
+    "fetcher": "asset_changes",
+    "target": "weirvern.admin.assets.asset_changes"
+  },
+  "/api/asset-posture": {
+    "verb": "GET",
+    "fetcher": "asset_posture",
+    "target": "weirvern.admin.assets.asset_posture_overview"
+  },
+  "/api/assets": {
+    "verb": "GET",
+    "fetcher": "assets",
+    "target": "weirvern.admin.assets.asset_inventory"
+  },
+  "/api/audit": {
+    "verb": "GET",
+    "fetcher": "audit",
+    "target": "weirvern.admin.status.pipeline_audit"
+  },
+  "/api/baselines": {
+    "verb": "GET",
+    "fetcher": "baselines",
+    "target": "weirvern.admin.status.baselines_overview"
+  },
+  "/api/blocked": {
+    "verb": "GET",
+    "fetcher": "blocked",
+    "target": "weirvern.admin.soc.blocked_view"
+  },
+  "/api/detectors": {
+    "verb": "GET",
+    "fetcher": "detectors",
+    "target": "weirvern.admin.status.detectors_overview"
+  },
+  "/api/discover/trends": {
+    "verb": "GET",
+    "fetcher": "discover_trends",
+    "target": "weirvern.admin.soc.discover_trends"
+  },
+  "/api/dns": {
+    "verb": "GET",
+    "fetcher": "dns",
+    "target": "weirvern.admin.soc.dns_rows"
+  },
+  "/api/dns/reverse": {
+    "verb": "GET",
+    "fetcher": "dns_reverse",
+    "target": "weirvern.admin.soc.dns_reverse_for"
+  },
+  "/api/episodes": {
+    "verb": "GET",
+    "fetcher": "episodes",
+    "target": "weirvern.admin.status.episodes_recent"
+  },
+  "/api/evidence": {
+    "verb": "GET",
+    "fetcher": "evidence",
+    "target": "weirvern.admin.status.alert_evidence"
+  },
+  "/api/findings": {
+    "verb": "GET",
+    "fetcher": "findings",
+    "target": "weirvern.admin.assets.asset_findings_list"
+  },
+  "/api/fingerprints": {
+    "verb": "GET",
+    "fetcher": "fingerprints",
+    "target": "weirvern.admin.status.fingerprint_hosts"
+  },
+  "/api/flows": {
+    "verb": "GET",
+    "fetcher": "flows",
+    "target": "weirvern.admin.soc.flows_matching"
+  },
+  "/api/identity": {
+    "verb": "GET",
+    "fetcher": "host_identity",
+    "target": "weirvern.admin.status.host_identity_view"
+  },
+  "/api/incident": {
+    "verb": "GET",
+    "fetcher": "incident",
+    "target": "weirvern.admin.status.incident_detail"
+  },
+  "/api/ml/ripple": {
+    "verb": "GET",
+    "fetcher": "ml_ripple",
+    "target": "weirvern.admin.status.ripple_overview"
+  },
+  "/api/models/calibration": {
+    "verb": "GET",
+    "fetcher": "models_calibration",
+    "target": "weirvern.admin.status.calibration_overview"
+  },
+  "/api/models/shadow": {
+    "verb": "GET",
+    "fetcher": "models_shadow",
+    "target": "weirvern.admin.status.shadow_overview"
+  },
+  "/api/scan-jobs": {
+    "verb": "GET",
+    "fetcher": "scan_jobs",
+    "target": "weirvern.scan_jobs.list_jobs"
+  },
+  "/api/settings": {
+    "verb": "GET",
+    "fetcher": "settings_payload",
+    "target": "weirvern.admin.status.settings_overview"
+  },
+  "/api/zeeklog": {
+    "verb": "GET",
+    "fetcher": "zeeklog",
+    "target": "weirvern.admin.soc.zeek_log_hosts"
+  }
+}
