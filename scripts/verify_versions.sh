@@ -14,7 +14,25 @@ set -u
 
 CODE_V=$(grep -m1 '^__version__' weirvern/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 PYPROJ_V=$(grep -m1 '^version = ' pyproject.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-KUST_V=$(grep -m1 'newTag:' k8s/kustomization.yaml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+KUST_TAG=$(grep -m1 'newTag:' k8s/kustomization.yaml | sed -E 's/.*newTag:[[:space:]]*"?([^"#]+)"?.*/\1/' | tr -d ' ')
+case "$KUST_TAG" in
+    sha-*)
+        # A DEPLOYMENT PIN, NOT A RELEASE VERSION (issue #69). The overlay names the exact tree the
+        # running image was built from; the release version still lives in the code, pyproject and
+        # README, and those are still checked against each other below. What a sha pin replaces is
+        # the old assumption that the overlay's tag and the code version are the same number -- an
+        # assumption that drifted (declared 0.23.65 while the cluster ran sha-11e0003).
+        KUST_V=$CODE_V
+        if ! printf '%s' "$KUST_TAG" | grep -qE '^sha-[0-9a-f]{7,40}$'; then
+            echo "    FAIL -- the kustomize pin '$KUST_TAG' is neither a release version nor sha-<commit>"
+            exit 1
+        fi
+        echo "    kustomize pins the build: $KUST_TAG (release version checked against the code)"
+        ;;
+    *)
+        KUST_V=$KUST_TAG
+        ;;
+esac
 README_V=$(grep -m1 'Current release:' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 
 echo "    code=$CODE_V  pyproject=$PYPROJ_V  kustomize=$KUST_V  README=$README_V"

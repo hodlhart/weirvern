@@ -112,9 +112,21 @@ images:
   # deployment went back to this pinned tag -- so the pod lost `intercept --all` and refused to run,
   # with the only symptom being "unrecognized arguments: --all" from inside the container.
   #
-  # A roll-forward must change THIS value, not the live object:
-  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.13.0
+  # A roll-forward must change THIS value, not the live object.
+  #
+  # THE PIN IS A SHA TAG, NOT A RELEASE NUMBER (issue #69, decided 2026-11-16). A semantic version
+  # in this field says what somebody INTENDED to run; the cluster ran sha tags set by hand, and the
+  # declared 0.23.65 named an image nobody had built -- so `kubectl apply -k` would have moved BOTH
+  # workloads to it and restarted the worker (dropping both intercepts) for a tag that does not
+  # exist. A sha tag names the exact tree the image was built from, and is updated in the same change
+  # that builds it:
+  #
+  #   docker build -t weirvern-worker:sha-<commit> -f Containerfile .
+  #   kustomize edit set image weirvern-worker=newTag=sha-<commit>
+  #
+  # scripts/verify_versions.sh accepts either form, so a release build tagged with the semver still
+  # passes; what it no longer allows is a number that disagrees with the code.
   - name: weirvern-worker
-    newTag: "0.23.65"
+    newTag: "sha-aebc0c4"
   - name: weirvern-scanner
     newTag: "0.14.14"

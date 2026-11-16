@@ -496,10 +496,19 @@ def test_the_package_version_matches_the_image_tag_declared_in_the_transformer()
     m = _re.search(r'name:\s*weirvern-worker\s*\n\s*newTag:\s*"([^"]+)"', kustom)
     assert m, "the image tag is no longer declared in kustomization.yaml"
     tag = m.group(1)
-    assert weirvern.__version__ == tag, (
-        f"weirvern/__init__.py says {weirvern.__version__} but the image tag is {tag}. Bump "
-        f"both together -- the Settings page reports one and the deployment runs the other."
-    )
+    # THE OVERLAY MAY PIN A SHA TAG, AND THEN IT NAMES A BUILD RATHER THAN A RELEASE (issue #69).
+    # What must never happen is a pin that matches neither: a number that drifts from the code, or
+    # a floating tag. scripts/verify_versions.sh checks the same rule; this is the copy the suite
+    # runs without shelling out.
+    if tag.startswith("sha-"):
+        assert _re.fullmatch(r"sha-[0-9a-f]{7,40}", tag), (
+            f"the kustomize pin {tag!r} is not a sha-<commit> tag, so it names nothing reproducible"
+        )
+    else:
+        assert weirvern.__version__ == tag, (
+            f"weirvern/__init__.py says {weirvern.__version__} but the image tag is {tag}. Bump "
+            f"both together -- the Settings page reports one and the deployment runs the other."
+        )
 
 
 def test_a_boolean_is_never_treated_as_a_secret():

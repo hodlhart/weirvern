@@ -221,10 +221,22 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.13.0
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:sha-<commit>
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.5.0
 cd ..
 ```
+
+**Tag the worker image with the commit it was built from** (`sha-<commit>`), and set that same
+tag here. The overlay's `newTag` is a DEPLOYMENT PIN, not a release number: it must name exactly
+the tree the image came from. A semantic version in that field says what somebody intended to run,
+and it drifts — this repository's overlay once declared `0.23.65` while the cluster ran
+`sha-11e0003`, so an `kubectl apply -k` would have moved both workloads to an image nobody had
+built and restarted the worker (dropping any live interception) for a tag that did not exist.
+
+A release build can still be tagged with the version (`0.23.65`), and `scripts/verify_versions.sh`
+accepts either form; what it refuses is a pin that matches neither the code version nor
+`sha-<commit>`. When the pin is a sha tag it is also the only record of what is deployed, so update
+it in the same change that builds the image.
 
 > **Deploy the sensor image and the site policy together.** The policy lives in a
 > ConfigMap generated from `k8s/zeek/weirvern-local.zeek` and `@load`s the module the

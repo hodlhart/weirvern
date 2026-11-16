@@ -17,7 +17,9 @@ echo "  $OLD -> $NEW"
 
 sed -i "s/^__version__ = \"$OLD\"/__version__ = \"$NEW\"/" weirvern/__init__.py
 sed -i "s/^version = \"$OLD\"/version = \"$NEW\"/" pyproject.toml
-sed -i "s/newTag: \"$OLD\"/newTag: \"$NEW\"/" k8s/kustomization.yaml
+# The kustomize newTag is NOT bumped here any more: since issue #69 it names the BUILT sha tag,
+# and rewriting it with a version number would point the overlay at an image nobody built. The
+# release version still moves in the three places above; the deployment pin moves at build time.
 sed -i "s/Current release: \*\*$OLD\*\*/Current release: **$NEW**/" README.md
 sed -i "s/Current release: <strong>$OLD<\/strong>/Current release: <strong>$NEW<\/strong>/" README.md
 sed -i "s/weirvern-worker:$OLD/weirvern-worker:$NEW/g" README.md

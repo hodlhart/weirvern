@@ -8,6 +8,7 @@ the failure is silent: the install happens and the launcher shows a generic scre
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,8 +57,31 @@ def test_the_manifest_icons_are_served_and_the_head_links_the_manifest():
 
 
 def test_the_installed_shell_registers_a_network_only_worker():
-    worker = (WEB / "sw.js").read_text()
-    assert 'fetch(event.request)' in worker, "the worker must fetch the live console, not a cache"
+    """NO CACHE **AND** NO FETCH HANDLER, and the second half is not a style choice.
+
+    This check used to require `fetch(event.request)` inside the worker, which pinned the mechanism
+    that broke Safari: a rejected `respondWith(fetch(...))` becomes a page-load failure ("FetchEvent
+    .respondWith received an error: TypeError: Load failed") instead of letting the navigation reach
+    the network. The property the check exists for is "the console is never served from a cache";
+    a worker with no fetch handler satisfies it more completely than one that proxies, because there
+    is no interception left to fail. Measured live: the fix shipped as a ConfigMap over this file,
+    which is how a shipped defect and a shipped fix can both live outside the repository.
+    """
+    # COMMENTS ARE STRIPPED BEFORE SCANNING. The worker's own header explains WHY it has no fetch
+    # handler and names respondWith while doing so, so a scan of the raw text matches the
+    # explanation instead of the code -- the same trap the network-graph checks hit with a class
+    # name inside a comment.
+    raw = (WEB / "sw.js").read_text()
+    worker = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+    worker = re.sub(r"^\s*//.*$", "", worker, flags=re.M)
     assert "caches" not in worker, "a cached dashboard can show stale health after a failure"
+    assert "respondWith" not in worker, (
+        "the worker intercepts fetch again; Safari turns a rejected respondWith into a page-load "
+        "failure, which is the defect this file was hot-fixed for"
+    )
+    assert 'addEventListener("fetch"' not in worker, "a network-only worker has nothing to do with fetch"
+    assert "skipWaiting" in worker and "clients.claim" in worker, (
+        "the worker still has to install and take over, or the PWA shell never updates"
+    )
     app = (WEB / "app.js").read_text()
     assert 'serviceWorker.register("/sw.js")' in app, "the installed app never registers its worker"
