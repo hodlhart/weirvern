@@ -72,9 +72,21 @@ def matrix_sql(limit: int, *, scope_filter: str = "", start: str | None = None,
         "WITH " + zeek_join_cte(start, end) + " "
         "SELECT a.window_start, a.src_addr, " + ", ".join(selects) + " "
         "FROM ("
-        "  SELECT window_start, src_addr, sum(total_bytes) AS total_bytes, "
-        "         sum(total_packets) AS total_packets, sum(unique_dst_ips) AS unique_dst_ips, "
-        "         sum(flow_count) AS flow_count "
+        # MERGE COMBINATORS, NOT sum(). `flows_window` is an AggregatingMergeTree and those four
+        # columns are AggregateFunction STATES (`sum(sum, UInt64)`, `count(count, UInt8)`,
+        # `uniq(uniq, String)`), so `sum(total_bytes)` is illegal on them: ClickHouse answers
+        # "Code: 43. DB::Exception: Illegal type AggregateFunction(sum, UInt64) of argument for
+        # aggregate function sum", which the shadow pass catches and logs as a warning, so the
+        # candidate list silently stops existing while everything else keeps running. Measured live
+        # on the 2026-11-16 roll: "ML shadow pass failed (detection continues): ... Code: 43".
+        #
+        # sumMerge/countMerge fold the states across insert blocks, which is what the columns are
+        # for; uniqMerge unions the HLL sketches, so the destination count is the true cardinality
+        # across blocks rather than a sum of per-block estimates.
+        "  SELECT window_start, src_addr, sumMerge(total_bytes) AS total_bytes, "
+        "         sumMerge(total_packets) AS total_packets, "
+        "         uniqMerge(unique_dst_ips) AS unique_dst_ips, "
+        "         countMerge(flow_count) AS flow_count "
         "  FROM weirvern.flows_window "
         "  WHERE window_start >= '" + start + "' AND window_start <= '" + end + "' "
         "  GROUP BY window_start, src_addr"

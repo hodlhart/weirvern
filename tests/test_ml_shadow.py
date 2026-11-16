@@ -145,10 +145,36 @@ def test_shadow_overview_names_each_channel_and_a_broken_one_is_not_empty_succes
 
 
 def test_candidate_matrix_collapses_aggregate_fragments_before_clustering():
+    """COLLAPSE WITH THE MERGE COMBINATORS, BECAUSE THE COLUMNS ARE STATES.
+
+    This check used to require `sum(total_bytes)`, which is the bug it was supposed to catch:
+    `flows_window` is an AggregatingMergeTree and those four columns are AggregateFunction states,
+    so summing them is illegal in ClickHouse. Measured on the 2026-11-16 roll, live:
+
+        ML shadow pass failed (detection continues): Code: 43. DB::Exception: Illegal type
+        AggregateFunction(sum, UInt64) of argument for aggregate function sum
+
+    The shadow pass catches its own failure and carries on, so the only symptom was a WARNING and a
+    candidate list that had quietly stopped existing. sumMerge/countMerge fold the states across
+    insert blocks; uniqMerge unions the sketches so the destination count is the true cardinality
+    rather than a sum of per-block estimates.
+    """
     from weirvern.models.candidates import matrix_sql
+
     sql = matrix_sql(5000)
     assert "GROUP BY window_start, src_addr" in sql
-    assert "sum(total_bytes)" in sql
+    assert "sumMerge(total_bytes)" in sql, "the byte total is read as a state, not summed raw"
+    assert "sumMerge(total_packets)" in sql
+    assert "uniqMerge(unique_dst_ips)" in sql, (
+        "a uniq state must be merged, not added: summing estimates is not a cardinality"
+    )
+    assert "countMerge(flow_count)" in sql
+    for illegal in ("sum(total_bytes)", "sum(total_packets)", "sum(flow_count)",
+                    "sum(unique_dst_ips)"):
+        assert illegal not in sql, (
+            f"{illegal} is illegal on an AggregateFunction column (ClickHouse code 43); the shadow "
+            f"pass would fail with a warning and no candidates"
+        )
     assert "ORDER BY sipHash64" in sql and "LIMIT 5000" in sql
 
 
