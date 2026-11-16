@@ -436,8 +436,17 @@ def drain_until_covered(*, sweep, cursor_path: Path, hi: datetime, lo: datetime,
     call = 0
     while True:
         call += 1
-        verdicts.extend(sweep() or [])
+        batch = sweep() or []
+        verdicts.extend(batch)
         covered = _read_cursor(cursor_path)
+        # EVERY CALL IS TRACED. Three attempts at this budget failed on facts nobody printed: where
+        # the cursor was after each call, and whether it moved at all. One line per call is cheap
+        # next to a 3-minute CI job whose failure cannot be diagnosed without it.
+        print(
+            f"  drain call {call}: cursor -> {covered} (target {hi}), "
+            f"{len(batch)} verdict(s) this call, {len(verdicts)} total",
+            flush=True,
+        )
         if _cursor_reached(covered, hi):
             return verdicts, None
         if max_calls is None:
