@@ -127,6 +127,6 @@ images:
   # scripts/verify_versions.sh accepts either form, so a release build tagged with the semver still
   # passes; what it no longer allows is a number that disagrees with the code.
   - name: weirvern-worker
-    newTag: "sha-aebc0c4"
+    newTag: "sha-019866d"
   - name: weirvern-scanner
     newTag: "0.14.14"
