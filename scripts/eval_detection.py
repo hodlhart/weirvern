@@ -329,6 +329,20 @@ def train_detectors(client, cfg_settings, attack_start_minute: int = 0):
     return detectors, None
 
 
+def _read_cursor(path) -> datetime | None:
+    """The coverage boundary the last sweep recorded, or None when it cannot be read.
+
+    Read rather than inferred from the verdict count: a quiet window scores nothing, so "no new
+    verdicts" cannot distinguish full coverage from no progress at all.
+    """
+    try:
+        import json  # noqa: PLC0415
+
+        return _as_datetime(json.loads(path.read_text())["covered_through"])
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def run_detection(client, cfg_settings, window_minutes: int,
                   attack_start_minute: int = 0, detectors=None):
     """The worker's REAL detection sweep, with the window widened to cover the seed.
@@ -356,12 +370,13 @@ def run_detection(client, cfg_settings, window_minutes: int,
     """
     import dataclasses
 
-    from weirvern import db
+    from weirvern import db, worker
     from weirvern.worker import detection_sweep
 
     settings, cfg = cfg_settings
-    lo = db.fetch_rows(
-        client, "SELECT min(window_start) FROM weirvern.flows_aggregated")[0][0]
+    lo, hi = db.fetch_rows(
+        client, "SELECT min(window_start), max(window_start) FROM weirvern.flows_aggregated")[0]
+    lo, hi = _as_datetime(lo), _as_datetime(hi)
 
     # The sweep's `since = now - interval_s` must be <= lo so every seeded window is in
     # scope, whether the seed sits in the past or the future relative to now.
@@ -373,8 +388,47 @@ def run_detection(client, cfg_settings, window_minutes: int,
         if err:
             return None, err
 
-    verdicts = detection_sweep(client, detectors, widened, cfg)
-    return verdicts, None
+    # ── ONE SWEEP COVERS ONE HOUR, SO ONE CALL IS NOT ENOUGH ────────────────────────────────────
+    #
+    # `detection_sweep` deliberately caps a cycle at MAX_CATCHUP_BUCKETS (12) of AGG_BUCKET_S (300),
+    # so it examines AT MOST ONE HOUR per call. That cap exists for the right reason: an uncapped
+    # catch-up after a stalled cursor is what OOMed the worker, and a stuck cursor then never
+    # recovered. But this harness seeds five hours and used to call the sweep exactly ONCE, so it
+    # scored the first hour, judged windows that predate the attacks injected at minute 200, and
+    # reported the detection as missed. The instrument was measuring its own window, which is the
+    # same failure as the liveness probe that passed on the freshest of several signals.
+    #
+    # So drain the span. The cursor persists between calls (detect_cursor.json in model_dir), which
+    # is what makes successive calls advance rather than repeat. Two stop conditions, both real:
+    # the cursor passed the last seeded window, or it stopped moving. The second matters because the
+    # generator runs forward from now, so the tail of the seed can sit in the FUTURE and no number of
+    # calls will ever cover it.
+    chunk_s = worker.MAX_CATCHUP_BUCKETS * worker.AGG_BUCKET_S
+    span_s = max(0.0, (hi - lo).total_seconds())
+    max_calls = int(span_s // chunk_s) + 4
+
+    verdicts: list[dict] = []
+    cursor_path = Path(settings.model_dir) / "detect_cursor.json"
+    previous = None
+    for call in range(1, max_calls + 1):
+        batch = detection_sweep(client, detectors, widened, cfg) or []
+        verdicts.extend(batch)
+        covered = _read_cursor(cursor_path)
+        if covered is not None and covered >= hi:
+            return verdicts, None
+        if covered is not None and covered == previous:
+            return verdicts, (
+                f"the sweep stopped advancing at {covered} after {call} call(s), with seeded windows "
+                f"up to {hi}; {len(verdicts)} verdict(s) were scored over the part it did reach. "
+                "Windows past that point were NOT examined, so a detection reported missing there "
+                "is unmeasured rather than absent."
+            )
+        previous = covered
+    return verdicts, (
+        f"the sweep did not cover the seed after {max_calls} calls "
+        f"({span_s / chunk_s:.1f} chunks needed for a {span_s / 3600:.1f}h span); "
+        f"{len(verdicts)} verdict(s) scored"
+    )
 
 
 def _settle_table(client, table: str, *, timeout_s: int) -> tuple[int, str]:
