@@ -185,6 +185,52 @@ default; `--legacy-clickhouse` is only for migrating a hub whose gateway is not 
 NetFlow/sFlow/IPFIX export, a SPAN/mirror port, or a TAP. The hub can run on the same node for a
 lab, or separately for a production segment.
 
+## Demo data
+
+A fresh install is empty, and every query in the console is relative to now, so the dashboard
+has nothing to show until traffic arrives. To fill it for a demo:
+
+```sh
+weirvern demo-seed --hours 6          # six hours of traffic, ending at the current minute
+weirvern demo-seed --hours 6 --dry-run   # print the row counts, write nothing
+```
+
+That writes `zeek_conn`, `zeek_dns`, `zeek_ssl`, `zeek_http` and `flows` for 22 simulated
+hosts. Two properties are deliberate.
+
+**The records go through the real mappers.** Every generated record is built in Zeek's own
+field shape and pushed through `ingester.map_zeek_*`, the same functions the tailer calls. A
+seeder that wrote finished rows would light up the console and leave the layer where ingestion
+bugs actually live untested, and a test fails if the mapper stops being called.
+
+**The flow view and the Zeek view come from the same conversations**, so the two channels
+agree about volume instead of contradicting each other.
+
+The data includes two anomalies on purpose: a steady small beacon to one external address every
+window, which a per-host volume baseline will not flag on size, and one port sweep with high
+flow count and almost no bytes, which the diversity and volume models read differently.
+
+**It is generated, not a capture.** `--seed` makes it reproducible, and nothing is derived from
+real traffic. If you have your own capture and want genuine packets, replay it instead:
+
+```sh
+tcpreplay --intf eth1 --topspeed capture.pcap
+```
+
+Three caveats, all measured on this codebase. The capture's timestamps are its own, so a
+capture from last week lands outside every `now()` window and renders an empty dashboard until
+you shift it with `tcprewrite`. Replay needs capture privileges on the interface, which a
+container usually does not have. And `--topspeed` can outrun Zeek, which shows up as
+`capture_loss` rather than as a clean demo.
+
+**After seeding, let the worker run one sweep.** The derived tables the ML panels read
+(`flows_window`, `ml_window_scores`) are produced by the normal detection loop, not by the
+seeder, so those panels stay empty until a sweep completes over the new data.
+
+The seeder refuses to run when recent flow data exists, because mixing demo rows into a working
+install is not recoverable by deleting rows you can no longer identify. `--force` overrides it
+when that is genuinely what you want.
+
 ### The deployment Secret
 
 The installer creates `weirvern-secrets` for you. By hand it is one command — the ClickHouse
