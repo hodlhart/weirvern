@@ -113,3 +113,72 @@ def test_the_gate_no_longer_tells_users_to_type_a_password_over_http():
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
     assert "served over HTTPS by the local Weirvern ingress" in html
     assert "install that root once" in html
+
+
+def test_waitress_actually_delivers_the_forwarded_scheme():
+    """A test client sets headers directly; a real WSGI server may drop them.
+
+    Waitress 3 clears every `X-Forwarded-*` header unless a trusted proxy is declared, so the
+    redirect and HSTS were green in the suite and dead in the deployment: the app never saw the
+    scheme. This starts the real server with the production options and sends the header over a
+    socket, which is the only way that difference shows up.
+    """
+    import http.client
+    import socket
+    import sys
+    import threading
+    import time
+
+    import pytest
+
+    waitress = pytest.importorskip("waitress")
+
+    sys.path.insert(0, str(ROOT))
+    from tests.support_routes import _Ctx
+    from weirvern.admin import cli, flask_app
+
+    app = flask_app.create_app(_Ctx(), secret_key="tls-edge")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    thread = threading.Thread(
+        target=lambda: waitress.serve(app, host="127.0.0.1", port=port, threads=2,
+                                      **cli.WAITRESS_PROXY_TRUST),
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            assert time.monotonic() < deadline, "waitress did not start listening"
+            time.sleep(0.05)
+
+    def request(headers: dict[str, str]):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", "/api/healthz", headers=headers)
+            return conn.getresponse()
+        finally:
+            conn.close()
+
+    plain = request({"X-Forwarded-Proto": "http"})
+    assert plain.status == 308, (
+        f"the server did not deliver X-Forwarded-Proto to the app (status {plain.status}); "
+        "waitress clears untrusted proxy headers unless trusted_proxy_headers names them")
+    assert plain.getheader("Location", "").startswith("https://")
+
+    secure = request({"X-Forwarded-Proto": "https"})
+    assert secure.status == 200
+    assert secure.getheader("Strict-Transport-Security"), "no HSTS over the forwarded https"
+
+    direct = request({})
+    assert direct.status == 200, "a request with no forwarded scheme was redirected"
+
+    # ONLY the scheme header is trusted: a forwarded address must not be able to impersonate one.
+    assert cli.WAITRESS_PROXY_TRUST["trusted_proxy_headers"] == {"x-forwarded-proto"}, (
+        "trusting x-forwarded-for would let a caller choose the address the login throttle and the "
+        "audit trail record")

@@ -52,6 +52,20 @@ from weirvern.admin.runtime import (
 # checkout.
 _CACHED_PROJECT_DIR: Path | None = None
 
+# WAITRESS CLEARS X-Forwarded-* BY DEFAULT, and that silently disabled the HTTPS edge.
+#
+# Waitress 3 ships `clear_untrusted_proxy_headers = True` with no trusted proxy declared, so it
+# strips `X-Forwarded-Proto` before the WSGI app can see it. The app's redirect and HSTS then never
+# fire in a real deployment while the test client -- which sets headers directly -- stays green.
+# Trust ONLY the scheme header, and from any peer: `x-forwarded-for` stays untrusted, so
+# `request.remote_addr` is still the TCP peer and the login throttle and audit rows cannot be
+# spoofed by a forwarded address.
+WAITRESS_PROXY_TRUST = {
+    "trusted_proxy": "*",
+    "trusted_proxy_count": 1,
+    "trusted_proxy_headers": {"x-forwarded-proto"},
+}
+
 
 def project_dir() -> Path:
     """Resolve the project directory on first use (see the note above)."""
@@ -865,7 +879,7 @@ def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port:
         app.run(host=host, port=port, threaded=True, use_reloader=False)
         return EXIT_OK
     print(_c("dim", "    serving with waitress (threaded, one process)"))
-    serve(app, host=host, port=port, threads=8)
+    serve(app, host=host, port=port, threads=8, **WAITRESS_PROXY_TRUST)
     return EXIT_OK
 
 
