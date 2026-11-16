@@ -551,7 +551,9 @@ def run_detection(client, cfg_settings, window_minutes: int,
         chunk_s=chunk_s,
         budget_s=float(os.environ.get("WEIRVERN_EVAL_DRAIN_BUDGET_S", "600")),
     )
-    return (None, err) if err else (verdicts, None)
+    # The verdicts come back WITH an error, not instead of it: a partial drain scored real windows,
+    # and the caller reports both ("N verdict(s) were scored over the part it did reach").
+    return verdicts, err
 
 
 def _settle_table(client, table: str, *, timeout_s: int) -> tuple[int, str]:
