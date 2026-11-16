@@ -4105,35 +4105,58 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   }
 
   // ── A DEGRADED GATE SAYS WHY, WHERE IT IS READ (QA-1-D3) ────────────────────────────────────
+  //
+  // THE CHIP IS THE STATE. There is no `sl-gate-state` element and there never was; the gate card's
+  // addressable parts are `sl2-traf-chip` (the word) and `sl2-traf-line` (the sentence beside it),
+  // plus `sl-gate-warning` for the same reason. Two checks skipped on the invented id rather than
+  // failing, which is the third outcome working as designed but leaving QA-1-D3 unmeasured.
+  //
+  // AND THE FIXTURE HAD TO ARM THE GATE. `gateOn` comes from the SETTINGS read (`sl2On`), not from
+  // the payload's `enabled` field, so with the default settings the card renders "off" and the
+  // degraded branch is unreachable however degraded the payload claims to be. The settings stub is
+  // therefore part of the fixture: the case worth pinning is ARMED and degraded, because that is
+  // the one where rules are meant to be live while something underneath them is wrong.
   {
     const origFetch = window.fetch;
+    const armedSettings = JSON.parse(JSON.stringify(SETTINGS_PAYLOAD));
+    armedSettings.groups = Object.assign({}, armedSettings.groups, {
+      detect: (armedSettings.groups.detect || []).concat([
+        { key: "SLUICE_ENABLED", label: "packet gate", value: "1", secret: false,
+          source: "setting", applies: "applies with Apply",
+          help: "Arms the packet gate: live rules drop traffic." },
+      ]),
+    });
     window.fetch = (u, o) => {
-      if (String(u).split("?")[0].endsWith("/api/sluice"))
+      const url = String(u).split("?")[0];
+      if (url.endsWith("/api/settings")) {
+        return Promise.resolve({ ok: true, json: async () => armedSettings });
+      }
+      if (url.endsWith("/api/sluice")) {
         return Promise.resolve({ ok: true, json: async () => Object.assign({}, SLUICE_PAYLOAD, {
-          enabled: false,
+          enabled: true,
           gate: Object.assign({}, SLUICE_PAYLOAD.gate, {
-            state: "degraded", rules_active: 0, rules_total: 0,
+            state: "degraded", rules_active: 2, rules_total: 2,
             detail: "these tables are still present after deletion: weirvern_sluice",
           }),
         }) });
+      }
       return origFetch(u, o);
     };
+    H.clearGetCache();   // getJSON caches for 8s; both stubs are only seen after a clear
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
+    const gateChip = needEl("sl2-traf-chip");
+    const gateLine = needEl("sl2-traf-line");
+    check("a degraded gate names its state beside the gate line",
+          !!gateChip && /degraded/i.test(gateChip.textContent.trim()),
+          gateChip ? gateChip.textContent : "no chip");
+    check("...and carries the server's reason where it is read",
+          !!gateLine
+            && /still present after deletion/.test(gateLine.textContent
+                                                   + (gateLine.getAttribute("title") || "")),
+          gateLine ? gateLine.textContent : "no line");
     window.fetch = origFetch;
-      // The state lives on the Traffic Gate chip, which HAS an id; "sl-gate-state" never existed
-      // as an element and sl2-gate/sl2-gate-head are CSS CLASSES -- which is why this skipped
-      // rather than failed, and why a guessed replacement would have passed over the wrong node.
-      // NOT YET PINNED, and the reason is a finding rather than an oversight: the chip reads
-      // "off" here because `gateOn` comes from the SETTINGS read (`sl2On("SLUICE_ENABLED")`), not
-      // from the payload's `enabled` field, so this fixture cannot arm the gate and the degraded
-      // branch is never reached. Arming the settings stub in this fixture is what closes it.
-      const st = needEl("sl-gate-state");
-      check("a degraded gate names its state beside the gate line",
-            /degraded/i.test(st.textContent), st.textContent);
-      check("...and carries the server's reason where it is read",
-            /still present after deletion/.test(st.textContent + (st.getAttribute("title") || "")),
-            st.textContent || "no reason");
+    H.clearGetCache();
     await H.loadBlockingControls();   // tidy back to the healthy fixture
   }
 
