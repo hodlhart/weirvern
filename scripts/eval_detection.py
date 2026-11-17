@@ -744,18 +744,28 @@ def main() -> int:
     # the absolute hour (hour_sin/hour_cos/is_business_hours -- features.py), so two anchored
     # runs that straddle an hour boundary are still two different datasets. Measured: 141 vs
     # 173 verdicts from two runs two minutes apart across midnight, same seed, same code. The
-    # harness therefore pins the seed to the MOST RECENT UTC MIDNIGHT: identical absolute
-    # timestamps for every run within a day, hour-aligned (every run sees the same hour-of-day
-    # regime), and hours from the tables' TTLs. A run just before and just after midnight is
-    # a different dataset, and the seed-clock line below is what says which one a run used.
-    pinned_start = (int(time.time()) // 86_400) * 86_400
+    # harness therefore pins the seed to a fixed UTC anchor: identical absolute timestamps for
+    # every run within a day, hour-aligned (every run sees the same hour-of-day regime), and
+    # hours from the tables' TTLs.
+    #
+    # THE SPAN ENDS AT THE MIDNIGHT, IT DOES NOT START THERE. Anchoring the START to the most
+    # recent midnight seeds the window FORWARD, so a run between 00:00 and 05:00 UTC writes
+    # traffic that has not happened yet. The worker's cursor can never pass `now` (see
+    # `_covered_through`), so the drain stalls one second per call and the gate reports "the
+    # sweep did not cover the seed" -- which reads like a detection defect and is a clock
+    # defect. Measured 2026-11-17 00:16Z: cursor 00:16:19 after call 1, then +0.5s per call,
+    # 4.6h short of the target, six verdicts scored and every attack window unexamined.
+    # Ending the span at the most recent midnight keeps the day-determinism AND leaves the
+    # whole seed in the past for any hour the job can run.
+    pinned_end = (int(time.time()) // 86_400) * 86_400
+    pinned_start = pinned_end - args.minutes * 60
     t0 = time.time()
     n = seed(client, args.minutes, args.devices, args.seed, [],
              attack_start_minute=attack_start_minute, start=pinned_start)
     print(f"  seeded {n} flows ({time.time() - t0:.1f}s)")
     print(f"  attacks begin at minute {attack_start_minute}; training holds out before it")
     print(f"  seed clock: pinned to {datetime.fromtimestamp(pinned_start, tz=UTC).isoformat()}"
-          f" (most recent UTC midnight; the phase line below confirms it landed)")
+          f" (span ends at the most recent UTC midnight; the phase line below confirms it landed)")
 
     # EVERY INPUT THIS RUN WILL BE JUDGED BY, ON THE RECORD (issue #2, recommendation 3):
     # a red run must be reproducible from the job log alone.
