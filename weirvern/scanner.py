@@ -442,6 +442,33 @@ def monitored_networks(client: Any) -> list[Network]:
             "scanner: no enabled weirling declares a CIDR segment; refusing to scan anything "
             "until the registry names a monitored network"
         )
+    # ── AND THE OPERATOR'S OWN SCOPE TABLE HAS THE LAST WORD (2026-11-17) ──────────────────────
+    #
+    # The registry says which segments a sensor covers; `network_scopes` says which networks are
+    # OURS. They are not the same claim, and nmap must never target something the operator has
+    # not declared monitored. A registered segment outside every monitored scope is dropped here
+    # with a log line -- the scanner keeps working on the segments that are ours instead of
+    # refusing everything, and the omission is visible in the log rather than silent.
+    from weirvern import monitored as monitored_mod  # noqa: PLC0415
+
+    scopes = monitored_mod.networks(client)
+    if scopes:
+        for label, network in list(networks.items()):
+            inside = any(
+                scope.version == network.version
+                and network.subnet_of(scope)  # type: ignore[arg-type]
+                for scope in scopes
+            )
+            if not inside:
+                logger.warning(
+                    "scanner: %s is declared by a weirling but is not inside a monitored "
+                    "network (%s); it will not be scanned",
+                    label, ", ".join(str(s) for s in scopes))
+                networks.pop(label, None)
+    else:
+        logger.warning(
+            "scanner: network_scopes declares no monitored network, so the weirling registry is "
+            "the only scope; add the segment to network_scopes to make the intent explicit")
     return list(networks.values())
 
 

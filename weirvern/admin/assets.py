@@ -602,6 +602,20 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     """
     hosts: dict[str, dict] = {}
 
+    # ── ONLY OUR NETWORKS ARE ASSETS (operator rule, 2026-11-17) ───────────────────────────────
+    #
+    # The inventory used to be "every address that appeared on the wire", which filled it with
+    # external peers: CDN edges, torrent swarm members, resolvers. An asset is a thing the
+    # operator is responsible for, and the same list decides what the scanner may touch, so the
+    # filter is the operator's own `network_scopes` table with monitored = 1. Everything else is
+    # a PEER and stays in the flow, discovery and graph views where it belongs.
+    from weirvern import monitored as monitored_mod  # noqa: PLC0415
+
+    nets = monitored_mod.networks(client)
+    ours_src = monitored_mod.sql_predicate("src_addr", nets)
+    ours_dst = monitored_mod.sql_predicate("dst_addr", nets)
+    excluded_peers = 0
+
     def _h(addr: str) -> dict:
         return hosts.setdefault(addr, {
             "addr": addr, "name": "", "bytes": 0, "flows": 0, "dst_count": 0,
@@ -615,7 +629,7 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         "SELECT src_addr, sum(total_bytes) AS bytes, sum(flow_count) AS flows, "
         "       max(unique_dst_ips) AS dsts, min(window_start) AS first, max(window_end) AS last "
         "FROM weirvern.flows_aggregated "
-        "WHERE window_start >= %(since)s AND window_start <= %(until)s "
+        f"WHERE window_start >= %(since)s AND window_start <= %(until)s AND {ours_src} "
         "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
         {**timewindow.w(hours), "n": limit},
         "asset inventory (aggregate)",
@@ -635,11 +649,11 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     direction = _rows(
         client,
         "SELECT addr, sum(outbound) AS out_b, sum(inbound) AS in_b FROM ("
-        "  SELECT src_addr AS addr, bytes AS outbound, 0 AS inbound FROM weirvern.flows "
-        "  WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+        f"  SELECT src_addr AS addr, bytes AS outbound, 0 AS inbound FROM weirvern.flows "
+        f"  WHERE timestamp >= %(since)s AND timestamp <= %(until)s AND {ours_src} "
         "  UNION ALL "
-        "  SELECT dst_addr AS addr, 0 AS outbound, bytes AS inbound FROM weirvern.flows "
-        "  WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+        f"  SELECT dst_addr AS addr, 0 AS outbound, bytes AS inbound FROM weirvern.flows "
+        f"  WHERE timestamp >= %(since)s AND timestamp <= %(until)s AND {ours_dst} "
         ") GROUP BY addr ORDER BY out_b DESC LIMIT %(n)s",
         {**timewindow.w(hours), "n": limit},
         "asset inventory (direction split)",
@@ -662,6 +676,7 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
             f"SELECT {addrcol} AS addr, count() AS n FROM weirvern.{table} "  # noqa: S608
             "WHERE ts >= %(since)s AND ts <= %(until)s "
             f"AND toString({addrcol}) != '' AND toString({addrcol}) != '-' "
+            f"AND {monitored_mod.sql_predicate(f'toString({addrcol})', nets)} "
             "GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
             {**timewindow.w(hours), "n": limit},
             f"asset inventory ({table})",
@@ -696,6 +711,25 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         if missing:
             reason = f"no host could be read; failed sources: {', '.join(missing)}"
         return _unavailable(reason, hosts=[], unreadable=zeek_unreadable)
+
+    # THE SAME RULE IN PYTHON, as a backstop. Every query above already filters, but a source
+    # added later could forget, and an inventory that quietly includes a stranger is worse than
+    # one that quietly omits a host of ours: the first is a scoping error with legal weight, the
+    # second is a gap an operator can see. So the scope is applied again to the assembled dict,
+    # and what it removed is COUNTED rather than silently dropped.
+    kept: dict[str, dict] = {}
+    for addr, entry in hosts.items():
+        if monitored_mod.in_scope(addr, nets):
+            kept[addr] = entry
+        else:
+            excluded_peers += 1
+    hosts = kept
+    if not hosts:
+        return _unavailable(
+            f"every address seen in this window is outside the monitored networks "
+            f"({', '.join(str(n) for n in nets) or 'none declared'}); {excluded_peers} peer(s) "
+            "were excluded. Add the network to network_scopes if it is ours.",
+            hosts=[], unreadable=zeek_unreadable)
 
     # NAMES FOR EVERY ROW. The dict above declares `"name": ""` per host, and nothing ever
     # filled it -- the Assets table has a Name column that rendered blank for every row while
@@ -749,6 +783,11 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         "scan_sources_failed": scan_failed,
         "sources_read": [k for k, ok in read_ok.items() if ok],
         "sources_failed": [k for k, ok in read_ok.items() if not ok],
+        # WHAT THE FILTER DID, stated so the panel can print it: which networks count as ours,
+        # and how many addresses were left out as peers. An exclusion that is not counted is an
+        # exclusion nobody can check.
+        "scope": monitored_mod.summary(nets),
+        "excluded_peers": excluded_peers,
     }
 
 
