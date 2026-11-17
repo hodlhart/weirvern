@@ -439,6 +439,9 @@ def store_scores(client: Any, results: Iterable[dict[str, Any]]) -> int:
     rows = []
     now = datetime.now(UTC).replace(tzinfo=None)
     for result in results:
+        if result.get("fused_p") is not None:
+            rows.append((result["hour"], result["host"], "fused", 0.0,
+                         float(result["fused_p"]), str(result.get("state", "scored")), "", now))
         for channel, payload in result["channels"].items():
             rows.append((result["hour"], result["host"], channel,
                          float(payload["score"]) if payload["score"] is not None else 0.0,
@@ -449,3 +452,104 @@ def store_scores(client: Any, results: Iterable[dict[str, Any]]) -> int:
                       column_names=["hour", "src_addr", "channel", "score", "p_value",
                                     "state", "evidence", "computed_at"])
     return len(rows)
+
+
+# ── the budget, and the hourly tick ───────────────────────────────────────────────────────────
+
+def derive_alpha(host_hours_per_day: int, alerts_per_day: float) -> float:
+    """The per-hour p threshold that spends a daily budget.
+
+    The design's rule is that the threshold IS the budget, not a number chosen for how it
+    feels. With N host-hours a day and a budget of A episodes, the largest p threshold that
+    can spend A is A/N -- before persistence, which can only reduce the count. Deriving it
+    this way makes the budget a setting and the outcome measurable against it.
+    """
+    return max(1e-9, min(1.0, float(alerts_per_day) / max(int(host_hours_per_day), 1)))
+
+
+def count_episodes(rows: Iterable[tuple[str, datetime, float]], alpha: float) -> int:
+    """Episodes in a window of (host, hour, fused_p) rows: one per run of two or more hours.
+
+    A single anomalous hour is not an episode -- that is the persistence rule, and counting
+    runs rather than hours is what keeps an eight-hour incident from being reported eight
+    times.
+    """
+    by_host: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
+    for host, hour, p in rows:
+        by_host[str(host)].append((hour, float(p)))
+    episodes = 0
+    for hours in by_host.values():
+        streak = 0
+        previous: datetime | None = None
+        for hour, p in sorted(hours):
+            # A gap is a break even when the missing hour has no row: a worker that was down
+            # for three hours must not join the hours either side into one incident.
+            if previous is not None and (hour - previous) > timedelta(hours=1):
+                if streak >= 2:
+                    episodes += 1
+                streak = 0
+            if p <= alpha:
+                streak += 1
+            else:
+                if streak >= 2:
+                    episodes += 1
+                streak = 0
+            previous = hour
+        if streak >= 2:
+            episodes += 1
+    return episodes
+
+
+def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = None,
+        lookback_hours: int = 6) -> dict[str, Any]:
+    """One hourly tick: build the hours that are missing, score them, count episodes.
+
+    Shadow only. It writes `host_hour_features` and `host_hour_scores` and logs a line; it
+    cannot page, because nothing in the alert path reads those tables yet. The point of
+    running it now is that the reference cannot be back-filled later: `flows` is trimmed long
+    before the thirty days a per-host baseline needs, so the hour has to be accumulated while
+    the flow log still has it.
+    """
+    end = (now or datetime.now(UTC).replace(tzinfo=None)).replace(minute=0, second=0,
+                                                                  microsecond=0)
+    last_complete = end - timedelta(hours=1)
+    # The window ENDS at the last completed hour and reaches back `lookback_hours`. An earlier
+    # version wrote max(back, last_complete), which is the LATER of the two -- so the tick
+    # rebuilt exactly one hour and reported a healthy zero on the rest.
+    start = last_complete - timedelta(hours=max(int(lookback_hours), 1) - 1)
+
+    built = build_features(client, start, end)
+
+    fresh_at = client.query(
+        "SELECT max(computed_at) FROM weirvern.host_reference_stats").result_rows[0][0]
+    if fresh_at is None or (end - fresh_at) > timedelta(hours=24):
+        rebuild_references(client, days=30, now=end)
+
+    stats, samples = load_reference(client)
+    rows = read_features(client, start, end)
+    results = [score_vector(str(r["src_addr"]), r["hour"], r, stats.get(str(r["src_addr"]), {}),
+                            samples.get(str(r["src_addr"]), {}))
+               for r in rows]
+    stored = store_scores(client, results)
+
+    # The denominator is the hosts that actually produced an hour in the last day, not the
+    # hosts in this tick: a host that was quiet for the last six hours still costs an
+    # opportunity to raise a false alarm over twenty-four.
+    hosts = int(client.query(
+        "SELECT uniqExact(src_addr) FROM weirvern.host_hour_features "
+        "WHERE hour >= %(since)s",
+        parameters={"since": end - timedelta(hours=24)}).result_rows[0][0] or 0)
+    alpha = derive_alpha(hosts * 24, alerts_per_day)
+    window = client.query(
+        "SELECT src_addr, hour, p_value FROM weirvern.host_hour_scores FINAL "
+        "WHERE channel = 'fused' AND hour >= %(since)s ORDER BY src_addr, hour",
+        parameters={"since": start - timedelta(hours=1)}).result_rows
+    episodes = count_episodes([(r[0], r[1], r[2]) for r in window], alpha)
+    # `result`, not `r`: these are scored host-hours, not database rows. The schema audit
+    # treats a variable named `r` as a row and reported `fused_p` as a name no table produces.
+    anomalous = sum(1 for result in results
+                    if result.get("fused_p") is not None and result["fused_p"] <= alpha)
+    return {"hours_built": built, "hours_scored": len(results), "rows": stored,
+            "hosts": hosts, "anomalous": anomalous, "episodes": episodes,
+            "alpha": round(alpha, 5),
+            "budget_per_day": alerts_per_day}

@@ -143,6 +143,13 @@ class Settings:
     # Shadow passes write candidate/calibration tables only; they never alter alerts or severity.
     # The calibration target is a false-alarm fraction for the alert tail, not an accuracy claim.
     ml_shadow: bool = field(default_factory=lambda: _env_bool("ML_SHADOW", True))
+
+    # The host-hour's daily episode budget. The threshold is derived from it (budget divided
+    # by host-hours) rather than tuned by hand, so the number of pages is a decision the
+    # operator made rather than one the distribution made for them. Shadow only until the
+    # scorecard has measured a replay at this budget.
+    host_hour_alerts_per_day: int = field(
+        default_factory=lambda: _env_int("HOST_HOUR_ALERTS_PER_DAY", 20))
     ml_target_far: float = field(default_factory=lambda: _env_float("ML_TARGET_FAR", 0.01))
     # Eligibility gate: a detector whose measured FAR exceeds target * multiple cannot set the
     # fused score. ON by default because the operator asked for the production decision layer;

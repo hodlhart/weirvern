@@ -2684,6 +2684,25 @@ def main() -> None:
                             logger.info("ML drift: %s pair(s), %s notice(s); retrain=%s",
                                         drift["rows"], len(drift.get("notices", [])),
                                         drift["retrain"]["trigger"])
+                        # THE HOST-HOUR, IN SHADOW. It writes its own two tables and logs a
+                        # line; nothing in the alert path reads them, so this cannot page.
+                        # It runs now because the reference cannot be back-filled later: the
+                        # flow log is trimmed long before the thirty days a per-host baseline
+                        # needs, so the hour has to be accumulated while the flows still exist.
+                        from weirvern.models import host_hour as _hh  # noqa: PLC0415
+
+                        try:
+                            hh = _hh.run(client, alerts_per_day=float(
+                                getattr(settings, "host_hour_alerts_per_day", 20)))
+                            logger.info(
+                                "ML host-hour shadow: %s hour(s), %s host(s), %s anomalous, "
+                                "%s episode(s); alpha %.4f for a budget of %s/day",
+                                hh["hours_scored"], hh["hosts"], hh["anomalous"],
+                                hh["episodes"], hh["alpha"], hh["budget_per_day"])
+                        except Exception as exc:  # noqa: BLE001
+                            # Its own guard: a broken host-hour build must name itself rather
+                            # than be reported as a failure of the specialists beside it.
+                            logger.warning("ML host-hour shadow failed: %s", exc)
                         # RIP-5: the fusion pass runs where the evidence was just written, not
                         # on a separate timer. The specialists above are hourly, so a fusion on
                         # the 5-minute detection cycle would almost always find every channel

@@ -159,3 +159,51 @@ def test_one_hour_with_a_signature_is_an_episode():
 
 def test_a_signature_on_a_quiet_hour_is_not_an_episode():
     assert not host_hour.is_episode(False, False, signature=True)
+
+
+# ── the budget and episodes ───────────────────────────────────────────────────────────────────
+
+def test_the_budget_sets_the_threshold():
+    # 22 hosts x 24 hours = 528 host-hours a day; twenty episodes a day is 20/528.
+    assert host_hour.derive_alpha(528, 20) == pytest.approx(20 / 528)
+
+
+def test_a_budget_larger_than_the_opportunities_does_not_exceed_one():
+    assert host_hour.derive_alpha(10, 500) == 1.0
+
+
+def test_zero_host_hours_clamps_to_one_rather_than_dividing_by_zero():
+    # With no denominator the rule degenerates to "score everything anomalous", which is the
+    # widest a p threshold can be -- not 20, which is not a probability.
+    assert host_hour.derive_alpha(0, 20) == 1.0
+
+
+def _hour(h: int):
+    return datetime(2026, 11, 16, h, 0)
+
+
+def test_a_single_anomalous_hour_is_not_an_episode():
+    rows = [("198.51.100.5", _hour(3), 0.001)]
+    assert host_hour.count_episodes(rows, 0.01) == 0
+
+
+def test_two_consecutive_hours_are_one_episode_not_two():
+    rows = [("198.51.100.5", _hour(3), 0.001), ("198.51.100.5", _hour(4), 0.002)]
+    assert host_hour.count_episodes(rows, 0.01) == 1
+
+
+def test_an_eight_hour_incident_is_reported_once():
+    rows = [("198.51.100.5", _hour(h), 0.001) for h in range(3, 11)]
+    assert host_hour.count_episodes(rows, 0.01) == 1
+
+
+def test_two_separate_runs_are_two_episodes():
+    rows = [("198.51.100.5", _hour(3), 0.001), ("198.51.100.5", _hour(4), 0.001),
+            ("198.51.100.5", _hour(7), 0.001), ("198.51.100.5", _hour(8), 0.001)]
+    assert host_hour.count_episodes(rows, 0.01) == 2
+
+
+def test_episodes_are_counted_per_host():
+    rows = [("198.51.100.5", _hour(3), 0.001), ("198.51.100.5", _hour(4), 0.001),
+            ("198.51.100.6", _hour(3), 0.001), ("198.51.100.6", _hour(4), 0.001)]
+    assert host_hour.count_episodes(rows, 0.01) == 2
