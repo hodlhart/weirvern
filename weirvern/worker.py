@@ -1082,6 +1082,28 @@ def _load_detect_cursor(settings) -> datetime | None:
         return None
 
 
+def _save_controls(settings, checks) -> None:
+    """Record the control verdicts beside the cursor, so the health probe reads the LAST run.
+
+    Written on EVERY sweep, including degraded ones. A file that only appears when things are well
+    is indistinguishable from a worker that stopped running the controls at all -- the same
+    ambiguity as a health panel with no capture row.
+
+    Failure to write is a warning, not an exception: the sweep has already done its work, and a
+    bookkeeping problem must not discard a detection cycle.
+    """
+    path = Path(settings.model_dir) / "detection_controls.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "checked_at": datetime.now(UTC).isoformat(),
+            "ok": not any(c.ok is False for c in checks),
+            "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks],
+        }))
+    except OSError as exc:
+        logger.warning("could not record detection controls: %s", exc)
+
+
 def _save_detect_cursor(settings, covered_through: datetime) -> None:
     """Record the boundary this sweep covered. Failure here is logged, never raised.
 
@@ -1826,6 +1848,26 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     # sweep that raised on the way would not have examined it. Recording at the start would turn any
     # mid-sweep exception into a permanently skipped window -- the defect this fixes, made worse.
     _save_detect_cursor(settings, _new_cursor)
+
+    # ── CONTROLS: a sweep that cannot demonstrate its own ranking is not a measurement ────────
+    #
+    # Placed after the cursor is saved, deliberately. The window WAS examined whether or not the
+    # controls pass; a control failure must not re-open it and score the same rows again next
+    # cycle. What a failure changes is the STATUS of the run, which is what the operator acts on.
+    #
+    # The two controls and why they are these two: weirvern/models/controls.py.
+    from weirvern.models import controls as controls_mod  # noqa: PLC0415 -- keep the sweep's import
+    # graph small for callers that only want detection
+    try:
+        checks = controls_mod.run_controls(client)
+    except Exception as exc:  # noqa: BLE001 -- a broken control is a verdict, not a lost sweep
+        checks = [controls_mod.Control("controls", None, f"could not run: {exc}")]
+    if controls_mod.degraded(checks):
+        logger.error("Detection run DEGRADED -- control failed: %s", controls_mod.describe(checks))
+    else:
+        logger.info("Detection controls: %s", controls_mod.describe(checks))
+    _save_controls(settings, checks)
+
     return fresh
 
 

@@ -275,6 +275,16 @@ def main() -> int:
         "present",
     }
 
+    # THE SCOPE ROWS are the third caller-built contract: `scopes.rank_from` returns dict literals
+    # shaped for the host view and the segment view (same keys, different key column), and
+    # controls.py reads them. Reported as phantoms the moment the controls landed -- the names are
+    # real, the table is what does not exist. Pinned by tests/test_scope_profiles.py,
+    # tests/test_scope_segments.py and tests/test_controls.py.
+    SCOPE_ROWS = {
+        "host", "segment", "state", "hour", "bytes", "peers", "ratio",
+        "median_bytes", "p90_bytes", "median_peers",
+    }
+
     phantom: list[str] = []
     for path in SRC:
         if path.suffix != ".py":
@@ -298,6 +308,8 @@ def main() -> int:
             if key in FLEET_PAYLOAD:
                 continue
             if key in SHADOW_ROW:
+                continue
+            if key in SCOPE_ROWS:
                 continue
             if not re.match(r"^[a-z][a-z0-9_]*$", key):
                 continue

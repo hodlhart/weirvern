@@ -455,6 +455,61 @@ def _feed_probe(client, settings=None) -> Probe:
 
 
 
+def _controls_probe(settings) -> Probe:
+    """Did the LAST detection sweep pass its own controls?
+
+    The controls (`weirvern/models/controls.py`) prove, on every cycle, that a 100x departure
+    outranks a larger ordinary transfer and that the widest-peer host stays quiet. The worker
+    writes their verdict beside the detect cursor; this reads it.
+
+    TRI-STATE, and the N/A case matters: no file means the controls have not run -- an image older
+    than this feature, or a worker that has not swept since it started. Reporting that as PASS is
+    exactly the "green because nobody looked" failure the controls exist to prevent.
+
+    STALE IS A FAILURE at three sweep intervals (the sweep is every five minutes): a worker that
+    stopped sweeping is not a worker whose controls passed.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    model_dir = getattr(settings, "model_dir", None)
+    if not model_dir:
+        return Probe("controls", ok=None, value={},
+                     detail="this process has no model directory, so it cannot see the last "
+                            "control verdict (the worker and the GUI both configure one)")
+    path = Path(model_dir) / "detection_controls.json"
+    try:
+        payload = json.loads(path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError("the controls file is not an object")
+    except FileNotFoundError:
+        return Probe("controls", ok=None, value={"path": str(path)},
+                     detail=f"no control verdict at {path}: no detection sweep has recorded one "
+                            "since this worker started (older image, or it has not swept)")
+    except (OSError, ValueError) as exc:
+        return Probe("controls", ok=False, value={"path": str(path)},
+                     detail=f"the control verdict at {path} could not be read: {exc}")
+
+    checks = payload.get("checks") or []
+    failed = [c for c in checks if isinstance(c, dict) and c.get("ok") is False]
+    fresh_s = 3 * 300
+    try:
+        checked = datetime.datetime.fromisoformat(str(payload.get("checked_at")))
+        age = max(0.0, age_seconds(checked))
+    except (TypeError, ValueError):
+        age = float("inf")
+    if age > fresh_s:
+        return Probe("controls", ok=False, value=payload,
+                     detail=f"the last control verdict is {_human_age(age)} old (limit {fresh_s}s, "
+                            "three sweeps): the worker has stopped checking itself")
+    if failed:
+        names = "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in failed)
+        return Probe("controls", ok=False, value=payload,
+                     detail=f"DEGRADED -- {names}")
+    return Probe("controls", ok=True, value=payload,
+                 detail="; ".join(f"{c.get('name')}={c.get('detail')}" for c in checks)
+                        or "both controls passed")
+
+
 def collect_health(client, settings, user_store=None) -> HealthReport:
     """Probe ClickHouse and the pipeline. Never raises.
 
@@ -1128,6 +1183,17 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
         report.add(_feed_probe(client, settings))
     except Exception as exc:  # noqa: BLE001
         _probe_failed(report, "feed", exc, (time.perf_counter() - started) * 1000)
+    if report.probes:
+        report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
+
+    # 10. DID THE DETECTION SWEEP PASS ITS OWN CONTROLS? A run that cannot show a 100x departure
+    # outranking an ordinary transfer is DEGRADED, and the panel should say so rather than leave an
+    # operator to infer it from a calm-looking chart.
+    started = time.perf_counter()
+    try:
+        report.add(_controls_probe(settings))
+    except Exception as exc:  # noqa: BLE001
+        _probe_failed(report, "controls", exc, (time.perf_counter() - started) * 1000)
     if report.probes:
         report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 

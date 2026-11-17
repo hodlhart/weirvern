@@ -102,6 +102,35 @@ def recent_hour(client: Any, *, minutes: int = 60, era: str | None = None) -> di
     return {str(src): {"bytes": int(b or 0), "peers": int(p or 0)} for src, b, p in rows if src}
 
 
+def rank_from(profiles: dict[str, dict[int, dict[str, float]]],
+              recent: dict[str, dict[str, int]], now_hour: int, *, limit: int = 12,
+              key: str = "host") -> list[dict[str, Any]]:
+    """The ranking rule itself, over profiles and a recent window. Pure, so a control can call it.
+
+    Split out of `rank_departures` for one reason: the exfil control has to exercise THE RULE the
+    product uses, not a re-implementation of it. A control that re-implements the thing it checks
+    passes when both are wrong.
+    """
+    out: list[dict[str, Any]] = []
+    for host, now in recent.items():
+        prof = (profiles.get(host) or {}).get(now_hour)
+        if prof is None:
+            out.append({key: host, "state": "new_hour", "hour": now_hour,
+                        "bytes": now["bytes"], "peers": now["peers"], "ratio": None})
+            continue
+        p90 = prof["p90_bytes"] or prof["median_bytes"]
+        ratio = (now["bytes"] / p90) if p90 > 0 else None
+        out.append({key: host, "state": "scored", "hour": now_hour,
+                    "bytes": now["bytes"], "peers": now["peers"],
+                    "median_bytes": prof["median_bytes"], "p90_bytes": prof["p90_bytes"],
+                    "median_peers": prof["median_peers"],
+                    "ratio": round(ratio, 2) if ratio is not None else None})
+    scored = sorted((r for r in out if r["ratio"] is not None),
+                    key=lambda r: r["ratio"], reverse=True)
+    fresh = [r for r in out if r["ratio"] is None]
+    return (scored + fresh)[:int(limit)]
+
+
 def rank_departures(client: Any, *, recent_minutes: int = 60, days: int = DEFAULT_DAYS,
                     era: str | None = None, limit: int = 12) -> list[dict[str, Any]]:
     """Hosts whose last hour is furthest from their own p90 for THIS hour.
@@ -112,24 +141,114 @@ def rank_departures(client: Any, *, recent_minutes: int = 60, days: int = DEFAUL
     profiles = host_hour_profiles(client, days=days, era=era)
     recent = recent_hour(client, minutes=recent_minutes, era=era)
     now_hour = int(client.query("SELECT toHour(now())").result_rows[0][0])
-    out: list[dict[str, Any]] = []
-    for host, now in recent.items():
-        prof = (profiles.get(host) or {}).get(now_hour)
-        if prof is None:
-            out.append({"host": host, "state": "new_hour", "hour": now_hour,
-                        "bytes": now["bytes"], "peers": now["peers"], "ratio": None})
+    return rank_from(profiles, recent, now_hour, limit=limit)
+
+
+def _quantile(values: list[float], q: float) -> float:
+    """Nearest-rank over a small list -- no numpy, and one point is its own p90."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    return float(ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))])
+
+
+def segment_of(host: str, *, bits: int = 24) -> str | None:
+    """The subnet that contains a host, as a network string. None if the address does not parse."""
+    import ipaddress  # noqa: PLC0415
+
+    try:
+        return str(ipaddress.ip_network(f"{host}/{int(bits)}", strict=False))
+    except (ValueError, TypeError):
+        return None
+
+
+def segment_hour_profiles(client: Any, *, bits: int = 24, days: int = DEFAULT_DAYS,
+                          era: str | None = None, recent_minutes: int = 60
+                          ) -> tuple[dict[str, dict[int, dict[str, float]]], dict[str, dict[str, int]]]:
+    """The SAME merged host-window rows, summed into the subnet that contains them.
+
+    WHY A SEGMENT AT ALL, when every host already has a profile. Two reasons that the host view
+    cannot answer. A single host that departs can be a backup, a Steam download, a phone syncing
+    photos; a whole /24 departing at once cannot be any of those, so the segment is the coarse
+    control that keeps the per-host view honest. And a segment is the smallest unit that survives a
+    DHCP churn: the address a host held last week may be someone else's this week, while the subnet
+    keeps its shape (measured on this deployment: 17 monitored hosts across two /24s).
+
+    WHAT IS AGGREGATED AND WHAT IS NOT. Bytes are summed across the hosts of a segment in the same
+    window -- volume is additive. Peers are NOT: `uniqMerge` gives each host its own distinct
+    destination count and the distinct count of the union cannot be recovered from the parts, so
+    the segment carries the WIDEST host's peer count and says so. That is a floor on the segment's
+    true peer diversity, never an overstatement, and it is the number the class work needs anyway
+    (a segment is not "chatty" because three of its hosts each see the same gateway).
+
+    The recent/long split is computed by the DATABASE (`if(window_start >= now() - INTERVAL ...)`),
+    never in Python: comparing a Python clock with a ClickHouse timestamp is the recurring defect
+    that cost a day of detection twice.
+    """
+    era = era or era_start(client, days * 24)
+    rows = _merged(
+        "SELECT src_addr, window_start, toHour(window_start) AS hour, "
+        "       sumMerge(total_bytes) AS bytes, uniqMerge(unique_dst_ips) AS peers, "
+        "       if(window_start >= now() - INTERVAL %(m)s MINUTE, 1, 0) AS recent "
+        "FROM weirvern.flows_window "
+        f"WHERE window_start >= %(era)s AND {_scope(client)} "
+        "GROUP BY src_addr, window_start, hour, recent",
+        client, {"era": era, "m": int(recent_minutes)},
+    )
+    folded: dict[tuple[str, Any], dict[str, Any]] = {}
+    for src, window_start, hour, bytes_, peers, is_recent in rows:
+        segment = segment_of(str(src or ""), bits=bits)
+        if not segment:
             continue
-        p90 = prof["p90_bytes"] or prof["median_bytes"]
-        ratio = (now["bytes"] / p90) if p90 > 0 else None
-        out.append({"host": host, "state": "scored", "hour": now_hour,
-                    "bytes": now["bytes"], "peers": now["peers"],
-                    "median_bytes": prof["median_bytes"], "p90_bytes": prof["p90_bytes"],
-                    "median_peers": prof["median_peers"],
-                    "ratio": round(ratio, 2) if ratio is not None else None})
-    scored = sorted((r for r in out if r["ratio"] is not None),
-                    key=lambda r: r["ratio"], reverse=True)
-    fresh = [r for r in out if r["ratio"] is None]
-    return (scored + fresh)[:int(limit)]
+        slot = folded.setdefault((segment, window_start), {
+            "bytes": 0.0, "peers": 0.0, "hour": int(hour), "recent": False})
+        slot["bytes"] += float(bytes_ or 0)
+        slot["peers"] = max(slot["peers"], float(peers or 0))
+        slot["recent"] = slot["recent"] or bool(is_recent)
+
+    by_hour: dict[str, dict[int, list[tuple[float, float]]]] = {}
+    recent: dict[str, dict[str, int]] = {}
+    for (segment, _window), slot in folded.items():
+        by_hour.setdefault(segment, {}).setdefault(slot["hour"], []).append(
+            (slot["bytes"], slot["peers"]))
+        if slot["recent"]:
+            agg = recent.setdefault(segment, {"bytes": 0, "peers": 0})
+            agg["bytes"] += int(slot["bytes"])
+            agg["peers"] = max(agg["peers"], int(slot["peers"]))
+
+    profiles: dict[str, dict[int, dict[str, float]]] = {}
+    for segment, hours in by_hour.items():
+        for hour, samples in hours.items():
+            profiles.setdefault(segment, {})[hour] = {
+                "median_bytes": _quantile([b for b, _ in samples], 0.5),
+                "p90_bytes": _quantile([b for b, _ in samples], 0.9),
+                "median_peers": _quantile([p for _, p in samples], 0.5),
+            }
+    return profiles, recent
+
+
+def rank_segments(client: Any, *, bits: int = 24, recent_minutes: int = 60,
+                  days: int = DEFAULT_DAYS, era: str | None = None, limit: int = 12
+                  ) -> list[dict[str, Any]]:
+    """Segments whose last hour is furthest from their own p90 for THIS hour."""
+    profiles, recent = segment_hour_profiles(
+        client, bits=bits, days=days, era=era, recent_minutes=recent_minutes)
+    now_hour = int(client.query("SELECT toHour(now())").result_rows[0][0])
+    return rank_from(profiles, recent, now_hour, limit=limit, key="segment")
+
+
+def summarise_segments(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    scored = [r for r in rows if r.get("ratio") is not None]
+    ratios = [r["ratio"] for r in scored]
+    return {
+        "segments_scored": len(scored),
+        "segments_without_history": len(rows) - len(scored),
+        "median_ratio": round(statistics.median(ratios), 2) if ratios else None,
+        "worst_ratio": max(ratios) if ratios else None,
+        "note": "a segment that departs as a whole is not a backup; peers are the widest host's",
+    }
 
 
 def peer_sets(client: Any, *, era: str, hours: int = 24) -> dict[str, set[str]]:

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.23.68 — 2026-11-17
+
+A SWEEP THAT CANNOT SHOW IT IS RIGHT IS NOT A MEASUREMENT.
+
+- **Segment rollup** (`scopes.segment_hour_profiles`, `scopes.rank_segments`): the same merged
+  host-window rows, summed into the /24 that contains them. Bytes are additive; peers are the
+  widest host's, because a distinct count cannot be recovered from its parts -- a floor on the
+  segment's diversity, never an overstatement. One host departing can be a backup; a whole subnet
+  departing cannot be, and a subnet survives the DHCP churn that moves addresses between hosts.
+- **Two controls on every detection sweep** (`weirvern/models/controls.py`): a 100x departure must
+  outrank a larger ordinary transfer (`exfil_fires`), and the host with the widest peer set must
+  not read as anomalous (`umbrel_quiet` -- measured live: 2.18x, sixth of seven, while two ordinary
+  hosts reached 45x and 100x). A failure logs `Detection run DEGRADED` and is written beside the
+  cursor; the window is not re-opened, because it was examined either way.
+- **An eleventh health check** reads the last verdict from `detection_controls.json`: fresh and
+  passing is green, a failed control is red and names it, a verdict older than three sweeps is red,
+  and a worker that never ran the controls is NOT APPLICABLE rather than a silent pass.
+
+Also: `rank_from` is the ranking rule split out as a pure function, so the exfil control exercises
+the product's own rule rather than a re-implementation that passes when both are wrong. Segment
+rollup measured live after deploy: see the handover.
+
 ## 0.23.67 — 2026-11-17
 
 THE HEALTH PANEL COULD NOT TELL A QUIET NETWORK FROM A DEAD TAP.
