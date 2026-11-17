@@ -5712,9 +5712,18 @@ function renderTrainingHistory(hist) {
     svg.appendChild(svgEl("circle", {
       cx: xOf(new Date(last.t).getTime()), cy: yOf(last.n), r: 2.6, fill: colour,
     }));
+    // WHAT EACH NUMBER IS, AND HOW OFTEN IT MOVES (2026-11-17). `training_sample_count` means a
+    // different thing per model: for the three sampled detectors it is rows drawn from the
+    // training window (capped at 80k/40k/5k), and for the Adaptive Baseline it is the number of
+    // PER-HOST baselines it just rebuilt (23 hosts, not 23 samples). The baseline also refreshes
+    // every detection cycle with a 24h window while the others retrain every 6h over 72h, so one
+    // line in this chart had 191 points against the others' 4 and its y-value was a different
+    // quantity on the same axis. The chart said "samples per retrain" for all four.
+    const unit = name === "Adaptive Baseline" ? "host baselines" : "samples";
+    const cadence = name === "Adaptive Baseline" ? ", every cycle" : "";
     legend.appendChild(el("span", { class: "legend-item" }, [
       el("span", { class: "legend-swatch", attrs: { style: `background:${colour}` } }),
-      el("span", { text: `${name} — last ${last.n} samples, ${pts.length} run(s)` }),
+      el("span", { text: `${name} — last ${last.n} ${unit}, ${pts.length} run(s)${cadence}` }),
     ]));
   }
   host.appendChild(svg);

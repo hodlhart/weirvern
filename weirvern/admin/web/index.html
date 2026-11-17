@@ -810,9 +810,15 @@
     <div class="card">
       <h2>Training history <span class="muted">samples per retrain</span> <button class="info-btn" data-info="m-history-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-history-info">
-  <p><strong>What it is.</strong> Each line is one detector over time.</p>
-  <p><strong>What writes it.</strong> Retrains, as samples accumulate.</p>
-  <p><strong>Last changed.</strong> A rising line means the training window is filling; flat means it is already full.</p>
+  <p><strong>What it is.</strong> Each line is one detector over time. The three sampled detectors
+  draw from a 72h training window every 6h and the line shows how many rows they sampled, capped at
+  80k (Isolation Forest), 40k (Gradient Boosting) and 5k (DBSCAN) &mdash; a flat line means the window
+  is already full.</p>
+  <p><strong>The Adaptive Baseline is a different quantity.</strong> It rebuilds per-host baselines
+  from the last 24h on every detection cycle, so its line is the number of HOSTS it just baselined
+  (tens, not thousands) and it has far more points than the others. It is on this chart because its
+  age belongs beside theirs, not because its y-value is comparable.</p>
+  <p><strong>What writes it.</strong> Every retrain, whether cadence or operator-triggered.</p>
   <p><strong>Where to see it.</strong> This chart, and the freshness note on the Models card above.</p>
 </div>
       <div id="m-history" class="chart"></div>

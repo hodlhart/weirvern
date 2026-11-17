@@ -2311,6 +2311,53 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
   }
 
+
+  // ── THE TRAINING HISTORY NAMES WHAT EACH LINE COUNTS (2026-11-17) ────────────────────────────
+  //
+  // Measured on the live Models tab: the chart said "samples per retrain" for four lines, and one
+  // of them was not samples. `training_sample_count` is rows drawn for Isolation Forest (80k cap),
+  // Gradient Boosting (40k) and DBSCAN (5k), but for the Adaptive Baseline it is the number of
+  // PER-HOST baselines it just rebuilt -- 23 hosts against 80,000 rows on one log axis -- and that
+  // model refreshes every detection cycle over 24h instead of every 6h over 72h, so it carried 191
+  // points where the others had 4. A reader comparing the lines was comparing nothing.
+  {
+    const origFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (/\/api\/models\?/.test(String(u)))
+        return Promise.resolve({ ok: true, json: async () => ({
+          available: true, summary: "4 runs", points: [], staleness: [],
+          retrain_interval_h: 6,
+          training_history: {
+            "Isolation Forest": [
+              { t: "2026-11-17T06:04:00-06:00", n: 80000, w: 1.0, metrics: {} },
+              { t: "2026-11-17T08:04:00-06:00", n: 80000, w: 1.0, metrics: {} },
+            ],
+            "Adaptive Baseline": [
+              { t: "2026-11-17T08:00:00-06:00", n: 22, w: 1.0, metrics: {} },
+              { t: "2026-11-17T08:04:00-06:00", n: 23, w: 1.0, metrics: {} },
+            ],
+          },
+          scores: {}, model_counts: {}, feature_deviations: [], baselines: {} }) });
+      return origFetch(u, o);
+    };
+    H.clearGetCache();
+    H.showView("models");
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 150));
+    window.fetch = origFetch;
+    H.clearGetCache();
+
+    const legend = doc.getElementById("m-history-legend");
+    const text = legend ? legend.textContent : "";
+    check("the training history legend says what the sampled detectors count",
+          /Isolation Forest — last 80000 samples/.test(text), text || "no legend");
+    check("...and does not call the baseline's host count 'samples'",
+          /Adaptive Baseline — last 23 host baselines/.test(text) && !/Adaptive Baseline[^·]*samples/.test(text),
+          text || "no legend");
+    check("...and names the baseline's different cadence",
+          /every cycle/.test(text), text || "no legend");
+  }
+
   // ── THE ADAPTIVE BASELINE CARD (AB-1) ───────────────────────────────────────────────────────
   {
     H.showView("models");
