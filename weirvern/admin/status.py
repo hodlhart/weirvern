@@ -16,6 +16,7 @@ import ipaddress
 import json
 import logging
 import re
+import statistics
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -276,18 +277,41 @@ def _capture_probe(settings) -> Probe:
 # How thin a window can be before the answer is "not enough traffic to judge" rather than a verdict.
 # Measured on this deployment 2026-11-17: a live LAN produced ~300 rows/hour of BROADCAST noise with
 # zero unicast, so twenty rows is well under a minute of a healthy mirror and well over the trickle a
-# dead one leaves. Below it the probe reports NOT APPLICABLE rather than a pass.
+# dead one leaves. Below it, and with no history to compare against, the probe reports NOT
+# APPLICABLE rather than a pass.
 FEED_MIN_ROWS = 20
 # Rows older than this mean the ingester has stopped even though the tap is producing.
 FEED_STALE_S = 600
+# A feed that has fallen to this fraction of its own trailing baseline for the same hours is not
+# quiet, it is gone. Measured: the collapse read 1,389 aggregate rows against a same-hours median of
+# 10,392,847 (0.01%), with 11 hosts against 3,717. One percent is far below any real diurnal swing
+# (the busiest and quietest hours of a live LAN differ by about 3x) and far above zero.
+FEED_COLLAPSE_SHARE = 0.01
+# The baseline is only meaningful when there is something to have collapsed FROM.
+FEED_MIN_BASELINE = 1000
 
 
-def classify_feed(rows: int, unicast: int, newest_age_s: float) -> tuple[str, bool | None, str]:
+def classify_feed(rows: int, unicast: int, newest_age_s: float,
+                  recent_rows: int | None = None, baseline_rows: float | None = None,
+                  recent_hosts: int = 0, baseline_hosts: float = 0.0) -> tuple[str, bool | None, str]:
     """The decision table for `_feed_probe`, pure so every branch is testable without a database.
 
-    Returns `(state, ok, reason)` where `state` is one of `no_data`, `stale`, `broadcast_only`,
-    `thin`, or `flowing`. The reason is written for a person reading the health panel, and it names
-    the measurement that produced the verdict.
+    Returns `(state, ok, reason)` where `state` is one of `no_data`, `stale`, `collapsed`,
+    `broadcast_only`, `thin`, or `flowing`.
+
+    ── WHY THE BASELINE DECIDES, AND THE UNICAST SHARE ONLY ADVISES ────────────────────────────────
+
+    The first version of this test asked whether any flow had a unicast destination, on the theory
+    that a dead mirror sees only broadcast noise. The live box refuted it within the hour: the
+    starving feed still carried 47 unicast flows of 322 (14.6%), because a handful of hosts renew
+    DHCP and answer ARP. A share threshold low enough to catch the outage would have to be near
+    zero, and near zero is also what a genuinely idle segment looks like at 4am.
+
+    What cannot be mistaken is the feed's own history. A LAN does not fall to one percent of itself
+    for seven days running and stay there; a capture port that stopped being mirrored does exactly
+    that, because the noise floor keeps producing rows. So the verdict compares today's aggregate,
+    for the hours elapsed, against the same hours on the previous seven days, and the unicast share
+    rides along in the detail as the explanation rather than the trigger.
     """
     if rows <= 0:
         return ("no_data", False,
@@ -298,21 +322,23 @@ def classify_feed(rows: int, unicast: int, newest_age_s: float) -> tuple[str, bo
                 f"the newest flow is {_human_age(newest_age_s)} old (limit {FEED_STALE_S}s): rows "
                 "exist, but nothing is arriving")
     share = unicast / rows if rows else 0.0
-    if rows >= FEED_MIN_ROWS and unicast == 0:
-        return ("broadcast_only", False,
-                f"{rows} flow(s) in the last hour and NOT ONE to a unicast destination "
-                f"({share * 100:.1f}% unicast). A capture port that has stopped receiving the "
-                "network's unicast traffic looks exactly like an idle network: it still sees "
-                "broadcast and multicast (mDNS, ARP, router beacons), so the tap reports running "
-                "and the tables keep growing. Check the switch mirror/SPAN session and that this "
-                "NIC is its destination port.")
-    if rows < FEED_MIN_ROWS:
+    kind = (f"{rows} flow(s) in the last hour, {share * 100:.1f}% to a unicast destination, "
+            f"newest {_human_age(newest_age_s)} old")
+    if (baseline_rows is not None and baseline_rows >= FEED_MIN_BASELINE
+            and recent_rows is not None and recent_rows < baseline_rows * FEED_COLLAPSE_SHARE):
+        ratio = (recent_rows / baseline_rows) if baseline_rows else 0.0
+        return ("collapsed", False,
+                f"the feed has collapsed: {recent_rows:,} aggregate row(s) so far today against a "
+                f"median of {baseline_rows:,.0f} for the same hours on the previous seven days "
+                f"({ratio * 100:.2f}%), and {recent_hosts:,} host(s) against {baseline_hosts:,.0f}. "
+                f"{kind}. The tap is alive and the rows are fresh, so this is not a quiet network "
+                "and not a stopped ingester: the capture port has stopped receiving the traffic. "
+                "Check the switch mirror/SPAN session and that this NIC is its destination port.")
+    if rows < FEED_MIN_ROWS and baseline_rows is None:
         return ("thin", None,
-                f"only {rows} flow(s) in the last hour, {unicast} unicast: too little traffic to "
-                "judge whether the capture port is carrying the network")
-    return ("flowing", True,
-            f"{rows} flow(s) in the last hour, {unicast} to unicast destinations "
-            f"({share * 100:.1f}%); newest {_human_age(newest_age_s)} old")
+                f"only {rows} flow(s) in the last hour and no history to compare against: too "
+                "little to judge whether the capture port is carrying the network")
+    return ("flowing", True, kind)
 
 
 def _feed_probe(client) -> Probe:
@@ -327,14 +353,12 @@ def _feed_probe(client) -> Probe:
     multicast group -- so the tables kept growing, the graphs kept drawing, and the panel stayed
     green.
 
-    Liveness cannot see this and freshness cannot either: the rows ARE fresh. What distinguishes a
-    quiet network from a port that is no longer mirrored is WHAT KIND of traffic arrives. On a live
-    LAN almost every flow has a unicast destination; on a dead mirror none do, while the noise
-    floor continues. That is one query and it is the difference between "nothing happened" and
-    "we were not looking".
+    Liveness cannot see this and freshness cannot either: the rows ARE fresh. What separates a
+    quiet network from a port that is no longer mirrored is the feed's own recent history. That is
+    what this measures, and the unicast share it also reports is the explanation, not the trigger.
 
-    One query over the last hour, because a minute is too short to judge a quiet LAN and an hour
-    still fails fast enough to matter.
+    TWO QUERIES, both cheap by construction: the raw store over the last hour (one filtered scan)
+    and the aggregate over eight days (a daily rollup the panel already reads elsewhere).
     """
     from weirvern.addressing import sql_host  # noqa: PLC0415
 
@@ -355,10 +379,41 @@ def _feed_probe(client) -> Probe:
         # A table that does not exist yet is a young deployment, not a broken capture.
         return Probe("feed", ok=None, value={"error": str(exc)},
                      detail=f"the feed could not be read, so the capture port was not judged: {exc}")
-    state, ok, reason = classify_feed(rows, unicast, age_s)
+
+    # THE SAME HOURS ON THE PREVIOUS SEVEN DAYS. Exact, not extrapolated: each day is cut at the
+    # current hour, so a partial day cannot be mistaken for a collapse early in the morning.
+    recent_rows: int | None = None
+    baseline_rows: float | None = None
+    recent_hosts = 0
+    baseline_hosts = 0.0
+    try:
+        series = client.query(
+            "SELECT toDate(window_start) AS day, count(), uniqExact(src_addr) "  # noqa: S608
+            "FROM weirvern.flows_aggregated "
+            "WHERE window_start >= toStartOfDay(now()) - INTERVAL 7 DAY "
+            "AND (toDate(window_start) < toDate(now()) OR toHour(window_start) <= toHour(now())) "
+            "GROUP BY day ORDER BY day"
+        ).result_rows
+        today = datetime.date.today()
+        prior = [r for r in series if getattr(r[0], "year", None) and r[0] < today]
+        todays = [r for r in series if getattr(r[0], "year", None) and r[0] == today]
+        if todays:
+            recent_rows = int(todays[-1][1] or 0)
+            recent_hosts = int(todays[-1][2] or 0)
+        if prior:
+            baseline_rows = float(statistics.median([int(r[1] or 0) for r in prior]))
+            baseline_hosts = float(statistics.median([int(r[2] or 0) for r in prior]))
+    except Exception as exc:  # noqa: BLE001
+        # The baseline is an aid, not the measurement: losing it must not lose the probe.
+        logger.debug("feed baseline unavailable: %s", exc)
+
+    state, ok, reason = classify_feed(rows, unicast, age_s, recent_rows, baseline_rows,
+                                      recent_hosts, baseline_hosts)
     return Probe("feed", ok=ok, detail=reason, latency_ms=(time.perf_counter() - started) * 1000,
                  value={"state": state, "rows": rows, "unicast": unicast,
-                        "host_pairs": host_pairs, "newest_age_s": age_s})
+                        "host_pairs": host_pairs, "newest_age_s": age_s,
+                        "recent_rows": recent_rows, "baseline_rows": baseline_rows,
+                        "recent_hosts": recent_hosts, "baseline_hosts": baseline_hosts})
 
 
 

@@ -937,44 +937,74 @@ def test_capture_probe_FAILS_on_a_corrupt_state_file(tmp_path, monkeypatch):
 # a multicast group, and nothing else. Flows had fallen from 12.4M an hour to about 300. Every probe
 # in this report read green, because "alive" was the question and the tap was very much alive.
 #
-# The rows were FRESH too, so a freshness check could not have caught it either. What separates a
-# quiet network from a port that is no longer mirrored is the KIND of traffic, which is one query
-# and the reason `classify_feed` exists.
+# The first version of this check asked whether ANY flow had a unicast destination, and the box
+# refuted it within the hour: the starving feed still carried 47 unicast flows of 322 (14.6%),
+# because a handful of hosts renew DHCP and answer ARP. The verdict therefore comes from the feed's
+# own history -- today's aggregate for the hours elapsed against the same hours on prior days -- and
+# the unicast share rides along as the explanation.
 
-def _feed(rows, unicast, host_pairs=0, age=5):
-    """The single row `_feed_probe` selects, keyed by the fragment its SQL contains."""
-    return {"INTERVAL 60 MINUTE": [(rows, unicast, host_pairs, age)]}
+def _feed(rows=322, unicast=47, host_pairs=0, age=5, *, today_rows=None, today_hosts=11,
+          history=None, history_hosts=3717):
+    """The two rows the feed probe reads: the last hour of raw flows, and the daily aggregate."""
+    import datetime as _d
+
+    today = _d.date.today()
+    series = []
+    items = list(history or [])
+    for i, n in enumerate(items):
+        series.append((today - _d.timedelta(days=len(items) - i), n, history_hosts))
+    if today_rows is not None:
+        series.append((today, today_rows, today_hosts))
+    return {"INTERVAL 60 MINUTE": [(rows, unicast, host_pairs, age)],
+            "flows_aggregated": series}
 
 
-def test_feed_probe_FAILS_when_the_port_carries_only_BROADCAST():
-    """The measured outage: 312 noise flows in an hour and not one to a real destination."""
-    p = _probe("feed", by_fragment=_feed(312, 0, 0, 8))
+def _feed_with_history(today_rows, median_rows, **kw):
+    """A seven-day history whose median is `median_rows`, with `today_rows` so far today."""
+    return _feed(today_rows=today_rows, history=[median_rows] * 7, **kw)
+
+
+def test_feed_probe_FAILS_when_the_feed_COLLAPSED_against_its_own_history():
+    """The measured outage: 1,389 aggregate rows today against a same-hours median of 10,392,847,
+    and 11 hosts against 3,717, while the tap reported running and the rows were fresh."""
+    p = _probe("feed", by_fragment=_feed_with_history(1389, 10_392_847,
+                                                      today_hosts=11, history_hosts=3717))
     assert p is not None, "the feed probe did not run, so a dead mirror would read healthy again"
-    assert p.ok is False, f"broadcast-only traffic was reported healthy: {p.detail!r}"
-    assert p.value["state"] == "broadcast_only", p.value
+    assert p.ok is False, f"a collapsed feed was reported healthy: {p.detail!r}"
+    assert p.value["state"] == "collapsed", p.value
+    assert "1,389" in p.detail and "10,392,847" in p.detail, p.detail
     assert "mirror" in p.detail.lower(), f"the detail must name what to check: {p.detail!r}"
-    assert "312" in p.detail, f"the detail must carry the measurement: {p.detail!r}"
 
 
-def test_feed_probe_PASSES_on_a_feed_that_carries_the_network():
-    p = _probe("feed", by_fragment=_feed(48_213, 47_902, 11_003, 4))
+def test_feed_probe_does_NOT_fail_on_a_LOW_UNICAST_SHARE_alone():
+    """The live refutation, pinned: 47 of 322 flows were unicast on the starving feed. A share
+    threshold low enough to catch the outage would also fire on a genuinely idle segment, so the
+    share must NOT be what decides."""
+    p = _probe("feed", by_fragment=_feed_with_history(10_400_000, 10_392_847))
+    assert p is not None
+    assert p.ok is True, f"a healthy feed was failed on its unicast share: {p.detail!r}"
+    assert p.value["state"] == "flowing", p.value
+    assert p.value["unicast"] == 47, p.value
+
+
+def test_feed_probe_PASSES_when_the_feed_matches_its_history():
+    p = _probe("feed", by_fragment=_feed_with_history(9_800_000, 10_392_847))
     assert p is not None
     assert p.ok is True, p.detail
     assert p.value["state"] == "flowing", p.value
-    assert p.value["host_pairs"] == 11_003, p.value
 
 
-def test_feed_probe_is_NOT_APPLICABLE_when_the_window_is_too_thin_to_judge():
-    """Five flows in an hour is a quiet LAN, not evidence about the mirror. Saying `False` here
-    would make every small deployment report a fault it does not have."""
-    p = _probe("feed", by_fragment=_feed(5, 1, 0, 30))
+def test_feed_probe_is_NOT_APPLICABLE_when_thin_and_there_is_NO_history():
+    """Five flows in an hour on a young deployment is not evidence about the mirror. Saying
+    `False` here would make every small deployment report a fault it does not have."""
+    p = _probe("feed", by_fragment=_feed(5, 1, today_rows=None, history=None))
     assert p is not None
     assert p.ok is None, f"a five-row window was judged: ok={p.ok}, {p.detail!r}"
     assert p.value["state"] == "thin", p.value
 
 
 def test_feed_probe_FAILS_when_NOTHING_arrives():
-    p = _probe("feed", by_fragment=_feed(0, 0, 0, 0))
+    p = _probe("feed", by_fragment=_feed(0, 0, today_rows=None, history=None))
     assert p is not None
     assert p.ok is False
     assert p.value["state"] == "no_data", p.value
@@ -983,7 +1013,7 @@ def test_feed_probe_FAILS_when_NOTHING_arrives():
 def test_feed_probe_FAILS_when_the_rows_are_STALE_even_though_they_exist():
     """Rows present, newest an hour old: the ingester stopped. This is the F024 shape (row
     existence read as freshness) in the flow store."""
-    p = _probe("feed", by_fragment=_feed(400, 390, 0, 3600))
+    p = _probe("feed", by_fragment=_feed_with_history(10_000_000, 10_392_847, age=3600))
     assert p is not None
     assert p.ok is False, f"an hour-old flow was reported as a live feed: {p.detail!r}"
     assert p.value["state"] == "stale", p.value
@@ -1003,4 +1033,22 @@ def test_the_feed_probe_is_present_EVEN_when_it_cannot_read_the_store():
     assert p is not None, "the feed probe vanished when it could not measure, which reads as a pass"
     assert p.ok is None, p.ok
     assert "Unknown identifier" in p.detail, p.detail
+
+
+def test_the_feed_probe_survives_a_missing_aggregate_table():
+    """`flows_aggregated` may not exist on a young deployment. Losing the baseline must not lose
+    the probe: it must still report what the raw feed carries."""
+    class _NoAggregate(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "flows_aggregated" in sql:
+                raise RuntimeError("Code: 60. Table weirvern.flows_aggregated doesn't exist")
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(
+        _NoAggregate({"INTERVAL 60 MINUTE": [(30_000, 29_500, 1_200, 3)]}), _settings())
+    p = next((x for x in report.probes if x.name == "feed"), None)
+    assert p is not None
+    assert p.ok is True, f"a live feed was failed because its baseline table was missing: {p.detail!r}"
+    assert p.value["baseline_rows"] is None, p.value
+
 
