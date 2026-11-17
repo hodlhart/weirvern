@@ -169,7 +169,11 @@ spec:
           # unit that actually relays traffic and the one whose flow records matter most. A
           # base unit with WEIRLING_NETFLOW=1 and an active plan would log the tap's refusal
           # ("socket: Operation not permitted") and collect nothing -- visible, not silent.
-          image: weirvern-worker:0.13.0
+          # THE RELEASE TAG, NOT A SHA. `deploy-weirling.sh` overwrites this pin with whatever the
+          # hub is RUNNING (it reads the live Deployment), so this value only matters when the
+          # template is applied by hand -- and then it must name a real image. It said 0.13.0 long
+          # after the hub had moved on, which would have given a hand-built unit the pre-tap agent.
+          image: weirvern-worker:0.23.66
           command: ["python3", "-m", "weirvern.admin.sensor_agent"]
           env:
             - name: SENSOR_ID
@@ -230,7 +234,7 @@ spec:
         # NET_ADMIN is the whole job -- installing a ruleset on the host's own interfaces, which
         # is why it shares the host network like the capture container. Everything else is dropped.
         - name: gate
-          image: weirvern-worker:0.13.0
+          image: weirvern-worker:0.23.66
           command: ["python3", "-m", "weirvern.worker"]
           env:
             - name: WEIRVERN_ROLE
