@@ -63,9 +63,9 @@ def test_ranking_is_stable_on_identical_keys():
 
 
 def test_measure_counts_only_attackers_in_the_top_twenty():
-    attackers = {"10.0.0.1", "10.0.0.2"}
-    verdicts = [verdict("10.0.0.1", "critical", 0.9), verdict("10.0.0.9", "critical", 0.9),
-                verdict("10.0.0.2", "high", 0.8)]
+    attackers = {"198.51.100.1", "198.51.100.2"}
+    verdicts = [verdict("198.51.100.1", "critical", 0.9), verdict("198.51.100.9", "critical", 0.9),
+                verdict("198.51.100.2", "high", 0.8)]
     result = mod.measure(verdicts, attack_hosts=attackers,
                          scenario_rows=[scenario(True, 4.0)], minutes=300)
     assert result["top20_size"] == 3
@@ -103,7 +103,7 @@ def test_a_detection_in_the_attacks_own_bucket_is_five_minutes_not_zero():
 def test_measure_says_unknown_rather_than_zero():
     # "no verdicts" and "perfectly quiet" are different states. Returning 0.0 for precision on
     # an empty ranking would read as a catastrophic score instead of an absent measurement.
-    result = mod.measure([], attack_hosts={"10.0.0.1"}, scenario_rows=[], minutes=300)
+    result = mod.measure([], attack_hosts={"198.51.100.1"}, scenario_rows=[], minutes=300)
     assert result["precision_at_20"] is None
     assert result["time_to_detect_min"] is None
     assert result["canary_recall"] is None
