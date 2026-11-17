@@ -14,20 +14,42 @@
 # INVARIANT instead: an address-shaped token must still parse after the scrub, and the count of
 # such tokens must not change. A scrub that eats an octet breaks the first; one that drops a
 # token breaks the second.
+#
+# THE SCRUB RUNS IN A DETACHED WORKTREE, NOT IN THE REPOSITORY UNDER TEST (measured 2026-11-17).
+# This script used to run `--write` in place, so VERIFYING the scrubber MUTATED the tree: a gate
+# run rewrote tests/test_scorecard.py from 10.0.0.x to 198.51.100.x while the gate was deciding
+# whether to push it. Two consequences, both bad. A failed gate left the repository altered, so
+# the next run judged different content than the run before it; and a scrub wide enough to touch
+# a real defect would have "fixed" the very file the gate had just rejected, turning a failing
+# check into a passing one without a human reading the change. A check that edits the subject
+# cannot report on it. `git worktree add --detach` gives the scrub a real checkout at HEAD --
+# what the push will publish -- and `trap` removes it on every exit path.
 set -u
-cd "$(dirname "$0")/.." || exit 1
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT" || exit 1
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/wv-sanitize.XXXXXX") || exit 1
+cleanup() {
+    git worktree remove --force "$WORK" >/dev/null 2>&1 || rm -rf "$WORK"
+}
+trap cleanup EXIT INT TERM
+if ! git worktree add --detach "$WORK" HEAD >/dev/null 2>&1; then
+    echo "FAIL: could not create a scratch worktree at HEAD"
+    exit 1
+fi
 
 echo "=== snapshot address-shaped tokens BEFORE ==="
-python3 - <<'EOF' > /tmp/sanitize_before.txt
-import re, subprocess, pathlib
+python3 - "$WORK" <<'EOF' > /tmp/sanitize_before.txt
+import re, subprocess, pathlib, sys
+root = pathlib.Path(sys.argv[1])
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 NET = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
-out = subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split()
+out = subprocess.run(["git","ls-files"], cwd=root, capture_output=True, text=True).stdout.split()
 for rel in out:
     if pathlib.Path(rel).suffix.lower() in {".png",".ico",".jpg",".pdf",".zip"}:
         continue
     try:
-        t = pathlib.Path(rel).read_text(errors="replace")
+        t = (root / rel).read_text(errors="replace")
     except Exception:
         continue
     for m in list(IP.finditer(t)) + list(NET.finditer(t)):
@@ -36,14 +58,15 @@ EOF
 wc -l < /tmp/sanitize_before.txt | sed 's/^/  tokens: /'
 
 echo
-echo "=== scrub ==="
-python3 -m weirvern.tools.sanitize_identifiers --write | tail -2
+echo "=== scrub (in the scratch worktree) ==="
+( cd "$WORK" && python3 -m weirvern.tools.sanitize_identifiers --write ) | tail -2
 
 echo
 echo "=== 1. every address-shaped token must still PARSE ==="
-python3 - <<'EOF'
+python3 - "$WORK" <<'EOF'
 import ipaddress, re, subprocess, pathlib, sys
 
+root = pathlib.Path(sys.argv[1])
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 # Tokens that were ALREADY unparseable BEFORE the scrub. A value written on purpose to be invalid
@@ -67,12 +90,12 @@ except OSError:
     pass
 
 bad = []
-out = subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split()
+out = subprocess.run(["git","ls-files"], cwd=root, capture_output=True, text=True).stdout.split()
 for rel in out:
     if pathlib.Path(rel).suffix.lower() in {".png",".ico",".jpg",".pdf",".zip"}:
         continue
     try:
-        t = pathlib.Path(rel).read_text(errors="replace")
+        t = (root / rel).read_text(errors="replace")
     except Exception:
         continue
     for m in IP.finditer(t):
@@ -103,17 +126,18 @@ PARSE=$?
 
 echo
 echo "=== 2. no address-shaped token was DROPPED ==="
-python3 - <<'EOF'
-import re, subprocess, pathlib
+python3 - "$WORK" <<'EOF'
+import re, subprocess, pathlib, sys
+root = pathlib.Path(sys.argv[1])
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 NET = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
-out = subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split()
+out = subprocess.run(["git","ls-files"], cwd=root, capture_output=True, text=True).stdout.split()
 after = []
 for rel in out:
     if pathlib.Path(rel).suffix.lower() in {".png",".ico",".jpg",".pdf",".zip"}:
         continue
     try:
-        t = pathlib.Path(rel).read_text(errors="replace")
+        t = (root / rel).read_text(errors="replace")
     except Exception:
         continue
     for m in list(IP.finditer(t)) + list(NET.finditer(t)):
@@ -142,7 +166,7 @@ else
 fi
 
 echo
-echo "=== 4. the guard reports nothing ==="
+echo "=== 4. the guard reports nothing in the tree that will be pushed ==="
 python3 -m weirvern.tools.sanitize_identifiers --check | tail -2
 CHECK=$(python3 -m weirvern.tools.sanitize_identifiers --check >/dev/null 2>&1; echo $?)
 
