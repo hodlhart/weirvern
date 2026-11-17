@@ -819,8 +819,14 @@ def test_the_volume_evidence_uses_the_REAL_flows_column():
 
     class _Rec(_StubClient):
         def query(self, sql, *a, **kw):
-            if "FROM weirvern.flows" in sql:
-                seen["sql"] = sql
+            # THE FIRST TIME-FILTERED READER WINS. The bare `SELECT count() FROM weirvern.flows`
+            # that the key-table probe makes has no WHERE clause (and asks nothing about time), so
+            # it cannot stand in for the volume evidence; the feed probe that now also reads this
+            # table asks about time_flow_start and runs LAST, so `setdefault` keeps the volume
+            # query. Keeping the last would let that later reader satisfy this assertion while
+            # testing nothing it exists to pin.
+            if "FROM weirvern.flows WHERE" in sql:
+                seen.setdefault("sql", sql)
             return super().query(sql, *a, **kw)
 
     report = status.collect_health(_Rec({"FROM weirvern.flows": [(18430, 12)]}), _settings())
@@ -921,3 +927,80 @@ def test_capture_probe_FAILS_on_a_corrupt_state_file(tmp_path, monkeypatch):
     p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
     assert p.ok is False
     assert "could not be read" in p.detail, p.detail
+
+
+# ── the feed probe: A LIVE TAP ON A DEAD MIRROR ────────────────────────────────────────────────
+#
+# MEASURED 2026-11-17, on the live box. The tap had been publishing state every tick for hours,
+# `running: true`, 286 segments summarised, ring healthy -- and its capture port was receiving
+# 163 packets in 45 seconds of which 0.0% were unicast: mDNS from the gateway and router beacons to
+# a multicast group, and nothing else. Flows had fallen from 12.4M an hour to about 300. Every probe
+# in this report read green, because "alive" was the question and the tap was very much alive.
+#
+# The rows were FRESH too, so a freshness check could not have caught it either. What separates a
+# quiet network from a port that is no longer mirrored is the KIND of traffic, which is one query
+# and the reason `classify_feed` exists.
+
+def _feed(rows, unicast, host_pairs=0, age=5):
+    """The single row `_feed_probe` selects, keyed by the fragment its SQL contains."""
+    return {"INTERVAL 60 MINUTE": [(rows, unicast, host_pairs, age)]}
+
+
+def test_feed_probe_FAILS_when_the_port_carries_only_BROADCAST():
+    """The measured outage: 312 noise flows in an hour and not one to a real destination."""
+    p = _probe("feed", by_fragment=_feed(312, 0, 0, 8))
+    assert p is not None, "the feed probe did not run, so a dead mirror would read healthy again"
+    assert p.ok is False, f"broadcast-only traffic was reported healthy: {p.detail!r}"
+    assert p.value["state"] == "broadcast_only", p.value
+    assert "mirror" in p.detail.lower(), f"the detail must name what to check: {p.detail!r}"
+    assert "312" in p.detail, f"the detail must carry the measurement: {p.detail!r}"
+
+
+def test_feed_probe_PASSES_on_a_feed_that_carries_the_network():
+    p = _probe("feed", by_fragment=_feed(48_213, 47_902, 11_003, 4))
+    assert p is not None
+    assert p.ok is True, p.detail
+    assert p.value["state"] == "flowing", p.value
+    assert p.value["host_pairs"] == 11_003, p.value
+
+
+def test_feed_probe_is_NOT_APPLICABLE_when_the_window_is_too_thin_to_judge():
+    """Five flows in an hour is a quiet LAN, not evidence about the mirror. Saying `False` here
+    would make every small deployment report a fault it does not have."""
+    p = _probe("feed", by_fragment=_feed(5, 1, 0, 30))
+    assert p is not None
+    assert p.ok is None, f"a five-row window was judged: ok={p.ok}, {p.detail!r}"
+    assert p.value["state"] == "thin", p.value
+
+
+def test_feed_probe_FAILS_when_NOTHING_arrives():
+    p = _probe("feed", by_fragment=_feed(0, 0, 0, 0))
+    assert p is not None
+    assert p.ok is False
+    assert p.value["state"] == "no_data", p.value
+
+
+def test_feed_probe_FAILS_when_the_rows_are_STALE_even_though_they_exist():
+    """Rows present, newest an hour old: the ingester stopped. This is the F024 shape (row
+    existence read as freshness) in the flow store."""
+    p = _probe("feed", by_fragment=_feed(400, 390, 0, 3600))
+    assert p is not None
+    assert p.ok is False, f"an hour-old flow was reported as a live feed: {p.detail!r}"
+    assert p.value["state"] == "stale", p.value
+
+
+def test_the_feed_probe_is_present_EVEN_when_it_cannot_read_the_store():
+    """A missing row is indistinguishable from a passing one (F047). A store that cannot be read
+    must still produce the row, with `ok=None` and the error named."""
+    class _Unreadable(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "INTERVAL 60 MINUTE" in sql:
+                raise RuntimeError("Code: 47. Unknown identifier time_flow_start")
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_Unreadable({}), _settings())
+    p = next((x for x in report.probes if x.name == "feed"), None)
+    assert p is not None, "the feed probe vanished when it could not measure, which reads as a pass"
+    assert p.ok is None, p.ok
+    assert "Unknown identifier" in p.detail, p.detail
+

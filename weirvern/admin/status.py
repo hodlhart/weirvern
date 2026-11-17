@@ -273,6 +273,95 @@ def _capture_probe(settings) -> Probe:
     return Probe("capture", ok=True, value=state, detail=f"tapping {summary}")
 
 
+# How thin a window can be before the answer is "not enough traffic to judge" rather than a verdict.
+# Measured on this deployment 2026-11-17: a live LAN produced ~300 rows/hour of BROADCAST noise with
+# zero unicast, so twenty rows is well under a minute of a healthy mirror and well over the trickle a
+# dead one leaves. Below it the probe reports NOT APPLICABLE rather than a pass.
+FEED_MIN_ROWS = 20
+# Rows older than this mean the ingester has stopped even though the tap is producing.
+FEED_STALE_S = 600
+
+
+def classify_feed(rows: int, unicast: int, newest_age_s: float) -> tuple[str, bool | None, str]:
+    """The decision table for `_feed_probe`, pure so every branch is testable without a database.
+
+    Returns `(state, ok, reason)` where `state` is one of `no_data`, `stale`, `broadcast_only`,
+    `thin`, or `flowing`. The reason is written for a person reading the health panel, and it names
+    the measurement that produced the verdict.
+    """
+    if rows <= 0:
+        return ("no_data", False,
+                "no flow rows in the last hour: the store is not receiving anything, so every "
+                "flow-based view is empty rather than quiet")
+    if newest_age_s > FEED_STALE_S:
+        return ("stale", False,
+                f"the newest flow is {_human_age(newest_age_s)} old (limit {FEED_STALE_S}s): rows "
+                "exist, but nothing is arriving")
+    share = unicast / rows if rows else 0.0
+    if rows >= FEED_MIN_ROWS and unicast == 0:
+        return ("broadcast_only", False,
+                f"{rows} flow(s) in the last hour and NOT ONE to a unicast destination "
+                f"({share * 100:.1f}% unicast). A capture port that has stopped receiving the "
+                "network's unicast traffic looks exactly like an idle network: it still sees "
+                "broadcast and multicast (mDNS, ARP, router beacons), so the tap reports running "
+                "and the tables keep growing. Check the switch mirror/SPAN session and that this "
+                "NIC is its destination port.")
+    if rows < FEED_MIN_ROWS:
+        return ("thin", None,
+                f"only {rows} flow(s) in the last hour, {unicast} unicast: too little traffic to "
+                "judge whether the capture port is carrying the network")
+    return ("flowing", True,
+            f"{rows} flow(s) in the last hour, {unicast} to unicast destinations "
+            f"({share * 100:.1f}%); newest {_human_age(newest_age_s)} old")
+
+
+def _feed_probe(client) -> Probe:
+    """Is the capture port carrying the NETWORK, or only the noise every port sees?
+
+    ── THE GAP THIS CLOSES (measured 2026-11-17) ────────────────────────────────────────────────
+
+    `_capture_probe` answers "is the tap alive", and it answered TRUE throughout a sixteen-hour
+    outage: the process was publishing state every tick, summarising segments, and capturing a
+    port that had stopped receiving unicast. Flows fell from 12.4M an hour to about 300, and every
+    row that remained was broadcast or multicast -- mDNS from the gateway, router beacons to a
+    multicast group -- so the tables kept growing, the graphs kept drawing, and the panel stayed
+    green.
+
+    Liveness cannot see this and freshness cannot either: the rows ARE fresh. What distinguishes a
+    quiet network from a port that is no longer mirrored is WHAT KIND of traffic arrives. On a live
+    LAN almost every flow has a unicast destination; on a dead mirror none do, while the noise
+    floor continues. That is one query and it is the difference between "nothing happened" and
+    "we were not looking".
+
+    One query over the last hour, because a minute is too short to judge a quiet LAN and an hour
+    still fails fast enough to matter.
+    """
+    from weirvern.addressing import sql_host  # noqa: PLC0415
+
+    host_dst = sql_host("dst_addr")
+    host_src = sql_host("src_addr")
+    sql = (
+        "SELECT count(), "                                        # noqa: S608 - no user input
+        f"countIf({host_dst}), "
+        f"countIf({host_src} AND {host_dst}), "
+        "toInt64(dateDiff('second', max(time_flow_start), now())) "
+        "FROM weirvern.flows WHERE time_flow_start >= now() - INTERVAL 60 MINUTE"
+    )
+    started = time.perf_counter()
+    try:
+        row = client.query(sql).result_rows[0]
+        rows, unicast, host_pairs, age_s = int(row[0]), int(row[1]), int(row[2]), float(row[3])
+    except Exception as exc:  # noqa: BLE001
+        # A table that does not exist yet is a young deployment, not a broken capture.
+        return Probe("feed", ok=None, value={"error": str(exc)},
+                     detail=f"the feed could not be read, so the capture port was not judged: {exc}")
+    state, ok, reason = classify_feed(rows, unicast, age_s)
+    return Probe("feed", ok=ok, detail=reason, latency_ms=(time.perf_counter() - started) * 1000,
+                 value={"state": state, "rows": rows, "unicast": unicast,
+                        "host_pairs": host_pairs, "newest_age_s": age_s})
+
+
+
 def collect_health(client, settings, user_store=None) -> HealthReport:
     """Probe ClickHouse and the pipeline. Never raises.
 
@@ -928,6 +1017,24 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
         report.add(_capture_probe(settings))
     except Exception as exc:  # noqa: BLE001
         _probe_failed(report, "capture", exc, (time.perf_counter() - started) * 1000)
+    if report.probes:
+        report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
+
+    # 10. THE FEED ITSELF — CARRYING THE NETWORK, OR ONLY THE NOISE FLOOR?
+    #
+    # ── A LIVE TAP ON A DEAD MIRROR IS THE FAILURE THE PROBE ABOVE CANNOT SEE (measured 2026-11-17)
+    #
+    # The tap published state every tick through a sixteen-hour outage and this panel stayed green,
+    # because "alive" was the question being asked and the answer was true. Flows had fallen from
+    # 12.4M an hour to about 300, all of them broadcast or multicast, so the rows were FRESH too:
+    # freshness cannot separate a quiet network from a port that is no longer mirrored. What can is
+    # the KIND of traffic -- on a live LAN nearly every flow has a unicast destination, and on a dead
+    # mirror none do while the noise floor keeps producing. `_feed_probe` asks exactly that.
+    started = time.perf_counter()
+    try:
+        report.add(_feed_probe(client))
+    except Exception as exc:  # noqa: BLE001
+        _probe_failed(report, "feed", exc, (time.perf_counter() - started) * 1000)
     if report.probes:
         report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 
