@@ -1122,6 +1122,21 @@ def mode_gate(ctx, changes: dict) -> str:
     THE GATE IS `mode.validate`, which is what `weirvern mode siphon` uses: a GUI session must not be a
     way around it, because enabling in-path interception without forwarding working takes the segment
     down, and the check that prevents that has to be the same check.
+
+    ── THE APPLY GRANTS WHAT THE PLAN REQUIRES (measured 2026-11-17) ─────────────────────────────
+
+    This used to judge the change against the capabilities the worker has RIGHT NOW, which produced a
+    dead end: selecting siphon in the console was refused with "enabling siphon widens the worker's
+    privileges", as if the operator had to widen them by hand and come back. But the apply already
+    does exactly that, later and deliberately -- `ClusterConfig.restart` calls
+    `reconcile_capabilities`, which sets the worker's block to `required_capabilities` of the config
+    it is about to run, so a plan naming siphon comes up with NET_RAW and NET_ADMIN before the
+    supervisor arms anything.
+
+    So the gate now asks the question it can actually answer: does this plan require a privilege the
+    apply knows how to grant? If it does, the requirement is satisfied BY THE PLAN, and the refusal
+    would be asking the operator to pre-do work the same request performs. Everything that cannot be
+    granted this way still refuses: the management-NIC rule, an unknown mode, a missing watchdog.
     """
     wanted = None
     for k, v in changes.items():
@@ -1133,6 +1148,13 @@ def mode_gate(ctx, changes: dict) -> str:
 
     normalised = mode_mod.normalise(wanted)
     has_net_admin, has_net_raw = sensor_caps(ctx)
+    if normalised == mode_mod.MODE_SIPHON:
+        # THE PLAN IMPLIES THE PRIVILEGE. `required_capabilities({"SENSOR_MODE": "siphon"})` is
+        # exactly NET_RAW + NET_ADMIN, and `restart()` reconciles the worker to that set before it
+        # rolls. Treating them as present here is not an assumption: it is the same decision, taken
+        # once, in the place that can carry it out.
+        has_net_raw = True
+        has_net_admin = True
     verdict = mode_mod.validate(normalised, has_net_admin=has_net_admin,
                                 has_net_raw=has_net_raw, watchdog_available=True)
     if verdict.ok:

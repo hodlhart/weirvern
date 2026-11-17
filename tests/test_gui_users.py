@@ -742,12 +742,17 @@ def test_the_mode_gate_OPENS_when_the_cluster_sensor_has_the_capabilities():
     assert _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "weir"}) == ""  # former name
 
 
-def test_the_mode_gate_REFUSES_when_the_sensor_lacks_net_admin():
-    """The box's current state: NET_RAW only. The refusal must name the missing capability."""
+def test_the_mode_gate_REFUSES_a_mode_no_apply_can_GRANT():
+    """The old rule here was "refuse siphon when the sensor lacks NET_ADMIN". That is now wrong:
+    the apply reconciles the worker's capabilities to what the plan requires before it rolls, so
+    refusing on the CURRENT block refused the one request that would have granted it (measured
+    2026-11-17 from the console). What still refuses is a mode no plan can create."""
     store = _store_with(exists=False)
     ctx = _ctx(store, config_client=_DSCli(["NET_RAW"]))
-    err = _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "siphon"})
-    assert err and "CAP_NET_ADMIN" in err
+    err = _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "banana"})
+    assert err and "banana" in err
+    # And siphon is ALLOWED with the same reading, because the apply supplies what it needs.
+    assert _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "siphon"}) == ""
 
 
 # -- the settings payload reports the caller's rights ----------------------------------------

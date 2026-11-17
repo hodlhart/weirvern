@@ -400,6 +400,33 @@ def test_the_mode_gate_blocks_when_prerequisites_are_missing():
     assert v.blockers, "the verdict carries no reason"
 
 
+def test_selecting_siphon_is_NOT_REFUSED_because_the_apply_grants_the_capability():
+    """Measured 2026-11-17, from the console's own refusal.
+
+    Selecting siphon and pressing Apply returned "cannot enable siphon: ... enabling siphon widens
+    the worker's privileges" -- while `ClusterConfig.restart` was already reconciling exactly those
+    capabilities before the roll. The gate judged the worker's CURRENT block, so the one request
+    that would have granted the privilege was the request it refused. The plan's own requirement is
+    the right question; a mode that cannot be granted still refuses.
+    """
+    from types import SimpleNamespace
+
+    from weirvern.admin import web as web_mod
+
+    class _Client:
+        def get_json(self, _path):
+            return {"spec": {"template": {"spec": {"containers": [
+                {"name": "worker",
+                 "securityContext": {"capabilities": {"drop": ["ALL"], "add": []}}}]}}}}
+
+    ctx = SimpleNamespace(config_client=_Client())
+    assert web_mod.sensor_caps(ctx) == (False, False), "the fixture must start with no capabilities"
+    assert web_mod.mode_gate(ctx, {"SENSOR_MODE": "siphon"}) == "", (
+        "the apply was refused for a privilege the same apply grants")
+    # A mode nobody can grant still fails, and so does a pass that does not name the mode.
+    assert web_mod.mode_gate(ctx, {"SENSOR_MODE": "banana"}) != ""
+
+
 def test_the_gui_reads_sensor_capabilities_from_the_CLUSTER_and_defaults_to_ABSENT():
     """Reading THIS process's capabilities would describe the wrong container, so the probe
     asks the cluster's own worker Deployment. And a probe that cannot answer must report ABSENT:
