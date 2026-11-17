@@ -31,7 +31,16 @@ def host_hour_profiles(client: Any, days: int = DEFAULT_DAYS) -> dict[str, dict[
 
     Reads `flows_aggregated`, which already holds per-window, per-source aggregates -- the same
     rows the panel draws -- so this adds no scan of raw flows.
+
+    ONLY HOSTS OF OURS. The aggregate carries a row per (source, destination) pair, and since the
+    sensor moved in path it sees both directions, so external peers appear as `src_addr` too.
+    Measured immediately after the switch: the top "hosts" by departure were eight public
+    addresses and one of ours. The scope is the same one the asset inventory uses -- networks
+    flagged monitored -- because an ML profile of a stranger is not a profile of the network.
     """
+    from weirvern import monitored as monitored_mod  # noqa: PLC0415
+
+    ours = monitored_mod.sql_predicate("src_addr", monitored_mod.networks(client))
     rows = client.query(
         "SELECT src_addr, toHour(window_start) AS hour, "
         "       quantile(0.5)(total_bytes) AS med_bytes, "
@@ -39,6 +48,7 @@ def host_hour_profiles(client: Any, days: int = DEFAULT_DAYS) -> dict[str, dict[
         "       quantile(0.5)(unique_dst_ips) AS med_peers "
         "FROM weirvern.flows_aggregated "
         "WHERE window_start >= now() - INTERVAL %(days)s DAY "
+        f"AND {ours} "
         "GROUP BY src_addr, hour",
         parameters={"days": int(days)},
     ).result_rows
@@ -66,10 +76,13 @@ def rank_departures(client: Any, *, recent_minutes: int = 60, days: int = DEFAUL
     """
     profiles = host_hour_profiles(client, days=days)
     now_hour = int(client.query("SELECT toHour(now())").result_rows[0][0])
+    from weirvern import monitored as monitored_mod  # noqa: PLC0415
+
     recent = client.query(
         "SELECT src_addr, sum(total_bytes) AS bytes, max(unique_dst_ips) AS peers "
         "FROM weirvern.flows_aggregated "
         "WHERE window_start >= now() - INTERVAL %(m)s MINUTE "
+        f"AND {monitored_mod.sql_predicate('src_addr', monitored_mod.networks(client))} "
         "GROUP BY src_addr",
         parameters={"m": int(recent_minutes)},
     ).result_rows
