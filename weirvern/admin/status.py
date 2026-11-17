@@ -313,7 +313,8 @@ FEED_MIN_BASELINE = 1000
 
 def classify_feed(rows: int, unicast: int, newest_age_s: float,
                   recent_rows: int | None = None, baseline_rows: float | None = None,
-                  recent_hosts: int = 0, baseline_hosts: float = 0.0) -> tuple[str, bool | None, str]:
+                  recent_hosts: int = 0, baseline_hosts: float = 0.0,
+                  siphon: bool = False) -> tuple[str, bool | None, str]:
     """The decision table for `_feed_probe`, pure so every branch is testable without a database.
 
     Returns `(state, ok, reason)` where `state` is one of `no_data`, `stale`, `collapsed`,
@@ -332,6 +333,15 @@ def classify_feed(rows: int, unicast: int, newest_age_s: float,
     that, because the noise floor keeps producing rows. So the verdict compares today's aggregate,
     for the hours elapsed, against the same hours on the previous seven days, and the unicast share
     rides along in the detail as the explanation rather than the trigger.
+
+    ── EXCEPT IN SIPHON, WHERE THE VOLUME COMPARISON IS NOT MEANINGFUL (measured 2026-11-17) ──────
+
+    In siphon the sensor is in the path for the hosts its plan names -- eleven of them here -- and
+    the historical baseline describes a mirrored port that carried the whole segment. Measured
+    minutes after arming: 35 flows in five minutes against a seven-day median of nine million rows
+    an hour, which is 0.0004% and would read as a total collapse while the relay was demonstrably
+    forwarding. Comparing the two would make a working in-path sensor look dead, so under siphon the
+    verdict is freshness and host count only, and the detail says the volume comparison is skipped.
     """
     if rows <= 0:
         return ("no_data", False,
@@ -344,6 +354,11 @@ def classify_feed(rows: int, unicast: int, newest_age_s: float,
     share = unicast / rows if rows else 0.0
     kind = (f"{rows} flow(s) in the last hour, {share * 100:.1f}% to a unicast destination, "
             f"newest {_human_age(newest_age_s)} old")
+    if siphon:
+        return ("flowing", True,
+                kind + ". Siphon mode: the sensor is in the path for its plan's hosts, so the "
+                "volume is not compared against the mirrored era -- freshness is the test that "
+                "matters here.")
     if (baseline_rows is not None and baseline_rows >= FEED_MIN_BASELINE
             and recent_rows is not None and recent_rows < baseline_rows * FEED_COLLAPSE_SHARE):
         ratio = (recent_rows / baseline_rows) if baseline_rows else 0.0
@@ -361,7 +376,7 @@ def classify_feed(rows: int, unicast: int, newest_age_s: float,
     return ("flowing", True, kind)
 
 
-def _feed_probe(client) -> Probe:
+def _feed_probe(client, settings=None) -> Probe:
     """Is the capture port carrying the NETWORK, or only the noise every port sees?
 
     ── THE GAP THIS CLOSES (measured 2026-11-17) ────────────────────────────────────────────────
@@ -427,13 +442,16 @@ def _feed_probe(client) -> Probe:
         # The baseline is an aid, not the measurement: losing it must not lose the probe.
         logger.debug("feed baseline unavailable: %s", exc)
 
-    state, ok, reason = classify_feed(rows, unicast, age_s, recent_rows, baseline_rows,
-                                      recent_hosts, baseline_hosts)
+    state, ok, reason = classify_feed(
+        rows, unicast, age_s, recent_rows, baseline_rows,
+        recent_hosts, baseline_hosts,
+        siphon=str(getattr(settings, "sensor_mode", "") or "").strip().lower() == "siphon")
     return Probe("feed", ok=ok, detail=reason, latency_ms=(time.perf_counter() - started) * 1000,
                  value={"state": state, "rows": rows, "unicast": unicast,
                         "host_pairs": host_pairs, "newest_age_s": age_s,
                         "recent_rows": recent_rows, "baseline_rows": baseline_rows,
-                        "recent_hosts": recent_hosts, "baseline_hosts": baseline_hosts})
+                        "recent_hosts": recent_hosts, "baseline_hosts": baseline_hosts,
+                        "siphon": bool(getattr(settings, "sensor_mode", "") == "siphon")})
 
 
 
@@ -1107,7 +1125,7 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
     # mirror none do while the noise floor keeps producing. `_feed_probe` asks exactly that.
     started = time.perf_counter()
     try:
-        report.add(_feed_probe(client))
+        report.add(_feed_probe(client, settings))
     except Exception as exc:  # noqa: BLE001
         _probe_failed(report, "feed", exc, (time.perf_counter() - started) * 1000)
     if report.probes:

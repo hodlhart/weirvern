@@ -1081,3 +1081,30 @@ def test_the_feed_probe_survives_a_missing_aggregate_table():
     assert p.value["baseline_rows"] is None, p.value
 
 
+
+
+def test_under_SIPHON_the_volume_baseline_is_not_the_test():
+    """Measured minutes after arming the intercept: 35 flows in five minutes against a seven-day
+    median of nine million rows an hour. That is 0.0004% and would read as a total collapse while
+    the relay was demonstrably forwarding eleven hosts' traffic. In siphon the sensor is in the
+    path for its plan's hosts and the baseline describes a mirrored port, so the two are not
+    comparable: freshness decides, and the detail says the comparison was skipped."""
+    p = _probe("feed", by_fragment=_feed_with_history(35, 9_359_326, today_hosts=11))
+    # `_probe` builds settings without a sensor_mode, so this is the MIRRORED reading first.
+    assert p is not None and p.ok is False and p.value["state"] == "collapsed", p
+
+    from types import SimpleNamespace
+
+    from weirvern.admin import status as status_mod
+
+    client = _StubClient(_feed_with_history(35, 9_359_326, today_hosts=11))
+    probe = status_mod._feed_probe(client, SimpleNamespace(sensor_mode="siphon"))
+    assert probe.ok is True, probe.detail
+    assert probe.value["state"] == "flowing", probe.value
+    assert "Siphon mode" in probe.detail, probe.detail
+
+    # AND A DEAD RELAY STILL FAILS: freshness is the test that remains.
+    stale = status_mod._feed_probe(
+        _StubClient(_feed_with_history(35, 9_359_326, today_hosts=11, age=400)),
+        SimpleNamespace(sensor_mode="siphon"))
+    assert stale.ok is False and stale.value["state"] == "stale", stale.value
