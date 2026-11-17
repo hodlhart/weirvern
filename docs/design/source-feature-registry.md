@@ -38,7 +38,11 @@ flows_aggregated | feature-now
 flows_aggregated_diversity | feature-now
 flows_aggregated_temporal | feature-now
 host_fingerprints | join-only
+host_hour_features | output
+host_hour_scores | output
 host_identity | join-only
+host_reference_samples | output
+host_reference_stats | output
 host_roles | feature-planned
 host_watches | excluded
 ml_calibration | output
@@ -287,6 +291,22 @@ confidence gates, not features. Sluice, fleet, weirling, audit, blocklist and ta
 - A planned field with zero rows is not a feature; it is a coverage task.
 - Raw payloads, free text, hashes, IPs, MACs and UIDs are never numeric features.
 - A feature-list change bumps `FEATURE_SCHEMA_VERSION` and retrains every affected model.
+
+## 6. Host-hour layer (new 2026-11-17)
+
+Four tables, all **output**: nothing here is a harvested field, they are the decision unit's
+own state. `host_hour_features` is the merged hour (twelve five-minute windows) with logged
+counts, bytes per flow and the exact distinct destination count. `host_reference_stats` is what
+normal looks like for that host at that hour of day -- median, MAD, p01, p99, sample count and
+the pooling width used to reach it. `host_reference_samples` keeps the reference's own per-hour
+channel scores, because a channel statistic is a max and its p-value has to be the empirical
+tail of that max, not a normal approximation. `host_hour_scores` records every channel's verdict
+for every hour including the ones that abstained: `scored`, `no-reference`, `no-data`, `error`.
+
+They are outputs of `weirvern/models/host_hour.py` and inputs to nothing yet; the sweep still
+decides per window. When the decision moves, the features feeding the channels are the four
+numeric columns of `host_hour_features`, which is why that table lists them explicitly rather
+than storing only the raw counts.
 
 ## 7. Check
 
