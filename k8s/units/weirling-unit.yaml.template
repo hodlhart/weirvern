@@ -207,6 +207,14 @@ spec:
             - name: flows
               mountPath: /flows
               readOnly: true
+            # THE FLOW CURSOR NEEDS A WRITABLE, PERSISTENT HOME (measured 2026-11-17). The shipper
+            # keeps its read offset through the ingester's own tail-state code, whose directory
+            # defaults to /models -- a path this container did not mount, so the cursor lived in the
+            # container filesystem and died with the pod. On restart the shipper then re-reads the
+            # collector's file FROM ZERO and inserts every record again: duplicate flows, and the
+            # baseline cannot tell them from real traffic. One hostPath per unit, beside its logs.
+            - name: unit-state
+              mountPath: /models
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -295,6 +303,12 @@ spec:
         # nothing and fail silently -- one of the two failures worth writing down.
         - name: netflow
           image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
+          # PORT SET IS PART OF THE UNIT'S IDENTITY, not a constant. Every flag here is configurable
+          # (`-listen` takes both schemes, `-addr` is the metrics/health listener), which is what lets
+          # a COLLECTOR LIVE BESIDE ANOTHER ONE on the same node: give the second one
+          # `-listen netflow://:12055,sflow://:16343 -addr :18080` and point its exporter at 12055.
+          # An exporter is configured with an ADDRESS, so the port it was given is the port it will
+          # keep using -- never move it without telling whoever owns that exporter.
           args:
             - -listen
             - netflow://:2055,sflow://:6343
@@ -335,6 +349,12 @@ spec:
           hostPath:
             # The collector's own directory, one per unit, for the same reason the logs are.
             path: /var/lib/weirvern/units/__WEIRLING_ID__/flows
+            type: DirectoryOrCreate
+        - name: unit-state
+          hostPath:
+            # The shipper's cursor and any other small state this unit must survive a restart with.
+            # Beside the logs and the collector's file, one directory per unit.
+            path: /var/lib/weirvern/units/__WEIRLING_ID__/state
             type: DirectoryOrCreate
         - name: zeek-site
           configMap:
