@@ -50,3 +50,34 @@ def test_the_summary_states_the_control():
     assert s["hosts_scored"] == 2 and s["hosts_without_history"] == 1
     assert s["worst_ratio"] == 3.0
     assert "thousands" in s["quiet_control"]
+
+
+def test_two_hosts_with_the_same_endpoints_are_a_class_even_if_one_is_chatty():
+    """The iPhone case: size is irrelevant, OVERLAP is the test."""
+    sets = {
+        "iphone-a": {"apple.com", "push.apple.com", "icloud.com", "cdn.apple.com"},
+        "iphone-b": {"apple.com", "push.apple.com", "icloud.com"},
+        "chatty": {"apple.com", "push.apple.com", "icloud.com", "cdn.apple.com",
+                   *{f"peer{i}.net" for i in range(500)}},
+        "laptop": {"github.com", "slack.com", "apple.com"},
+    }
+    groups = scopes.class_profiles(sets)
+    members = sorted(m for g in groups for m in g["members"])
+    assert "iphone-a" in members and "iphone-b" in members, groups
+    assert "laptop" not in members, groups
+
+
+def test_a_peer_new_to_one_host_but_ROUTINE_FOR_ITS_CLASS_is_not_novelty():
+    sets = {
+        "iphone-a": {"apple.com", "icloud.com", "push.apple.com"},
+        "iphone-b": {"apple.com", "icloud.com", "push.apple.com", "gateway.icloud.com"},
+    }
+    groups = scopes.class_profiles(sets)
+    out = scopes.explain("iphone-a", {"apple.com", "icloud.com", "push.apple.com",
+                                      "gateway.icloud.com"}, groups, sets)
+    assert out["novel_count"] == 0, out          # the sibling's endpoint explains it
+    assert out["explained"] == 4, out
+
+
+def test_the_era_marker_exists_and_is_a_timestamp():
+    assert len(scopes.era_start(6)) >= 19
