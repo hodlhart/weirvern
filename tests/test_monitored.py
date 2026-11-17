@@ -31,12 +31,12 @@ class _Client:
 
 
 def test_only_rows_flagged_monitored_are_our_networks():
-    client = _Client([("192.168.3.0/24",), ("192.168.2.0/24",)])
+    client = _Client([("192.0.2.0/24",), ("198.51.100.0/24",)])
     nets = monitored.networks(client)
-    assert [str(n) for n in nets] == ["192.168.3.0/24", "192.168.2.0/24"]
-    assert monitored.in_scope("192.168.3.58", nets)
+    assert [str(n) for n in nets] == ["192.0.2.0/24", "198.51.100.0/24"]
+    assert monitored.in_scope("192.0.2.58", nets)
     assert not monitored.in_scope("8.8.8.8", nets)
-    assert not monitored.in_scope("192.168.5.20", nets)
+    assert not monitored.in_scope("203.0.113.20", nets)
 
 
 def test_an_unreadable_scope_table_is_not_permission_to_scan_everything():
@@ -48,27 +48,27 @@ def test_an_unreadable_scope_table_is_not_permission_to_scan_everything():
 
 
 def test_the_predicate_names_every_network_and_nothing_else():
-    nets = [ipaddress.ip_network("192.168.3.0/24"), ipaddress.ip_network("10.0.0.0/8")]
+    nets = [ipaddress.ip_network("192.0.2.0/24"), ipaddress.ip_network("10.0.0.0/8")]
     sql = monitored.sql_predicate("dst_addr", nets)
     assert sql.count("isIPAddressInRange(dst_addr") == 2
-    assert "192.168.3.0/24" in sql and "10.0.0.0/8" in sql
+    assert "192.0.2.0/24" in sql and "10.0.0.0/8" in sql
     assert sql.startswith("(")
 
 
 def test_a_junk_scope_row_is_skipped_rather_than_crashing_the_view():
-    client = _Client([("192.168.3.0/24",), ("third floor IDF",), ("",)])
-    assert [str(n) for n in monitored.networks(client)] == ["192.168.3.0/24"]
+    client = _Client([("192.0.2.0/24",), ("third floor IDF",), ("",)])
+    assert [str(n) for n in monitored.networks(client)] == ["192.0.2.0/24"]
 
 
 def test_ipv4_and_ipv6_are_judged_separately():
-    nets = [ipaddress.ip_network("192.168.3.0/24"), ipaddress.ip_network("fd00::/8")]
+    nets = [ipaddress.ip_network("192.0.2.0/24"), ipaddress.ip_network("fd00::/8")]
     assert monitored.in_scope("fd00::1", nets)
-    assert monitored.in_scope("192.168.3.10", nets)
+    assert monitored.in_scope("192.0.2.10", nets)
     assert not monitored.in_scope("2001:db8::1", nets)
 
 
 def test_the_summary_states_the_rule_so_the_panel_can_print_it():
-    s = monitored.summary([ipaddress.ip_network("192.168.3.0/24")])
+    s = monitored.summary([ipaddress.ip_network("192.0.2.0/24")])
     assert s["enforced"] is True
-    assert s["networks"] == ["192.168.3.0/24"]
+    assert s["networks"] == ["192.0.2.0/24"]
     assert "peer" in s["rule"]
