@@ -15,10 +15,13 @@ def test_a_passive_sensor_gets_nothing():
     assert caps == set()
 
 
-def test_an_active_tap_needs_only_the_capture_socket():
+def test_an_active_tap_is_not_the_WORKERS_grant():
+    """THE MEASURED BUG THIS PINS. The worker used to be granted NET_RAW for an active tap, and
+    the grant was inert: it runs as uid 10001, and Kubernetes drops added capabilities for a
+    non-root container (CapEff read 0000000000000000 in the live pod). The tap now runs in the
+    Zeek sidecar, which is root; granting the worker again would recreate the false assurance."""
     caps = cc.required_capabilities({"SENSOR_MODE": "loch", "NETFLOW_MODE": "active"})
-    assert caps == {"NET_RAW"}
-    assert "NET_ADMIN" not in caps
+    assert caps == set()
 
 
 def test_a_siphon_needs_both_and_that_is_strictly_more():
@@ -33,8 +36,8 @@ def test_the_legacy_siphon_flag_implies_siphon():
         "NET_RAW", "NET_ADMIN"}
 
 
-def test_a_channel_selection_needs_the_capture_socket():
-    assert cc.required_capabilities({"CHANNEL_NETFLOW": "upstream"}) == {"NET_RAW"}
+def test_a_channel_selection_is_not_the_WORKERS_grant_either():
+    assert cc.required_capabilities({"CHANNEL_NETFLOW": "upstream"}) == set()
 
 
 def test_the_patch_is_surgical_and_refuses_the_wrong_container():

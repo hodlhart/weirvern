@@ -156,7 +156,7 @@ CAP_CAPTURE = {"NET_RAW"}
 
 
 def required_capabilities(config: dict[str, str]) -> set[str]:
-    """The container capabilities a chosen sensor plan needs, and nothing more.
+    """The container capabilities the chosen sensor plan needs, and nothing more.
 
     THE CHOICE IMPLIES THE PRIVILEGE. An operator who selects an active tap or a siphon in the
     weirling settings has already made the decision; making them also hand-edit a Deployment is
@@ -165,24 +165,25 @@ def required_capabilities(config: dict[str, str]) -> set[str]:
 
     Passive needs NOTHING: no tap runs, and the exporter is somebody else's process.
 
-    Active capture needs NET_RAW to open the capture socket (tcpdump/softflowd read the wire).
+    A SENSOR-GENERATED FLOW CAPTURE IS NO LONGER THIS CONTAINER'S JOB. Since 2026-11-17 the tap
+    runs as a sidecar in the Zeek DaemonSet (`weirvern.tap`), which is root and holds NET_RAW
+    statically. The worker used to be granted NET_RAW for it and the grant was INERT -- a
+    non-root container loses added capabilities (measured: CapEff 0000000000000000), so the
+    tap could not open the socket while the plan read as applied. Granting it here again would
+    recreate that false assurance.
 
-    Siphon needs NET_RAW AND NET_ADMIN: it forges ARP frames and rewrites forwarding, rp_filter
-    and send_redirects. That is strictly more than capture, so a passive deployment must never
-    be given NET_ADMIN "in case".
+    Siphon still needs NET_RAW AND NET_ADMIN in THIS container: the intercept child runs here,
+    forges ARP frames and rewrites forwarding, rp_filter and send_redirects. That is strictly
+    more than capture, so a passive deployment must never be given NET_ADMIN "in case".
     """
     def truthy(value: object) -> bool:
         return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
     sensor_mode = str(config.get("SENSOR_MODE") or "").strip().lower()
-    netflow_mode = str(config.get("NETFLOW_MODE") or "auto").strip().lower()
-    channel = str(config.get("CHANNEL_NETFLOW") or "off").strip().lower()
 
     caps: set[str] = set()
     if sensor_mode == "siphon" or truthy(config.get("SIPHON_NETFLOW")):
         caps |= CAP_SIPHON
-    if netflow_mode == "active" or channel in ("upstream", "downstream"):
-        caps |= CAP_CAPTURE
     return caps
 
 
@@ -272,17 +273,30 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
                         "NIC in the plan) and the worker, which supervises one intercept per "
                         "interface"),
     # The channel keys are read by the WORKER (it verifies the wiring from the kernel and
-    # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
-    "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
-    "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
-    "SIPHON_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
-                       "runs the flow probe"),
-    "NETFLOW_MODE": (("deploy/weirvern-worker",), "restarts the detection worker, which "
-                      "starts or stops sensor-generated flow capture"),
-    "NETFLOW_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker, which "
-                       "samples this port for active flow capture"),
-    "CHANNEL_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
-                        "starts or stops the flow probe"),
+    # enforces on the bridge) and by the TAP sidecar, which may sample one of the two ports.
+    "CHANNEL_UPSTREAM": (("ds/zeek", "deploy/weirvern-worker"),
+                         "restarts the capture sensor (brief capture gap, and the tap that reads "
+                         "this port) and the detection worker, which verifies the channel"),
+    "CHANNEL_DOWNSTREAM": (("ds/zeek", "deploy/weirvern-worker"),
+                           "restarts the capture sensor (brief capture gap, and the tap that "
+                           "reads this port) and the detection worker, which verifies the channel"),
+    # THE FLOW KEYS BELONG TO THE TAP SIDECAR NOW, NOT THE WORKER. The tap is a container in
+    # the Zeek DaemonSet (weirvern.tap), so a change takes effect by rolling that pod -- which
+    # also restarts Zeek and costs a brief capture gap, stated here because the operator is
+    # entitled to know before pressing Apply. Restarting the worker for these would apply
+    # nothing: it no longer contains a capture path.
+    "SIPHON_NETFLOW": (("ds/zeek",),
+                       "restarts the capture sensor (brief capture gap), which runs the flow "
+                       "tap as a sidecar"),
+    "NETFLOW_MODE": (("ds/zeek",),
+                     "restarts the capture sensor (brief capture gap), which runs the flow tap "
+                     "as a sidecar"),
+    "NETFLOW_IFACE": (("ds/zeek",),
+                      "restarts the capture sensor (brief capture gap), whose tap samples this "
+                      "port for active flow capture"),
+    "CHANNEL_NETFLOW": (("ds/zeek",),
+                        "restarts the capture sensor (brief capture gap), whose tap samples the "
+                        "channel port"),
     # The sluice keys are read by the WORKER: it resolves the enforcement interface, compiles the
     # rules and runs the pass. Restarting it also re-establishes the kernel state immediately
     # rather than waiting for the gate's own interval.

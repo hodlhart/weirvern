@@ -868,6 +868,47 @@ def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
         pass
 
 
+def _tap_supervisor(settings, iface: str, controller, stop: threading.Event) -> None:
+    """Meter this unit's own capture port, while the unit is asked to produce flow records.
+
+    THE AGENT CONTAINER IS THE UNIT'S CAPTURE BOUNDARY. In a siphon unit it already holds
+    NET_RAW + NET_ADMIN (the intercept runs there), and in a loch unit the base manifest grants
+    NET_RAW for exactly this process; the capture container next door is the Zeek image, which
+    has no python. So the tap runs HERE, using the hub's own `weirvern.tap` module rather than a
+    second implementation that could drift.
+
+    THE MODE IS THE UNIT'S, NEVER THE HUB'S. `controller.mode` is this unit's plan, read from its
+    own registry row; `SENSOR_MODE` arrives through envFrom and describes the HUB's sensor, so it
+    would be exactly the wrong input. `intercept_running` is direct evidence, which is stronger
+    than the database liveness check the hub's sidecar has to ask for.
+
+    OFF UNLESS THE UNIT SHIPS. `WEIRLING_NETFLOW` gates both halves: a collector whose file
+    nothing ships is a file that grows forever, so a unit that is not shipping has no reason to
+    spend CPU summarising packets. The thread exits immediately when the switch is off.
+    """
+    from weirvern import tap as tap_mod  # noqa: PLC0415
+
+    supervisor = tap_mod.Supervisor()
+    try:
+        while not stop.wait(tap_mod.TICK_S):
+            try:
+                targets = tap_mod.select_from_settings(
+                    settings,
+                    # A unit has no channel of its own; its in-path mode is the intercept.
+                    channel_active=False,
+                    siphon_live=controller.intercept_running,
+                    sensor_mode=controller.mode,
+                    capture_iface=iface,
+                    zeek_iface=iface,
+                )
+                supervisor.tick(targets)
+            except Exception as exc:  # noqa: BLE001 -- capture must not kill the heartbeat
+                logger.warning("tap: tick failed (heartbeat continues): %s", exc)
+    finally:
+        # Orderly: SIGTERM tcpdump so it closes its last segment, and drop the ring.
+        supervisor.stop("unit shutting down")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -918,6 +959,14 @@ def main() -> None:
     controller = InterceptController(sid)
     last_plan_read = 0.0
     last_renew_check = 0.0
+
+    # THE OTHER HALF OF THE FLOW SWITCH: a unit that ships flow records also PRODUCES them from
+    # its own capture when its plan asks for active flow. Same module and same supervision as
+    # the hub's tap sidecar, so the two capture paths cannot drift. Started after the controller
+    # because the tap must read THIS unit's mode and intercept state, not the hub's SENSOR_MODE.
+    if flow_shipping_enabled():
+        threading.Thread(target=_tap_supervisor, args=(settings, iface, controller, stop),
+                         daemon=True, name="tap").start()
 
     client = None
     while not stop.is_set():

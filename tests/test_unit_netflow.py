@@ -1,144 +1,27 @@
-"""NetFlow from a sensor: the intercept's own traffic, and a unit that can RECEIVE exports.
+"""NetFlow from a unit: the collector it can host, and the records it can ship home.
 
-TWO FEATURES, ONE IDEA: flow records should come from wherever the traffic actually is. A sensor
-that is in the path (a channel's bridge, or a live siphon intercept) can meter what crosses it, and
-a sensor that has an exporter pointed at it can collect that and ship it home -- so a network's
-exports do not have to reach the hub to be counted.
+THE OTHER HALF IS IN `test_tap.py`. Producing flow records from a sensor's own capture (tcpdump
+segments -> softflowd -> IPFIX) used to be tested here because the worker owned it; since
+2026-11-17 it is `weirvern.tap`, launched at the capture boundary, and its decision table and
+supervision live there. This file keeps what is still the UNIT's: a collector a segment's
+exporter can reach, and the shipper that carries its rows to the hub.
 
-Both halves are gated on EVIDENCE, never on configuration, and that is what most of this file pins:
-a tap started on the strength of a ConfigMap would produce records of traffic that is not flowing
-through the box, landing in the table the volume baselines train on.
+Both halves ship DISABLED: an exporter pointed at a box that is not shipping is a silent hole,
+and a tap on a box whose file nothing reads is a file that grows forever.
 """
 
-import dataclasses
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class _Channel:
-    def __init__(self, active=False, bridge=""):
-        self.active = active
-        self.bridge = bridge
-
-
-class _Proc:
-    def __init__(self, argv):
-        self.argv = argv
-        self.returncode = None
-
-    def poll(self):
-        return None
-
-
 def _settings(**over):
+    import dataclasses
+
     from weirvern.config import get_settings
 
-    base = {
-        "channel_netflow": "off", "siphon_netflow": True, "sensor_mode": "siphon",
-        "zeek_iface": "eth1", "channel_upstream": "eth2", "channel_downstream": "eth3",
-    }
-    base.update(over)
-    return dataclasses.replace(get_settings(), **base)
-
-
-def _reset_holder():
-    from weirvern import worker
-
-    worker._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "source": "", "retry_after": 0.0,
-                                    "taps": {}})
-
-
-# ── the intercept as a flow source ───────────────────────────────────────────────────────────────
-
-
-def test_a_siphon_tap_starts_only_on_a_VERIFIED_LIVE_intercept():
-    from weirvern import worker
-
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    which = lambda name: f"/usr/bin/{name}"  # noqa: E731 - a lookup table in one line
-
-    _reset_holder()
-    worker._channel_netflow_maybe(_settings(), channel_state=_Channel(), siphon_live=False,
-                                  spawn=fake_spawn, which=which, now=lambda: 1000.0)
-    assert not spawned, "a tap started for an intercept that is not live"
-    assert worker._CHANNEL_NETFLOW["tap"] is None
-
-    worker._channel_netflow_maybe(_settings(), channel_state=_Channel(), siphon_live=None,
-                                  spawn=fake_spawn, which=which, now=lambda: 1000.0)
-    assert not spawned, "an UNVERIFIED intercept (the evidence could not be read) started a tap"
-
-    worker._channel_netflow_maybe(_settings(), channel_state=_Channel(), siphon_live=True,
-                                  spawn=fake_spawn, which=which, now=lambda: 1000.0)
-    assert len(spawned) == 1, "the live intercept was not metered"
-    argv = spawned[0].argv
-    assert "-i" in argv and argv[argv.index("-i") + 1] == "eth1", (
-        "the tap is not on the interface the relay crosses")
-    assert worker._CHANNEL_NETFLOW["source"] == "siphon"
-    _reset_holder()
-
-
-def test_one_tap_per_box_the_channel_wins_when_both_are_configured():
-    """An INLINE channel is one bridged upstream/downstream pair, not a per-NIC probe. Tapping
-    both the channel and an intercept of the same traffic would count it twice, so the channel
-    keeps the tap. This does not limit ordinary NICs: each selected interface gets its own tap."""
-    from weirvern import worker
-
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-
-    _reset_holder()
-    worker._channel_netflow_maybe(_settings(channel_netflow="upstream"),
-                                  channel_state=_Channel(active=True, bridge="br0"),
-                                  siphon_live=True, spawn=fake_spawn, which=which,
-                                  now=lambda: 1000.0)
-    assert len(spawned) == 1
-    argv = spawned[0].argv
-    assert argv[argv.index("-i") + 1] == "eth2", (
-        "the channel's port did not win: two sources would be metered at once")
-    assert worker._CHANNEL_NETFLOW["source"] == "channel"
-    _reset_holder()
-
-
-def test_the_tap_stops_when_the_intercept_ends():
-    from weirvern import worker
-
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    def fake_run(argv, **_kw):
-        raise AssertionError("the sweep must not run: no completed segments here")
-
-    which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-
-    _reset_holder()
-    worker._channel_netflow_maybe(_settings(), channel_state=_Channel(), siphon_live=True,
-                                  spawn=fake_spawn, which=which, now=lambda: 1000.0)
-    assert worker._CHANNEL_NETFLOW["tap"] is not None
-    # The intercept ends: the next tick must let go of the tap (and clear pending segments), not
-    # keep collecting records of a segment that is no longer routing through this box.
-    worker._channel_netflow_maybe(_settings(), channel_state=_Channel(), siphon_live=False,
-                                  spawn=fake_spawn, which=which, run=fake_run,
-                                  now=lambda: 1000.0)
-    assert worker._CHANNEL_NETFLOW["tap"] is None
-    assert worker._CHANNEL_NETFLOW["iface"] == ""
+    return dataclasses.replace(get_settings(), **over)
 
 
 # ── a unit that can RECEIVE exports ───────────────────────────────────────────────────────────────
@@ -160,13 +43,15 @@ def test_the_agent_ships_what_the_collector_wrote(tmp_path, monkeypatch):
     saved = {}
     monkeypatch.setattr(ingester_mod, "tail_and_insert", fake_tail)
     monkeypatch.setattr(ingester_mod, "load_tail_state", lambda path: object())
-    monkeypatch.setattr(ingester_mod, "save_tail_state", lambda path, state: saved.update({"ok": True}))
+    monkeypatch.setattr(ingester_mod, "save_tail_state",
+                        lambda path, state: saved.update({"ok": True}))
 
     read = sensor_agent.ship_flows_once(object(), path=str(flow_file), allow="198.51.100.0/24")
     assert read == 3, "the rows the collector wrote were not shipped"
     assert calls["path"] == str(flow_file) and calls["allow"] == "198.51.100.0/24", (
         "the exclusion/allow filter must travel with every pass")
-    assert saved.get("ok"), "the byte cursor was not checkpointed: a restart would re-insert everything"
+    assert saved.get("ok"), (
+        "the byte cursor was not checkpointed: a restart would re-insert everything")
 
 
 def test_a_unit_with_no_exporter_is_not_an_error(tmp_path, monkeypatch):
@@ -178,49 +63,6 @@ def test_a_unit_with_no_exporter_is_not_an_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ingester_mod, "tail_and_insert", explode)
     assert sensor_agent.ship_flows_once(object(), path=str(tmp_path / "missing.jsonl")) == 0
-
-
-def test_two_selected_interfaces_get_two_taps():
-    """Both NICs can meter at once; the old single holder made them mutually exclusive."""
-    from weirvern import worker
-
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    _reset_holder()
-    worker._channel_netflow_maybe(
-        _settings(capture_iface="eth1", netflow_iface="eth1,eth2"),
-        channel_state=_Channel(), siphon_live=True, spawn=fake_spawn,
-        which=lambda name: f"/usr/bin/{name}", now=lambda: 1000.0)
-    assert len(spawned) == 2, "the second selected NIC did not get its own tap"
-    ifaces = {argv[argv.index("-i") + 1] for argv in (p.argv for p in spawned)}
-    assert ifaces == {"eth1", "eth2"}
-    assert set(worker._CHANNEL_NETFLOW["taps"]) == {"eth1", "eth2"}
-    _reset_holder()
-
-
-def test_the_single_tap_legacy_still_stops(monkeypatch, tmp_path):
-    """The old single-tap fields remain usable by callers and tests."""
-    from weirvern import worker
-
-    class _Dead:
-        returncode = 1
-
-        def poll(self):
-            return 1
-
-    _reset_holder()
-    worker._CHANNEL_NETFLOW.update({"tap": _Dead(), "iface": "eth1"})
-    worker._channel_netflow_maybe(
-        _settings(netflow_mode="passive"), channel_state=_Channel(),
-        siphon_live=True, spawn=lambda *a, **k: None, which=lambda name: "/usr/bin/x",
-        now=lambda: 1000.0)
-    assert worker._CHANNEL_NETFLOW["tap"] is None
-    _reset_holder()
 
 
 def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):
@@ -250,6 +92,9 @@ def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):
     assert calls["n"] >= 1, "the shipper never even tried to connect"
 
 
+# ── the manifest contract ────────────────────────────────────────────────────────────────────────
+
+
 def test_the_unit_and_the_script_carry_the_collector_and_ship_it_disabled():
     unit = (ROOT / "k8s/units/weirling-unit.yaml.template").read_text()
     script = (ROOT / "scripts/deploy-weirling.sh").read_text()
@@ -265,44 +110,22 @@ def test_the_unit_and_the_script_carry_the_collector_and_ship_it_disabled():
     assert "WEIRLING_NETFLOW" in agent and "FLOW_SHIP_INTERVAL_S" in agent
 
 
-def test_the_tap_follows_the_SIPHON_port_not_the_zeek_port():
-    """The relay runs on CAPTURE_IFACE; tapping zeek_iface meters the wrong segment."""
-    from weirvern import worker
+def test_a_unit_that_ships_also_PRODUCES_from_its_own_capture():
+    """The two halves are one switch. `WEIRLING_NETFLOW` starts the shipper AND the tap thread;
+    a unit that is not shipping must not spend CPU summarising packets into a file nobody reads.
 
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    _reset_holder()
-    worker._channel_netflow_maybe(_settings(capture_iface="eth2"),
-                                  channel_state=_Channel(), siphon_live=True,
-                                  spawn=fake_spawn, which=lambda n: f"/usr/bin/{n}",
-                                  now=lambda: 1000.0)
-    assert len(spawned) == 1
-    argv = spawned[0].argv
-    assert argv[argv.index("-i") + 1] == "eth2", (
-        "the tap followed the Zeek port instead of the siphon capture port")
-    _reset_holder()
-
-
-def test_a_siphon_sensor_meters_automatically_without_the_extra_flag():
-    """The operator asked the backend to derive netflow capture from the mode/interface."""
-    from weirvern import worker
-
-    spawned = []
-
-    def fake_spawn(argv, **_kw):
-        proc = _Proc(argv)
-        spawned.append(proc)
-        return proc
-
-    _reset_holder()
-    worker._channel_netflow_maybe(_settings(siphon_netflow=False, sensor_mode="siphon"),
-                                  channel_state=_Channel(), siphon_live=True,
-                                  spawn=fake_spawn, which=lambda n: f"/usr/bin/{n}",
-                                  now=lambda: 1000.0)
-    assert len(spawned) == 1, "siphon mode did not start its flow capture automatically"
-    _reset_holder()
+    The tap thread must read THIS unit's mode, never `SENSOR_MODE` (which describes the hub's
+    sensor and arrives through envFrom -- the exact leak the per-weirling plan exists to stop).
+    """
+    agent = (ROOT / "weirvern/admin/sensor_agent.py").read_text()
+    assert "def _tap_supervisor" in agent
+    body = agent[agent.index("def _tap_supervisor"):]
+    body = body[:body.index("def main()")]
+    assert "sensor_mode=controller.mode" in body, (
+        "the unit's tap is reading a mode other than its own plan's")
+    assert "siphon_live=controller.intercept_running" in body, (
+        "the unit has direct evidence of its intercept; it must not fall back to a config read")
+    # Started inside the shipping branch, after the controller exists.
+    startup = agent[agent.index("    controller = InterceptController(sid)"):]
+    startup = startup[:startup.index("    client = None")]
+    assert "if flow_shipping_enabled():" in startup and "_tap_supervisor" in startup

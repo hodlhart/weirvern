@@ -777,6 +777,63 @@ spec:
           # No probe: Zeek has no HTTP endpoint, and a liveness probe that
           # restarts the sniffer on a slow period would drop packets. Its health
           # signal is capture_loss.log, which the worker ingests.
+        # ── THE TAP: FLOW RECORDS FROM THIS SENSOR'S OWN CAPTURE ────────────────
+        #
+        # WHY IT IS HERE AND NOT IN THE WORKER. The worker runs as uid 10001, and
+        # Kubernetes DROPS an added capability for a non-root container. Measured
+        # again on 2026-11-17: its pod spec carried `add: ["NET_RAW"]` while
+        # CapEff inside the container read 0000000000000000, so tcpdump could not
+        # open the capture socket and flows stopped while every surface still
+        # looked correctly configured. A capability a non-root container cannot
+        # hold is decoration. This sidecar runs as root with NET_RAW, in the same
+        # host network namespace as Zeek, so the tap is on the same box, on the
+        # same port, with a grant that is actually effective.
+        #
+        # WHAT IT RUNS: the project's own `weirvern.tap` -- tcpdump into bounded
+        # rotating segments, each COMPLETED segment summarised by one-shot
+        # softflowd into IPFIX at 127.0.0.1:2055 (goflow2, hostNetwork on this
+        # node). It makes its own targeting decisions from the same ConfigMap
+        # keys the worker used to read, and the worker now only READS the
+        # collector's output.
+        #
+        # NO FLOW-VOLUME MOUNT, deliberately: the segments are a transient buffer
+        # in this container's own /tmp (each is summarised and deleted within a
+        # tick), and the collector's output is not this container's to write.
+        - name: tap
+          image: weirvern-worker
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-m", "weirvern.tap"]
+          envFrom:
+            # The same ConfigMap the worker reads: NETFLOW_MODE, NETFLOW_IFACE,
+            # CHANNEL_NETFLOW, SIPHON_NETFLOW, SENSOR_MODE and the channel ports.
+            - configMapRef:
+                name: weirvern-env
+            # Only consulted in siphon mode, to ask the database whether an
+            # intercept has published a live heartbeat (status.siphon_liveness).
+            # A loch deployment never opens a connection and needs no credential.
+            - secretRef:
+                name: weirvern-secrets
+          securityContext:
+            # Root for the SAME measured reason as the zeek container above:
+            # Kubernetes drops added capabilities for non-root containers, and
+            # libpcap needs NET_RAW in the EFFECTIVE set. Everything else is
+            # dropped, escalation is refused, and the seccomp profile is the
+            # pod's RuntimeDefault.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_RAW"]
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            # tcpdump copies packets to disk and softflowd parses one 16 MB
+            # segment at a time; neither needs a full core.
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
       volumes:
         - name: host-sys
           hostPath:

@@ -161,6 +161,14 @@ spec:
         - name: agent
           # The reporting half: observes the capture from OUTSIDE (log mtimes, Zeek's own
           # capture_loss.log) and heartbeats it under this unit's own SENSOR_ID.
+          #
+          # IT ALSO RUNS THE FLOW TAP when the unit is shipping and its plan asks for active
+          # flow (`weirvern.tap`, see sensor_agent._tap_supervisor). That needs CAP_NET_RAW in
+          # THIS container, and the BASE unit deliberately grants nothing: in-path is opt-in
+          # per unit. The grant therefore arrives with the in-path overlay below, which is the
+          # unit that actually relays traffic and the one whose flow records matter most. A
+          # base unit with WEIRLING_NETFLOW=1 and an active plan would log the tap's refusal
+          # ("socket: Operation not permitted") and collect nothing -- visible, not silent.
           image: weirvern-worker:0.13.0
           command: ["python3", "-m", "weirvern.admin.sensor_agent"]
           env:
