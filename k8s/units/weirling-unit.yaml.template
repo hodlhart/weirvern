@@ -191,15 +191,36 @@ spec:
               value: "0"
             - name: WEIRLING_FLOW_FILE
               value: /flows/flows.jsonl
+            # ── mTLS ONLY (operator rule, 2026-11-17) ────────────────────────────────────────
+            #
+            # "all communication between hub and weirling uses mtls". This unit therefore carries NO
+            # database credential: heartbeats, plans, flow records, Zeek records and gate rules all
+            # travel over the gateway under this unit's own certificate, which is revocable one
+            # sensor at a time. `sensor_agent.connect` REFUSES to fall back to ClickHouse, so a unit
+            # without these three files does not start -- that is the point, and the error names the
+            # enrollment command.
+            #
+            # Enroll once, with the certs landing on a per-unit hostPath:
+            #   weirvern weirlings token --sensor-id __WEIRLING_ID__        # on the hub
+            #   python -m weirvern.weirling_client enroll --hub __GATEWAY_URL__ \
+            #          --token <token> --sensor-id __WEIRLING_ID__ \
+            #          --dir /etc/weirvern-weirling/pki
+            - name: WEIRLING_GATEWAY_URL
+              value: "__GATEWAY_URL__"
+            - name: WEIRLING_CLIENT_CERT
+              value: /etc/weirvern-weirling/pki/weirling.crt
+            - name: WEIRLING_CLIENT_KEY
+              value: /etc/weirvern-weirling/pki/weirling.key
+            - name: WEIRLING_ROOT_CA
+              value: /etc/weirvern-weirling/pki/root-ca.crt
+            # Zeek records ride the same gateway; without this the capture is logged and never sent.
+            - name: WEIRLING_ZEEK
+              value: "1"
           envFrom:
+            # THE CONFIGMAP STAYS (hostnames, cadences, no credentials). THE SECRET DOES NOT: a
+            # sensor holding the hub's ClickHouse password is the thing mTLS exists to remove.
             - configMapRef:
                 name: weirvern-env
-            # THE PASSWORD LIVES IN THE SECRET, like every other ClickHouse reader (33-worker,
-            # 34-gui, 50-schema all carry this second envFrom). MEASURED by the first unit test
-            # without it: DNS resolved, /ping answered 200, and the heartbeat still failed with
-            # "Authentication failed: password is incorrect, or there is no user with such name".
-            - secretRef:
-                name: weirvern-secrets
           volumeMounts:
             - name: zeek-logs
               mountPath: /zeek/logs
@@ -215,6 +236,11 @@ spec:
             # baseline cannot tell them from real traffic. One hostPath per unit, beside its logs.
             - name: unit-state
               mountPath: /models
+            # This unit's own certificate and key. Per unit, on the host, never a shared Secret:
+            # revoking one sensor must not touch another's credential.
+            - name: pki
+              mountPath: /etc/weirvern-weirling
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -355,6 +381,13 @@ spec:
             # The shipper's cursor and any other small state this unit must survive a restart with.
             # Beside the logs and the collector's file, one directory per unit.
             path: /var/lib/weirvern/units/__WEIRLING_ID__/state
+            type: DirectoryOrCreate
+        - name: pki
+          hostPath:
+            # `weirling_client enroll --dir /var/lib/weirvern/units/__WEIRLING_ID__/pki` puts the
+            # certificate and key here; the agent mounts it read-only. The root CA is copied from
+            # the hub's `weirling-root` Secret during enrollment, exactly as deploy-weirling.sh does.
+            path: /var/lib/weirvern/units/__WEIRLING_ID__/pki
             type: DirectoryOrCreate
         - name: zeek-site
           configMap:

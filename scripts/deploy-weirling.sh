@@ -451,6 +451,12 @@ GRANT INSERT ON weirvern.* TO ${CH_USER};"
         printf 'CLICKHOUSE_PORT=%s\n' "$CH_PORT"
         printf 'CLICKHOUSE_USER=%s\n' "$CH_USER"
         printf 'CLICKHOUSE_PASSWORD=%s\n' "$CH_PASS"
+        # THE LAB ESCAPE, WRITTEN OUT LOUD. `sensor_agent.connect` now refuses to touch ClickHouse
+        # unless this is set, because the deployment rule is that every hub/weirling message crosses
+        # the mTLS gateway. --legacy-clickhouse is the migration path for a hub whose gateway is not
+        # reachable yet, so the flag is set here, in the file that also carries the credential it
+        # justifies -- one file to delete when the sensor is enrolled properly.
+        printf 'WEIRLING_ALLOW_DIRECT_CLICKHOUSE=1\n'
     } | rsh "$TARGET" "cat > /etc/weirvern-weirling.env && chmod 0600 /etc/weirvern-weirling.env"
 fi
 

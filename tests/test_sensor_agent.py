@@ -228,6 +228,48 @@ def test_an_unmeasured_loss_stays_unmeasured_not_zero(monkeypatch, tmp_path):
 
 # ── the entrypoint the manifest actually runs ─────────────────────────────────────────────────
 
+def test_a_unit_without_mtls_REFUSES_to_fall_back_to_clickhouse(monkeypatch):
+    """Operator rule, 2026-11-17: all hub/weirling traffic crosses the mTLS gateway.
+
+    The fallback that used to live in `connect` made a sensor a database client with a capture
+    habit: it held the hub's password, every unit needed its own copy, and revoking one sensor
+    meant rotating a credential for the rest. A unit with no certificate now refuses, and the
+    refusal names the enrollment command rather than failing later with an auth error.
+    """
+    for var in ("WEIRLING_GATEWAY_URL", "WEIRLING_CLIENT_CERT", "WEIRLING_CLIENT_KEY",
+                "WEIRLING_ROOT_CA", "WEIRLING_ALLOW_DIRECT_CLICKHOUSE"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(sensor_agent.SensorTransportError) as exc:
+        sensor_agent.connect(object())
+    message = str(exc.value)
+    assert "WEIRLING_GATEWAY_URL" in message, message
+    assert "enroll" in message and "mTLS" in message.replace("mtls", "mTLS"), message
+    # AND THE UNIT REFUSES AT STARTUP, before it starts threads that could only fail.
+    with pytest.raises(SystemExit):
+        sensor_agent.require_transport()
+
+
+def test_the_direct_clickhouse_escape_still_works_and_says_what_it_costs(monkeypatch, caplog):
+    """The lab escape stays, off by default and loud: it is the only way a box with no gateway can
+    run a unit, and an operator who takes it should see why it is not a deployment."""
+    import logging
+
+    monkeypatch.delenv("WEIRLING_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("WEIRLING_ALLOW_DIRECT_CLICKHOUSE", "1")
+    monkeypatch.setattr(sensor_agent, "db",
+                        type("DB", (), {"connect": staticmethod(lambda *a, **k: "db-client")}))
+    with caplog.at_level(logging.WARNING, logger="weirvern.sensor_agent"):
+        assert sensor_agent.connect(object()) == "db-client"
+    assert "DIRECTLY" in caplog.text, caplog.text
+    assert "mTLS" in caplog.text, caplog.text
+
+
+def _settings():
+    from types import SimpleNamespace
+
+    return SimpleNamespace()
+
+
 def test_the_module_can_run_as_the_units_entrypoint():
     """The manifest runs `python3 -m weirvern.admin.sensor_agent`; a module without the guard
     imports to nothing and the unit would heartbeat never."""

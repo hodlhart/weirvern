@@ -145,12 +145,78 @@ def gateway_client():
     return GatewayClient(url, cert, key, ca)
 
 
+class SensorTransportError(RuntimeError):
+    """No authenticated transport to the hub: the unit has nothing it may talk to."""
+
+
+def _no_transport_message() -> str:
+    return (
+        "sensor unit: no WEIRLING_GATEWAY_URL (or the certificate it names is missing), so this "
+        "unit has no authenticated way to reach the hub. Every hub/weirling message crosses the "
+        "mTLS gateway: enroll this sensor with "
+        "`weirvern weirlings token --sensor-id <id>` on the hub and "
+        "`python -m weirvern.weirling_client enroll --hub <gateway> --token <token> "
+        "--sensor-id <id> --dir <pki>` on this box, then set WEIRLING_GATEWAY_URL, "
+        "WEIRLING_CLIENT_CERT, WEIRLING_CLIENT_KEY and WEIRLING_ROOT_CA. A unit that cannot prove "
+        "who it is does not report, and it does not fall back to the database."
+    )
+
+
+def _direct_clickhouse_allowed() -> bool:
+    return str(os.environ.get("WEIRLING_ALLOW_DIRECT_CLICKHOUSE", "")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def require_transport() -> None:
+    """Refuse to start a unit that cannot authenticate to the hub.
+
+    Called once from `main` so the failure is immediate and legible, instead of a unit that runs
+    forever and reports nothing because every write is refused.
+    """
+    if gateway_client() is not None:
+        return
+    if _direct_clickhouse_allowed():
+        logger.warning(
+            "heartbeat/netflow/zeek: talking to ClickHouse DIRECTLY because "
+            "WEIRLING_ALLOW_DIRECT_CLICKHOUSE is set. This is the lab escape, not a deployment: "
+            "the unit is holding the hub's database credential, which mTLS exists to avoid."
+        )
+        return
+    raise SystemExit(_no_transport_message())
+
+
 def connect(settings):
-    """One transport for this unit: mTLS when configured, ClickHouse otherwise."""
+    """One transport for this unit: mTLS, always.
+
+    ── EVERY HUB↔WEIRLING MESSAGE CROSSES THE mTLS GATEWAY (operator rule, 2026-11-17) ──────────
+
+    "the hub is the command and control server, the weirling is the sensor" and "all communication
+    between hub and weirling uses mtls". A sensor that holds the hub database's password is not a
+    sensor, it is a database client that happens to capture: the credential outlives the sensor,
+    every unit needs its own copy of it, and revoking a sensor means rotating a password for
+    everything else. So the fallback to ClickHouse is GONE for units -- heartbeats, plans, flow
+    records, Zeek records and gate rules all travel over the authenticated gateway under the unit's
+    own certificate, which is revocable one unit at a time.
+
+    THE ESCAPE IS DELIBERATELY UGLY AND OFF BY DEFAULT. `WEIRLING_ALLOW_DIRECT_CLICKHOUSE=1` exists
+    for a lab box with no gateway running yet, prints a warning on every pass, and is never set by
+    any manifest this repo ships. `deploy-weirling.sh --legacy-clickhouse` writes it into the same
+    file that carries the credential it justifies.
+
+    RAISES A RUNTIME ERROR, not SystemExit, so a caller with its own retry loop (the flow shipper)
+    can log and try again without killing the heartbeat thread.
+    """
     gateway = gateway_client()
     if gateway is not None:
         return gateway
-    return db.connect(settings, retries=1, delay_s=2)
+    if _direct_clickhouse_allowed():
+        logger.warning(
+            "netflow/heartbeat: talking to ClickHouse DIRECTLY because "
+            "WEIRLING_ALLOW_DIRECT_CLICKHOUSE is set. This is the lab escape, not a deployment: "
+            "the unit is holding the hub's database credential, which mTLS exists to avoid."
+        )
+        return db.connect(settings, retries=1, delay_s=2)
+    raise SensorTransportError(_no_transport_message())
 
 
 def flow_shipping_enabled() -> bool:
@@ -918,6 +984,9 @@ def _tap_supervisor(settings, iface: str, controller, stop: threading.Event) -> 
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # BEFORE ANYTHING ELSE: a unit with no certificate has no hub to talk to, and must say so once
+    # instead of running and reporting nothing.
+    require_transport()
     iface = required_iface()
     capture_port_check(iface)
     sid = sensor_identity()

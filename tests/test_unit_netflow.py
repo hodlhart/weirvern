@@ -67,7 +67,7 @@ def test_a_unit_with_no_exporter_is_not_an_error(tmp_path, monkeypatch):
 
 def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):
     """The heartbeat is the unit's LIVENESS -- it is how the fleet view knows this sensor exists.
-    Flow shipping is a convenience on top, so a dead database, a missing client or a raising pass
+    Flow shipping is a convenience on top, so a dead transport, a missing client or a raising pass
     is a log line and a retry, never a crash."""
     import threading
 
@@ -80,6 +80,10 @@ def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):
         calls["n"] += 1
         raise RuntimeError("hub unreachable")
 
+    # THE LAB ESCAPE, so this test drives the ClickHouse path it is about. Without it the shipper
+    # stops at the mTLS refusal (covered by the next test), which is a different failure.
+    monkeypatch.setenv("WEIRLING_ALLOW_DIRECT_CLICKHOUSE", "1")
+    monkeypatch.delenv("WEIRLING_GATEWAY_URL", raising=False)
     monkeypatch.setattr(db, "connect", failing_connect)
     stop = threading.Event()
 
@@ -90,6 +94,30 @@ def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):
     threading.Thread(target=stopper, daemon=True).start()
     sensor_agent._flow_shipper(_settings(), stop)  # must return normally
     assert calls["n"] >= 1, "the shipper never even tried to connect"
+
+
+def test_a_shipper_with_NO_CA_SURVIVES_THE_REFUSAL_TOO(monkeypatch, caplog):
+    """The same guarantee for the mTLS rule: a unit that cannot authenticate must LOG and return,
+    not raise out of the shipping thread -- the heartbeat still owns the unit's liveness."""
+    import logging
+    import threading
+
+    from weirvern.admin import sensor_agent
+
+    for var in ("WEIRLING_GATEWAY_URL", "WEIRLING_CLIENT_CERT", "WEIRLING_CLIENT_KEY",
+                "WEIRLING_ROOT_CA", "WEIRLING_ALLOW_DIRECT_CLICKHOUSE"):
+        monkeypatch.delenv(var, raising=False)
+    stop = threading.Event()
+
+    def stopper():
+        stop.wait(0.2)
+        stop.set()
+
+    threading.Thread(target=stopper, daemon=True).start()
+    with caplog.at_level(logging.WARNING, logger="weirvern.sensor_agent"):
+        sensor_agent._flow_shipper(_settings(), stop)  # must return normally
+    assert "shipping pass failed" in caplog.text, caplog.text
+    assert "mTLS" in caplog.text.replace("mtls", "mTLS"), caplog.text
 
 
 # ── the manifest contract ────────────────────────────────────────────────────────────────────────
