@@ -413,3 +413,48 @@ def test_a_weirling_runs_the_same_module_in_its_agent_container():
     assert "NET_RAW" in overlay[start:end], (
         "no unit manifest grants the agent NET_RAW, so a weirling's tap could never open a "
         "socket")
+
+
+# ── the ring's disk budget ───────────────────────────────────────────────────────────────────────
+
+
+def _segment(path: Path, mb: int) -> None:
+    path.write_bytes(b"\0" * (mb * 1024 * 1024))
+
+
+def test_the_ring_prune_is_a_NOOP_under_budget(tmp_path):
+    """On a working tap the sweep has already deleted every summarised segment: two files, ~20 KB
+    measured. The guard must not touch a healthy ring."""
+    from weirvern import tap
+
+    for i in range(3):
+        _segment(tmp_path / f"ch-20261117-15000{i}.pcap00{i}", 1)
+
+    assert tap.prune_ring(directory=str(tmp_path), max_mb=16) == 0
+    assert len(list(tmp_path.glob("*.pcap*"))) == 3
+
+
+def test_the_ring_prune_DROPS_OLDEST_FIRST_and_never_the_live_segment(tmp_path):
+    """A softflowd that starts and then hangs is the one failure with no other bound: the sweep
+    keeps failing and tcpdump keeps rotating. The budget is the backstop, and the segment tcpdump
+    is writing RIGHT NOW must survive -- deleting it makes the next rotation reuse an open name."""
+    from weirvern import tap
+
+    for i in range(5):
+        _segment(tmp_path / f"ch-20261117-15000{i}.pcap00{i}", 1)
+    (tmp_path / "notes.jsonl").write_text("not a segment")
+
+    dropped = tap.prune_ring(directory=str(tmp_path), max_mb=2)
+
+    assert dropped == 2, f"pruned {dropped} segments, expected the two oldest"
+    remaining = sorted(p.name for p in tmp_path.glob("*.pcap*"))
+    assert remaining == ["ch-20261117-150002.pcap002", "ch-20261117-150003.pcap003",
+                         "ch-20261117-150004.pcap004"], remaining
+    assert (tmp_path / "notes.jsonl").exists(), "the guard deleted a non-segment file"
+
+
+def test_the_ring_prune_does_not_raise_on_an_empty_or_missing_ring(tmp_path):
+    from weirvern import tap
+
+    assert tap.prune_ring(directory=str(tmp_path), max_mb=1) == 0
+    assert tap.prune_ring(directory=str(tmp_path / "gone"), max_mb=1) == 0

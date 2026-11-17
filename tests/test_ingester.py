@@ -1486,3 +1486,24 @@ def test_no_allow_list_reports_no_unchecked_admissions(tmp_path, monkeypatch):
         f"an ungated deployment reported unchecked admissions, so the line is measuring the wrong "
         f"thing. info={log.infos}"
     )
+
+
+# ── the log must not drown its own alarms ────────────────────────────────────────────────────────
+
+
+def test_the_zeek_cursor_resume_is_NOT_an_INFO_line():
+    """MEASURED 2026-11-17: this loop re-opens every Zeek log on every 5s pass, so an INFO line per
+    file per pass produced ~50,000 lines per ten minutes. The container log is capped at 10MiB and
+    rotated every few minutes, taking every OTHER message with it -- including the detection
+    warnings. A log that drowns its alarms hides outages; that is how the wedged detect cursor went
+    unnoticed for twenty hours. The per-file cursor is diagnostic detail: DEBUG, not INFO.
+    """
+    import re
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "weirvern" / "ingester.py").read_text()
+    assert re.search(r'logger\.debug\(\s*"Resuming Zeek tail', source), (
+        "the per-file resume line is not at DEBUG, so the 5s pass will flood the container log again"
+    )
+    assert not re.search(r'logger\.info\(\s*"Resuming Zeek tail', source), (
+        "the per-file resume line is still logging at INFO"
+    )

@@ -16,10 +16,12 @@ from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.worker import (
     AGG_BUCKET_S,
+    CURSOR_GAP_GRACE_S,
     MAX_CATCHUP_BUCKETS,
     _collapse_partial_aggregates,
     _covered_through,
     _load_detect_cursor,
+    _may_step_over_empty_chunk,
     _save_detect_cursor,
     detection_sweep,
     train_if_due,
@@ -942,6 +944,43 @@ def test_the_swep_ADVANCES_the_cursor_only_when_it_examined_something(tmp_path):
     assert _load_detect_cursor(settings) is None, (
         "a sweep that read no aggregates recorded coverage, so the window is skipped next cycle"
     )
+
+
+def test_a_DEAD_chunk_cannot_wedge_the_cursor_forever(tmp_path, caplog):
+    """THE LIVE FAILURE, 2026-11-17. Flows died at 19:12Z; the cursor stopped at 19:17:59Z; the next
+    chunk (19:17 -> 20:17) could never fill. Every cycle re-read that chunk and returned without
+    saving, so detection stayed dark for TWENTY HOURS after flows came back, with the pod green.
+    """
+    settings = Settings(model_dir=str(tmp_path))
+    dead_at = utcnow() - timedelta(hours=20)
+    _save_detect_cursor(settings, dead_at)
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        assert detection_sweep(_empty_sweep_client(), [StubDetector(0.9)], settings,
+                               ModelConfig()) == []
+
+    cursor = _load_detect_cursor(settings)
+    assert cursor is not None and cursor > dead_at, (
+        "the sweep re-read the same dead chunk and left the cursor where it was, which is the "
+        "wedge: an empty window behind an outage is re-examined forever"
+    )
+    assert any("WEDGED" in r.getMessage() for r in caplog.records), (
+        "the cursor moved past a dead chunk without saying so"
+    )
+
+
+def test_an_empty_chunk_INSIDE_the_grace_window_is_still_re_covered():
+    """The refusal to advance is the default and must stay it: rows for a window that just closed
+    can still arrive, so a fresh empty chunk is re-read next cycle rather than skipped."""
+    now = utcnow()
+    assert not _may_step_over_empty_chunk(now - timedelta(seconds=60), now=now)
+
+
+def test_the_grace_hORIZON_is_inclusive_of_the_chunk():
+    """A chunk ending exactly ON the horizon has not yet passed it."""
+    now = utcnow()
+    assert not _may_step_over_empty_chunk(now - timedelta(seconds=CURSOR_GAP_GRACE_S), now=now)
+    assert _may_step_over_empty_chunk(now - timedelta(seconds=CURSOR_GAP_GRACE_S + 1), now=now)
 
 
 def test_a_corrupt_cursor_is_DISCARDED_not_raised(tmp_path, caplog):

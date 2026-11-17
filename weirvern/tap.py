@@ -74,6 +74,15 @@ TAP_DIR = "/tmp/weirvern-tap"
 TAP_SEGMENT_S = 30
 TAP_SEGMENT_MB = 16
 TAP_KEEP_SEGMENTS = 240
+# THE RING'S DISK BUDGET, IN MB (measured 2026-11-17). `-W 240` x `-C 16` is a 3.84 GB worst case,
+# and it is only reachable the way that matters: softflowd stops consuming. Every other failure
+# already bounds itself -- a dead tcpdump stops writing, and `stop()` deletes the ring outright --
+# but a softflowd that exists, starts, and then hangs leaves tcpdump happily filling the node's
+# disk for two hours of segment time. The sweep deletes each segment as it succeeds, so a healthy
+# ring is two files (20 KB measured); anything approaching this budget is already a failure, and
+# 512 MB is 16 minutes of capture -- far more than the 120s a summariser is allowed to take, so
+# pruning to it cannot cost data that was still going to be read.
+TAP_RING_MAX_MB = 512
 # A crash loop that writes a log line and doomed children every tick is worse than a tap that
 # is visibly not running: one warning, then a five-minute cooldown, then a retry.
 RETRY_S = 300.0
@@ -199,6 +208,58 @@ def select_from_settings(settings, *, channel_active: bool = False,
         channel_active=channel_active,
         siphon_live=siphon_live,
     )
+
+
+def prune_ring(*, directory: str | None = None, max_mb: int = TAP_RING_MAX_MB) -> int:
+    """Drop the OLDEST completed segments when the ring outgrows its disk budget.
+
+    A backstop, not a policy: on a working tap this returns 0 because the sweep has already
+    deleted every segment it summarised (two files, ~20 KB, measured). It exists for the one
+    failure that otherwise has no bound -- softflowd present but hung, so `sweep_completed` keeps
+    failing and tcpdump keeps rotating through 3.84 GB.
+
+    THE NEWEST FILE IS NEVER TOUCHED. That is the segment tcpdump is writing right now; deleting
+    it would make the next rotation re-use a name tcpdump still holds open. Oldest-first falls out
+    of the sort: `-W` numbers its files with a fixed-width suffix ("ch-20261117-153000.pcap000"),
+    so lexical order is capture order.
+
+    Returns how many segments were dropped, so the caller can log one line rather than one per file.
+    """
+    root = directory or TAP_DIR
+    try:
+        names = sorted(n for n in os.listdir(root) if ".pcap" in n)
+    except OSError:
+        return 0
+    names = names[:-1]  # the newest is the live segment
+    sizes: dict[str, int] = {}
+    total = 0
+    for name in names:
+        try:
+            sizes[name] = os.path.getsize(os.path.join(root, name))
+        except OSError:
+            continue
+        total += sizes[name]
+    budget = max(1, int(max_mb)) * 1024 * 1024
+    if total <= budget:
+        return 0
+    dropped = 0
+    for name in names:
+        if total <= budget:
+            break
+        try:
+            os.unlink(os.path.join(root, name))
+        except OSError:
+            continue
+        total -= sizes.get(name, 0)
+        dropped += 1
+    if dropped:
+        logger.warning(
+            "tap: ring over the %dMB budget — dropped %d oldest segment(s), %dMB still pending. "
+            "softflowd is not keeping up with the capture; flows in the dropped segments were "
+            "never exported.",
+            max_mb, dropped, total // (1024 * 1024),
+        )
+    return dropped
 
 
 def sweep_completed(*, run: Callable | None = None, probe: str | None = None,
@@ -353,8 +414,11 @@ class Supervisor:
     def _sweep(self) -> None:
         probe = self._which("softflowd")
         for entry in self.taps.values():
-            sweep_completed(run=self._run, probe=probe,
-                            directory=entry.get("dir") or self.directory)
+            directory = entry.get("dir") or self.directory
+            sweep_completed(run=self._run, probe=probe, directory=directory)
+            # AFTER the sweep, never before: whatever could still be summarised has been. The
+            # guard is a backstop for a summariser that is not consuming (see TAP_RING_MAX_MB).
+            prune_ring(directory=directory)
 
     # ── shutdown ─────────────────────────────────────────────────────────────────────────────
     def stop(self, reason: str = "") -> None:

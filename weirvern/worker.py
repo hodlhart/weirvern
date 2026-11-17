@@ -63,6 +63,23 @@ AGG_BUCKET_S = 300  # toStartOfFiveMinute in weirvern/schema/001_weirvern.sql
 # 18-hour backlog in 18 cycles: 90 minutes at the shipped 300s cadence.
 MAX_CATCHUP_BUCKETS = 12
 
+# HOW OLD AN EMPTY CHUNK MUST BE BEFORE THE CURSOR IS ALLOWED TO STEP OVER IT (measured 2026-11-17).
+#
+# The rule above -- never advance a cursor over an empty read -- is correct for rows that are still
+# arriving, and WRONG forever when the emptiness is permanent. A sensor outage longer than one
+# catch-up chunk creates a leading chunk that can never fill: on 2026-11-16 flows died at 19:12Z, the
+# cursor stopped at 19:17:59Z, and the chunk 19:17 -> 20:17 stayed empty. Every cycle re-read it,
+# logged "examined NOTHING", and returned without saving -- so when flows came back four hours later
+# the cursor was still in the dead hour and detection stayed dark for twenty hours with the pod
+# green. A second cursor from the same failure (detect_cursor.json.stuck-20261112) was already on the
+# box: it had happened before.
+#
+# Fifteen minutes is chosen against the producer, not by feel: a window's rows are written by the
+# inserting flows, and the tap emits each segment within TICK_S (15s) while flow expiries are 60-600s,
+# so a bucket is complete well inside 5 minutes. Waiting 15 puts three full bucket cycles between the
+# last possible row and the decision to step over the window.
+CURSOR_GAP_GRACE_S = 900
+
 
 # The gate's supervisor lives at module scope so its `last_ok` SURVIVES BETWEEN PASSES. Rebuilding
 # it each time would reset the age that `healthy()` uses to distinguish "holding" from "held the
@@ -873,6 +890,20 @@ _ANOMALY_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _may_step_over_empty_chunk(new_cursor: datetime, *, now: datetime | None = None,
+                               grace_s: float = CURSOR_GAP_GRACE_S) -> bool:
+    """Whether an empty chunk is old enough to be stepped over instead of re-read forever.
+
+    Split out of the sweep so the decision is a pure function of two clocks: the whole point of the
+    grace period is that it is testable at the boundary, and a test that has to build a ClickHouse
+    client to ask "does this wedge?" would never have been written.
+
+    `now` is injectable for the same reason. The comparison uses `<` rather than `<=`: a chunk that
+    ended exactly at the horizon is still inside it.
+    """
+    return new_cursor < (now or utcnow()) - timedelta(seconds=grace_s)
+
+
 def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime, datetime]:
     """The lower bound for this sweep's window, and the new cursor to carry forward.
 
@@ -1351,6 +1382,26 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             "sidecar (`kubectl -n weirvern logs ds/zeek -c tap`).",
             since, _new_cursor.isoformat(),
         )
+        # ── AN EMPTY CHUNK THAT CAN NEVER FILL MUST NOT WEDGE THE CURSOR (measured 2026-11-17) ─────
+        #
+        # The refusal to advance above is the right default and stays the default: a bucket whose
+        # rows are still arriving must be re-covered. It becomes a permanent stop when the
+        # emptiness is a FACT rather than a delay -- an outage longer than one catch-up chunk
+        # leaves a leading chunk with no flows in it that no later arrival can fill. See
+        # CURSOR_GAP_GRACE_S for the live case (20 hours dark after flows returned) and the second
+        # stale cursor already on the box from the same failure.
+        #
+        # So: re-cover inside the grace window, step over outside it, and say which happened. A
+        # skipped window is not silently marked as examined -- the warning carries the boundary
+        # that was skipped, and the data it would have covered does not exist.
+        if _may_step_over_empty_chunk(_new_cursor):
+            _save_detect_cursor(settings, _new_cursor)
+            logger.warning(
+                "Detection cursor was WEDGED at %s: the chunk %s -> %s is empty and ended more "
+                "than %ds ago, so no row can still arrive for it. Advancing the cursor to %s "
+                "instead of re-reading the same dead window every cycle.",
+                _last_covered, since, until, CURSOR_GAP_GRACE_S, _new_cursor.isoformat(),
+            )
         return []
 
     div_cols, div_rows = db.fetch_rows_named(

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.23.66 — 2026-11-17
+
+AN EMPTY WINDOW BEHIND AN OUTAGE RE-EXAMINED ITSELF FOREVER, AND THE LOG THAT WOULD HAVE SAID SO
+WAS BURIED.
+
+- **The detect cursor could wedge permanently.** The rule "never advance the cursor over an empty
+  read" is right for rows that are still arriving and wrong when the emptiness is permanent. Flows
+  died at 19:12Z on 2026-11-16; the cursor stopped at 19:17:59Z; the next catch-up chunk
+  (19:17 → 20:17) could never fill. Every cycle re-read that dead hour, logged `examined NOTHING`
+  and returned without saving — so when flows returned four hours later, detection stayed dark for
+  **twenty hours** with the pod green. A second stale cursor on the box
+  (`detect_cursor.json.stuck-20261112`) shows the same failure five days earlier.
+  An empty chunk is now re-covered inside a 15-minute grace window (three bucket cycles after the
+  last row can land) and **stepped over, loudly, outside it** — `CURSOR_GAP_GRACE_S`.
+- **The ingest log drowned the detection log.** The Zeek tailer re-opens every log on every 5 s
+  pass and logged one line per file per pass: ~50,000 lines per ten minutes, against a 10MiB
+  container log that then rotated every few minutes and took every other message with it. The
+  per-file cursor is now DEBUG; the pass still reports work at INFO. This is why the wedge above
+  was invisible.
+- **The tap's segment ring has a disk budget.** `-C 16 -W 240` is a 3.84 GB worst case, and it is
+  reachable exactly one way: softflowd starts, hangs, and tcpdump keeps rotating. `prune_ring()`
+  drops the oldest completed segments above 512 MB (after the sweep, never before, never the live
+  segment) and says which segments were dropped. A healthy ring is two files, ~20 KB.
+
+ALSO IN THIS RELEASE, DEPLOYED 2026-11-17 BUT NOT YET CHANGELOGGED: the tap moved to the capture
+boundary (`weirvern/tap.py`, run as a Zeek DaemonSet sidecar on the hub and by the agent container
+on a weirling) and the worker's capture path was deleted in the same commit. The worker ran as uid
+10001, and Kubernetes drops an added capability for a non-root container — measured `CapEff
+0000000000000000` despite `add: ["NET_RAW"]`, which is why flows stopped while every surface read
+"configured".
+
 ## 0.23.65 — 2026-11-12
 
 CLICKHOUSE'S OWN LOGS WERE 37 GiB OF A 42 GiB VOLUME.

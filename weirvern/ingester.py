@@ -1725,7 +1725,16 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
             # no field names and drops every line.
             st = load_zeek_state(path)
             if st.offset:
-                logger.info("Resuming Zeek tail at offset %d for %s", st.offset, path)
+                # DEBUG, NOT INFO (measured 2026-11-17). This loop re-opens every Zeek log on every
+                # pass, and `tail_forever` passes 5.0s, so the INFO line fired once per file per
+                # five seconds: ~50,000 lines per ten minutes on the live hub. The container log is
+                # capped at 10MiB, so it rotated every few minutes and took every OTHER message
+                # with it -- including the detection warnings this file exists to surface. A log
+                # that drowns its own alarms is a log that hides outages, which is exactly what
+                # happened to the wedged cursor on 2026-11-16. The pass still reports work at INFO
+                # ("Ingested N records"), which is the line an operator needs; the per-file cursor
+                # is diagnostic detail and belongs behind `--log-level DEBUG`.
+                logger.debug("Resuming Zeek tail at offset %d for %s", st.offset, path)
             state[name] = st
             n, _off, _ino, _hdr = tail_zeek_log(client, path, state=st)
             save_zeek_state(path, st)
