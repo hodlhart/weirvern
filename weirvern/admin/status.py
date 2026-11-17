@@ -298,7 +298,10 @@ def _capture_probe(settings) -> Probe:
 # APPLICABLE rather than a pass.
 FEED_MIN_ROWS = 20
 # Rows older than this mean the ingester has stopped even though the tap is producing.
-FEED_STALE_S = 600
+# FIVE MINUTES, because that is the operating budget: the detection sweep re-evaluates five-minute
+# buckets, so a feed that has not produced a row in one bucket has already missed a detection cycle.
+# Anything looser lets a capture be "healthy" through the cycle it failed to feed.
+FEED_STALE_S = 300
 # A feed that has fallen to this fraction of its own trailing baseline for the same hours is not
 # quiet, it is gone. Measured: the collapse read 1,389 aggregate rows against a same-hours median of
 # 10,392,847 (0.01%), with 11 hosts against 3,717. One percent is far below any real diurnal swing

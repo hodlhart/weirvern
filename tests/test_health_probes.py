@@ -1032,6 +1032,22 @@ def test_feed_probe_FAILS_when_the_rows_are_STALE_even_though_they_exist():
     assert p.value["state"] == "stale", p.value
 
 
+def test_the_freshness_budget_is_ONE_FIVE_MINUTE_BUCKET():
+    """The requirement, in the operator's words: a capture that reports healthy must have produced
+    flows in the last five minutes. The detection sweep re-evaluates five-minute buckets, so a feed
+    that has not produced a row inside one bucket has already missed a cycle -- and a ten-minute
+    tolerance would let it miss one and still read green."""
+    from weirvern.admin import status as status_mod
+
+    assert status_mod.FEED_STALE_S == 300, "the budget drifted from one detection bucket"
+    fresh = _probe("feed", by_fragment=_feed_with_history(9_900_000, 10_392_847, age=299))
+    assert fresh is not None and fresh.ok is True, fresh
+    stale = _probe("feed", by_fragment=_feed_with_history(9_900_000, 10_392_847, age=301))
+    assert stale is not None, "the feed probe did not run"
+    assert stale.ok is False, "a feed 301 seconds quiet was reported healthy"
+    assert stale.value["state"] == "stale", stale.value
+
+
 def test_the_feed_probe_is_present_EVEN_when_it_cannot_read_the_store():
     """A missing row is indistinguishable from a passing one (F047). A store that cannot be read
     must still produce the row, with `ok=None` and the error named."""
