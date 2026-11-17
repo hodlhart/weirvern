@@ -151,6 +151,61 @@ REVOCATION_CLEARS: dict[str, str] = {
 }
 
 
+CAP_SIPHON = {"NET_RAW", "NET_ADMIN"}
+CAP_CAPTURE = {"NET_RAW"}
+
+
+def required_capabilities(config: dict[str, str]) -> set[str]:
+    """The container capabilities a chosen sensor plan needs, and nothing more.
+
+    THE CHOICE IMPLIES THE PRIVILEGE. An operator who selects an active tap or a siphon in the
+    weirling settings has already made the decision; making them also hand-edit a Deployment is
+    how a plan comes to be "applied" while the capture it describes cannot open a socket. The
+    apply path reconciles this, so the two cannot disagree.
+
+    Passive needs NOTHING: no tap runs, and the exporter is somebody else's process.
+
+    Active capture needs NET_RAW to open the capture socket (tcpdump/softflowd read the wire).
+
+    Siphon needs NET_RAW AND NET_ADMIN: it forges ARP frames and rewrites forwarding, rp_filter
+    and send_redirects. That is strictly more than capture, so a passive deployment must never
+    be given NET_ADMIN "in case".
+    """
+    def truthy(value: object) -> bool:
+        return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+    sensor_mode = str(config.get("SENSOR_MODE") or "").strip().lower()
+    netflow_mode = str(config.get("NETFLOW_MODE") or "auto").strip().lower()
+    channel = str(config.get("CHANNEL_NETFLOW") or "off").strip().lower()
+
+    caps: set[str] = set()
+    if sensor_mode == "siphon" or truthy(config.get("SIPHON_NETFLOW")):
+        caps |= CAP_SIPHON
+    if netflow_mode == "active" or channel in ("upstream", "downstream"):
+        caps |= CAP_CAPTURE
+    return caps
+
+
+def capability_patch(container_index: int, container_name: str, caps: set[str],
+                     has_capabilities: bool) -> list[dict]:
+    """A JSON patch that changes ONLY the capability block of one container.
+
+    A merge patch cannot do this: `containers` is a list, and RFC 7386 replaces a list whole --
+    which would drop the image, the env and the mounts. A JSON patch with an index and a `test`
+    on the container's name is surgical and refuses to hit the wrong container if the order ever
+    changes.
+    """
+    value = {"drop": ["ALL"]}
+    if caps:
+        value["add"] = sorted(caps)
+    path = f"/spec/template/spec/containers/{container_index}/securityContext/capabilities"
+    ops: list[dict] = [{"op": "test",
+                        "path": f"/spec/template/spec/containers/{container_index}/name",
+                        "value": container_name}]
+    ops.append({"op": "replace" if has_capabilities else "add", "path": path, "value": value})
+    return ops
+
+
 def apply_semantics(key: str) -> str:
     """How a change to this key takes effect, in one sentence for the settings row's badge.
 
@@ -1060,6 +1115,58 @@ class ClusterConfig:
                 return {str(k): dict(v) for k, v in parsed.items() if isinstance(v, dict)}
         return {}
 
+    def reconcile_capabilities(self, name: str, container: str = "worker") -> dict:
+        """Give the worker exactly the capabilities its CONFIG asks for.
+
+        Reads the live ConfigMap (not the staged values) because this runs at restart time, after
+        the write has landed and been read back. Idempotent: a deployment that already carries the
+        right block is left alone, so the normal five-minute restart does not churn the pod.
+        """
+        config = self.read()
+        caps = required_capabilities(config)
+        url = f"{self.api_host}/apis/apps/v1/namespaces/{self.namespace}/deployments/{name}"
+        workload = self._request_url("GET", url)
+        containers = (((workload or {}).get("spec") or {}).get("template") or {}).get(
+            "spec", {}).get("containers") or []
+        index = next((i for i, c in enumerate(containers) if c.get("name") == container), None)
+        if index is None:
+            raise ConfigError(f"deployment {name} has no container named {container!r}")
+
+        block = (containers[index].get("securityContext") or {}).get("capabilities") or {}
+        current_add = sorted(str(c) for c in (block.get("add") or []))
+        current_drop = sorted(str(c) for c in (block.get("drop") or []))
+        want_add = sorted(caps)
+        if current_add == want_add and current_drop == ["ALL"]:
+            return {"changed": False, "capabilities": want_add}
+
+        ops = capability_patch(index, container, caps, has_capabilities=bool(block))
+        self._patch_json(url, ops)
+        return {"changed": True, "capabilities": want_add, "was": current_add}
+
+    def _request_url(self, method: str, url: str) -> dict:
+        req = urllib.request.Request(url, method=method)
+        req.add_header("Authorization", f"Bearer {self.token()}")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=self._ssl_context()) as response:
+                return json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            raise ConfigError(
+                f"{method} {url} failed: HTTP {exc.code} {exc.read()[:300]!r}") from exc
+
+    def _patch_json(self, url: str, ops: list[dict]) -> None:
+        body = json.dumps(ops).encode()
+        req = urllib.request.Request(url, data=body, method="PATCH")
+        req.add_header("Authorization", f"Bearer {self.token()}")
+        req.add_header("Content-Type", "application/json-patch+json")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=self._ssl_context()):
+                return
+        except urllib.error.HTTPError as exc:
+            raise ConfigError(
+                f"capability patch failed: HTTP {exc.code} {exc.read()[:300]!r}") from exc
+
     def restart(self, target: str) -> None:
         """Roll a workload so it re-reads the ConfigMap.
 
@@ -1078,6 +1185,13 @@ class ClusterConfig:
         path = {"deploy": "deployments", "ds": "daemonsets",
                 "statefulset": "statefulsets"}[kind]
         url = f"{self.api_host}/apis/apps/v1/namespaces/{self.namespace}/{path}/{name}"
+
+        # THE PLAN IMPLIES THE PRIVILEGE. Reconcile the worker's capabilities before it rolls,
+        # so an applied plan that needs NET_RAW (active capture) or NET_RAW+NET_ADMIN (siphon)
+        # does not come up unable to open its socket. Passive plans get the block REMOVED of
+        # everything but drop:ALL -- the grant shrinks as well as grows.
+        if kind == "deploy" and name == "weirvern-worker":
+            self.reconcile_capabilities(name)
 
         # THE SAME KEY kubectl uses, so either tool sees the other's rollout. A stable,
         # ISO-8601 second-resolution stamp: two restarts inside one second would produce the same

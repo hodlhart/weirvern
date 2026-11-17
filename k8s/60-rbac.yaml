@@ -167,6 +167,15 @@ rules:
   # account store has to exist before anyone can sign in, and the alternative (shipping a
   # placeholder manifest) was rejected for the reason the file header gives: `kubectl apply -k`
   # would re-apply it with empty values and silently wipe live accounts. What a create can make
+  # THE APPLY PATH RECONCILES CAPABILITIES WITH THE PLAN (2026-11-17). Choosing an active tap
+  # or a siphon in the weirling settings must grant the worker NET_RAW (capture socket) or
+  # NET_RAW+NET_ADMIN (ARP + forwarding) on Apply, and must shrink the grant back to drop:ALL
+  # when the plan goes passive. Deployments only, this namespace only: the GUI still cannot
+  # touch pods, images, or anything outside weirvern.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["weirvern-worker", "weirvern-gui"]
+    verbs: ["patch"]
   # here is a ConfigMap nobody reads until it is named `weirvern-users`.
   - apiGroups: [""]
     resources: ["configmaps"]
