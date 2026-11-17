@@ -275,6 +275,13 @@ spec:
               memory: "512Mi"
         # ── NETFLOW COLLECTOR (opt-in, per unit) ────────────────────────────────────────────────
         #
+        # A UNIT ON THE HUB NODE MUST OMIT THIS CONTAINER (measured 2026-11-17). It runs with
+        # hostNetwork, so it binds the NODE's 2055/6343/8080 -- and the hub's own goflow2 already
+        # owns all three. The result was a CrashLoop in a container nobody was watching while the
+        # rest of the unit reported healthy: `bind: address already in use` on :8080. Delete this
+        # block when the unit's `nodeSelector` can resolve to the hub itself, or give the collector
+        # a distinct port set and point the exporter at that.
+        #
         # THE OTHER HALF OF "A SENSOR CAN RECEIVE NETFLOW": this listener is where an exporter on
         # THIS segment sends. It runs the hub's own collector image with the hub's own arguments,
         # so a record written here is the record the hub writes for its own exporters -- and the
