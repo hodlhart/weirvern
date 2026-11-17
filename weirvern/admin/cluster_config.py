@@ -1130,32 +1130,95 @@ class ClusterConfig:
         return {}
 
     def reconcile_capabilities(self, name: str, container: str = "worker") -> dict:
-        """Give the worker exactly the capabilities its CONFIG asks for.
+        """Give the worker exactly the POSTURE its CONFIG asks for, not only its capabilities.
 
         Reads the live ConfigMap (not the staged values) because this runs at restart time, after
         the write has landed and been read back. Idempotent: a deployment that already carries the
         right block is left alone, so the normal five-minute restart does not churn the pod.
+
+        ── CAPABILITIES ALONE ARE A NO-OP HERE (measured 2026-11-17, inside the running pod) ─────
+
+        The base worker runs as uid 10001 with `runAsNonRoot: true`, and Kubernetes DROPS added
+        capabilities for a non-root container. Measured in the live pod: `CapBnd` carried
+        NET_ADMIN and NET_RAW while `CapEff` was 0000000000000000, so every intercept operation
+        failed with EPERM while the deployment read as configured. The base worker is also NOT
+        hostNetwork, so `weirvern intercept` cannot even see eth1: measured, it sees only lo and
+        eth0 while the node has eth1.
+
+        So a siphon plan reconciles the whole posture the intercept needs, exactly as
+        `overlays/siphon/worker-siphon-caps.yaml` does by hand: hostNetwork with
+        ClusterFirstWithHostNet (the default resolver for a hostNetwork pod cannot resolve
+        `clickhouse.weirvern.svc`), pod-level runAsNonRoot=false with runAsUser/runAsGroup 0 (the
+        API server REJECTS the pod when the pod level still says non-root), and the container's
+        own uid plus NET_RAW and NET_ADMIN. A passive plan puts all of it back, because a grant
+        that never shrinks is how a sensor ends up permanently privileged.
         """
         config = self.read()
         caps = required_capabilities(config)
         url = f"{self.api_host}/apis/apps/v1/namespaces/{self.namespace}/deployments/{name}"
         workload = self._request_url("GET", url)
-        containers = (((workload or {}).get("spec") or {}).get("template") or {}).get(
-            "spec", {}).get("containers") or []
+        spec = ((workload or {}).get("spec") or {}).get("template") or {}
+        pod = (spec.get("spec") or {})
+        containers = pod.get("containers") or []
         index = next((i for i, c in enumerate(containers) if c.get("name") == container), None)
         if index is None:
             raise ConfigError(f"deployment {name} has no container named {container!r}")
 
-        block = (containers[index].get("securityContext") or {}).get("capabilities") or {}
+        target = containers[index]
+        block = (target.get("securityContext") or {}).get("capabilities") or {}
         current_add = sorted(str(c) for c in (block.get("add") or []))
         current_drop = sorted(str(c) for c in (block.get("drop") or []))
         want_add = sorted(caps)
-        if current_add == want_add and current_drop == ["ALL"]:
-            return {"changed": False, "capabilities": want_add}
+
+        pod_sc = dict(pod.get("securityContext") or {})
+        container_sc = dict(target.get("securityContext") or {})
+        if caps:
+            posture_ok = (
+                bool(pod.get("hostNetwork"))
+                and pod.get("dnsPolicy") == "ClusterFirstWithHostNet"
+                and pod_sc.get("runAsNonRoot") is False
+                and int(pod_sc.get("runAsUser", -1)) == 0
+                and int(container_sc.get("runAsUser", -1)) == 0
+            )
+        else:
+            posture_ok = (
+                not bool(pod.get("hostNetwork"))
+                and pod_sc.get("runAsNonRoot") is not False
+            )
+
+        if current_add == want_add and current_drop == ["ALL"] and posture_ok:
+            return {"changed": False, "capabilities": want_add, "posture": posture_ok}
 
         ops = capability_patch(index, container, caps, has_capabilities=bool(block))
+        if caps:
+            ops.extend([
+                # POD LEVEL AND CONTAINER LEVEL MUST AGREE, or the API server refuses the pod with
+                # "container's runAsUser breaks non-root policy", which reads like a container bug.
+                {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": True},
+                {"op": "add", "path": "/spec/template/spec/dnsPolicy",
+                 "value": "ClusterFirstWithHostNet"},
+                {"op": "add", "path": "/spec/template/spec/securityContext",
+                 "value": {**pod_sc, "runAsNonRoot": False, "runAsUser": 0, "runAsGroup": 0}},
+                {"op": "add",
+                 "path": f"/spec/template/spec/containers/{index}/securityContext/runAsUser",
+                 "value": 0},
+                {"op": "add",
+                 "path": f"/spec/template/spec/containers/{index}/securityContext/runAsGroup",
+                 "value": 0},
+            ])
+        else:
+            ops.extend([
+                {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": False},
+                {"op": "add", "path": "/spec/template/spec/securityContext",
+                 "value": {**pod_sc, "runAsNonRoot": True, "runAsUser": 10001, "runAsGroup": 10001}},
+                {"op": "remove",
+                 "path": f"/spec/template/spec/containers/{index}/securityContext/runAsUser"},
+                {"op": "remove",
+                 "path": f"/spec/template/spec/containers/{index}/securityContext/runAsGroup"},
+            ])
         self._patch_json(url, ops)
-        return {"changed": True, "capabilities": want_add, "was": current_add}
+        return {"changed": True, "capabilities": want_add, "was": current_add,
+                "posture": "siphon" if caps else "passive"}
 
     def _request_url(self, method: str, url: str) -> dict:
         req = urllib.request.Request(url, method=method)
