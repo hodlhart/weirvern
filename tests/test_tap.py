@@ -458,3 +458,50 @@ def test_the_ring_prune_does_not_raise_on_an_empty_or_missing_ring(tmp_path):
 
     assert tap.prune_ring(directory=str(tmp_path), max_mb=1) == 0
     assert tap.prune_ring(directory=str(tmp_path / "gone"), max_mb=1) == 0
+
+
+# ── the state the tap publishes ────────────────────────────────────────────────────────────────
+
+
+def test_publish_state_writes_the_evidence_the_health_probe_reads(tmp_path):
+    """One JSON file per tick, atomic, carrying the counters that distinguish 'quiet network' from
+    'dead tap'. This is the only thing that crosses the container boundary: the tap has no database
+    client by design, and the health probe runs in another pod."""
+    import json
+    from types import SimpleNamespace
+
+    from weirvern import tap
+
+    ring = tmp_path / "ring"
+    ring.mkdir()
+    (ring / "ch-20261117-150000.pcap000").write_bytes(b"x" * 100)
+    (ring / "ch-20261117-150030.pcap001").write_bytes(b"x" * 50)
+
+    sup = tap.Supervisor(directory=str(ring))
+    sup.taps = {"eth1": {"tap": object(), "source": "loch", "dir": str(ring)}}
+    sup.segments_swept = 3
+    dest = tmp_path / "state" / "state.json"
+
+    ok = tap.publish_state(sup, [tap.Target(iface="eth1", source="loch")],
+                           SimpleNamespace(netflow_mode="active", sensor_mode="loch"),
+                           path=str(dest))
+
+    assert ok is True
+    payload = json.loads(dest.read_text())
+    assert payload["running"] is True
+    assert payload["segments_swept"] == 3
+    assert payload["ring_files"] == 2
+    assert payload["ring_bytes"] == 150
+    assert payload["targets"][0]["iface"] == "eth1"
+    assert payload["netflow_mode"] == "active"
+
+
+def test_publish_state_never_raises_on_an_unwritable_path(tmp_path):
+    """A read-only mount must not take capture down, and must not spam the log either."""
+    from types import SimpleNamespace
+
+    from weirvern import tap
+
+    sup = tap.Supervisor(directory=str(tmp_path))
+    assert tap.publish_state(sup, [], SimpleNamespace(netflow_mode="active"),
+                             path="/proc/definitely-not-writable/state.json") is False

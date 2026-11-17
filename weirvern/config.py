@@ -10,6 +10,28 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# ── WHERE THE TAP PUBLISHES ITS OWN STATE (measured 2026-11-17) ────────────────────────────────
+#
+# The tap runs where the privilege is (the Zeek pod's sidecar on the hub, the agent container on a
+# weirling), and the process that reports health runs somewhere else (the GUI pod, or the worker
+# for the CLI). Neither can see the other's /tmp, and the tap has no database client -- by design,
+# a capture process must keep capturing when ClickHouse is away.
+#
+# So the state is a small file on a hostPath that all three mount. It is the only evidence a human
+# has that capture is ALIVE rather than merely configured: every other health probe can read green
+# while the tap is dead, because flows simply stop arriving and "no flows" looks exactly like "a
+# quiet network" (the failure this module's siblings spent the week fixing).
+DEFAULT_TAP_STATE_PATH = "/var/lib/weirvern/tap/state.json"
+
+
+def tap_state_path() -> str:
+    """Where the tap writes its state and every reader looks for it.
+
+    A function, not a constant, so the path is read at CALL time: tests point it at a tmp dir, and
+    a container can override it without the value being frozen at import.
+    """
+    return (os.environ.get("WEIRVERN_TAP_STATE") or "").strip() or DEFAULT_TAP_STATE_PATH
+
 
 def _int_env(name: str, default: int) -> int:
     """Read a positive int from the environment, tolerating junk.

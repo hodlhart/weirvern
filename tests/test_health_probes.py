@@ -847,3 +847,77 @@ def test_a_FAILED_volume_read_is_carried_into_the_detail():
     assert p is not None
     assert "could not be read" in str(p.detail), p.detail
     assert "Unknown identifier" in str(p.detail), p.detail
+
+
+# ── the capture probe: is the TAP alive, or merely configured? ───────────────────────────────────
+#
+# Every other probe infers capture from the rows that arrive, and "no rows" cannot tell a quiet
+# network from a dead tap. Measured 2026-11-17: flows stopped at 13:12 and nothing on the box said
+# why; the health panel was green because ClickHouse was fine and the tables were fine. The tap
+# now publishes its own state to a hostPath, and this probe reads it.
+
+
+def _tap_state(tmp_path, monkeypatch, **overrides):
+    import json
+    import time as _time
+
+    path = tmp_path / "tap" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ts": _time.time(), "running": True,
+        "targets": [{"iface": "eth1", "source": "loch"}],
+        "segments_swept": 7, "ring_files": 2, "ring_bytes": 20480, "last_error": "",
+    }
+    payload.update(overrides)
+    path.write_text(json.dumps(payload))
+    monkeypatch.setenv("WEIRVERN_TAP_STATE", str(path))
+    return path
+
+
+def test_capture_probe_reports_a_LIVE_tap_with_its_interface_and_counters(tmp_path, monkeypatch):
+    _tap_state(tmp_path, monkeypatch)
+    p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
+    assert p.ok is True, p.detail
+    assert "eth1" in p.detail and "7 segment(s)" in p.detail, p.detail
+
+
+def test_capture_probe_FAILS_when_the_tap_stopped_publishing(tmp_path, monkeypatch):
+    """The dead-tap case: the file exists but is older than three publish ticks."""
+    import time as _time
+
+    _tap_state(tmp_path, monkeypatch, ts=_time.time() - 600, last_error="")
+    p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
+    assert p.ok is False, "a tap that has not published for ten minutes was reported healthy"
+    assert "dead or wedged" in p.detail, p.detail
+
+
+def test_capture_probe_FAILS_when_the_tap_is_alive_but_not_capturing(tmp_path, monkeypatch):
+    _tap_state(tmp_path, monkeypatch, running=False, last_error="socket: Operation not permitted")
+    p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
+    assert p.ok is False
+    assert "NOT capturing" in p.detail and "Operation not permitted" in p.detail, p.detail
+
+
+def test_capture_probe_FAILS_when_active_but_no_state_was_EVER_published(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEIRVERN_TAP_STATE", str(tmp_path / "never" / "state.json"))
+    p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
+    assert p.ok is False
+    assert "NEVER published" in p.detail, p.detail
+
+
+def test_capture_probe_is_NOT_APPLICABLE_on_a_box_with_no_tap(tmp_path, monkeypatch):
+    """A deployment fed by an external exporter has no tap to be alive; that is not a fault."""
+    monkeypatch.setenv("WEIRVERN_TAP_STATE", str(tmp_path / "none" / "state.json"))
+    p = status._capture_probe(SimpleNamespace(netflow_mode="passive"))
+    assert p.ok is None, "a box with no tap was reported as failing"
+    assert "nothing to be alive" in p.detail, p.detail
+
+
+def test_capture_probe_FAILS_on_a_corrupt_state_file(tmp_path, monkeypatch):
+    path = tmp_path / "tap" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json")
+    monkeypatch.setenv("WEIRVERN_TAP_STATE", str(path))
+    p = status._capture_probe(SimpleNamespace(netflow_mode="active"))
+    assert p.ok is False
+    assert "could not be read" in p.detail, p.detail

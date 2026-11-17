@@ -319,9 +319,33 @@ def _sluice_maybe(settings, client, *, derive: bool = True, store=None) -> None:
                 logger.warning("sluice: could not reconcile gate tables: %s", detail)
         _SLUICE["tables"] = desired_tables
     else:
-        ok, detail = sweep_gate_tables(set())
-        if not ok:
-            logger.warning("sluice: could not remove gate tables while disabled: %s", detail)
+        ok, detail = True, ""
+        # ── ONCE PER PROCESS, NOT ONCE PER PASS (measured 2026-11-17) ─────────────────────────────
+        #
+        # The worker runs as uid 10001 with every capability dropped, so `nft list tables` fails
+        # with "Operation not permitted (you must be root)" on EVERY pass. The intent here is
+        # right -- a disabled gate must mean the rules are gone, and a table a previous process
+        # armed outlives it -- but the failure is PERMANENT for this process, and a warning every
+        # 60 seconds is how the next real warning gets ignored. Measured: this single line was
+        # ~1,440 entries a day, and it is the loudest thing in a log that also has to carry the
+        # detection sweep's verdicts.
+        #
+        # So: try once, and if the answer is "this process may not touch nft", say so ONCE at INFO,
+        # name the remedy, and stop asking. A different error is still a warning, every time.
+        if not _SLUICE.get("nft_blocked"):
+            ok, detail = sweep_gate_tables(set())
+            if not ok:
+                if "Operation not permitted" in detail or "you must be root" in detail:
+                    _SLUICE["nft_blocked"] = True
+                    logger.info(
+                        "sluice: this process cannot manage nft (%s), so the disabled gate's "
+                        "leftover tables cannot be swept from here. Nothing is armed and nothing "
+                        "is being blocked; a table left by an earlier run needs a privileged "
+                        "operator (or the gate container) to remove it. Reported once, not every "
+                        "pass.", detail,
+                    )
+                else:
+                    logger.warning("sluice: could not remove gate tables while disabled: %s", detail)
         _SLUICE["tables"] = set()
 
     if not settings.sluice_enabled:

@@ -1719,3 +1719,27 @@ def test_a_failed_nft_list_does_not_count_as_a_present_table():
     assert backend.installed() is False
     ok, detail = backend.disarm()
     assert ok is True and "still present" not in detail
+
+
+def test_a_PERMISSION_DENIED_sweep_is_reported_once_not_every_pass(monkeypatch, caplog):
+    """The worker runs as uid 10001 with every capability dropped, so `nft list tables` fails
+    permanently -- `Operation not permitted (you must be root)` on EVERY pass.
+
+    MEASURED 2026-11-17: that single line ran ~1,440 times a day, in the same log that has to carry
+    the detection sweep's verdicts. The condition cannot change within the process, so it is
+    reported once, with the remedy, and then not asked again.
+    """
+    worker, _ = _wire_disabled_sweep(monkeypatch, _SweepBackend(present=False))
+    monkeypatch.setattr("weirvern.sluice.sweep_gate_tables",
+                        lambda keep=None: (False, "Operation not permitted (you must be root)"))
+    worker._SLUICE.pop("nft_blocked", None)
+
+    with caplog.at_level("INFO", logger="weirvern.worker"):
+        worker._sluice_maybe(_disabled_settings(), client=object())
+        worker._sluice_maybe(_disabled_settings(), client=object())
+
+    hits = [r for r in caplog.records if "cannot manage nft" in r.getMessage()]
+    assert len(hits) == 1, f"the permanent failure was logged {len(hits)} times"
+    assert "privileged operator" in hits[0].getMessage(), (
+        "the one report did not say what to do about it"
+    )

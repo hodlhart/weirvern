@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weirvern"
-version = "0.23.66"
+version = "0.23.67"
 description = "Home-lab network flow anomaly detection: GoFlow2 -> ClickHouse -> scikit-learn ensemble -> Pushover"
 readme = "README.md"
 license = { text = "MIT" }

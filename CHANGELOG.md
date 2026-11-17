@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.67 — 2026-11-17
+
+THE HEALTH PANEL COULD NOT TELL A QUIET NETWORK FROM A DEAD TAP.
+
+- **The tap publishes its own state** (`weirvern.tap.publish_state`) once per tick to a hostPath
+  that the tap, the worker and the GUI all mount: PID, targets, segments summarised, ring size and
+  the last error. Atomic by rename, so a reader never sees half a file; a read-only mount is DEBUG,
+  not a warning, because a capture process must not be noisy about a reporting failure.
+- **New `capture` health probe**, tri-state like the rest: no state file on a box with no active
+  tap is NOT APPLICABLE; no file with `netflow_mode=active`, a file older than three publish ticks,
+  or a live tap that is not capturing are failures — each naming the next thing to check.
+- Why this is not cosmetic: every other probe infers capture from the rows that arrive, and "no
+  rows" is the same fact whether the network is quiet, the filter is wrong, softflowd is stuck or
+  the tap is dead. That ambiguity is what let a sixteen-hour gap, and then a twenty-hour wedged
+  cursor after it, read as a quiet night with every light green.
+- **The sluice teardown warning is no longer once a minute.** `nft list tables` fails permanently
+  for a uid-10001, capability-free worker; the condition is now reported once with the remedy
+  instead of ~1,440 times a day in the log that also carries the detection sweep's verdicts.
+
 ## 0.23.66 — 2026-11-17
 
 AN EMPTY WINDOW BEHIND AN OUTAGE RE-EXAMINED ITSELF FOREVER, AND THE LOG THAT WOULD HAVE SAID SO

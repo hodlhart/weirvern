@@ -133,6 +133,11 @@ spec:
               readOnly: true
             - name: models
               mountPath: /models
+            # READ-ONLY: the worker only reports what the tap published (`weirvern status`), and
+            # a component that does not write a path should not be able to.
+            - name: tap-state
+              mountPath: /var/lib/weirvern/tap
+              readOnly: true
           resources:
             requests:
               cpu: "500m"
@@ -199,3 +204,9 @@ spec:
         - name: models
           persistentVolumeClaim:
             claimName: models
+        - name: tap-state
+          # The tap's published state, read-only. Same hostPath the Zeek pod's tap container
+          # writes: the health probe lives here (and in the GUI), not next to the process.
+          hostPath:
+            path: /var/lib/weirvern/tap
+            type: DirectoryOrCreate

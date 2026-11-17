@@ -902,6 +902,12 @@ def _tap_supervisor(settings, iface: str, controller, stop: threading.Event) -> 
                     zeek_iface=iface,
                 )
                 supervisor.tick(targets)
+                # Same evidence the hub's sidecar publishes, for the same reason: a file is the
+                # only thing that crosses a container boundary, and this process has no database
+                # client by design. ON A UNIT THIS IS LOCAL EVIDENCE -- the hub's health panel
+                # reads the HUB's hostPath, so a weirling's tap state is not visible there yet;
+                # making it visible belongs on the heartbeat (sensor_status), not on this file.
+                tap_mod.publish_state(supervisor, targets, settings)
             except Exception as exc:  # noqa: BLE001 -- capture must not kill the heartbeat
                 logger.warning("tap: tick failed (heartbeat continues): %s", exc)
     finally:

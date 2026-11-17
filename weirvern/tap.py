@@ -48,6 +48,7 @@ which the worker deliberately mounts read-only.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -262,6 +263,71 @@ def prune_ring(*, directory: str | None = None, max_mb: int = TAP_RING_MAX_MB) -
     return dropped
 
 
+def publish_state(supervisor: Supervisor, targets: Sequence[Target], settings,
+                  *, path: str | None = None) -> bool:
+    """Write the tap's own state where a health probe can read it. Best-effort, once per tick.
+
+    WHY A FILE AND NOT A ROW (measured 2026-11-17). The tap deliberately has no database client:
+    it must keep capturing when ClickHouse is away, and a capture process that dies with the
+    database is the wrong dependency direction. The health probe, meanwhile, runs in a different
+    pod (the GUI) or a different container (the worker CLI) and cannot see this process's /tmp.
+    A hostPath file that all of them mount is the smallest thing that crosses that boundary.
+
+    WHAT IT ADDS THAT NO OTHER PROBE HAS. Everything else infers capture from the ROWS that
+    arrive, and "no rows" is the same fact whether the network is quiet or the tap is dead -- the
+    exact ambiguity that hid a 16-hour outage. This says the process is alive, on which interface,
+    how many segments it has summarised, and what last went wrong.
+
+    ATOMIC BY RENAME: a reader either sees the previous tick or this one, never a half-written
+    file. A failure to write is DEBUG, not a warning: a read-only mount or a missing hostPath must
+    not spam a capture process that is otherwise doing its job.
+    """
+    from weirvern.config import tap_state_path  # noqa: PLC0415 -- no cycle at import time
+
+    dest = path or tap_state_path()
+    ring_files = 0
+    ring_bytes = 0
+    roots = {entry.get("dir") or supervisor.directory for entry in supervisor.taps.values()}
+    for root in roots or {supervisor.directory}:
+        try:
+            names = [n for n in os.listdir(root) if ".pcap" in n]
+        except OSError:
+            continue
+        ring_files += len(names)
+        for name in names:
+            with contextlib.suppress(OSError):
+                ring_bytes += os.path.getsize(os.path.join(root, name))
+    payload = {
+        "ts": time.time(),
+        "pid": os.getpid(),
+        "running": bool(supervisor.taps),
+        "targets": [{"iface": t.iface, "source": t.source} for t in targets],
+        "netflow_mode": str(getattr(settings, "netflow_mode", "")),
+        "sensor_mode": str(getattr(settings, "sensor_mode", "")),
+        "collector": TAP_COLLECTOR,
+        "segments_swept": int(supervisor.segments_swept),
+        "ring_files": ring_files,
+        "ring_bytes": ring_bytes,
+        "last_error": supervisor.last_error,
+    }
+    tmp = f"{dest}.tmp.{os.getpid()}"
+    try:
+        parent = os.path.dirname(dest)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, dest)
+        return True
+    except OSError as exc:
+        logger.debug("tap: could not publish state to %s: %s", dest, exc)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        return False
+
+
 def sweep_completed(*, run: Callable | None = None, probe: str | None = None,
                     now: Callable[[], float] | None = None,
                     directory: str | None = None) -> int:
@@ -331,6 +397,10 @@ class Supervisor:
         self.directory = directory
         self.taps: dict[str, dict] = {}
         self.retry_after = 0.0
+        # Counters for the published state. They are what turns "flows stopped" into a diagnosis:
+        # a live tap that has swept nothing for ten minutes is a different fault from a dead one.
+        self.segments_swept = 0
+        self.last_error = ""
         self._spawn = spawn or subprocess.Popen
         self._which = which or shutil.which
         self._run = run
@@ -349,6 +419,7 @@ class Supervisor:
             rc = next((getattr(self.taps[i].get("tap"), "returncode", None) for i in dead), None)
             self.stop(f"the tap on {', '.join(dead)} exited")
             self.retry_after = max(self.retry_after, self._clock() + RETRY_S)
+            self.last_error = f"the tap on {', '.join(dead)} exited (code {rc})"
             logger.warning("tap: a capture tap exited (code %s); next attempt in 5 minutes", rc)
             running = False
         elif running and set(self.taps) != set(target_ifaces):
@@ -408,6 +479,7 @@ class Supervisor:
         except Exception as exc:  # noqa: BLE001
             self.stop()
             self.retry_after = self._clock() + RETRY_S
+            self.last_error = str(exc)
             logger.warning("tap: could not start the probe: %s", exc)
 
     # ── the sweep ────────────────────────────────────────────────────────────────────────────
@@ -415,7 +487,9 @@ class Supervisor:
         probe = self._which("softflowd")
         for entry in self.taps.values():
             directory = entry.get("dir") or self.directory
-            sweep_completed(run=self._run, probe=probe, directory=directory)
+            done = sweep_completed(run=self._run, probe=probe, directory=directory)
+            if isinstance(done, int):
+                self.segments_swept += done
             # AFTER the sweep, never before: whatever could still be summarised has been. The
             # guard is a backstop for a summariser that is not consuming (see TAP_RING_MAX_MB).
             prune_ring(directory=directory)
@@ -549,6 +623,9 @@ def main() -> None:
                              .strip().lower() == "siphon" else None),
             )
             supervisor.tick(targets)
+            # Publish what this process is doing, once per tick: the only evidence that capture is
+            # ALIVE rather than merely configured. Never raises, never blocks the sweep.
+            publish_state(supervisor, targets, settings)
         except Exception as exc:  # noqa: BLE001 -- a monitoring feature must not die on a tick
             logger.warning("tap: tick failed (retrying): %s", exc)
 

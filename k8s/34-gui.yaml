@@ -187,6 +187,12 @@ spec:
             - name: host-sys
               mountPath: /host-sys
               readOnly: true
+            # THE TAP'S PUBLISHED STATE, read-only. The health probe that reads it runs in THIS
+            # pod, while the tap itself runs in the Zeek pod -- a hostPath is the only thing they
+            # share. Without it the panel cannot tell a quiet network from a dead capture process.
+            - name: tap-state
+              mountPath: /var/lib/weirvern/tap
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
         # bytecode caches and temp files. An emptyDir is the minimum that allows.
@@ -200,6 +206,12 @@ spec:
           hostPath:
             path: /sys
             type: Directory
+        - name: tap-state
+          # Written by the Zeek pod's tap sidecar; read here by the health panel. One JSON file
+          # per tick, never captured traffic.
+          hostPath:
+            path: /var/lib/weirvern/tap
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

@@ -186,6 +186,93 @@ def _probe_failed(report, name: str, err: Exception, ms: float) -> None:
     ))
 
 
+def _capture_probe(settings) -> Probe:
+    """Is the capture process ALIVE, and is it actually tapping anything?
+
+    Every other probe infers capture from rows that arrive, and "no rows" cannot tell a quiet
+    network from a dead tap. The tap publishes its own state once per tick
+    (`weirvern.tap.publish_state`) to a hostPath file that the tap, the worker and the GUI all
+    mount; this reads it.
+
+    TRI-STATE:
+      * no file, `netflow_mode` not `active` -> None (this box runs no tap; nothing to be alive)
+      * no file, `netflow_mode` is `active` -> False (the contract is broken; it never started)
+      * file stale (> 3 publish ticks)       -> False (dead or wedged)
+      * file fresh, `running` false          -> False (alive, but not capturing -- names why)
+      * file fresh, `running` true           -> True
+
+    A pure function of the file and the settings, so the decision table is testable without a
+    container, a pod or a database.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from weirvern.config import tap_state_path  # noqa: PLC0415
+
+    path = tap_state_path()
+    mode = str(getattr(settings, "netflow_mode", "") or "").strip().lower()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = _json.load(fh)
+        if not isinstance(state, dict):
+            raise ValueError("the state file is not a JSON object")
+    except FileNotFoundError:
+        if mode == "active":
+            return Probe(
+                "capture", ok=False, value={"path": path},
+                detail=(
+                    f"netflow_mode is 'active' but the tap has NEVER published state at {path}. "
+                    "Either it has not started since this build was deployed, or it cannot write "
+                    "there -- check `kubectl -n weirvern logs ds/zeek -c tap` and that the tap-state "
+                    "hostPath is mounted in the Zeek pod."
+                ),
+            )
+        return Probe(
+            "capture", ok=None, value={"path": path, "mode": mode},
+            detail=(
+                f"no tap state at {path}; netflow_mode is '{mode or 'unset'}', so this box is not "
+                "running an active tap and there is nothing to be alive"
+            ),
+        )
+    except (OSError, ValueError) as exc:
+        return Probe(
+            "capture", ok=False, value={"path": path},
+            detail=f"the tap state at {path} exists but could not be read: {exc}",
+        )
+
+    try:
+        age = max(0.0, time.time() - float(state.get("ts") or 0))
+    except (TypeError, ValueError):
+        age = float("inf")
+    limit_s = 3 * 15  # three publish ticks (weirvern.tap.TICK_S); derived, not guessed
+    targets = [t for t in (state.get("targets") or []) if isinstance(t, dict)]
+    iface = ", ".join(str(t.get("iface", "")) for t in targets) or "no target selected"
+    ring_mb = float(state.get("ring_bytes") or 0) / (1024 * 1024)
+    summary = (
+        f"{iface}; {int(state.get('segments_swept') or 0)} segment(s) summarised; "
+        f"ring {int(state.get('ring_files') or 0)} file(s) / {ring_mb:.1f}MB"
+    )
+    if age > limit_s:
+        last = state.get("last_error")
+        return Probe(
+            "capture", ok=False, value=state,
+            detail=(
+                f"the tap has not published for {_human_age(age)} (limit {limit_s}s, three "
+                f"publishes): it is dead or wedged and NOTHING is being captured. Last state: "
+                f"{summary}" + (f"; last error: {last}" if last else "")
+            ),
+        )
+    if not state.get("running"):
+        why = state.get("last_error") or "no reason recorded"
+        return Probe(
+            "capture", ok=False, value=state,
+            detail=(
+                f"the tap is alive but NOT capturing ({why}). Every flow-based probe will read "
+                "quiet rather than broken until this is fixed."
+            ),
+        )
+    return Probe("capture", ok=True, value=state, detail=f"tapping {summary}")
+
+
 def collect_health(client, settings, user_store=None) -> HealthReport:
     """Probe ClickHouse and the pipeline. Never raises.
 
@@ -816,6 +903,33 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
                 ))
         except Exception as exc:  # noqa: BLE001
             _probe_failed(report, "account_store", exc, 0.0)
+
+    # 9. THE TAP ITSELF — ALIVE, OR MERELY CONFIGURED?
+    #
+    # ── EVERY PROBE ABOVE INFERS CAPTURE FROM THE ROWS THAT ARRIVE (measured 2026-11-17) ─────────
+    #
+    # And "no rows" is the same fact whether the network is quiet, the filter is wrong, softflowd
+    # is stuck, or the capture process is dead. That ambiguity is what let a sixteen-hour outage
+    # read as a quiet night, and it is why the tap now publishes its own state once per tick
+    # (`weirvern.tap.publish_state`): a PID, its targets, how many segments it has summarised, the
+    # ring's size, and the last thing that went wrong. The file lives on a hostPath because the
+    # tap, the worker and this process are three different containers.
+    #
+    # TRI-STATE, like every other probe here. No state file on a box that is not running an active
+    # tap is NOT APPLICABLE, not a failure: a deployment fed by an external exporter has no tap to
+    # be alive. On a box configured for `netflow_mode=active` the file is the contract, and its
+    # absence is the fault.
+    #
+    # THE THRESHOLD IS DERIVED FROM THE PUBLISH CADENCE (TICK_S = 15s), not a literal, for the same
+    # reason `detect_loop` derives its own: three ticks tolerates one slow pass and one lost write
+    # without hiding a dead process.
+    started = time.perf_counter()
+    try:
+        report.add(_capture_probe(settings))
+    except Exception as exc:  # noqa: BLE001
+        _probe_failed(report, "capture", exc, (time.perf_counter() - started) * 1000)
+    if report.probes:
+        report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 
     return report
 
