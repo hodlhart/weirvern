@@ -919,6 +919,19 @@ def test_capture_probe_is_NOT_APPLICABLE_on_a_box_with_no_tap(tmp_path, monkeypa
     assert "nothing to be alive" in p.detail, p.detail
 
 
+def test_capture_probe_does_NOT_read_GREEN_in_passive_mode_with_a_live_state_file(tmp_path, monkeypatch):
+    """The fallback path, measured against its own logic: in passive mode the tap selects no
+    targets by design and publishes `running: true` with an empty list, which the old verdict read
+    as "ok -- tapping no target selected". A green row over a capture that does not exist is the
+    exact failure this report exists to prevent, so passive is NOT APPLICABLE and the feed check
+    carries the truth."""
+    _tap_state(tmp_path, monkeypatch, targets=[])
+    p = status._capture_probe(SimpleNamespace(netflow_mode="passive"))
+    assert p.ok is None, f"passive mode reported a capture it does not have: {p.detail!r}"
+    assert "external exporter owns the feed" in p.detail, p.detail
+
+
+
 def test_capture_probe_FAILS_on_a_corrupt_state_file(tmp_path, monkeypatch):
     path = tmp_path / "tap" / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)

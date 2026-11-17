@@ -211,6 +211,23 @@ def _capture_probe(settings) -> Probe:
 
     path = tap_state_path()
     mode = str(getattr(settings, "netflow_mode", "") or "").strip().lower()
+    if mode == "passive":
+        # ── PASSIVE MEANS THE ROUTER OWNS THE FEED (added 2026-11-17) ────────────────────────────
+        #
+        # In passive mode `select_targets` returns nothing on purpose, so a running tap publishes
+        # `running: true` with an empty target list -- and the old verdict here read that as "ok,
+        # tapping no target selected", which is a green row over a capture that does not exist. The
+        # fallback deployment (a gateway exporting NetFlow or sFlow into goflow2) is legitimate and
+        # must not report a fault, but it must not report a pass either: there is no sensor tap to
+        # be alive, and the `feed` probe is the one that says whether records are arriving.
+        return Probe(
+            "capture", ok=None, value={"path": path, "mode": mode},
+            detail=(
+                "netflow_mode is 'passive': an external exporter owns the feed, so this box runs no "
+                "tap and there is nothing to be alive. Whether records are arriving is reported by "
+                "the feed check."
+            ),
+        )
     try:
         with open(path, encoding="utf-8") as fh:
             state = _json.load(fh)
