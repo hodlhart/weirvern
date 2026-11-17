@@ -22,7 +22,6 @@ monitored -- because a profile of a stranger is not a profile of the network.
 from __future__ import annotations
 
 import statistics
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 DEFAULT_DAYS = 14
@@ -33,9 +32,18 @@ DEFAULT_DAYS = 14
 DEFAULT_ERA_HOURS = 6
 
 
-def era_start(hours: int = DEFAULT_ERA_HOURS) -> str:
-    """An ISO timestamp the queries can filter on: this capture regime only."""
-    return (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+def era_start(client: Any, hours: int = DEFAULT_ERA_HOURS) -> str:
+    """The era boundary, taken from the DATABASE clock, not this process's.
+
+    MEASURED 2026-11-17: the first live run returned nothing. The container is UTC and ClickHouse
+    runs on the deployment's local clock, so an era computed here was six hours ahead of the rows
+    and filtered every one of them out. A timestamp compared against another clock is the same
+    class of bug as the naive/aware drain cursor; taking it from `now()` on the server removes the
+    question.
+    """
+    row = client.query("SELECT toString(now() - INTERVAL %(h)s HOUR)",
+                       parameters={"h": int(hours)}).result_rows[0]
+    return str(row[0])
 
 
 def _scope(client: Any) -> str:
@@ -51,7 +59,7 @@ def _merged(sql: str, client: Any, params: dict[str, Any]) -> list[Any]:
 def host_hour_profiles(client: Any, *, days: int = DEFAULT_DAYS, era: str | None = None
                        ) -> dict[str, dict[int, dict[str, float]]]:
     """Per host, per hour of day: median bytes, p90 bytes, median peers, from merged buckets."""
-    era = era or era_start(days * 24)
+    era = era or era_start(client, days * 24)
     rows = _merged(
         "SELECT src_addr, toHour(window_start) AS hour, "
         "       quantile(0.5)(bytes) AS med_bytes, quantile(0.9)(bytes) AS p90_bytes, "
@@ -79,7 +87,7 @@ def host_hour_profiles(client: Any, *, days: int = DEFAULT_DAYS, era: str | None
 
 def recent_hour(client: Any, *, minutes: int = 60, era: str | None = None) -> dict[str, dict[str, int]]:
     """What each of our hosts has actually done in the last `minutes`, from merged buckets."""
-    era = era or era_start(24)
+    era = era or era_start(client, 24)
     rows = _merged(
         "SELECT src_addr, sum(bytes) AS bytes, max(peers) AS peers FROM ("
         "  SELECT src_addr, window_start, sumMerge(total_bytes) AS bytes, "

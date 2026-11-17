@@ -24,6 +24,8 @@ class _C:
             return _R(self._s)
         if "quantile(0.5)(bytes)" in sql:
             return _R(self._p)
+        if "toString(now() - INTERVAL" in sql:
+            return _R([("2026-01-01 00:00:00",)])
         if "toHour(now())" in sql:
             return _R([(self._h,)])
         return _R(self._r)
@@ -90,7 +92,8 @@ def test_a_peer_new_to_one_host_but_ROUTINE_FOR_ITS_CLASS_is_not_novelty():
 
 
 def test_the_era_marker_is_a_timestamp_and_the_summary_states_the_control():
-    assert len(scopes.era_start(6)) >= 19
+    client = _C([], 0, [])
+    assert len(scopes.era_start(client, 6)) >= 19
     s = scopes.summarise([{"ratio": 1.1}, {"ratio": 3.0}, {"ratio": None}])
     assert s["hosts_scored"] == 2 and s["hosts_without_history"] == 1
     assert "thousands" in s["quiet_control"]
