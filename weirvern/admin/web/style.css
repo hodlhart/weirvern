@@ -487,6 +487,10 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
    rule is a child selector, not a snapshot. */
 #view-settings > .card.collapsed > *:not(h2) { display: none; }
 #view-settings > .card > h2.acc { cursor: pointer; }
+/* THE COUNT BADGE CARRIES ITS OWN DOT. The generic h2 > .muted dot rule does not reach these
+ * headings once installViewHeaders demotes every card h2 to h3, so "Storage and runtime" and its
+ * count ran together as "runtime13 settings". */
+.acc-count::before { content: "\00b7\00a0"; color: var(--muted); }
 #view-settings > .card > h2.acc::after { content: "\25B8"; float: right; color: var(--muted);
   font-weight: 400; }
 #view-settings > .card:not(.collapsed) > h2.acc::after { content: "\25BE"; }

@@ -1482,6 +1482,8 @@ async function loadSettings() {
   // Software update is a read-only release check. It deliberately runs beside Settings rather
   // than inside the ConfigMap payload: a slow GitHub request must not delay the settings rows.
   if (typeof loadUpdateStatus === "function") loadUpdateStatus().catch(() => {});
+  // The rows exist after the loop below; the count on each heading is refreshed once they do.
+  setTimeout(settingsSummaries, 0);
 
   for (const key of ["detect", "sensor", "dns", "runtime"]) {
     const host = document.getElementById(`st-${key}`);
@@ -4425,12 +4427,29 @@ function settingsAccordion() {
     const h2 = card.querySelector(":scope > h2");
     if (!h2) continue;
     card.dataset.acc = "1";
-    card.classList.add("collapsed");
+    // NOT COLLAPSED BY DEFAULT (operator, 2026-11-18: "it looks empty till you expand all").
+    // Ten collapsed cards with no values visible read as a settings page with no settings.
     h2.classList.add("acc");
     h2.addEventListener("click", (e) => {
       if (e.target.closest("button, a, input, select")) return;
       card.classList.toggle("collapsed");
     });
+  }
+}
+
+/** EVERY SETTINGS HEADING SAYS HOW MUCH IT HOLDS. The cards open by default now; this is what
+ *  keeps a collapsed card from reading as an empty one -- "Access and sessions · 6 settings". */
+function settingsSummaries() {
+  const view = document.getElementById("view-settings");
+  if (!view) return;
+  for (const card of view.querySelectorAll(":scope > .card")) {
+    const head = card.querySelector(":scope > h2, :scope > h3");
+    if (!head) continue;
+    const n = card.querySelectorAll(".setting").length;
+    let badge = head.querySelector(".acc-count");
+    if (!n) { if (badge) badge.remove(); continue; }
+    if (!badge) { badge = el("span", { class: "muted acc-count" }); head.appendChild(badge); }
+    badge.textContent = `${n} setting${n === 1 ? "" : "s"}`;
   }
 }
 
@@ -5441,6 +5460,7 @@ async function boot() {
   wrapTables();
   lockTabsToTop();
   settingsAccordion();
+  settingsSummaries();
   modalWiring();
   filterCellWiring();
   // The "i" affordances: every view's explainer is one click from the header it explains.

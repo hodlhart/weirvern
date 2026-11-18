@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.75 — 2026-11-18
+
+SETTINGS OPENS WITH ITS VALUES SHOWING.
+
+- **The cards are open on arrival.** Every settings card used to boot collapsed, so ten headings
+  and no values read as a settings page with nothing in it until Expand all was pressed (operator,
+  2026-11-18). Collapsing is still there, one click away, and the header still says Expand all.
+- **A collapsed card says how much it holds** — "Detection · 6 settings" — so the collapsed state
+  is informative rather than blank. The count is rendered after the rows load and refreshed on
+  every reload, and the badge carries its own separator dot because the generic h2 dot rule never
+  reached these headings once they were demoted to h3.
+
 ## 0.23.74 — 2026-11-18
 
 THE SLUICE PAGE JOINS THE CONSOLE, AND THE SMALL DEAD ENDS ARE DOORS.
