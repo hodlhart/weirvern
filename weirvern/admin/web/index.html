@@ -449,7 +449,10 @@
       <div id="nf-detail"></div>
       <table id="nf-detail-table">
         <thead><tr><th>Source</th><th>Destination</th><th>Port</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
-        <tbody></tbody>
+        <!-- AT REST THE TABLE SAYS WHAT IT IS WAITING FOR. Headers over an empty body read as a
+             broken table; the instruction belongs inside the table, where the eye lands. -->
+        <tbody><tr><td colspan="6" class="muted">Choose a bar above — Talkers, Protocol mix or
+          Top ports — to see the host pairs behind it.</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -651,7 +654,12 @@
       <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span> <span id="m-filters"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
-  <p><strong>What it is.</strong> The production ensemble has four detectors watching the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and asks how many independent families agree before a score is believed. Isolation Forest and its Gradient Boosting student are one family; DBSCAN and the baseline are separate.</p>
+  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods —
+  Isolation Forest, its Gradient Boosting student, DBSCAN and an adaptive per-host baseline — and
+  the ensemble asks how many independent families agree before a score is believed. Isolation
+  Forest and Gradient Boosting are one family; the baseline is another. <strong>DBSCAN's card is
+  retired</strong>, so its findings stay as evidence but do not count toward the fused score:
+  the model cards below are the authority on which model is production, not this sentence.</p>
   <p><strong>What is new.</strong> Calibration and the shadow channels below are read-only experiments: they measure budgets, candidates and regime changes, but no shadow row can create or change an alert.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
@@ -1308,17 +1316,26 @@
        The gate fails open on purpose (a monitoring appliance must not take a network down when
        its supervisor dies), so state leads and explains its consequence. -->
   <section id="view-sluice" class="view">
-    <div class="view-head sl2-head">
-      <!-- The view header supplies the title and the live count (VIEW_HEADER_META); the
-           primary verb is this view's own New rule button, which installViewHeaders moves
-           into the header. No second heading. -->
-      <div class="controls">
-        <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
-                aria-expanded="false" title="what this view shows">i</button>
-        <button id="sl2-new" class="primary" type="button">New rule</button>
-      </div>
+    <!-- THE HOUSE HEADER SUPPLIES THE TITLE, THE LIVE COUNT AND THE ONE PRIMARY VERB
+         (0.23.74). This page used to carry its own .sl2-head row holding only an info button;
+         once installViewHeaders moved New rule into the header, that row held a single orphan
+         icon floating between the title and the button. There is no page-specific header now. -->
+    <span id="sl2-count" class="hidden"></span>
+    <!-- THE HOUSE HEADER, DECLARED ONLY FOR THE ONE PRIMARY VERB. installViewHeaders adds the
+         title and count; the button must already be inside .view-head, because a section that is
+         hidden at boot is skipped when the header pass looks for a primary and the view would
+         silently end up with a second Refresh instead. -->
+    <div class="view-head">
+      <button id="sl2-new" class="primary" type="button">New rule</button>
     </div>
-    <div class="info-text hidden" id="sl-info">
+
+    <div class="grid2 sl2-gates">
+      <div class="card">
+        <h2>Domain gate <span class="muted">DNS</span> <span class="chip" id="sl2-dom-chip">loading&hellip;</span>
+          <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
+                  aria-expanded="false" title="what this view shows">i</button>
+        </h2>
+        <div class="info-text hidden" id="sl-info">
   <p><strong>What it is.</strong> Two gates on one page: the Domain Gate answers DNS names through
   blocklists and domain rules; the Traffic Gate drops packets on a weirling that sits in path.</p>
   <p><strong>What writes it.</strong> Rules you create here, rules the detection ensemble files, and
@@ -1328,17 +1345,9 @@
   <p><strong>Where to see it.</strong> Blocks lists the recorded hits behind the Domain Gate, and
   Weirlings shows whether each sensor is still reporting.</p>
 </div>
-    <!-- The header count is synced from this source by VIEW_HEADER_META. It is hidden because
-         the visible copy lives in the view header, not in the body. -->
-    <span id="sl2-count" class="hidden"></span>
-
-    <div class="grid sl2-gates">
-      <div class="card sl2-gate">
-        <div class="sl2-gate-head">
-          <h2>Domain Gate <span class="muted">DNS</span></h2>
-          <span class="chip" id="sl2-dom-chip">loading&hellip;</span>
-        </div>
         <p class="muted" id="sl2-dom-line">loading&hellip;</p>
+        <!-- THE TILES ARE FILTERS, NOT DECORATION (the fleet's count tiles set the precedent):
+             lists open the blocklists, hits open Blocks. -->
         <div class="stat-row" id="sl2-dom-stats"></div>
         <div class="controls">
           <button id="sl2-dom-toggle" type="button" class="quiet">&hellip;</button>
@@ -1347,11 +1356,8 @@
         </div>
       </div>
 
-      <div class="card sl2-gate">
-        <div class="sl2-gate-head">
-          <h2>Traffic Gate <span class="muted">packets</span></h2>
-          <span class="chip" id="sl2-traf-chip">loading&hellip;</span>
-        </div>
+      <div class="card">
+        <h2>Traffic gate <span class="muted">packets</span> <span class="chip" id="sl2-traf-chip">loading&hellip;</span></h2>
         <p class="muted" id="sl2-traf-line">loading&hellip;</p>
         <p id="sl-gate-warning" class="muted hidden"></p>
         <div class="stat-row" id="sl2-traf-stats"></div>
@@ -1363,26 +1369,29 @@
       </div>
     </div>
 
+    <!-- FLEET PACKET GATES: the sibling card, full width. A row opens that weirling, because
+         "which sensor is enforcing" is a question about a sensor, not about this page. -->
     <div class="card hidden" id="sl2-fleet-card">
+      <h2>Fleet packet gates <span class="muted" id="sl2-fleet-note"></span></h2>
       <div id="sl2-fleet"></div>
     </div>
 
     <div class="card">
-      <div class="view-head">
-        <h2>Rules <span class="muted" id="sl2-rules-note"></span></h2>
-        <label class="muted sl2-show"><input id="sl2-show-revoked" type="checkbox"> show revoked</label>
-      </div>
+      <h2>Rules <span class="muted" id="sl2-rules-note"></span></h2>
+      <!-- One filter row: the gate chips and the revoked toggle answer the same question
+           ("which rules am I looking at"), so they sit on one line instead of the toggle
+           floating above the heading. -->
       <div class="controls" id="sl2-filters" role="group" aria-label="filter rules by gate">
-        <span class="muted">show</span>
         <button class="dc-chip active" type="button" data-gate="all" aria-pressed="true">All rules</button>
-        <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain Gate</button>
-        <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic Gate</button>
+        <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain gate</button>
+        <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
+        <label class="muted sl2-show check"><input id="sl2-show-revoked" type="checkbox"> show revoked</label>
       </div>
       <div id="sl-reach" class="chips"></div>
       <div class="tablewrap">
         <table id="sl2-rules">
           <thead>
-            <tr><th>Rule</th><th>Gate</th><th>State</th><th>Expires</th><th>Origin</th><th></th></tr>
+            <tr><th>Rule</th><th>Gate</th><th>State</th><th>Expires</th><th>Origin</th><th>Reason</th></tr>
           </thead>
           <tbody></tbody>
         </table>

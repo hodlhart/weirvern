@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.23.74 — 2026-11-18
+
+THE SLUICE PAGE JOINS THE CONSOLE, AND THE SMALL DEAD ENDS ARE DOORS.
+
+- **Sluice Gate rebuilt on the house pattern.** The page's private header (`.sl2-head`), its
+  gate wrappers and its own table class are gone: it now uses the standard view header, cards,
+  tables and controls, and its copy says "Domain gate" / "Traffic gate" in sentence case like
+  every other heading. The orphaned info icon that floated beside the title is inside the first
+  card's heading, where the other views keep theirs.
+- **Every gate number is now a door.** Enabled lists → the blocklists, DNS hits and packets
+  blocked → Blocks, live packet rules and rules in store → the rules table filtered to the
+  traffic gate. Fleet gate rows open that weirling; rule rows open their sheet.
+- **Clickable things say so at rest.** A muted chevron marks clickable rows and stat tiles,
+  because a hover state is invisible to anyone scanning and to a screenshot. This also fixed a
+  real bug: the JS wrote `sl2-rule-row` while the CSS styled `sl-rule-row`, so rule rows opened
+  their sheet with no pointer and no hover at all.
+- **The "show revoked" checkbox sits on its label's line.** It inherited `.controls label`'s
+  column direction and floated a line above its own text.
+- **A CNAME answer in DNS is a domain filter.** Only address answers were clickable; a hostname
+  answer was inert text.
+- **Flow detail says what it is waiting for.** Headers over an empty body read as a broken table.
+- **The Models description no longer claims DBSCAN is production.** Its model card is `retired`,
+  and a retired card is not a production model: the sentence now says so and points at the cards
+  as the authority.
+
 ## 0.23.73 — 2026-11-18
 
 THE MIX SAID HOW MUCH; THE SERIES SAYS WHETHER IT IS STILL COMING.

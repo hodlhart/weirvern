@@ -295,7 +295,15 @@ function dnRenderRows(d) {
         if (i < ans.length - 1) ax.appendChild(el("span", { text: ", " }));
       });
     } else {
+      // A CNAME ANSWER IS A NAME, SO IT IS A DOMAIN FILTER -- the same door the query column
+      // offers. Only the address branch above had a target; a hostname answer was inert text.
+      const first = String(r.answers || "").split(",")[0].trim();
       ax.textContent = (r.answers || "\u2014").slice(0, 40);
+      if (/^[a-z0-9._-]+\.[a-z]{2,}$/i.test(first)) {
+        ax.classList.add("dcell", "mono");
+        ax.title = "add to the filter: domain = " + first;
+        ax.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-domain", first]]); });
+      }
     }
     tr.appendChild(ax);
     // PUSH THE NAME TO A RULE, but not from row furniture. A DNS list is a reading table: at

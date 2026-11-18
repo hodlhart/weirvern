@@ -221,7 +221,10 @@ def test_the_gate_state_and_rule_counts_are_stated_once_with_their_owner():
     assert html.count('id="sl2-traf-chip"') == 1
     assert html.count('id="sl2-fleet"') == 1
     js = (WEB / "sluice.js").read_text()
-    assert "Fleet packet gates" in js
+    # The heading lives in the markup now (0.23.74): the JS renders rows into it, so the phrase
+    # appears exactly once on the page and not at all in the renderer.
+    assert html.count("Fleet packet gates") == 1
+    assert "Fleet packet gates" not in js
     assert "rules in store" in js, "the Traffic Gate lost its store count"
 
 

@@ -38,11 +38,25 @@ function sl2On(key) {
   return /^(1|true|on|yes|enabled|armed)$/i.test(sl2Setting(key));
 }
 
-function sl2Stat(label, value) {
-  return el("div", { class: "stat" }, [
+function sl2Stat(label, value, action) {
+  const box = el("div", { class: action ? "stat clickable" : "stat" }, [
     el("div", { class: "k", text: label }),
     el("div", { class: "v", text: String(value === null || value === undefined || value === "" ? "—" : value) }),
   ]);
+  if (action) {
+    // A TILE THAT COUNTS SOMETHING IS A DOOR TO THAT SOMETHING. Same idiom as the fleet's tiles
+    // (BF-7): pointer, hover ring, and the action is a filter or a view, never a dead number.
+    box.setAttribute("role", "button");
+    box.setAttribute("tabindex", "0");
+    // aria-label, not title: a hover-only affordance is exactly the debt the canon ratchet
+    // counts. The chevron is the visible cue; this is the accessible name.
+    box.setAttribute("aria-label", action.label || label);
+    box.addEventListener("click", action.run);
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); action.run(); }
+    });
+  }
+  return box;
 }
 
 function sl2GateOf(rule) {
@@ -66,6 +80,25 @@ function sl2Visible(rule) {
   if (SL2_STATE.filter === "domain" && !rule.domain) return false;
   if (SL2_STATE.filter === "traffic" && rule.domain) return false;
   return true;
+}
+
+/** ONE WAY TO SET THE RULES FILTER. The chips, the gate tiles and anything added later all
+ *  come through here, so the pressed state and the rows cannot disagree. */
+function sl2SetGate(gate) {
+  SL2_STATE.filter = gate || "all";
+  const filters = document.getElementById("sl2-filters");
+  if (filters) {
+    for (const button of filters.querySelectorAll("[data-gate]")) {
+      const on = (button.getAttribute("data-gate") || "all") === SL2_STATE.filter;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+  renderSluiceRules(SL2_STATE.data || { available: false, reason: "not loaded" });
+  const card = document.getElementById("sl2-rules");
+  if (card && card.scrollIntoView) {
+    try { card.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_e) { /* optional */ }
+  }
 }
 
 function sl2Chip(text, cls) {
@@ -186,9 +219,11 @@ function renderSluiceGates(d) {
     const hitHours = Number(d.hits_hours || 24);
     const hits = Array.isArray(d.hits) ? d.hits.length : 0;
     domStats.replaceChildren(
-      sl2Stat("enabled lists", lists.length),
+      sl2Stat("enabled lists", lists.length,
+        { label: "open the blocklists in Settings", run: () => showView("settings") }),
       sl2Stat("domains covered", domains ? domains.toLocaleString() : "0"),
-      sl2Stat(`DNS hits in ${hitHours}h`, hits),
+      sl2Stat(`DNS hits in ${hitHours}h`, hits,
+        { label: "see the recorded blocks", run: () => showView("blocked") }),
     );
   }
   const domBtn = document.getElementById("sl2-dom-toggle");
@@ -228,9 +263,12 @@ function renderSluiceGates(d) {
   const trafStats = document.getElementById("sl2-traf-stats");
   if (trafStats) {
     trafStats.replaceChildren(
-      sl2Stat("live packet rules", live),
-      sl2Stat("rules in store", total),
-      sl2Stat("packets blocked", Number(gate.packets_blocked || 0).toLocaleString()),
+      sl2Stat("live packet rules", live,
+        { label: "show the traffic rules below", run: () => sl2SetGate("traffic") }),
+      sl2Stat("rules in store", total,
+        { label: "show the traffic rules below", run: () => sl2SetGate("traffic") }),
+      sl2Stat("packets blocked", Number(gate.packets_blocked || 0).toLocaleString(),
+        { label: "see the recorded blocks", run: () => showView("blocked") }),
     );
   }
   const note = document.getElementById("sl2-traf-note");
@@ -290,8 +328,13 @@ function renderSluiceFleet(gates) {
   }
   if (card) card.classList.toggle("hidden", false);
   host.replaceChildren();
-  host.appendChild(el("h3", { class: "gate-subhead", text: "Fleet packet gates" }));
-  const table = el("table", { class: "sl2-fleet-table" });
+  const note = document.getElementById("sl2-fleet-note");
+  if (note) {
+    const stale = gates.filter((g) => g.stale).length;
+    note.textContent = `${gates.length} sensor${gates.length === 1 ? "" : "s"}` +
+      (stale ? ` · ${stale} stale` : "");
+  }
+  const table = el("table");
   table.appendChild(el("thead", {}, [el("tr", {}, [
     el("th", { text: "Weirling" }), el("th", { text: "State" }), el("th", { text: "Interfaces" }),
     el("th", { text: "Rules" }), el("th", { text: "Last check" }),
@@ -299,14 +342,23 @@ function renderSluiceFleet(gates) {
   const body = el("tbody");
   for (const g of gates) {
     const state = String(g.state || "unknown");
-    body.appendChild(el("tr", {}, [
+    // A ROW IS A SENSOR, SO IT OPENS THAT SENSOR. The gates table names weirlings; leaving the
+    // names inert made an operator copy them into the Weirlings tab to ask the next question.
+    const row = el("tr", {
+      class: g.sensor ? "clickable" : "",
+      attrs: g.sensor ? { "aria-label": `open ${g.sensor}` } : {},
+    }, [
       el("td", {}, [el("span", { class: "mono", text: g.sensor || "—" }),
         g.local ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
       el("td", {}, [sluiceStateChip(g.state, g.stale)]),
       el("td", { class: "mono", text: g.iface || "—" }),
       el("td", { text: `${Number(g.rules_active || 0)} / ${Number(g.rules_total || 0)}` }),
       el("td", { class: "muted", text: g.age_s == null ? "—" : `${fmtAge(g.age_s)} ago` }),
-    ]));
+    ]);
+    if (g.sensor && typeof openWeirling === "function") {
+      row.addEventListener("click", () => openWeirling(g.sensor));
+    }
+    body.appendChild(row);
   }
   table.appendChild(body);
   // The fleet table scrolls inside its card on a phone instead of widening the document.
@@ -925,15 +977,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const filters = document.getElementById("sl2-filters");
   if (filters) {
     for (const button of filters.querySelectorAll("[data-gate]")) {
-      button.addEventListener("click", () => {
-        SL2_STATE.filter = button.getAttribute("data-gate") || "all";
-        for (const other of filters.querySelectorAll("[data-gate]")) {
-          const active = other === button;
-          other.classList.toggle("active", active);
-          other.setAttribute("aria-pressed", active ? "true" : "false");
-        }
-        renderSluiceRules(SL2_STATE.data || { available: false, reason: "not loaded" });
-      });
+      button.addEventListener("click", () => sl2SetGate(button.getAttribute("data-gate") || "all"));
     }
   }
   const showRevoked = document.getElementById("sl2-show-revoked");
