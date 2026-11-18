@@ -291,9 +291,10 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "NETFLOW_MODE": (("ds/zeek",),
                      "restarts the capture sensor (brief capture gap), which runs the flow tap "
                      "as a sidecar"),
-    "NETFLOW_IFACE": (("ds/zeek",),
-                      "restarts the capture sensor (brief capture gap), whose tap samples this "
-                      "port for active flow capture"),
+    "NETFLOW_IFACE": (("ds/zeek", "deploy/goflow2", "deploy/weirvern-worker"),
+                      "restarts the capture sensor (brief capture gap), the flow collector, which "
+                      "opens one listener per NIC, and the worker, whose ingester starts tailing "
+                      "the new NIC's file"),
     "CHANNEL_NETFLOW": (("ds/zeek",),
                         "restarts the capture sensor (brief capture gap), whose tap samples the "
                         "channel port"),

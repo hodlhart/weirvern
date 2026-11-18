@@ -2130,7 +2130,9 @@ def main() -> None:
         # the bottom of main() gives the in-flight pass a bounded moment to finish and checkpoint.
         # tail_files: the per-NIC file map -- one collector per NIC, same port, one file each.
         kwargs={"exporter_allow": settings.flow_exporter_allow, "stop": _stop,
-                "tail_files": settings.tail_files},
+                "tail_files": settings.tail_files,
+                # With no explicit map the ingester derives one file per NETFLOW_IFACE.
+                "netflow_iface": settings.netflow_iface},
         daemon=True,
         name="ingest-thread",
     )

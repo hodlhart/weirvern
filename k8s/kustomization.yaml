@@ -31,6 +31,7 @@ resources:
   # the SECRETS block below.
   - 30-clickhouse.yaml
   - 31-goflow2.yaml
+  - 35-goflow2-launcher.yaml
   - 32-zeek.yaml
   - 33-worker.yaml
   - 34-gui.yaml

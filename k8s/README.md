@@ -18,7 +18,8 @@ sketches and look for somewhere else to start.
 | `20-configmap-env.yaml` | Non-secret environment (ClickHouse coordinates, Zeek log set, retention, alerting toggles) |
 | `20-configmap-schema.yaml` | A decision record, deliberately NOT in the kustomize build: why the schema ships inside the package and is applied by the schema Job rather than copied into a ConfigMap |
 | `30-clickhouse.yaml` | ClickHouse StatefulSet (with the backup engine's allow-list drop-in) + the Service the schema Job and worker wait on |
-| `31-goflow2.yaml` | NetFlow/sFlow collector (Deployment) |
+| `31-goflow2.yaml` | NetFlow/sFlow collector (Deployment) — one container, one process per NIC |
+| `35-goflow2-launcher.yaml` | The collector launcher ConfigMap: opens `127.0.0.<n>:2055` per NIC named in `NETFLOW_IFACE` |
 | `32-zeek.yaml` | Zeek packet sensor (DaemonSet) |
 | `33-worker.yaml` | Ingest + detection worker (Deployment) |
 | `34-gui.yaml` | The console — Deployment and the NodePort Service it is reached through |

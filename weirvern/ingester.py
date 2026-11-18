@@ -2410,13 +2410,25 @@ def save_tail_state(path: str, state: TailState) -> None:
         logger.warning("Could not checkpoint the tail cursor for %s: %s", path, exc)
 
 
-def tail_targets(path: str, mapping: str = "") -> list[tuple[str, str]]:
+def tail_targets(path: str, mapping: str = "", ifaces: str = "") -> list[tuple[str, str]]:
     """[(path, iface)] from TAIL_FILES ("eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl").
 
     One collector writes one file per NIC (same port 2055, a different loopback address each),
     so the FILE is the attribution. A single entry, or no mapping at all, keeps the historical
     behaviour and an empty interface name.
     """
+    # DERIVED FROM NETFLOW_IFACE WHEN NO MAP IS GIVEN (0.23.72): adding a NIC is a settings change,
+    # not a manifest edit. The collector launcher writes the first NIC to the historical
+    # flows.jsonl and every further NIC to flows-<nic>.jsonl, so both sides read one rule.
+    names = [n.strip() for n in str(ifaces or "").replace(";", ",").split(",") if n.strip()]
+    if not str(mapping or "").strip() and names:
+        folder = os.path.dirname(path) or "/data"
+        derived = [(path if i == 0 else os.path.join(folder, f"flows-{n}.jsonl"), n)
+                   for i, n in enumerate(names)]
+        # The node's own address is where a LAN router exports; it names no NIC.
+        derived.append((os.path.join(folder, "flows-external.jsonl"), ""))
+        return derived
+
     out: list[tuple[str, str]] = []
     for part in str(mapping or "").replace(";", ",").split(","):
         part = part.strip()
@@ -2433,7 +2445,8 @@ def tail_targets(path: str, mapping: str = "") -> list[tuple[str, str]]:
 def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
                  zeek_dir: str = "", exporter_allow: str = "",
                  stop: threading.Event | None = None,
-                 tail_files: str = "") -> None:
+                 tail_files: str = "",
+                 netflow_iface: str = "") -> None:
     """Block forever: tail NetFlow JSONL and (optionally) Zeek logs.
 
     Duplicate-insert failure mode of the first v20 pass: re-reading the whole
@@ -2453,7 +2466,7 @@ def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
     checkpointing, and kept writing warnings about directories that no longer existed. A loop that
     cannot be stopped is hard to test and hard to shut down; the caller already owns a stop flag.
     """
-    targets = tail_targets(path, tail_files)
+    targets = tail_targets(path, tail_files, netflow_iface)
     states = {where: load_tail_state(where) for where, _ in targets}
     for where, iface in targets:
         if states[where].offset:

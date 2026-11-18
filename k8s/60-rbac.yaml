@@ -115,7 +115,10 @@ rules:
     verbs: ["patch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    resourceNames: ["weirvern-worker", "weirvern-gui"]
+    # goflow2 is here because NETFLOW_IFACE names the NICs the collector opens a socket for: the
+    # launcher reads it at start, so the apply restarts this deployment (0.23.72). Without the
+    # grant the setting would save and never take effect.
+    resourceNames: ["weirvern-worker", "weirvern-gui", "goflow2"]
     verbs: ["patch"]
   # THE STOP/START PATH (`weirvern stop` / `weirvern start`), name-scoped to exactly the
   # workloads the CLI drives (`runtime.WORKLOADS`): the database, the exporter and the consumer.

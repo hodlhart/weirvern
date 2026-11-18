@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.72 — 2026-11-18
+
+A NIC YOU ADD IS A SETTING, NOT A MANIFEST EDIT — AND THE FLOWS HAVE A PANEL.
+
+- **The Netflow view has an Interfaces card**: NIC, flows, bytes and share, with each row a door
+  that filters the whole view to that NIC. `iface` is a first-class chip: it is validated as an
+  interface name (not an index) and it forces the RAW table, because `flows_aggregated` has no
+  `in_iface` and would otherwise ignore the chip without saying so.
+- **One collector container, one process per NIC** (`k8s/35-goflow2-launcher.yaml`). The launcher
+  reads `NETFLOW_IFACE` and opens `127.0.0.<n>:2055` for each NIC, writing `flows.jsonl` for the
+  first and `flows-<nic>.jsonl` for the rest. goflow2 v2.2.6 still panics on two netflow listeners
+  in one process, so the launcher spawns one process each — and if any collector dies it stops the
+  others and exits, because a dead collector looks exactly like a quiet segment.
+- **The ingester derives the same list** from `NETFLOW_IFACE` when `TAIL_FILES` is empty, so both
+  sides read one rule; adding a NIC is `NETFLOW_IFACE=eth1,eth2,eth3` and Apply.
+- **`NETFLOW_IFACE` now restarts the collector and the worker** as well as the capture sensor,
+  because all three have to learn the new NIC; before, only the sensor restarted and the flow was
+  silently unattributed.
+
 ## 0.23.71 — 2026-11-18
 
 THE FLOWS KNEW THEIR NIC; THE CONSOLE DID NOT SAY SO.

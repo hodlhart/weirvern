@@ -219,7 +219,8 @@ function renderTimeline(hostId, res, opts = {}) {
  * builder -- OR-ing multiple values is Discover's job, and saying so here keeps the two honest.
  */
 const NF_FILTERS = [];
-const NF_FIELD_LABELS = { src: "source", dst: "destination", proto: "protocol", dport: "port" };
+const NF_FIELD_LABELS = { src: "source", dst: "destination", proto: "protocol", dport: "port",
+                          iface: "interface" };
 
 function nfQuery() {
   return NF_FILTERS.map((f) => `&${f.field}=${encodeURIComponent(f.value)}`).join("");
@@ -332,6 +333,46 @@ async function loadNetflow() {
                      discoverDrill({ from: trFormat(from), to: trFormat(to),
                                      hours: Math.max(1, Math.round(b / 3600)) });
                    } });
+
+  // WHICH NIC EACH FLOW CAME THROUGH (0.23.72). Its own table rather than a fourth bar chart:
+  // the operator's question is a share ("is eth2 carrying what I think it is"), and a table can
+  // carry flows, bytes and the percentage at once. A row is a DOOR -- clicking it filters the
+  // whole view to that NIC, the same contract every other panel in this view keeps. An
+  // unattributed row is NOT clickable: there is no interface value to filter on, and inventing
+  // one would turn "the export did not arrive on a NIC socket" into "some NIC".
+  const ic = d.interfaces || {};
+  const ifaceBox = document.getElementById("nf-interfaces");
+  if (ifaceBox) {
+    ifaceBox.replaceChildren();
+    if (ic.available === false) {
+      ifaceBox.appendChild(el("p", { class: "empty",
+        text: `Interfaces unavailable \u2014 ${ic.reason || "the read failed"}.` }));
+    } else if (!(ic.points || []).length) {
+      ifaceBox.appendChild(el("p", { class: "empty", text: "No flows in this window." }));
+    } else {
+      const totalIf = (ic.points || []).reduce((a, p) => a + (p.flows || 0), 0) || 1;
+      const table = el("table", {}, [
+        el("thead", {}, [el("tr", {}, ["NIC", "Flows", "Bytes", "Share"].map((h) => el("th", { text: h })))]),
+      ]);
+      const body = el("tbody", {});
+      for (const p of ic.points) {
+        const name = p.iface || "unattributed";
+        const share = Math.round(((p.flows || 0) / totalIf) * 100);
+        const row = el("tr", { class: p.iface ? "clickable" : "",
+          attrs: p.iface ? { title: `show only ${name} flows` }
+                         : { title: "this export did not arrive on a NIC's socket" } }, [
+          el("td", { text: name }),
+          el("td", { class: "mono", text: Number(p.flows || 0).toLocaleString() }),
+          el("td", { class: "mono", text: fmtBytes(p.bytes || 0) }),
+          el("td", { class: "mono", text: `${share}%` }),
+        ]);
+        if (p.iface) row.addEventListener("click", () => nfSetFilter("iface", p.iface, p.iface));
+        body.appendChild(row);
+      }
+      table.appendChild(body);
+      ifaceBox.appendChild(table);
+    }
+  }
 
   // THE PAYLOAD'S OWN STATE, not a hardcoded true (issue #13, 2026-10-16): a failed talkers query
   // rendered "No talkers in this window." -- a broken read shown as a quiet network.

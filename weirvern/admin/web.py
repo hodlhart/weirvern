@@ -416,10 +416,19 @@ def netflow_filters(query: dict) -> dict[str, str]:
     filters = {"src": str(_first(query, "src", "") or "").strip(),
                "dst": str(_first(query, "dst", "") or "").strip(),
                "proto": str(_first(query, "proto", "") or "").strip(),
-               "dport": str(_first(query, "dport", "") or "").strip()}
+               "dport": str(_first(query, "dport", "") or "").strip(),
+               # WHICH NIC (0.23.72): the interface name as the kernel spells it. A name, not an
+               # index -- an index changes when a NIC is plugged in, and a filter that silently
+               # matches a different NIC later is worse than refusing it here.
+               "iface": str(_first(query, "iface", "") or "").strip()}
     for key in ("src", "dst"):
         if len(filters[key]) > 64:
             raise ValueError(f"{key} filter is implausibly long")
+    if filters["iface"]:
+        if len(filters["iface"]) > 32:
+            raise ValueError("iface filter is implausibly long")
+        if not all(c.isalnum() or c in "._-@" for c in filters["iface"]):
+            raise ValueError("iface must be an interface name (letters, digits, . _ - @)")
     for key, hi in (("proto", 255), ("dport", 65535)):
         raw = filters[key]
         if raw and (not raw.isdigit() or int(raw) > hi):

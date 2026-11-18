@@ -63,37 +63,34 @@ spec:
           type: RuntimeDefault
       automountServiceAccountToken: false
       containers:
+        # ── ONE CONTAINER, ONE PROCESS PER LISTENER, ALL ON PORT 2055 (2026-11-18) ─────────────
+        # Two listeners may share a port when they bind different addresses, and Linux routes all
+        # of 127.0.0.0/8 locally -- so eth1 exports to 127.0.0.1:2055, eth2 to 127.0.0.2:2055, and
+        # the port in the docs, the firewall and every exporter stays 2055.
+        #
+        # goflow2 v2.2.6 PANICS with two netflow listeners in ONE process ("pattern /templates
+        # conflicts with /templates", measured on the first apply), so each NIC gets its own
+        # process -- started by /opt/weirvern/goflow2-multi.sh, which reads NETFLOW_IFACE.
+        # That is why this is one container rather than one container per NIC: adding a NIC is
+        # NETFLOW_IFACE=eth1,eth2,eth3 plus Apply, and the launcher opens the third socket.
         - name: goflow2
           image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
+          command: ["/bin/sh", "/opt/weirvern/goflow2-multi.sh"]
           env:
-            # THE NODE'S OWN ADDRESS, so an external router can still export to this node on
-            # 2055 (the NodePort DNATs to podIP:2055, which with hostNetwork is the node IP).
-            # Kubernetes expands $(NODE_IP) in args because it is defined here.
+            # The NIC list, from the same ConfigMap the settings console writes. Optional so a
+            # missing key falls back to eth1 instead of leaving the pod unscheduled.
+            - name: NETFLOW_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: NETFLOW_IFACE
+                  optional: true
+            # THE NODE'S OWN ADDRESS, so an external router can still export to this node on 2055
+            # (the Service DNATs to podIP:2055, which with hostNetwork is the node IP).
             - name: NODE_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
-          args:
-            # ── ONE PORT, ONE ADDRESS PER NIC (2026-11-18) ────────────────────────────────────
-            # Two listeners may share a port when they bind different addresses, and Linux
-            # routes all of 127.0.0.0/8 locally. eth1's exports go to 127.0.0.1:2055; eth2's go
-            # to 127.0.0.2:2055 in the SECOND container below, which writes its own file -- so
-            # the port in the docs, the firewall and every exporter stays 2055, and the FILE is
-            # what names the NIC. The wildcard bind had to go: it would swallow 127.0.0.2.
-            #
-            # ONE NETFLOW LISTENER PER PROCESS. goflow2 v2.2.6 PANICS with two netflow listeners
-            # in one process ("pattern /templates conflicts with /templates", measured on the
-            # first apply), so the node's own address -- where a LAN router exports -- is a third
-            # container, not a second URI here. sflow rides along: its scheme registers no
-            # template handler, which is why netflow+sflow worked and netflow+netflow did not.
-            - -listen
-            - netflow://127.0.0.1:2055,sflow://:6343
-            - -format
-            - json
-            - -transport
-            - file
-            - -transport.file
-            - /data/flows.jsonl
           ports:
             - name: netflow
               containerPort: 2055
@@ -107,117 +104,38 @@ spec:
           volumeMounts:
             - name: flow-data
               mountPath: /data
+            - name: launcher
+              mountPath: /opt/weirvern
+              readOnly: true
+          # THE SUM OF THE THREE COLLECTORS THIS REPLACES (250m+100m+100m, 256Mi+128Mi+128Mi), so
+          # the cluster's measured sizing does not move because the shape did.
           resources:
             requests:
-              cpu: "250m"
-              memory: "256Mi"
+              cpu: "450m"
+              memory: "512Mi"
             limits:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "2Gi"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
             runAsNonRoot: true
             runAsUser: 100
+          # The first NIC's collector also serves the HTTP endpoint these probe.
           readinessProbe:
             httpGet: {path: /metrics, port: metrics}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /metrics, port: metrics}
-            initialDelaySeconds: 15
-            periodSeconds: 20
-        # ── THE SECOND NIC'S COLLECTOR ──────────────────────────────────────────────────────────
-        # Same image, same port, one address over: 127.0.0.2:2055, its own file. The worker's
-        # ingester tails BOTH files and tags each record with the interface the file belongs to.
-        # Nothing here is a guess about the packets: softflowd cannot report an interface when it
-        # reads a pcap (measured four ways), so the separation happens at the collector, where it
-        # is a fact about which socket received the export.
-        - name: goflow2-eth2
-          image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
-          args:
-            - -listen
-            - netflow://127.0.0.2:2055
-            - -addr
-            - :8081
-            - -format
-            - json
-            - -transport
-            - file
-            - -transport.file
-            - /data/flows-eth2.jsonl
-          volumeMounts:
-            - name: flow-data
-              mountPath: /data
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            runAsNonRoot: true
-            runAsUser: 100
-          readinessProbe:
-            httpGet: {path: /metrics, port: 8081}
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet: {path: /metrics, port: 8081}
-            initialDelaySeconds: 15
-            periodSeconds: 20
-        # ── WHAT A LAN ROUTER REACHES (the node's own address, port 2055) ───────────────────────
-        # The Service DNATs to podIP:2055, which with hostNetwork is the node's address. Records
-        # from here are NOT attributed to a NIC, and the ingester leaves in_iface empty for them:
-        # a router export says nothing about which interface this sensor captured it on.
-        - name: goflow2-external
-          image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
-          env:
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-          args:
-            - -listen
-            - netflow://$(NODE_IP):2055
-            - -addr
-            - :8082
-            - -format
-            - json
-            - -transport
-            - file
-            - -transport.file
-            - /data/flows-external.jsonl
-          volumeMounts:
-            - name: flow-data
-              mountPath: /data
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            runAsNonRoot: true
-            runAsUser: 100
-          readinessProbe:
-            httpGet: {path: /metrics, port: 8082}
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet: {path: /metrics, port: 8082}
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
+        - name: launcher
+          configMap:
+            name: goflow2-launcher
+            defaultMode: 0555
         - name: flow-data
           hostPath:
             path: /var/lib/weirvern/flows

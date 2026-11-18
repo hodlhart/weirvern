@@ -99,14 +99,18 @@ def test_the_operator_role_cannot_patch_EVERY_daemonset():
 def test_the_operator_role_cannot_patch_EVERY_deployment():
     """The same shape on deployments. Less severe than daemonsets only because a Deployment is not
     privileged here -- but `update` on it would strip securityContext from the worker, and the
-    grant is not needed either way."""
+    grant is not needed either way.
+
+    goflow2 joined the list with 0.23.72: its launcher reads NETFLOW_IFACE at start, so a NIC
+    added in the console takes effect only by restarting the collector. The allowlist is
+    extended here, deliberately, rather than by removing the restriction."""
     names = _scoped_names(_role("weirvern-operator"), "deployments", "patch")
     assert names is not None, (
         "the operator role can patch deployments without a resourceNames restriction"
     )
-    assert names <= {"weirvern-worker", "weirvern-gui"}, (
+    assert names <= {"weirvern-worker", "weirvern-gui", "goflow2"}, (
         f"the operator role may patch deployments it has no reason to touch: "
-        f"{sorted(names - {'weirvern-worker', 'weirvern-gui'})}"
+        f"{sorted(names - {'weirvern-worker', 'weirvern-gui', 'goflow2'})}"
     )
 
 

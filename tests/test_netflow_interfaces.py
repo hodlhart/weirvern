@@ -124,3 +124,102 @@ def test_the_sentence_names_each_nic_and_admits_the_unattributed():
     assert "unattributed 12" in out[1], "an empty interface is named, not hidden"
     assert out[2] == "", "a window with no flows adds no clause"
     assert "unavailable" in out[3], "a failed read says so instead of reading as a quiet network"
+
+
+# ── the launcher: one process per NIC, one port ─────────────────────────────────────────────
+def _launcher_script(tmp_path: Path) -> Path:
+    """THE SHIPPING SCRIPT, extracted from the ConfigMap that mounts it.
+
+    A test that kept its own copy of the launcher would pass while the cluster ran something
+    else -- the same trap the 0.23.69 review-text tests were written to avoid.
+    """
+    import yaml
+
+    doc = yaml.safe_load((ROOT / "k8s" / "35-goflow2-launcher.yaml").read_text())
+    script = doc["data"]["goflow2-multi.sh"]
+    path = tmp_path / "goflow2-multi.sh"
+    path.write_text(script)
+    return path
+
+
+def _launch_commands(tmp_path: Path, ifaces: str) -> list[list[str]]:
+    import os
+
+    script = _launcher_script(tmp_path)
+    env = dict(os.environ, DRY_RUN="1", NETFLOW_IFACE=ifaces,
+               NODE_IP="192.0.2.10", FLOW_DATA_DIR="/data")
+    out = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=30,
+                         env=env, check=False)
+    assert out.returncode == 0, out.stderr
+    return [line.split() for line in out.stdout.strip().splitlines() if line.strip()]
+
+
+def test_the_launcher_opens_one_socket_per_nic_on_the_same_port(tmp_path):
+    cmds = _launch_commands(tmp_path, "eth1,eth2,eth3")
+
+    listens = [c[c.index("-listen") + 1] for c in cmds[:3]]
+    assert listens == ["netflow://127.0.0.1:2055,sflow://:6343",
+                       "netflow://127.0.0.2:2055",
+                       "netflow://127.0.0.3:2055"], (
+        "the operator asked to keep 2055 for every NIC: only the loopback ADDRESS may differ"
+    )
+    assert all(":2055" in listen for listen in listens)
+
+
+def test_the_launcher_names_the_files_the_ingester_expects(tmp_path):
+    cmds = _launch_commands(tmp_path, "eth1,eth2,eth3")
+
+    files = [c[c.index("-transport.file") + 1] for c in cmds[:3]]
+    assert files == ["/data/flows.jsonl", "/data/flows-eth2.jsonl", "/data/flows-eth3.jsonl"]
+    # And the same rule on the reading side, from the same input.
+    assert _targets("eth1,eth2,eth3") == [
+        ("/data/flows.jsonl", "eth1"),
+        ("/data/flows-eth2.jsonl", "eth2"),
+        ("/data/flows-eth3.jsonl", "eth3"),
+        ("/data/flows-external.jsonl", ""),
+    ]
+
+
+def test_the_launcher_keeps_the_node_address_for_a_lan_router(tmp_path):
+    cmds = _launch_commands(tmp_path, "eth1")
+
+    assert cmds[-1][cmds[-1].index("-listen") + 1] == "netflow://192.0.2.10:2055"
+    assert cmds[-1][cmds[-1].index("-transport.file") + 1] == "/data/flows-external.jsonl"
+
+
+def test_more_nics_than_loopback_addresses_is_refused_before_it_starts(tmp_path):
+    import os
+
+    script = _launcher_script(tmp_path)
+    too_many = ",".join(f"eth{i}" for i in range(1, 257))
+    out = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=30,
+                         env=dict(os.environ, DRY_RUN="1", NETFLOW_IFACE=too_many,
+                                  NODE_IP="192.0.2.10", FLOW_DATA_DIR="/data"), check=False)
+
+    assert out.returncode != 0
+    assert "254" in out.stderr
+
+
+def _targets(ifaces: str) -> list[tuple[str, str]]:
+    from weirvern.ingester import tail_targets
+
+    return tail_targets("/data/flows.jsonl", "", ifaces)
+
+
+def test_the_interface_chip_filters_the_view_on_the_raw_table():
+    clause, params = soc.flow_filter({"iface": "eth2"})
+
+    assert "in_iface = %(fiface)s" in clause
+    assert params["fiface"] == "eth2"
+    assert soc.flow_filter_is_raw({"iface": "eth2"}) is True, (
+        "flows_aggregated has no in_iface; the chip must force the raw table or it would be "
+        "silently ignored"
+    )
+
+
+def test_an_interface_filter_that_is_not_a_name_is_refused():
+    from weirvern.admin import web
+
+    with pytest.raises(ValueError):
+        web.netflow_filters({"iface": "eth2; drop table"})
+    assert web.netflow_filters({"iface": "eth2"})["iface"] == "eth2"

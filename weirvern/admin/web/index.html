@@ -407,6 +407,13 @@
       <h2>Flow volume over time <span class="muted">bytes per bucket</span></h2>
       <div id="nf-volume"></div>
     </div>
+    <!-- WHICH NIC EACH FLOW CAME THROUGH (0.23.72). A per-flow fact the console could only guess
+         at from subnets before 0.23.70; the ingester now stamps it from the collector that
+         received the export. Clicking a row filters the whole view to that NIC. -->
+    <div class="card">
+      <h2>Interfaces <span class="muted">which NIC each flow arrived through</span></h2>
+      <div id="nf-interfaces"></div>
+    </div>
     <div class="grid">
       <div class="card">
         <h2>Talkers <span class="muted">click a bar to drill down</span></h2>

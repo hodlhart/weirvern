@@ -1,0 +1,93 @@
+# GOFLOW2 LAUNCHER — one netflow listener per NIC, all on port 2055.
+#
+# WHY THIS EXISTS (2026-11-18). The operator asked "how can we continue to use 2055 for each nic".
+# softflowd cannot report an interface when it converts a pcap (measured four ways: plain,
+# `-i idx:iface`, `-e <exporter>`, `-S <name>` -- always `in_if=0`, one sampler address), so the
+# NIC has to be established where the export lands: one collector per NIC, each bound to its own
+# loopback address, each writing its own file.
+#
+# And goflow2 v2.2.6 PANICS with two netflow listeners in ONE process ("pattern /templates
+# conflicts with /templates"), so "one process, many listeners" is not available. One process per
+# listener is the shape -- but it is ONE container, launched from this script and driven by
+# NETFLOW_IFACE, so adding a NIC is a settings change (NETFLOW_IFACE=eth1,eth2,eth3 + Apply) rather
+# than a manifest edit and a hand-written third container.
+#
+# THE FILE NAMING IS A CONTRACT with weirvern/ingester.py: the first NIC keeps the historical
+# /data/flows.jsonl (its tail cursor points into that 100 MB file), every further NIC writes
+# /data/flows-<nic>.jsonl, and the node's own address writes /data/flows-external.jsonl. Change
+# one side and the console silently loses a NIC.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: goflow2-launcher
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: goflow2
+data:
+  goflow2-multi.sh: |
+    #!/bin/sh
+    set -eu
+
+    DRY_RUN="${DRY_RUN:-0}"
+    IFACES="${NETFLOW_IFACE:-eth1}"
+    NODE_IP="${NODE_IP:-}"
+    DATA="${FLOW_DATA_DIR:-/data}"
+    BIN="${GOFLOW2_BIN:-/goflow2}"
+
+    PIDS=""
+
+    launch() {
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "$@"
+      else
+        "$@" &
+        PIDS="$PIDS $!"
+      fi
+    }
+
+    i=1
+    for nic in $(echo "$IFACES" | tr ',' ' '); do
+      [ -n "$nic" ] || continue
+      if [ "$i" -gt 254 ]; then
+        echo "more than 254 interfaces have no loopback address to bind" >&2
+        exit 1
+      fi
+      if [ "$i" -eq 1 ]; then
+        # The first NIC keeps the historical file name and the sflow listener it always had.
+        out="$DATA/flows.jsonl"
+        listen="netflow://127.0.0.$i:2055,sflow://:6343"
+      else
+        out="$DATA/flows-$nic.jsonl"
+        listen="netflow://127.0.0.$i:2055"
+      fi
+      launch "$BIN" -listen "$listen" -addr ":$((8079 + i))" -format json \
+        -transport file -transport.file "$out"
+      i=$((i + 1))
+    done
+
+    # THE NODE'S OWN ADDRESS, where a LAN router exports (the Service DNATs to podIP:2055, which
+    # with hostNetwork is this address). Its records name no NIC, so the ingester leaves
+    # in_iface empty for them.
+    if [ -n "$NODE_IP" ]; then
+      launch "$BIN" -listen "netflow://$NODE_IP:2055" -addr ":8090" -format json \
+        -transport file -transport.file "$DATA/flows-external.jsonl"
+    fi
+
+    if [ "$DRY_RUN" = "1" ]; then
+      exit 0
+    fi
+
+    # A collector that dies leaves a NIC silently unattributed, which looks exactly like a quiet
+    # segment. Take the pod down instead: Kubernetes restarts it, and the restart is the signal.
+    STOP=0
+    trap 'STOP=1; kill $PIDS 2>/dev/null; wait; exit 0' TERM INT
+    while [ "$STOP" -eq 0 ]; do
+      for p in $PIDS; do
+        if ! kill -0 "$p" 2>/dev/null; then
+          echo "a collector exited; stopping the rest so the pod restarts" >&2
+          kill $PIDS 2>/dev/null
+          exit 1
+        fi
+      done
+      sleep 5
+    done

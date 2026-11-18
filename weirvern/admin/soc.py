@@ -378,6 +378,12 @@ def flow_filter(filters: dict | None) -> tuple[str, dict]:
     if dport != "":
         parts.append(" AND dst_port = %(fdport)s ")
         params["fdport"] = int(dport)
+    # WHICH NIC (0.23.72): in_iface exists only on the raw table, which is why flow_filter_is_raw
+    # must also answer True for this key -- the aggregate would silently ignore the chip.
+    iface = str(filters.get("iface") or "").strip()
+    if iface:
+        parts.append(" AND in_iface = %(fiface)s ")
+        params["fiface"] = iface
     return "".join(parts), params
 
 
@@ -386,7 +392,8 @@ def flow_filter_is_raw(filters: dict | None) -> bool:
     filters = filters or {}
     return bool(str(filters.get("proto") or "").strip()
                 or str(filters.get("dport") or "").strip()
-                or str(filters.get("dst") or "").strip())
+                or str(filters.get("dst") or "").strip()
+                or str(filters.get("iface") or "").strip())
 
 
 def flow_volume_series(client, hours: int = 24, *, filters: dict | None = None) -> dict:
