@@ -297,6 +297,25 @@ kubectl apply -k k8s/
 > workloads exist that is fine too — what matters is that nothing in `k8s/`
 > defines it.
 
+### Verify the roll — five workloads, not two
+
+A release is not one image swap. `deploy/weirvern-worker`, `deploy/weirvern-gui`,
+`deploy/weirvern-ingest` (the weirling gateway), `deploy/weirvern-scanner` and the `tap` container of
+`ds/zeek` all run the release image, and each is set separately. On 2026-11-18 two of them were found
+days behind (`weirvern-ingest` at `sha-cd0f002`, `weirvern-scanner` at `sha-283033a`, two releases
+old) and the tap was a commit behind — with nothing in the console saying so, because it reports
+only its own image.
+
+After any deploy, run the check against the tag you meant to ship:
+
+```sh
+ssh <cluster-host> 'sh -s -- --pin sha-<commit>' < scripts/image_drift.sh
+```
+
+It prints every workload with its image and verdict, treats the digest-pinned upstream `goflow2` as
+external rather than drifting, and exits non-zero when anything lags. No checkout is needed on the
+host — the script is streamed in.
+
 The schema is applied automatically by the `weirvern-schema` Job, which runs
 the application's own `weirvern init-db` code path. There is no separate
 schema-loading step and no initdb-directory mechanism to go stale.
