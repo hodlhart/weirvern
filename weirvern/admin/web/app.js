@@ -4435,6 +4435,9 @@ function settingsAccordion() {
       card.classList.toggle("collapsed");
     });
   }
+  // At boot the rows are not rendered yet; this paints the placeholders and loadSettings()
+  // refreshes the counts once the values exist.
+  settingsSummaries();
 }
 
 /** EVERY SETTINGS HEADING SAYS HOW MUCH IT HOLDS. The cards open by default now; this is what
@@ -4446,9 +4449,14 @@ function settingsSummaries() {
     const head = card.querySelector(":scope > h2, :scope > h3");
     if (!head) continue;
     const n = card.querySelectorAll(".setting").length;
-    let badge = head.querySelector(".acc-count");
-    if (!n) { if (badge) badge.remove(); continue; }
-    if (!badge) { badge = el("span", { class: "muted acc-count" }); head.appendChild(badge); }
+    let badge = card._accBadge;                 // the heading is replaced when h2 -> h3
+    if (badge && !head.contains(badge)) badge = null;
+    if (!n) { if (badge) badge.remove(); card._accBadge = null; continue; }
+    if (!badge) {
+      badge = el("span", { class: "muted acc-count" });
+      card._accBadge = badge;
+      head.appendChild(badge);
+    }
     badge.textContent = `${n} setting${n === 1 ? "" : "s"}`;
   }
 }
@@ -5460,7 +5468,6 @@ async function boot() {
   wrapTables();
   lockTabsToTop();
   settingsAccordion();
-  settingsSummaries();
   modalWiring();
   filterCellWiring();
   // The "i" affordances: every view's explainer is one click from the header it explains.
