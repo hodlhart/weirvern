@@ -341,6 +341,16 @@ async function loadNetflow() {
   // unattributed row is NOT clickable: there is no interface value to filter on, and inventing
   // one would turn "the export did not arrive on a NIC socket" into "some NIC".
   const ic = d.interfaces || {};
+
+  // THE TREND. One line per NIC, bytes per bucket, on the same bucket width as the volume chart
+  // above so the two can be read together. A failed read says so; it does not draw a flat line,
+  // which would read as "this NIC went quiet".
+  const timeline = ic.timeline || {};
+  renderTimeline("nf-iface-timeline", { available: timeline.available !== false,
+                                        reason: timeline.reason, series: timeline.series || {} },
+                 { emptyText: "No flow windows recorded for any NIC in this window.",
+                   legendUnit: "bytes", legendFormat: fmtBytes, pointUnit: " bytes" });
+
   const ifaceBox = document.getElementById("nf-interfaces");
   if (ifaceBox) {
     ifaceBox.replaceChildren();

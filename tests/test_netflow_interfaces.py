@@ -223,3 +223,54 @@ def test_an_interface_filter_that_is_not_a_name_is_refused():
     with pytest.raises(ValueError):
         web.netflow_filters({"iface": "eth2; drop table"})
     assert web.netflow_filters({"iface": "eth2"})["iface"] == "eth2"
+
+
+# ── the trend, not just the share ───────────────────────────────────────────────────────────
+def test_the_series_draws_one_line_per_nic_per_bucket():
+    import datetime as _dt
+
+    t1 = _dt.datetime(2026, 1, 1, 10, 0)
+    t2 = _dt.datetime(2026, 1, 1, 10, 1)
+    client = FakeClient([(t1, "eth1", 1000, 5), (t1, "eth2", 250, 2),
+                         (t2, "eth1", 0, 0), (t2, "eth2", 900, 7)])
+
+    out = soc.interface_series(client, hours=1, filters={})
+
+    assert out["available"] is True
+    assert out["bucket_s"] > 0
+    assert [p["n"] for p in out["series"]["eth1"]] == [1000, 0]
+    assert [p["n"] for p in out["series"]["eth2"]] == [250, 900]
+    assert out["series"]["eth1"][0]["t"].startswith("2026-01-01T10:00")
+
+
+def test_the_series_names_an_unattributed_flow_instead_of_dropping_it():
+    import datetime as _dt
+
+    client = FakeClient([(_dt.datetime(2026, 1, 1, 10, 0), "", 40, 1)])
+
+    out = soc.interface_series(client, hours=1, filters={})
+
+    assert list(out["series"]) == ["unattributed"], (
+        "a flow with no interface still happened; dropping it from the chart would understate "
+        "the window"
+    )
+
+
+def test_a_failed_series_read_is_unavailable_not_a_flat_line():
+    client = FakeClient(raises=RuntimeError("clickhouse said no"))
+
+    out = soc.interface_series(client, hours=1, filters={})
+
+    assert out["available"] is False
+    assert "RuntimeError" in out["reason"]
+    assert out["series"] == {}, "an empty series would draw as 'every NIC went quiet'"
+
+
+def test_the_series_obeys_the_interface_chip_like_every_other_panel():
+    import datetime as _dt
+
+    client = FakeClient([(_dt.datetime(2026, 1, 1, 10, 0), "eth2", 5, 1)])
+
+    soc.interface_series(client, hours=1, filters={"iface": "eth2"})
+
+    assert "in_iface = %(fiface)s" in client.sql

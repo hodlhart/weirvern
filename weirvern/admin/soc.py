@@ -471,6 +471,45 @@ def interface_mix(client, hours: int = 24, *, filters: dict | None = None) -> di
             "total_flows": sum(p["flows"] for p in points), "points": points}
 
 
+def interface_series(client, hours: int = 24, *, filters: dict | None = None) -> dict:
+    """Bytes and flows per bucket, PER NIC -- the trend the mix table cannot show.
+
+    THE MIX ANSWERS "HOW MUCH", THIS ANSWERS "IS IT STILL COMING". A share of the window is a
+    single number: a NIC that carried 40% of the day could have done it in one hour and then gone
+    silent, and the table would look identical. One line per NIC makes that shape visible.
+
+    READS RAW `flows` for the same reason as `interface_mix`: `flows_aggregated` has no
+    `in_iface`. Buckets use the same width the volume chart uses, so the two charts line up when
+    read side by side.
+
+    An empty interface is reported as "unattributed" -- a named line, not a folded-in guess.
+    """
+    width = _bucket_seconds(hours)
+    filt, fparams = flow_filter(filters)
+    try:
+        rows = client.query(
+            "SELECT toStartOfInterval(timestamp, INTERVAL %(w)s SECOND) AS bucket, "
+            "in_iface, sum(bytes) AS bytes, count() AS flows "
+            "FROM weirvern.flows "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s " + filt +
+            "GROUP BY bucket, in_iface ORDER BY bucket",
+            parameters={"w": width, **timewindow.w(hours), **fparams},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("interface_series failed: %s", exc)
+        # KEEP THE SHAPE: a caller that indexes `series` must find an empty one, not a KeyError.
+        return {**_unavailable(f"interface series query failed: {type(exc).__name__}"),
+                "series": {}, "bucket_s": 0}
+
+    series: dict[str, list[dict]] = {}
+    for row in rows:
+        t = row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0])
+        name = str(row[1] or "") or "unattributed"
+        series.setdefault(name, []).append({"t": t, "n": int(row[2] or 0), "flows": int(row[3] or 0)})
+    return {"available": True, "reason": "", "hours": hours, "bucket_s": width,
+            "series": series, "unit": "bytes"}
+
+
 def protocol_mix(client, hours: int = 24, limit: int = 12, *,
                  filters: dict | None = None) -> dict:
     """Flows and bytes per IP protocol.

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.73 — 2026-11-18
+
+THE MIX SAID HOW MUCH; THE SERIES SAYS WHETHER IT IS STILL COMING.
+
+- **The Interfaces card gains a trend**: one line per NIC, bytes per bucket, on the same bucket
+  width as the volume chart above it so the two read together. A NIC that carried 40% of the day
+  in one hour and a NIC that carried it all day produce the same share in the table — only the
+  series tells them apart.
+- **A flow with no interface is drawn as "unattributed"**, not dropped: it still happened, and
+  hiding it would understate the window.
+- **A failed series read reports unavailable with its reason** rather than drawing an empty series,
+  which would read as "every NIC went quiet" — the same distinction the talkers panel learned.
+- The series obeys the dashboard filters, including the `iface` chip, and reads the RAW table for
+  the same reason the mix does: `flows_aggregated` has no `in_iface`.
+
 ## 0.23.72 — 2026-11-18
 
 A NIC YOU ADD IS A SETTING, NOT A MANIFEST EDIT — AND THE FLOWS HAVE A PANEL.

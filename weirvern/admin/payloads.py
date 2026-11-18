@@ -528,6 +528,15 @@ def netflow(client: Client, *, hours: int, filters: dict) -> dict[str, Any]:
         # WHICH NIC EACH FLOW CAME THROUGH (0.23.70): its own read, so a failure here still
         # leaves the volume, protocol and port charts standing.
         interfaces = soc_mod.interface_mix(client, hours=hours, filters=filters)
+        # THE TREND IS A SECOND READ, so a failure in it cannot blank the mix beside it.
+        try:
+            interfaces = {**interfaces,
+                          "timeline": soc_mod.interface_series(client, hours=hours, filters=filters)}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("interface series unavailable: %s", exc)
+            interfaces = {**interfaces,
+                          "timeline": {"available": False, "reason": "the series read failed",
+                                       "series": {}, "bucket_s": 0}}
         talkers = status_mod.top_talkers(client, hours=hours, limit=12, filters=filters)
         # The host lists are filtered; this says by how much, so a reader can tell "a quiet segment"
         # from "a noisy one with the noise hidden".
