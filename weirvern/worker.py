@@ -2128,7 +2128,9 @@ def main() -> None:
         #
         # The event is shared with the detect loop, so the ONE SIGTERM now stops both, and the join at
         # the bottom of main() gives the in-flight pass a bounded moment to finish and checkpoint.
-        kwargs={"exporter_allow": settings.flow_exporter_allow, "stop": _stop},
+        # tail_files: the per-NIC file map -- one collector per NIC, same port, one file each.
+        kwargs={"exporter_allow": settings.flow_exporter_allow, "stop": _stop,
+                "tail_files": settings.tail_files},
         daemon=True,
         name="ingest-thread",
     )

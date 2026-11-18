@@ -1507,3 +1507,44 @@ def test_the_zeek_cursor_resume_is_NOT_an_INFO_line():
     assert not re.search(r'logger\.info\(\s*"Resuming Zeek tail', source), (
         "the per-file resume line is still logging at INFO"
     )
+
+
+# --- one collector per NIC, one port ------------------------------------------------
+def test_a_file_names_the_interface_its_flows_came_through():
+    """THE ATTRIBUTION IS THE FILE, NOT THE RECORD. softflowd cannot report an interface when it
+    reads a pcap (measured four ways on the box), so each NIC's collector writes its own file and
+    the tailer stamps the interface that file belongs to onto every row."""
+    from weirvern.ingester import _COLUMNS, TailState, tail_and_insert
+
+    fake = FakeCH()
+    with tempfile.TemporaryDirectory() as d:
+        path = _write(d, "flows-eth2.jsonl", [_flow_record(1), _flow_record(2)])
+        tail_and_insert(fake, path, state=TailState(), iface="eth2")
+
+    rows = fake.calls[-1]
+    assert len(rows) == 2
+    assert all(r[_COLUMNS.index("in_iface")] == "eth2" for r in rows)
+
+
+def test_without_a_map_the_interface_stays_empty_not_guessed():
+    from weirvern.ingester import _COLUMNS, TailState, tail_and_insert
+
+    fake = FakeCH()
+    with tempfile.TemporaryDirectory() as d:
+        path = _write(d, "flows.jsonl", [_flow_record(1)])
+        tail_and_insert(fake, path, state=TailState())
+
+    assert fake.calls[-1][0][_COLUMNS.index("in_iface")] == "", (
+        "an unattributed flow must read as unattributed -- a default NIC would be a lie"
+    )
+
+
+def test_tail_targets_reads_the_per_nic_map():
+    from weirvern.ingester import tail_targets
+
+    assert tail_targets("/data/flows.jsonl", "") == [("/data/flows.jsonl", "")]
+    assert tail_targets("/data/flows.jsonl",
+                        "eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl") == [
+        ("/data/flows.jsonl", "eth1"),
+        ("/data/flows-eth2.jsonl", "eth2"),
+    ]

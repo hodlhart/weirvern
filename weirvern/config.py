@@ -224,6 +224,10 @@ class Settings:
 
     # Data input (goflow2 JSONL sink)
     tail_file: str = field(default_factory=lambda: os.environ.get("TAIL_FILE", "/data/flows.jsonl"))
+    # ONE COLLECTOR PER NIC (2026-11-18): each writes its own file on the one port 2055, bound to
+    # a different loopback address. "eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl" makes the
+    # file the attribution; empty keeps the single-file behaviour and an empty interface name.
+    tail_files: str = field(default_factory=lambda: os.environ.get("TAIL_FILES", ""))
 
     # Addresses the sensor refuses to LEARN from: scanners, synthetic test ranges, noisy hosts.
     # Comma-separated CIDRs. Applied at the row layer so the traffic is counted rather than

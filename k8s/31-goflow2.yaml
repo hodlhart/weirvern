@@ -65,9 +65,23 @@ spec:
       containers:
         - name: goflow2
           image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
+          env:
+            # THE NODE'S OWN ADDRESS, so an external router can still export to this node on
+            # 2055 (the NodePort DNATs to podIP:2055, which with hostNetwork is the node IP).
+            # Kubernetes expands $(NODE_IP) in args because it is defined here.
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           args:
+            # ── ONE PORT, ONE ADDRESS PER NIC (2026-11-18) ────────────────────────────────────
+            # Two listeners may share a port when they bind different addresses, and Linux
+            # routes all of 127.0.0.0/8 locally. eth1's exports go to 127.0.0.1:2055; eth2's go
+            # to 127.0.0.2:2055 in the SECOND container below, which writes its own file -- so
+            # the port in the docs, the firewall and every exporter stays 2055, and the FILE is
+            # what names the NIC. The wildcard bind had to go: it would swallow 127.0.0.2.
             - -listen
-            - netflow://:2055,sflow://:6343
+            - netflow://127.0.0.1:2055,netflow://$(NODE_IP):2055,sflow://:6343
             - -format
             - json
             - -transport
@@ -98,33 +112,57 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-            # ── PINNED, BECAUSE NOTHING ELSE PINS IT (audit F041) ─────────────────────────────
-            #
-            # This container ran as uid 100 in practice -- but ONLY because the goflow2 IMAGE
-            # declares `USER flow`. Nothing in this manifest said so, so the guarantee was a
-            # property of a third-party image tag that a version bump could silently change.
-            #
-            # Measured on the live pod: the container's `runAsUser` and `runAsNonRoot` were both
-            # unset at every level, so the container ran as whatever the image said. The deployment
-            # was one image update away from collecting flows as root, and the root-container
-            # tripwire could not have noticed, because it resolves a uid and an unset uid is
-            # neither 0 nor absent-but-suspicious to it.
-            #
-            # `runAsNonRoot` is the load-bearing line: the kubelet ENFORCES it and refuses to start
-            # the container if the image would run as root, which turns a silent drift into a
-            # startup failure. `runAsUser` states the uid explicitly so the runtime value matches
-            # what the image already did.
             runAsNonRoot: true
             runAsUser: 100
-          # TCP is not a valid probe for a UDP-only collector, so readiness is
-          # the metrics endpoint, which is the only listener that proves the
-          # process is up and serving.
           readinessProbe:
             httpGet: {path: /metrics, port: metrics}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+        # ── THE SECOND NIC'S COLLECTOR ──────────────────────────────────────────────────────────
+        # Same image, same port, one address over: 127.0.0.2:2055, its own file. The worker's
+        # ingester tails BOTH files and tags each record with the interface the file belongs to.
+        # Nothing here is a guess about the packets: softflowd cannot report an interface when it
+        # reads a pcap (measured four ways), so the separation happens at the collector, where it
+        # is a fact about which socket received the export.
+        - name: goflow2-eth2
+          image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
+          args:
+            - -listen
+            - netflow://127.0.0.2:2055
+            - -addr
+            - :8081
+            - -format
+            - json
+            - -transport
+            - file
+            - -transport.file
+            - /data/flows-eth2.jsonl
+          volumeMounts:
+            - name: flow-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 100
+          readinessProbe:
+            httpGet: {path: /metrics, port: 8081}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /metrics, port: 8081}
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:

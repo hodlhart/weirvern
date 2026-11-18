@@ -62,7 +62,11 @@ class Inserter(Protocol):
     def insert(self, table: Any = None, data: Any = None, column_names: Any = None, **kwargs: Any) -> Any: ...  # noqa: ANN401
 
 _COLUMNS = [
-    "timestamp", "sampler_address", "time_flow_start", "time_flow_end", "src_addr",
+    # in_iface: WHICH NIC THIS FLOW CAME THROUGH. Not from the packet -- softflowd cannot report
+    # an interface when it reads a pcap (measured four ways) -- but from the collector SOCKET that
+    # received the export: each NIC has its own goflow2 bound to 127.0.0.<n>:2055 writing its own
+    # file, and the tailer tags every record with the interface that file belongs to.
+    "timestamp", "sampler_address", "in_iface", "time_flow_start", "time_flow_end", "src_addr",
     "dst_addr", "src_port", "dst_port", "proto", "etype", "bytes", "packets",
     "tcp_flags", "sampling_rate", "src_as", "dst_as", "src_vlan", "dst_vlan",
     "in_if", "out_if", "next_hop", "ip_tos", "ip_ttl", "frag_offset",
@@ -110,6 +114,8 @@ def map_flow(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "timestamp": utcnow(),
         "sampler_address": raw.get("sampler_address", ""),
+        # Filled by the tailer, never by the record: the record has no interface to offer.
+        "in_iface": "",
         "time_flow_start": _ts(raw.get("time_flow_start_ns", 0)),
         "time_flow_end": _ts(raw.get("time_flow_end_ns", 0)),
         "src_addr": _to_ip(raw.get("src_addr", "0.0.0.0")),
@@ -1970,7 +1976,8 @@ def _offset_is_on_boundary(path: str, offset: int) -> bool:
 def tail_and_insert(client: Inserter, path: str, once: bool = False,
                     offset: int | None = None, known_inode: int | None = None,
                     state: TailState | None = None,
-                    allow: str = "") -> tuple[int, int, int]:
+                    allow: str = "",
+                    iface: str = "") -> tuple[int, int, int]:
     """Tail `path` (JSONL) and batch-insert new records.
 
     Returns (inserted, final_offset, final_inode).
@@ -2062,6 +2069,9 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
                 continue
             try:
                 row = map_flow(json.loads(line))
+                # THE FILE NAMES THE NIC. Set here, at the one place every record passes through,
+                # so no record can arrive untagged when the collector split is configured.
+                row["in_iface"] = iface
             except json.JSONDecodeError:
                 logger.warning("Skipping malformed JSON line (%.80s…)", line)
                 continue
@@ -2400,9 +2410,30 @@ def save_tail_state(path: str, state: TailState) -> None:
         logger.warning("Could not checkpoint the tail cursor for %s: %s", path, exc)
 
 
+def tail_targets(path: str, mapping: str = "") -> list[tuple[str, str]]:
+    """[(path, iface)] from TAIL_FILES ("eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl").
+
+    One collector writes one file per NIC (same port 2055, a different loopback address each),
+    so the FILE is the attribution. A single entry, or no mapping at all, keeps the historical
+    behaviour and an empty interface name.
+    """
+    out: list[tuple[str, str]] = []
+    for part in str(mapping or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, where = part.partition("=")
+        if sep:
+            out.append((where.strip(), name.strip()))
+        else:
+            out.append((part, ""))
+    return out or [(path, "")]
+
+
 def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
                  zeek_dir: str = "", exporter_allow: str = "",
-                 stop: threading.Event | None = None) -> None:
+                 stop: threading.Event | None = None,
+                 tail_files: str = "") -> None:
     """Block forever: tail NetFlow JSONL and (optionally) Zeek logs.
 
     Duplicate-insert failure mode of the first v20 pass: re-reading the whole
@@ -2422,14 +2453,19 @@ def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
     checkpointing, and kept writing warnings about directories that no longer existed. A loop that
     cannot be stopped is hard to test and hard to shut down; the caller already owns a stop flag.
     """
-    state = load_tail_state(path)
-    if state.offset:
-        logger.info("Resuming NetFlow tail at offset %d for %s", state.offset, path)
+    targets = tail_targets(path, tail_files)
+    states = {where: load_tail_state(where) for where, _ in targets}
+    for where, iface in targets:
+        if states[where].offset:
+            logger.info("Resuming NetFlow tail at offset %d for %s%s",
+                        states[where].offset, where, f" (iface {iface})" if iface else "")
     zeek_state: dict[str, ZeekTailState] = {}
     while not (stop is not None and stop.is_set()):
         try:
-            _, offset, inode = tail_and_insert(client, path, state=state, allow=exporter_allow)
-            save_tail_state(path, state)
+            for where, iface in targets:
+                tail_and_insert(client, where, state=states[where], allow=exporter_allow,
+                                iface=iface)
+                save_tail_state(where, states[where])
             if zeek_dir:
                 _, zeek_state = tail_zeek_dir(client, zeek_dir, zeek_state)
         except Exception as exc:  # noqa: BLE001

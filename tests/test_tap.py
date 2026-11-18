@@ -505,3 +505,42 @@ def test_publish_state_never_raises_on_an_unwritable_path(tmp_path):
     sup = tap.Supervisor(directory=str(tmp_path))
     assert tap.publish_state(sup, [], SimpleNamespace(netflow_mode="active"),
                              path="/proc/definitely-not-writable/state.json") is False
+
+
+def test_every_nic_keeps_port_2055_and_gets_its_own_loopback_address():
+    """Operator, 2026-11-18: "how can we continue to use 2055 for each nic".
+
+    Two listeners may share a port when they bind different addresses, and Linux routes all of
+    127.0.0.0/8 locally -- so the port in the docs, the firewall and every exporter stays 2055.
+    """
+    from weirvern import tap
+
+    assert tap.collector_for(0) == "127.0.0.1:2055"
+    assert tap.collector_for(1) == "127.0.0.2:2055"
+    assert tap.collector_for(2) == "127.0.0.3:2055"
+    assert {tap.collector_for(i).rsplit(":", 1)[1] for i in range(4)} == {"2055"}, (
+        "the port must be the same for every NIC; only the address separates them"
+    )
+
+
+def test_the_sweep_exports_a_segment_to_the_collector_for_its_interface(tmp_path):
+    """The directory of a NIC's segments and the socket its exports reach must agree."""
+    from weirvern import tap
+
+    old = tmp_path / "ch-20260101-000000.pcap000"
+    new = tmp_path / "ch-20260101-000030.pcap000"
+    old.write_bytes(b"seg")
+    new.write_bytes(b"seg")
+    past = time.time() - 100.0
+    os.utime(old, (past, past))
+    os.utime(new, (past, past))
+    calls: list = []
+
+    def run(argv, timeout=None, capture_output=False, **kwargs):
+        calls.append(list(argv))
+        return _Result(0)
+
+    tap.sweep_completed(run=run, probe="/usr/sbin/softflowd", directory=str(tmp_path),
+                        collector=tap.collector_for(1))
+
+    assert calls[0][calls[0].index("-n") + 1] == "127.0.0.2:2055"

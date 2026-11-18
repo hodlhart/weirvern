@@ -63,6 +63,24 @@ logger = logging.getLogger(__name__)
 
 # goflow2, hostNetwork on this node.
 TAP_COLLECTOR = "127.0.0.1:2055"
+TAP_PORT = 2055
+
+
+def collector_for(index: int, *, port: int = TAP_PORT) -> str:
+    """The collector address for the index-th NIC: 127.0.0.1:2055, 127.0.0.2:2055, and so on.
+
+    ONE PORT, ONE ADDRESS PER NIC (operator, 2026-11-18: "how can we continue to use 2055 for
+    each nic"). Two listeners may share a port as long as they bind different addresses, and
+    Linux routes all of 127.0.0.0/8 locally, so a second collector costs no interface, no
+    firewall rule and no new port. The PORT the exporter targets never changes; the FILE a
+    collector writes is what names the NIC, which is honest in a way a synthetic header field
+    would not be -- softflowd cannot report an interface when it reads a pcap, measured four
+    ways on the box (ingress index, exporter IP, interface name, plain).
+    """
+    n = index + 1
+    if not 1 <= n <= 254:
+        raise ValueError("more than 254 interfaces have no loopback address to bind")
+    return f"127.0.0.{n}:{port}"
 # Timeouts chosen for a monitoring pipeline that re-evaluates five-minute buckets: idle flows
 # export within a minute or two and long flows at least every ten, rather than the half-hour-to-
 # hour defaults of a router exporting for billing. The `arp` term in the tap filter is not
@@ -301,7 +319,8 @@ def publish_state(supervisor: Supervisor, targets: Sequence[Target], settings,
         "ts": time.time(),
         "pid": os.getpid(),
         "running": bool(supervisor.taps),
-        "targets": [{"iface": t.iface, "source": t.source} for t in targets],
+        "targets": [{"iface": t.iface, "source": t.source,
+                     "collector": collector_for(i)} for i, t in enumerate(targets)],
         "netflow_mode": str(getattr(settings, "netflow_mode", "")),
         "sensor_mode": str(getattr(settings, "sensor_mode", "")),
         "collector": TAP_COLLECTOR,
@@ -330,7 +349,8 @@ def publish_state(supervisor: Supervisor, targets: Sequence[Target], settings,
 
 def sweep_completed(*, run: Callable | None = None, probe: str | None = None,
                     now: Callable[[], float] | None = None,
-                    directory: str | None = None) -> int:
+                    directory: str | None = None,
+                    collector: str | None = None) -> int:
     """Summarise every COMPLETED capture segment into IPFIX, and delete it once it is in.
 
     Returns how many segments were summarised. Injectable `run` / `probe` / `now` / `directory`
@@ -340,6 +360,10 @@ def sweep_completed(*, run: Callable | None = None, probe: str | None = None,
     runner = run or subprocess.run
     clock = now or time.time
     root = directory or TAP_DIR
+    # THE COLLECTOR FOLLOWS THE DIRECTORY: each NIC exports to its own loopback address on the
+    # one port, so the file a collector writes -- not a header field softflowd cannot set --
+    # carries the identity.
+    target = collector or TAP_COLLECTOR
     try:
         # `.pcap` IN the name, not a suffix match: tcpdump's -W rotation numbers the files it
         # writes ("ch-20261015-200648.pcap000"), so a `.endswith(".pcap")` filter matched nothing
@@ -364,7 +388,7 @@ def sweep_completed(*, run: Callable | None = None, probe: str | None = None,
         # measured on the box, the same invocation WITH them hung for the runner's whole timeout
         # while the same file summarised cleanly (82/82 packets, flows flushed) without them.
         # stdin is DEVNULL: this child reads a FILE; it has no business inheriting the tap's stdin.
-        argv = [binary, "-r", path, "-n", TAP_COLLECTOR, "-v", "10", "-d", *TAP_TIMEOUTS]
+        argv = [binary, "-r", path, "-n", target, "-v", "10", "-d", *TAP_TIMEOUTS]
         try:
             result = runner(argv, timeout=120, capture_output=True, stdin=subprocess.DEVNULL)
         except Exception as exc:  # noqa: BLE001
@@ -446,7 +470,7 @@ class Supervisor:
             return
         started: dict[str, dict] = {}
         try:
-            for target in targets:
+            for index, target in enumerate(targets):
                 # One NIC keeps the historical flat directory; two or more get a directory each
                 # so one tap's still-being-written segment cannot hold up another's sweep.
                 if len(targets) == 1:
@@ -469,13 +493,14 @@ class Supervisor:
                      "-w", os.path.join(directory, "ch-%Y%m%d-%H%M%S.pcap"),
                      TAP_FILTER])
                 started[target.iface] = {"tap": tap_proc, "source": target.source,
-                                          "dir": directory}
+                                          "dir": directory,
+                                          "collector": collector_for(index)}
             self.taps = started
             for target in targets:
                 logger.info("%s netflow: tapping %s into %s (segment %ss / %sMB) and "
                             "summarising each completed segment to %s IPFIX",
                             target.source, target.iface, started[target.iface]["dir"],
-                            TAP_SEGMENT_S, TAP_SEGMENT_MB, TAP_COLLECTOR)
+                            TAP_SEGMENT_S, TAP_SEGMENT_MB, started[target.iface]["collector"])
         except Exception as exc:  # noqa: BLE001
             self.stop()
             self.retry_after = self._clock() + RETRY_S
@@ -487,7 +512,8 @@ class Supervisor:
         probe = self._which("softflowd")
         for entry in self.taps.values():
             directory = entry.get("dir") or self.directory
-            done = sweep_completed(run=self._run, probe=probe, directory=directory)
+            done = sweep_completed(run=self._run, probe=probe, directory=directory,
+                                   collector=entry.get("collector"))
             if isinstance(done, int):
                 self.segments_swept += done
             # AFTER the sweep, never before: whatever could still be summarised has been. The

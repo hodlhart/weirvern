@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.70 — 2026-11-18
+
+A FLOW COULD NOT SAY WHICH NIC IT CAME THROUGH.
+
+- **One collector per NIC, on ONE port** (`k8s/31-goflow2.yaml`, `tap.collector_for`): eth1's
+  exports go to `127.0.0.1:2055`, eth2's to `127.0.0.2:2055`. Two listeners may share a port when
+  they bind different addresses, and Linux routes all of `127.0.0.0/8` locally -- so every
+  exporter, firewall rule and doc keeps saying 2055, and no interface is invented. The wildcard
+  bind had to go, or it would have swallowed `127.0.0.2`; the node's own address is bound as well
+  so a LAN router can still export to this host on 2055.
+- **The file names the NIC** (`flows.in_iface`, migration 054): the ingester tails every
+  collector's file (`TAIL_FILES`) and stamps the interface that file belongs to onto each record.
+  An unattributed flow reads as empty, never as a guessed NIC.
+- **Measured first, then built**: softflowd cannot report an interface when it reads a pcap --
+  plain, `-i idx:iface`, `-e <exporter ip>` and `-S <name>` were each replayed on the box, and the
+  collector recorded `in_if=0` and one sampler address every time. That is why the separation
+  happens at the socket, where it is a fact, rather than in the record.
+
 ## 0.23.69 — 2026-11-18
 
 A REVIEW THAT SHOWS THE WRONG PORT IS A REVIEW THAT LOSES THE OPERATOR'S TRUST.
