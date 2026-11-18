@@ -92,11 +92,12 @@ data:
   INTERFACE_NETWORKS: ""
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
-  # ONE COLLECTOR PER NIC, ONE PORT (2026-11-18). Each collector writes its own file, all on
-  # 2055 but bound to a different loopback address, and the ingester stamps the interface the
-  # file belongs to into flows.in_iface. Softflowd cannot report an interface when it reads a
-  # pcap, so this is the only place the attribution can be a fact. Empty = single-collector.
-  TAIL_FILES: "eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl,/data/flows-external.jsonl"
+  # THE PER-NIC FILES ARE DERIVED, NOT LISTED (0.23.72). Leave this empty: the ingester builds
+  # the list from NETFLOW_IFACE with the same naming rule the collector launcher uses (first NIC
+  # -> flows.jsonl, further NICs -> flows-<nic>.jsonl, plus flows-external.jsonl for the node's
+  # own address). Set it only to OVERRIDE that rule, e.g. to read a file some other exporter
+  # writes: "eth1=/data/flows.jsonl,eth9=/data/flows-eth9.jsonl".
+  TAIL_FILES: ""
 
   # ── Tail cursor checkpoints ────────────────────────────────────────────────
   # Where the ingester records how far it has read each tailed log, so a restart
