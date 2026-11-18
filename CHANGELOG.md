@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.23.76 — 2026-11-18
+
+THE ML TAB GETS A SPINE.
+
+- **Four sections, in the order an operator asks the questions.** *Production* — what is scoring
+  traffic now (overview, retraining, model cards, freshness, the adaptive baseline, training
+  history, score distribution and agreement). *Verification and review* — what evidence says it
+  works (source coverage, SLO, verification coverage, evaluation history, program review, promotion
+  ledger). *Shadow* — what is being tried without controlling alerts (channels, shadow ML, ripple,
+  calibration, asset posture). *Host baselines and findings* — baseline deviations, near misses and
+  the anomaly list.
+- **Nothing was removed and no data changed**: the same 21 cards ship, regrouped, with the house
+  section eyebrow (the same rule the Settings tab uses) between the groups.
+- **The summary card is called Overview**, not Models — the page title already says Models and
+  repeats the same counts, so the card's heading was doing no work.
+
 ## 0.23.75 — 2026-11-18
 
 SETTINGS OPENS WITH ITS VALUES SHOWING.
