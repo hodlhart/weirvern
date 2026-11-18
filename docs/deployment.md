@@ -17,8 +17,8 @@ refuse to proceed, and how to upgrade or remove it.
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated): the
-shipped workloads total **2.14 CPU / 3.97 GiB of requests** and **11.75 CPU /
-18.88 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
+shipped workloads total **2.24 CPU / 4.09 GiB of requests** and **12.25 CPU /
+19.38 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
 its header states the inclusion rule (every container -- init containers included
 -- of every rendered workload: worker, GUI, ClickHouse, goflow2, the scanner,
 the Zeek DaemonSet -- capture, both init containers and the flow tap sidecar --

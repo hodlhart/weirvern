@@ -742,7 +742,8 @@ def models_payload(data: dict) -> dict:
 
 
 def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
-                    talkers: dict, noise: dict | None = None) -> dict:
+                    talkers: dict, noise: dict | None = None,
+                    interfaces: dict | None = None) -> dict:
     """Netflow view payload.
 
     NAMES RIDE WITH EVERY ROW THAT CARRIES AN ADDRESS. The talkers list has had
@@ -768,6 +769,10 @@ def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
         # TALKERS KEEP THEIR STATE (issue #13): the list used to be flattened here, dropping the
         # `available`/`reason` the helper had just produced -- which is how a failed query reached
         # the panel as an empty list and rendered as a quiet network. Same shape as every sibling.
+        # WHICH NIC EACH FLOW CAME THROUGH (0.23.70). Its own key so a failure here cannot
+        # blank the charts beside it -- the same shape rule every sibling follows.
+        "interfaces": interfaces or {"available": False, "reason": "not read", "points": [],
+                                     "total_flows": 0},
         "talkers": {
             "available": bool((talkers or {}).get("available", True)),
             "reason": (talkers or {}).get("reason", ""),

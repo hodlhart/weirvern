@@ -276,6 +276,18 @@ function nfDetailWithChips(base) {
   return { params, unapplied };
 }
 
+// WHICH NIC EACH FLOW CAME THROUGH (0.23.70). `flows.in_iface` is stamped by the ingester
+// from the collector file that received the export, so this is a fact about the socket -- not
+// a guess from the subnet, which is all the console could do before. An empty interface is
+// "unattributed" and stays SEPARATE: a guessed NIC is worse than an admitted gap.
+function ifaceSplitText(interfaces) {
+  const d = interfaces || {};
+  if (d.available === false) return ` \u2014 by NIC: unavailable`;
+  const parts = (d.points || []).filter((p) => (p.flows || 0) > 0)
+    .map((p) => `${p.iface || "unattributed"} ${Number(p.flows).toLocaleString()}`);
+  return parts.length ? ` \u2014 by NIC: ${parts.join(" \u00b7 ")}` : "";
+}
+
 async function loadNetflow() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
@@ -299,7 +311,7 @@ async function loadNetflow() {
   const totalBytes = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.bytes, 0);
   const totalFlows = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.flows, 0);
   document.getElementById("nf-summary").textContent = (d.volume && d.volume.available)
-    ? `${fmtBytes(totalBytes)} across ${totalFlows.toLocaleString()} flows.`
+    ? `${fmtBytes(totalBytes)} across ${totalFlows.toLocaleString()} flows${ifaceSplitText(d.interfaces)}.`
     : "Flow volume is unavailable — see the panel below.";
 
   // Volume as a line: bytes per bucket. The series is NAMED bytes, not flows: the legend

@@ -525,13 +525,17 @@ def netflow(client: Client, *, hours: int, filters: dict) -> dict[str, Any]:
         proto = soc_mod.protocol_mix(client, hours=hours, filters=filters)
         ports = soc_mod.top_ports(client, hours=hours, filters=filters)
         spread = soc_mod.destination_spread(client, hours=hours, filters=filters)
+        # WHICH NIC EACH FLOW CAME THROUGH (0.23.70): its own read, so a failure here still
+        # leaves the volume, protocol and port charts standing.
+        interfaces = soc_mod.interface_mix(client, hours=hours, filters=filters)
         talkers = status_mod.top_talkers(client, hours=hours, limit=12, filters=filters)
         # The host lists are filtered; this says by how much, so a reader can tell "a quiet segment"
         # from "a noisy one with the noise hidden".
         noise = status_mod.noise_flows(client, hours=hours)
     except Exception as exc:  # noqa: BLE001
         return netflow_failure(exc)
-    return web_api.netflow_payload(volume, proto, ports, spread, talkers, noise=noise)
+    return web_api.netflow_payload(volume, proto, ports, spread, talkers, noise=noise,
+                                   interfaces=interfaces)
 
 
 def netflow_failure(exc: BaseException) -> dict[str, Any]:

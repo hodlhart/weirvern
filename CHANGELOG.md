@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.71 — 2026-11-18
+
+THE FLOWS KNEW THEIR NIC; THE CONSOLE DID NOT SAY SO.
+
+- **The Netflow summary prints the split**: `1.4 MB across 3,240 flows — by NIC: eth1 2,100 ·
+  eth2 1,140`. It reads `flows.in_iface` from the RAW table (the aggregate has no such column)
+  and obeys the same dashboard filters as every chart beside it.
+- **An empty interface prints as `unattributed`** — it is never folded into a NIC. A flow whose
+  export did not arrive on a NIC's loopback socket is a gap the console admits; a guessed NIC
+  would be a fact the sensor does not have. A failed read prints `unavailable`, not silence.
+- **The ClickHouse client has a 60 s send/receive timeout** (the library default is 300 s).
+  Measured 2026-11-18: a DELETE mutation held an insert for ~4 minutes and the ingest thread
+  stopped passing entirely, with nothing in the log to read. It now fails, logs, and the next
+  pass retries.
+- **The third goflow2 listener is committed** (the node's own address on 2055, where a LAN
+  router exports) along with `TAIL_FILES` — the manifest the live pod already runs, which had
+  been applied but not recorded.
+
 ## 0.23.70 — 2026-11-18
 
 A FLOW COULD NOT SAY WHICH NIC IT CAME THROUGH.

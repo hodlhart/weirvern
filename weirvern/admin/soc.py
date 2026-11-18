@@ -433,6 +433,37 @@ def flow_volume_series(client, hours: int = 24, *, filters: dict | None = None) 
     }
 
 
+def interface_mix(client, hours: int = 24, *, filters: dict | None = None) -> dict:
+    """Which NIC each flow arrived through -- `flows.in_iface`, populated since 0.23.70.
+
+    THE QUESTION THE FLOW TABLES COULD NOT ANSWER. Until 0.23.70 every row carried the same
+    sampler address and `in_if=0`: softflowd cannot report an interface when it reads a pcap
+    (measured four ways -- plain, `-i idx:iface`, `-e <exporter>`, `-S <name>`), so the NIC was
+    a guess made from subnets. Now one collector per NIC writes its own file, and the ingester
+    stamps the file's interface onto every row.
+
+    READS RAW `flows`: `flows_aggregated` has no `in_iface`, and this is a per-flow fact.
+
+    AN EMPTY INTERFACE IS REPORTED AS "" and labelled "unattributed" by the console -- never
+    folded into a NIC. A guessed NIC is worse than an admitted gap.
+    """
+    filt, fparams = flow_filter(filters)
+    try:
+        rows = client.query(
+            "SELECT in_iface, count() AS flows, sum(bytes) AS bytes FROM weirvern.flows "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s " + filt +
+            " GROUP BY in_iface ORDER BY flows DESC",
+            parameters={**timewindow.w(hours), **fparams},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("interface_mix failed: %s", exc)
+        return _unavailable(f"interface mix query failed: {type(exc).__name__}")
+    points = [{"iface": str(r[0] or ""), "flows": int(r[1] or 0), "bytes": int(r[2] or 0)}
+              for r in rows]
+    return {"available": True, "reason": "", "hours": hours,
+            "total_flows": sum(p["flows"] for p in points), "points": points}
+
+
 def protocol_mix(client, hours: int = 24, limit: int = 12, *,
                  filters: dict | None = None) -> dict:
     """Flows and bytes per IP protocol.

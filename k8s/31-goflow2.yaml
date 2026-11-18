@@ -80,8 +80,14 @@ spec:
             # to 127.0.0.2:2055 in the SECOND container below, which writes its own file -- so
             # the port in the docs, the firewall and every exporter stays 2055, and the FILE is
             # what names the NIC. The wildcard bind had to go: it would swallow 127.0.0.2.
+            #
+            # ONE NETFLOW LISTENER PER PROCESS. goflow2 v2.2.6 PANICS with two netflow listeners
+            # in one process ("pattern /templates conflicts with /templates", measured on the
+            # first apply), so the node's own address -- where a LAN router exports -- is a third
+            # container, not a second URI here. sflow rides along: its scheme registers no
+            # template handler, which is why netflow+sflow worked and netflow+netflow did not.
             - -listen
-            - netflow://127.0.0.1:2055,netflow://$(NODE_IP):2055,sflow://:6343
+            - netflow://127.0.0.1:2055,sflow://:6343
             - -format
             - json
             - -transport
@@ -163,6 +169,52 @@ spec:
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /metrics, port: 8081}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+        # ── WHAT A LAN ROUTER REACHES (the node's own address, port 2055) ───────────────────────
+        # The Service DNATs to podIP:2055, which with hostNetwork is the node's address. Records
+        # from here are NOT attributed to a NIC, and the ingester leaves in_iface empty for them:
+        # a router export says nothing about which interface this sensor captured it on.
+        - name: goflow2-external
+          image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          args:
+            - -listen
+            - netflow://$(NODE_IP):2055
+            - -addr
+            - :8082
+            - -format
+            - json
+            - -transport
+            - file
+            - -transport.file
+            - /data/flows-external.jsonl
+          volumeMounts:
+            - name: flow-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 100
+          readinessProbe:
+            httpGet: {path: /metrics, port: 8082}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /metrics, port: 8082}
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:

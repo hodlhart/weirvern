@@ -96,7 +96,7 @@ data:
   # 2055 but bound to a different loopback address, and the ingester stamps the interface the
   # file belongs to into flows.in_iface. Softflowd cannot report an interface when it reads a
   # pcap, so this is the only place the attribution can be a fact. Empty = single-collector.
-  TAIL_FILES: "eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl"
+  TAIL_FILES: "eth1=/data/flows.jsonl,eth2=/data/flows-eth2.jsonl,/data/flows-external.jsonl"
 
   # ── Tail cursor checkpoints ────────────────────────────────────────────────
   # Where the ingester records how far it has read each tailed log, so a restart

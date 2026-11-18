@@ -115,12 +115,21 @@ def connect(settings: Settings, retries: int = 30, delay_s: float = 5.0) -> Clie
                 username=settings.clickhouse_user,
                 password=settings.clickhouse_password,
                 database="default",
+                # A READ THAT NEVER RETURNS IS WORSE THAN ONE THAT FAILS. Measured 2026-11-18:
+                # a ClickHouse ALTER/DELETE mutation held an insert for ~4 minutes and the
+                # ingest thread -- which shares this client -- stopped passing entirely, with
+                # no error to read. clickhouse-connect defaults to 300 s; 60 s turns that into a
+                # logged failure the next pass retries.
+                connect_timeout=10,
+                send_receive_timeout=60,
             )
             bootstrap.command(f"CREATE DATABASE IF NOT EXISTS {db_name}")
             bootstrap.close()
             client = clickhouse_connect.get_client(
                 host=settings.clickhouse_host,
                 port=settings.clickhouse_port,
+                connect_timeout=10,
+                send_receive_timeout=60,
                 username=settings.clickhouse_user,
                 password=settings.clickhouse_password,
                 database=db_name,
