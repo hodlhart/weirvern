@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.23.69 — 2026-11-18
+
+A REVIEW THAT SHOWS THE WRONG PORT IS A REVIEW THAT LOSES THE OPERATOR'S TRUST.
+
+- **The staged change says what moves, in words** (`describePlan`, `describePlanChange` in
+  `app.js`): the intercept plan is stored as JSON keyed by NIC, and the pending-changes list printed
+  it verbatim. An operator staging eth2 read `{"eth1":{...},"eth2":{...}}` left to right, saw eth1
+  first, and twice concluded the console was about to apply the change to the wrong port. The review
+  now reads `eth2: adds siphon 198.51.100.0/24, address 198.51.100.233, gateway 198.51.100.1` -- the
+  NIC that moved, and only that NIC. An untouched plan reads `no change`; a NIC leaving the plan
+  reads `removed`.
+- **The sheet describes its own NIC** (`renderStageMirror`): with eth2's settings open, the row is
+  `intercept · eth2 -> siphon 198.51.100.0/24, ...` rather than the whole plan, in the same
+  vocabulary as the Zeek and NetFlow rows beside it.
+- **The after-apply receipt uses the same sentences** (`renderApplyInto`): the write the operator is
+  checking is described the way the change was reviewed, not as the raw ConfigMap value.
+- **The formatter is tested against the shipping source** (`scripts/plan_review_text.js` extracts
+  the functions from `app.js` and runs them under node; `tests/test_plan_review_text.py` pins the
+  sentences and asserts all three call sites use it). A helper nothing calls would pass every case
+  and fix nothing.
+
 ## 0.23.68 — 2026-11-17
 
 A SWEEP THAT CANNOT SHOW IT IS RIGHT IS NOT A MEASUREMENT.

@@ -703,6 +703,88 @@ function setStageNote(text) {
   }
 }
 
+/** WHAT A STORED VALUE MEANS, IN WORDS (operator, 2026-11-18: "I just want a user to easily
+ *  understand what is being applied").
+ *
+ *  THE PLAN IS STORED AS JSON KEYED BY NIC, and the staged list printed it verbatim:
+ *  `intercept_plans -> {"eth1":{...},"eth2":{...}}`. That is unreadable, and worse, an operator
+ *  editing eth2 saw eth1's name first and concluded the change was aimed at the wrong port. One
+ *  line per NIC, in the vocabulary of the thing being changed -- and when the sheet is open on one
+ *  NIC, only that NIC's line. */
+function describePlan(value, nic) {
+  let plans;
+  try {
+    plans = JSON.parse(String(value == null ? "" : value) || "{}");
+  } catch (e) {
+    return String(value || "");
+  }
+  if (!plans || typeof plans !== "object") return String(value || "");
+  const phrase = (name) => {
+    const p = plans[name] || {};
+    const mode = String(p.mode || (p.siphon === true ? "siphon"
+      : (p.capture === true ? "capture" : "off"))).toLowerCase();
+    if (mode === "siphon") {
+      const parts = [`siphon ${p.segment || "this segment"}`];
+      if (p.addr) parts.push(`address ${p.addr}`);
+      if (p.gateway) parts.push(`gateway ${p.gateway}`);
+      if (p.targets && String(p.targets) !== "*") parts.push(`targets ${p.targets}`);
+      return parts.join(", ");
+    }
+    if (mode === "capture") return "capture only";
+    return "off";
+  };
+  const names = Object.keys(plans);
+  if (nic) {
+    return Object.prototype.hasOwnProperty.call(plans, nic) ? phrase(nic) : "not intercepted";
+  }
+  if (!names.length) return "no NICs";
+  return names.map((n) => `${n}: ${phrase(n)}`).join(" · ");
+}
+
+/** What actually changes, NIC by NIC. THE POINT OF THE REVIEW IS THE DIFFERENCE: listing both NICs
+ *  when only one moved is how an operator concludes the change is aimed at the wrong port. */
+function describePlanChange(proposed, current) {
+  let a;
+  let b;
+  try {
+    a = JSON.parse(String(proposed == null ? "" : proposed) || "{}");
+    b = JSON.parse(String(current == null ? "" : current) || "{}");
+  } catch (e) {
+    return describePlan(proposed, "");
+  }
+  if (!a || typeof a !== "object" || !b || typeof b !== "object") {
+    return describePlan(proposed, "");
+  }
+  const lines = [];
+  for (const name of Object.keys(a)) {
+    const next = a[name] || {};
+    const prev = b[name] || {};
+    if (JSON.stringify(next) === JSON.stringify(prev)) continue;
+    const verb = Object.keys(prev).length ? "changes to" : "adds";
+    lines.push(`${name}: ${verb} ${describePlan(JSON.stringify({ [name]: next }), name)}`);
+  }
+  for (const name of Object.keys(b)) {
+    if (!Object.prototype.hasOwnProperty.call(a, name)) lines.push(`${name}: removed`);
+  }
+  return lines.length ? lines.join(" · ") : "no change";
+}
+
+/** The row's name as a person would say it. */
+function stageLabel(key) {
+  if (key === "intercept_plans") return "intercept plan";
+  return key;
+}
+
+/** The value a person should read, for any key whose stored form is machine JSON. */
+function readableValue(key, value, nic, current) {
+  if (key === "intercept_plans") {
+    return (current !== undefined && current !== null && current !== "")
+      ? describePlanChange(value, current)
+      : describePlan(value, nic);
+  }
+  return value;
+}
+
 /** The sheet's mirror of the same STAGE: the keys and their staged values, never a copy of
  *  them. Includes Detection changes staged on Settings, because Apply here writes them too. */
 function renderStageMirror(keys) {
@@ -741,10 +823,12 @@ function renderStageMirror(keys) {
     if (key === "interface_networks") {
       return typeof wlIfaceNames === "function" ? (wlIfaceNames(value)[nic] || "") : value;
     }
+    if (key === "intercept_plans") return describePlan(value, nic);
     return value;
   };
   const localKey = (key) => {
-    if (!nic) return key;
+    if (!nic) return stageLabel(key);
+    if (key === "intercept_plans") return `intercept · ${nic}`;
     if (key === "zeek_ifaces") return `Zeek capture · ${nic}`;
     if (key === "capture_iface") return `siphon capture · ${nic}`;
     if (key === "netflow_iface") return `active NetFlow · ${nic}`;
@@ -815,29 +899,28 @@ function renderStage() {
   // a typo by pressing the button.
   const bad = [];
   for (const key of keys) {
-    const row = el("div", { class: "stage-row" }, [
-      el("span", { class: "stage-key mono", text: key }),
-      el("span", { class: "stage-arrow", text: "→" }),
-      el("span", { class: "stage-val mono", text: STAGE.changes[key] || "(empty)" }),
-    ]);
     // WHAT IT REPLACES, not just what it becomes: a diff the operator cannot read is not a review.
     // The from-value comes from the plan when there is one and from the running settings otherwise,
     // so a fresh stage reads "0.35 -> 0.36" immediately rather than only after a plan has run
-    // (QA-1-D1).
-    {
-      const p = (STAGE.plan && (STAGE.plan.proposals || []).find((x) => x.key === key)) || null;
-      const was = (STAGE.from && STAGE.from[key] !== undefined)
-        ? STAGE.from[key]
-        : (p && p.current !== undefined
-            ? p.current
-            : (SETTINGS_ROWS[key] ? SETTINGS_ROWS[key].value : ""));
-      if (was !== "" && was !== undefined && was !== null) {
-        row.appendChild(el("span", { class: "stage-was", text: `(was ${was})` }));
-      }
-      if (p && p.warning) {
-        row.appendChild(el("div", { class: "stage-warn", text: "⚠ " + p.warning }));
-        bad.push(key);
-      }
+    // (QA-1-D1). Computed before the row so a stored JSON blob can be described as a diff.
+    const p = (STAGE.plan && (STAGE.plan.proposals || []).find((x) => x.key === key)) || null;
+    const was = (STAGE.from && STAGE.from[key] !== undefined)
+      ? STAGE.from[key]
+      : (p && p.current !== undefined
+          ? p.current
+          : (SETTINGS_ROWS[key] ? SETTINGS_ROWS[key].value : ""));
+    const shown = readableValue(key, STAGE.changes[key], "", was);
+    const row = el("div", { class: "stage-row" }, [
+      el("span", { class: "stage-key mono", text: stageLabel(key) }),
+      el("span", { class: "stage-arrow", text: "→" }),
+      el("span", { class: "stage-val mono", text: shown || "(empty)" }),
+    ]);
+    if (was !== "" && was !== undefined && was !== null) {
+      row.appendChild(el("span", { class: "stage-was", text: `(was ${readableValue(key, was, "")})` }));
+    }
+    if (p && p.warning) {
+      row.appendChild(el("div", { class: "stage-warn", text: "⚠ " + p.warning }));
+      bad.push(key);
     }
     list.appendChild(row);
   }
@@ -888,8 +971,8 @@ function renderApplyInto(out) {
   const failed = [];
   for (const item of (R.items || [])) {
     const row = el("div", { class: "stage-res-item", attrs: { "data-key": item.key } }, [
-      el("span", { class: "mono", text: item.key }),
-      el("span", { text: " = " + (item.value || "(empty)") }),
+      el("span", { class: "mono", text: stageLabel(item.key) }),
+      el("span", { text: " = " + (readableValue(item.key, item.value, "") || "(empty)") }),
     ]);
     if (item.ok) {
       row.appendChild(el("span", { class: "muted", text: "\u2014 applied" + (stamp ? " " + stamp : "") }));
