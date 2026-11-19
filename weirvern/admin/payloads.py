@@ -744,8 +744,11 @@ def model_training(client: Client) -> dict[str, dict[str, Any]]:
     """
     try:
         res = client.query(
-            "SELECT model_type, toString(max(trained_at)) AS trained_at, "
-            "toString(max(training_window_end)) AS window_end, "
+            # ALIASES MUST NOT SHARE A COLUMN'S NAME (ClickHouse Code 184): `AS trained_at`
+            # made the alias visible inside `max(trained_at)`, which the engine refuses as
+            # "aggregate function found inside another aggregate". Same class as bytes_total.
+            "SELECT model_type, toString(max(trained_at)) AS last_trained, "
+            "toString(max(training_window_end)) AS last_window_end, "
             "argMax(training_sample_count, trained_at) AS samples "
             "FROM weirvern.ml_models GROUP BY model_type")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page

@@ -471,3 +471,28 @@ def test_the_models_payload_does_not_drop_fields_it_computed():
     assert out["model_cards_behind"] == ["DBSCAN"]
     assert out["model_training"]["DBSCAN"]["trained_at"].startswith("2026-11-19")
     assert out["normalized"]["total"] == 3
+
+
+def test_the_training_query_never_names_an_alias_after_a_column():
+    """ClickHouse Code 184, twice in this project: an alias is global in the SELECT.
+
+    `toString(max(trained_at)) AS trained_at` resolves the alias inside the aggregate and the
+    engine refuses it. The payload then logs a warning and returns {} -- so the panel quietly
+    falls back to the old registry while looking like it read live data.
+    """
+    from weirvern.admin import payloads
+
+    seen = {}
+
+    class Client:
+        def query(self, sql):
+            seen["sql"] = sql
+            class R:
+                result_rows = [("DBSCAN", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000)]
+            return R()
+
+    out = payloads.model_training(Client())
+    sql = seen["sql"]
+    assert "AS last_trained" in sql and "AS last_window_end" in sql
+    assert "AS trained_at" not in sql
+    assert out["DBSCAN"]["samples"] == 5000
