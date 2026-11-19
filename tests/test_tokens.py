@@ -473,6 +473,45 @@ def test_a_mint_turns_the_token_path_on_without_a_restart():
     assert ctx.auth.enabled is True
 
 
+def test_the_tokens_card_is_wired_between_the_html_and_the_js():
+    """The seam this repo keeps breaking: an element with no handler is a control that does nothing.
+
+    THE ROUTES ARE DRIVEN ELSEWHERE IN THIS FILE; this asserts the DOM half -- every id the panel
+    drives exists in the Settings view, and every id in the markup is referenced by app.js. It is
+    static on purpose: the full DOM harness does not exercise this card yet, and a renamed id would
+    otherwise be invisible until an operator clicked it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "weirvern" / "admin" / "web" / "index.html").read_text()
+    app = (root / "weirvern" / "admin" / "web" / "app.js").read_text()
+
+    view = html[html.index('id="view-settings"'):]
+    view = view[:view.index("</section>", view.index('id="view-settings"'))]
+    html_ids = ("st-tokens-card", "st-tokens-count", "st-tokens-note", "st-tokens",
+                "st-new-token-name", "st-new-token-role", "st-token-create", "st-token-add",
+                "st-token-reveal", "st-token-value", "st-token-done", "st-token-result",
+                "st-tokens-info")
+    for eid in html_ids:
+        assert f'id="{eid}"' in view, f"#{eid} is missing from the Settings view"
+    # `st-token-add` is a layout wrapper and `st-tokens-info` is opened by the shared info-button
+    # handler from its data-info attribute; neither is queried by id, so only the rest must appear.
+    for eid in ("st-tokens-card", "st-tokens-count", "st-tokens-note", "st-new-token-name",
+                "st-new-token-role", "st-token-create", "st-token-reveal", "st-token-value",
+                "st-token-done", "st-token-result"):
+        assert f'"{eid}"' in app, f"#{eid} exists in the HTML but nothing in app.js uses it"
+    assert "#st-tokens tbody" in app, "the panel never selects its own table body"
+    for route in ("/api/tokens", "/api/tokens/create", "/api/tokens/revoke"):
+        assert f'"{route}"' in app, f"app.js never calls {route}"
+    # A token caller must not be offered the panel: the server refuses those routes without a
+    # session, and a button that can only fail is worse than no button.
+    panel = app[app.index("async function loadTokens"):]
+    panel = panel[:panel.index("function tokensResult")]
+    assert 'AUTH.via !== "token"' in panel, (
+        "the panel does not hide itself from a token caller")
+
+
 def test_an_unreadable_store_does_not_cache_the_failure_forever():
     """The F090 shape, for this store: a transient read failure must heal without a restart."""
     class FlakyClient(FakeClient):
