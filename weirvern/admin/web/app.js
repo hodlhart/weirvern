@@ -5827,6 +5827,59 @@ function renderBaselines(bl) {
   }
 }
 
+/* ── the Detectors table ──────────────────────────────────────────────────
+ * STATUS COMES FROM THE SERVER, WHICH DERIVES IT FROM EVIDENCE. The stored card status is not
+ * rendered -- not even when it literally says `retired` -- because the engine training a detector
+ * is a stronger fact than a curation snapshot somebody edited months ago. This function only lays
+ * out the row; it never decides what "contributing" means, so the console and the payload cannot
+ * drift on it.
+ */
+function renderDetectors(detectors, summary, cardsAvailable) {
+  const body = document.querySelector("#md-table tbody");
+  const line = document.getElementById("md-summary");
+  const note = document.getElementById("md-note");
+  if (!body) return;
+  body.replaceChildren();
+  if (line) line.textContent = summary || "nothing measured yet";
+  if (note) {
+    // A registry that could not be READ is not a registry that said no, and the difference is
+    // shown rather than buried in a log line.
+    note.textContent = cardsAvailable === false
+      ? "the model-card registry could not be read, so every detector is barred" : "";
+  }
+  if (!detectors.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: "7" },
+                 text: "No detector has a training row or a calibration row yet." }),
+    ]));
+    return;
+  }
+  const statusClass = (status) => (
+    status === "contributing" ? "sev-low"
+      : status === "not trained" ? "muted" : "sev-medium");
+  for (const d of detectors) {
+    const target = (d.target_far === null || d.target_far === undefined)
+      ? null : Number(d.target_far);
+    const observed = (d.observed_far === null || d.observed_far === undefined)
+      ? null : Number(d.observed_far);
+    body.appendChild(el("tr", {}, [
+      el("td", { text: d.name }),
+      el("td", { class: "mono muted", text: d.trained_at ? fmtTime(d.trained_at) : "\u2014" }),
+      el("td", { class: "num", text: d.samples === null || d.samples === undefined
+        ? "\u2014" : Number(d.samples).toLocaleString() }),
+      // An artifact is a file name, not a score: the version is the whole point of the column.
+      el("td", { class: "mono muted", text: d.artifact_version || "none" }),
+      // NEVER A NUMBER WITHOUT ITS TARGET. If the pair is incomplete the cell says so instead of
+      // printing a rate that would read as measured.
+      el("td", { class: "num", text: observed !== null && target !== null
+        ? observed.toFixed(2) : "not measured" }),
+      el("td", { class: "num", text: target !== null ? target.toFixed(2) : "not measured" }),
+      el("td", {}, [el("span", { class: statusClass(d.status),
+                                 text: d.status || "not trained" })]),
+    ]));
+  }
+}
+
 function renderStaleness(rows, intervalH) {
   const body = document.querySelector("#m-stale tbody");
   const note = document.getElementById("m-stale-note");
@@ -6533,6 +6586,17 @@ async function loadModels() {
     }
     const body = document.querySelector("#m-points tbody");
     if (body) body.innerHTML = "";
+    // The detectors table must not keep the previous load's rows while the rest of the view says
+    // the payload is unavailable: a stale "contributing" beside an outage is the worst reading.
+    const detBody = document.querySelector("#md-table tbody");
+    if (detBody) {
+      detBody.replaceChildren();
+      detBody.appendChild(el("tr", {}, [
+        el("td", { class: "muted", attrs: { colspan: "7" },
+                   text: "Unavailable: " + ((data && data.reason) || "no data") })]));
+    }
+    const detLine = document.getElementById("md-summary");
+    if (detLine) detLine.textContent = "nothing measured yet";
     return;
   }
 
@@ -6559,6 +6623,8 @@ async function loadModels() {
   renderEvalReport(data.eval_report || {});
   renderReview(data.review || {});
   renderVerification(data.verification || {});
+  renderDetectors(data.detectors || [], data.detector_summary || "",
+                  data.model_cards_available);
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});

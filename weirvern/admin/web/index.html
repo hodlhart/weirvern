@@ -780,9 +780,10 @@
   <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods —
   Isolation Forest, its Gradient Boosting student, DBSCAN and an adaptive per-host baseline — and
   the ensemble asks how many independent families agree before a score is believed. Isolation
-  Forest and Gradient Boosting are one family; the baseline is another. <strong>DBSCAN's card is
-  retired</strong>, so its findings stay as evidence but do not count toward the fused score:
-  the model cards below are the authority on which model is production, not this sentence.</p>
+  Forest and Gradient Boosting are one family; the baseline is another. Whether a detector
+  contributes is derived in the Detectors table below — a training row, an artifact on disk, a
+  measured false-alarm rate against its target, and the model card's veto. No stored status word is
+  repeated as a fact here.</p>
   <p><strong>What is new.</strong> Calibration and the shadow channels below are read-only experiments: they measure budgets, candidates and regime changes, but no shadow row can create or change an alert.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
@@ -799,6 +800,23 @@
          hours; the cards were a hand-curated snapshot that disagreed with the artifacts on disk.
          Both described paperwork, not the engine. What survives is the one control they contained,
          Force retrain, beside the table that says when each detector last trained. -->
+    <!--
+      THE DETECTORS TABLE. The operator's question -- "is this detector contributing?" --
+      was answered from a hand-curated card status, which read `retired` for DBSCAN while DBSCAN
+      trained every six hours and wrote a fresh artifact. So the status here is DERIVED from
+      evidence: a training row in the engine's own log, an artifact on disk, a measured false-alarm
+      rate against its target, and the card's existing veto. No stored status word is rendered.
+    -->
+    <div class="card">
+      <h2>Detectors <span class="muted" id="md-note"></span></h2>
+      <p class="muted" id="md-summary">loading…</p>
+      <div class="tablewrap">
+        <table id="md-table">
+          <thead><tr><th>Detector</th><th>Trained</th><th>Samples</th><th>Artifact</th><th>Observed FAR</th><th>Target</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
     <div class="card">
       <h2>Detection freshness <span class="muted" id="m-stale-window"></span></h2>
       <div class="controls">

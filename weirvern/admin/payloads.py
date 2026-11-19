@@ -31,6 +31,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern.admin import status as status_mod
 from weirvern.admin import web_api
+from weirvern.config import FUSED_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -390,27 +391,47 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
     THE MODEL REGISTRY IS ITS OWN READ. A broken card query must not hide the training history, and a
     broken history must not make the cards look absent, so the registry failure is carried in the
     payload as `model_cards_available: false` with its own reason instead of taking the route down.
-    """
-    data = status_mod.model_overview(client, hours=hours, settings=settings)
-    try:
-        from weirvern.models import cards as cards_mod  # noqa: PLC0415
 
+    THE DETECTORS TABLE IS DERIVED, NOT CURATED. Its status comes from the engine's own
+    training log, the artifacts on disk and the measured false-alarm rate; the card registry keeps
+    only its existing veto and is never quoted. Each source is read independently, so a card table
+    that cannot be read bars the detectors (fail closed, as the engine's gate does) without also
+    hiding what the engine trained.
+    """
+    from weirvern.models import cards as cards_mod  # noqa: PLC0415
+    from weirvern.models.detector_status import detector_rows, detector_summary  # noqa: PLC0415
+
+    data = status_mod.model_overview(client, hours=hours, settings=settings)
+    # WHAT THE ENGINE ACTUALLY DID, not only what an operator approved (2026-11-19: "in models
+    # this still looks wrong. dbscan says retired and the retraining says october 14"). The
+    # registry is a curation snapshot; ml_models is the engine's own log, one row per training.
+    data["model_training"] = model_training(client)
+    # WHAT IS INSTALLED is a file read, so a broken card query cannot hide it either.
+    data["model_artifacts"] = cards_mod.artifact_inventory(getattr(settings, "model_dir", ""))
+    data["normalized"] = normalized_seeds(client)
+
+    card_statuses: dict[str, str] = {}
+    try:
         data["model_cards"] = cards_mod.current_cards(client)
         data["model_cards_available"] = True
-        data["model_artifacts"] = cards_mod.artifact_inventory(getattr(settings, "model_dir", ""))
-        # WHAT THE ENGINE ACTUALLY DID, not only what an operator approved (2026-11-19: "in models
-        # this still looks wrong. dbscan says retired and the retraining says october 14"). The
-        # registry is a curation snapshot; ml_models is the engine's own log, one row per training.
-        data["model_training"] = model_training(client)
-        data["normalized"] = normalized_seeds(client)
-        behind = [c["model_name"] for c in data["model_cards"]
-                  if str(c.get("version") or "") !=
-                  str((data["model_artifacts"].get(c.get("model_name")) or {}).get("version") or "")]
-        data["model_cards_behind"] = behind
+        card_statuses = cards_mod.status_map(data["model_cards"])
+        data["model_cards_behind"] = [
+            c["model_name"] for c in data["model_cards"]
+            if str(c.get("version") or "") !=
+            str((data["model_artifacts"].get(str(c.get("model_name") or "")) or {})
+                .get("version") or "")]
     except Exception as card_exc:  # noqa: BLE001
         data["model_cards"] = []
         data["model_cards_available"] = False
         data["model_cards_reason"] = f"cannot read the model registry: {card_exc}"
+        data["model_cards_behind"] = []
+
+    calibration = calibration_latest(client)
+    data["detectors"] = detector_rows(
+        data["model_training"], data["model_artifacts"], calibration, card_statuses,
+        target_far=float(getattr(settings, "ml_target_far", 0.01) or 0.01),
+        multiple=float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0))
+    data["detector_summary"] = detector_summary(data["detectors"], calibration.get(FUSED_MODEL))
     return web_api.models_payload(data)
 
 
@@ -759,6 +780,32 @@ def model_training(client: Client) -> dict[str, dict[str, Any]]:
         name, trained_at, window_end, samples = (list(row) + ["", "", "", 0])[:4]
         out[str(name)] = {"trained_at": str(trained_at), "window_end": str(window_end),
                           "samples": int(samples or 0)}
+    return out
+
+
+def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
+    """The newest calibration row per model, with the fused score under its own name.
+
+    ONE ROW PER NAME. `ml_calibration` is a ReplacingMergeTree keyed by
+    (model_name, scope, subject, statistic), so FINAL can still leave several rows for one model
+    when a scope or subject changed; argMax takes the newest measurement rather than whichever row
+    the engine happened to return first.
+
+    A FAILED READ IS AN EMPTY MAPPING, and the detector summary then says nothing is measured. The
+    table is a panel, not a page: the rest of the Models view still has to draw.
+    """
+    try:
+        res = client.query(
+            "SELECT model_name, argMax(observed_far, computed_at), "
+            "argMax(target_far, computed_at) "
+            "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+    except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
+        logger.warning("model calibration rows unavailable: %s", exc)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in (getattr(res, "result_rows", None) or []):
+        name, observed, target = (list(row) + [None, None, None])[:3]
+        out[str(name)] = {"observed_far": observed, "target_far": target}
     return out
 
 

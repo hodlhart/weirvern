@@ -151,7 +151,8 @@ async function main() {
   const order = [];
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
-        JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/soc.js", "/assets.js", "/sluice.js",
+        JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/normalize.js",
+                                                 "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
                                                  "/dnsview.js", "/blocked.js", "/palette.js"]),
         JSON.stringify(order));
@@ -187,14 +188,14 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
                    loadDns, dnClear, dnApply, loadBlocked,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderDetectors, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
                   openModal, closeModal, markFilterCells,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    showSessionNote, refreshAccountCard,
                    wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
-                   loadRetrain, retrainAction,
+                   retrainAction,
                    loadSluice, wireSluice, renderSluiceRules, renderSluiceGates,
                    // THE RESPONSE CACHE MUST BE CLEARABLE, OR A STUBBED RE-FETCH IS NEVER SEEN.
                    // getJSON returns a cached body for 8s and dedupes in-flight requests, so a
@@ -2410,6 +2411,30 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // leaves the console somewhere else would break a check that is not about this card.
     H.showView("health");
   }
+
+  // ── the Detectors table ─────────────────────────────────────────────────────────
+  // The operator's ruling: "DBSCAN trains, therefore it is not retired." The status is derived on
+  // the server from training rows, artifacts and the measured FAR; the browser renders it verbatim
+  // and must never show a stored card word instead.
+  H.renderDetectors([
+    { name: "DBSCAN", trained: true, trained_at: "2026-11-19T08:21:17", samples: 5000,
+      artifact_version: "v5", observed_far: 1.0, target_far: 0.01,
+      eligible: false, barred: true, contributing: false,
+      status: "trained, not contributing (FAR 1.00 vs 0.01)" },
+    { name: "Isolation Forest", trained: true, trained_at: "2026-11-19T08:21:17", samples: 11900,
+      artifact_version: "v5", observed_far: 0.0, target_far: 0.01,
+      eligible: true, barred: false, contributing: true, status: "contributing" },
+  ], "2 detectors: 1 contributing. Fused false-alarm rate 0.04 against a 0.01 target.", true);
+  check("the Detectors table renders one row per detector",
+        doc.querySelectorAll("#md-table tbody tr").length === 2,
+        `${doc.querySelectorAll("#md-table tbody tr").length} row(s)`);
+  check("a detector over its FAR budget states both numbers and does not contribute",
+        /trained, not contributing \(FAR 1\.00 vs 0\.01\)/.test(needEl("md-table").textContent));
+  check("the summary carries the fused rate AND its target",
+        /0\.04/.test(needEl("md-summary").textContent)
+        && /0\.01 target/.test(needEl("md-summary").textContent));
+  check("no stored card status word reaches the table",
+        !/retired/i.test(needEl("md-table").textContent));
 
   // ── the Models staleness panel ─────────────────────────────────────────────────────────
   // The bug this guards: three detectors were 16h overdue against a 6h interval and the Models
@@ -6008,63 +6033,6 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           doc.querySelectorAll("#fp-results tbody tr").length === 0);
     fetchOverride = null;
   }
-
-  // ── the forced retrain: a rehearsal, and keep-or-trash as the decision ─────────────────────
-  //
-  // The panel has to make three things visible BEFORE the decision: what the candidate was trained
-  // on, whether the window contained detections the deployment already recorded (a retrain learns
-  // those as normal), and which of Keep / Trash applies. A candidate that trained nothing must not
-  // offer Keep at all.
-  H.showView("overview");
-  await new Promise((r) => setTimeout(r, 20));
-  H.showView("models");
-  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
-  await H.loadRetrain();
-  const mrNote = (needEl("mr-note") || {}).textContent || "";
-  check("the retrain panel says what the candidate trained, and on how much",
-        /2 of 4 detector/.test(mrNote) && /host-window/.test(mrNote), mrNote.slice(0, 180));
-  check("the contamination warning reaches the screen, beside the decision",
-        /WARNING/.test(mrNote) && /as normal/.test(mrNote), mrNote.slice(0, 240));
-  check("one row per detector, so 'trained' can be read per model",
-        doc.querySelectorAll("#mr-report tbody tr").length === 4,
-        `${doc.querySelectorAll("#mr-report tbody tr").length} row(s)`);
-  {
-    const keepBtn = needEl("mr-keep");
-    check("Keep is offered for a candidate that trained something",
-          !!keepBtn && !keepBtn.classList.contains("hidden"));
-    if (keepBtn) {
-      const postedBefore = POSTED.length;
-      keepBtn.click();
-      await new Promise((r) => setTimeout(r, 120));
-      check("Keep opens the destructive echo first (target + a required reason)",
-            !!doc.querySelector("#modal-body .dest-confirm"),
-            needEl("mr-note").textContent.slice(0, 80));
-      await confirmEcho("the candidate's precision held up");
-      await new Promise((r) => setTimeout(r, 120));
-      const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/models/retrain"));
-      check("Keep is a WRITE carrying the action, the candidate's own id and the reason",
-            !!req && /keep/.test(req.body) && /r123/.test(req.body)
-            && /precision held up/.test(req.body),
-            req ? req.body.slice(0, 180)
-                : POSTED.slice(postedBefore).map((r) => r.url).join(","));
-    }
-  }
-
-  // A candidate that built NOTHING: Keep must be absent, not merely unhelpful.
-  fetchOverride = (u, opts) => (String(u).split("?")[0].endsWith("/api/models/retrain")
-    && String((opts || {}).method || "GET").toUpperCase() === "GET"
-    ? { ok: true, status: 200, json: async () => Object.assign({}, RETRAIN_PAYLOAD, {
-        state: "done", can_keep: false,
-        summary: "0 of 4 detector(s) trained; on 0 host-window(s)",
-        report: Object.assign({}, RETRAIN_PAYLOAD.report, { trained_any: false }) }) }
-    : null);
-  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
-  await H.loadRetrain();
-  check("a candidate that trained NOTHING does not offer Keep",
-        needEl("mr-keep").classList.contains("hidden"),
-        "an empty candidate must not be installable over working models");
-  fetchOverride = null;
-  await H.loadRetrain();
 
   // ── accounts: the sign-in gate, roles, and the Users panel ────────────────────────────────
   //
