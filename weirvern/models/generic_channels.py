@@ -64,6 +64,11 @@ class ChannelSpec:
     # ── the multi-scale evidence layer (phase 1) ────────────────────────────────────────────
     #: The timestamp the window is built from. `flows_window` is keyed on `window_start`.
     time_column: str = "ts"
+    #: The OTHER endpoint of the row, when the table records one. This is what lets the ripple
+    #: layer attribute an inbound flow to the monitored destination instead of its remote
+    #: source. `flows_window` has no peer column: it is pre-aggregated by source only, so an
+    #: unattributable row there is dropped rather than emitted under the external address.
+    peer_column: str | None = None
     #: The scales this source can be measured at. `compute()` skips any scale the lookback
     #: cannot supply a baseline for, so declaring 7d costs nothing where retention is 7 days.
     scales: tuple[str, ...] = ("5m",)
@@ -97,7 +102,8 @@ class ChannelSpec:
                 f"GROUP BY {self.host_column}, w ORDER BY w")
 
     def sql_anchored(self, *, bucket_s: int, anchor: datetime, since: datetime,
-                     until: datetime) -> str:
+                     until: datetime,
+                     scope_cidrs: tuple[str, ...] | None = None) -> str:
         """One bucket-per-host query whose buckets end exactly at `anchor`.
 
         WHY NOT `toStartOfInterval`. Calendar-aligned buckets make the CURRENT bucket partial:
@@ -105,6 +111,13 @@ class ChannelSpec:
         host looks quiet at the moment it is measured. Here bucket 0 is exactly
         `[anchor - bucket_s, anchor)` and bucket k reaches back k buckets, so the current value
         and its history are the same length.
+
+        WHO THE SUBJECT IS. When `scope_cidrs` is given, the row is attributed to its monitored
+        endpoint: the source if the source is inside a monitored network, otherwise the
+        destination. A row with neither endpoint monitored is excluded in SQL. This is the rule
+        that keeps a remote scanner out of a host-behaviour ripple: the change belongs to the
+        internal host that talked to it. `scope_cidrs=None` keeps the old source-only shape for
+        callers that do not have a scope list (there are none in this package).
 
         Returns `(host, k, n, u, b)`: rows in the bucket, distinct/numerator, and sum. The
         caller picks the one its `kind` needs. `k` is counted back from the anchor.
@@ -133,14 +146,43 @@ class ChannelSpec:
                 if not self.value_column:
                     raise ValueError(f"{self.channel}: a sum channel needs a value column")
                 b_expr = f"sum({self.value_column})"
+
+        host_expr = self.host_column
+        peer_expr = self.peer_column or self.host_column
+        scope_where = ""
+        if scope_cidrs is not None:
+            src_in = " OR ".join(
+                f"isIPAddressInRange({self.host_column}, '{cidr}')" for cidr in scope_cidrs)
+            # An empty scope list is not a licence: the predicate becomes `0`, so no row can
+            # pass and the caller can only under-report.
+            src_in = src_in or "0"
+            if self.peer_column:
+                dst_in = " OR ".join(
+                    f"isIPAddressInRange({self.peer_column}, '{cidr}')" for cidr in scope_cidrs)
+                dst_in = dst_in or "0"
+                host_expr = f"if(({src_in}), {self.host_column}, {self.peer_column})"
+                peer_expr = f"if(({src_in}), {self.peer_column}, {self.host_column})"
+                scope_where = f" AND (({src_in}) OR ({dst_in}))"
+            else:
+                # PRE-AGGREGATED BY SOURCE, with no destination column to fall back to. A row
+                # whose source is not monitored cannot be attributed to one of ours, so it is
+                # dropped rather than reported under the remote address.
+                scope_where = f" AND ({src_in})"
+            # A diversity channel whose value IS the peer column (flow_dst_diversity,
+            # conn_dst_diversity) must count the peer FROM THE SUBJECT'S SIDE. Counting
+            # dst_addr when the subject is the destination would measure the subject itself
+            # and read as a constant one.
+            if (self.kind == "diversity" and self.value_column == self.peer_column):
+                u_expr = f"uniqExact({peer_expr})"
+
         anchor_ts = int(anchor.timestamp())
         return (
-            f"SELECT {self.host_column} AS host, "
+            f"SELECT {host_expr} AS host, "
             f"intDiv({anchor_ts} - toUnixTimestamp({self.time_column}), {int(bucket_s)}) AS k, "
             f"{n_expr} AS n, {u_expr} AS u, {b_expr} AS b "
             f"FROM {self.table} "
             f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
-            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}' "
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where} "
             f"GROUP BY host, k"
         )
 

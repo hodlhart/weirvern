@@ -7,19 +7,26 @@ shadow channels (flow, DNS, TLS, beacon, graph, temporal, change-point) and answ
 
 Design rules:
   * a missing or stale channel is UNKNOWN, never zero;
-  * one family cannot make a ripple on its own;
+  * a family is one measurement, not one channel: two views of the same events cannot
+    corroborate each other;
+  * one family cannot make a ripple on its own except at the extreme bar (p <= 0.001);
   * one scale is an observation, not a ripple;
-  * the combined p-value is Fisher's, with a Bonferroni guard for the number of channels;
-  * every result carries the evidence the operator needs to see why.
+  * an empirical p-value at the baseline's resolution floor is a bound, not a result: a
+    baseline too short to express the bar is reported as too short, never as significance;
+  * the combined score is the joint surprise of the supporting families, and every result
+    carries the evidence the operator needs to see why.
 
 The page decision is separate. A `ripple` result is a candidate incident; `pageable` is policy.
 """
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from weirvern.monitored import in_scope as _in_scope
 
 SCALES = ("5m", "1h", "24h")
 DEFAULT_MAX_P = 0.05
@@ -40,8 +47,77 @@ EVIDENCE_SCALE_SECONDS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
 #: One grouping window for phase 1. Evidence from one hour is one ripple candidate.
 RIPPLE_WINDOW_S = 3600
 
-#: A single channel must be this extreme to stand alone. Two channels only need `max_p`.
-DEFAULT_EXTREME_P = 0.01
+#: A baseline shorter than this cannot support a decision at any scale. The number is a floor,
+#: not a preference: see `pvalue_floor`, which is 1/(n+1). At 29 windows the smallest p the test
+#: can express is 1/30 = 0.033; calling that "significant" is reading the test's resolution as a
+#: result. Thirty windows is the minimum, and the per-scale map exists so a future scale with a
+#: different cost can set its own floor instead of inheriting this one silently.
+MIN_BASELINE_SAMPLES = 30
+MIN_BASELINE_BY_SCALE: dict[str, int] = {scale: MIN_BASELINE_SAMPLES for scale in EVIDENCE_SCALES}
+
+#: THE NEW RIPPLE BAR. A family is significant at `DEFAULT_FAMILY_MAX_P`; two independent
+#: families are required, or ONE family at `DEFAULT_EXTREME_P`. `DEFAULT_MIN_RIPPLE_SCORE` is
+#: the joint-surprise bar: 3.0 is exactly one family at 0.001, and two families at 0.01 score
+#: 4.0. Together the family rule and the score rule stop two barely-significant views of one
+#: host from becoming a ripple.
+DEFAULT_FAMILY_MAX_P = 0.01
+DEFAULT_EXTREME_P = 0.001
+DEFAULT_MIN_RIPPLE_SCORE = 3.0
+
+#: CHANNEL -> FAMILY. A family is ONE collection pipeline observing ONE population of events.
+#: `flow_bytes` and `flow_volume` are the byte sum and the row count of the SAME flow records;
+#: they are two units for one measurement, so they can never corroborate each other. The same
+#: rule collapses the other views of a pipeline (conn_volume / conn_dst_diversity /
+#: conn_service_diversity / conn_reset_ratio, all `conn`; the DNS views, all `dns`; the identity
+#: views, all `identity`). Different pipelines (flow vs conn vs dns vs identity) are separate
+#: families: they are collected by different code paths, can disagree because of sampling or
+#: visibility, and therefore carry information the other does not.
+CHANNEL_FAMILIES: dict[str, str] = {
+    "flow_volume": "flow",
+    "flow_bytes": "flow",
+    "flow_dst_diversity": "flow",
+    "conn_volume": "conn",
+    "conn_dst_diversity": "conn",
+    "conn_service_diversity": "conn",
+    "conn_reset_ratio": "conn",
+    "dns_volume": "dns",
+    "dns_query_diversity": "dns",
+    "dns_nxdomain_ratio": "dns",
+    "dns_reverse_ratio": "dns",
+    "kerberos_volume": "identity",
+    "kerberos_service_diversity": "identity",
+    "ntlm_volume": "identity",
+    "ntlm_user_diversity": "identity",
+    "smb_file_volume": "identity",
+    "smb_path_diversity": "identity",
+}
+
+
+def channel_family(channel: str, family: str = "") -> str:
+    """The family a channel belongs to, with the map winning over a stale stored label.
+
+    A stored row written before this map existed still has a family, and the map is what makes
+    `flow_bytes` and `flow_volume` one measurement. Unknown channels keep their own family so a
+    new source is never silently folded into an existing one.
+    """
+    return CHANNEL_FAMILIES.get(channel) or family or channel
+
+
+def pvalue_floor(sample_count: int) -> float:
+    """The smallest two-sided empirical p-value `sample_count` baseline windows can express.
+
+    p = (1 + #{at least as extreme}) / (n + 1), so the floor is 1/(n+1). At n=20 the floor is
+    0.0476: the test is saying "this is the most extreme value I can represent", not "p is
+    about five percent". A caller that wants to claim p <= alpha needs a floor below alpha;
+    `baseline_short` is how a row says it cannot.
+    """
+    n = max(0, int(sample_count))
+    return 1.0 / (n + 1)
+
+
+def min_baseline_samples(scale: str) -> int:
+    """The per-scale baseline minimum. Thirty everywhere today, tunable per scale tomorrow."""
+    return MIN_BASELINE_BY_SCALE.get(scale, MIN_BASELINE_SAMPLES)
 
 
 def _round(value: float, digits: int = 6) -> float | None:
@@ -72,17 +148,46 @@ class ChannelEvidence:
     sample_count: int = 0
     coverage: float = 0.0
     direction: str = ""
+    #: THE TEST'S OWN RESOLUTION. `p_floor = 1/(sample_count+1)` is the smallest two-sided
+    #: empirical p this row could have produced. `baseline_short` says the sample count is below
+    #: the per-scale minimum, so the row is a measurement but cannot support a ripple decision.
+    p_floor: float = float("nan")
+    baseline_short: bool = False
+
+    def floor(self) -> float:
+        """The attainable floor, computed from the row when the writer did not carry it."""
+        if math.isfinite(float(self.p_floor)) and self.p_floor > 0.0:
+            return float(self.p_floor)
+        return pvalue_floor(self.sample_count)
+
+    def at_floor(self) -> bool:
+        """True when the measurement sits at the baseline's resolution limit.
+
+        This is not a statement about the size of the change. It says every baseline window was
+        less extreme, and the test has no finer number to give.
+        """
+        if not math.isfinite(float(self.pvalue)):
+            return False
+        floor = self.floor()
+        return floor > 0.0 and float(self.pvalue) <= floor * (1.0 + 1e-9)
+
+    def resolves(self, alpha: float) -> bool:
+        """Whether this row's baseline can express a p-value strictly below `alpha`."""
+        return self.floor() < float(alpha)
 
     def as_dict(self) -> dict[str, Any]:
         """The shape the API and the Models card read. `p_value` is spelled out here."""
         return {
             "channel": self.channel,
-            "family": self.family,
+            "family": channel_family(self.channel, self.family),
             "scale": self.scale,
             "model_id": self.model_id,
             "value": _round(self.value),
             "baseline_median": _round(self.baseline_median),
             "p_value": _round(self.pvalue, 8),
+            "p_floor": _round(self.floor(), 8),
+            "at_floor": self.at_floor(),
+            "baseline_short": bool(self.baseline_short),
             "sample_count": int(self.sample_count),
             "coverage": _round(self.coverage, 4),
             "direction": self.direction,
@@ -246,15 +351,12 @@ def empirical_pvalue_two_sided(score: float, reference: list[float]) -> float:
 class Ripple:
     """One host, one window, and the evidence that lined up inside it.
 
-    WHAT THE SCORE IS, EXACTLY. `score = -log10(corrected_p)` where
-
-        corrected_p = min(1, Fisher(one p per significant channel) * tests_in_window)
-
-    and `tests_in_window` is the number of DISTINCT channels measured for that host in that
-    window (not the number of scales: one channel measured at three scales is one view, and
-    counting it three times is how a single signal would manufacture corroboration). Fisher is
-    applied to each channel's strongest scale. Higher score = stronger combined evidence; 2.0
-    means "about one in a hundred after the guard". The score is a ranking aid, not a
+    WHAT THE SCORE IS, EXACTLY. `score = sum(-log10(p))` over one p-value per significant
+    FAMILY: the joint surprise of the independent measurements, i.e. `-log10(product p)`.
+    Two families at 0.01 score 4.0; one family at exactly 0.001 scores 3.0. Only the strongest
+    member of each family contributes, so `flow_bytes` and `flow_volume` cannot add a second
+    p-value for one set of flow records. `combined_p` is Fisher's calibrated combination of the
+    same p-values and is reported alongside; the score is the ranking/bar quantity, not a
     probability, and this pass never pages on it.
     """
 
@@ -265,6 +367,8 @@ class Ripple:
     combined_p: float
     channels: tuple[str, ...]
     explanation: str
+    families: tuple[str, ...] = ()
+    single_family: bool = False
     evidence: tuple[ChannelEvidence, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -275,6 +379,8 @@ class Ripple:
             "score": round(float(self.score), 4),
             "combined_p": round(float(self.combined_p), 8),
             "channels": list(self.channels),
+            "families": list(self.families),
+            "single_family": self.single_family,
             "explanation": self.explanation,
             "evidence": [item.as_dict() for item in self.evidence],
         }
@@ -296,81 +402,138 @@ def _fmt(value: float) -> str:
     return f"{float(value):.4g}"
 
 
-def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence]) -> str:
-    """One sentence naming every channel that moved, each with the baseline it moved from.
+def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence],
+             families: tuple[str, ...], single_family: bool) -> str:
+    """One sentence naming the subject, the family, and what each family measured.
 
-    The rule is deliberate: a value without its own median is a number, not evidence. Every
-    clause therefore reads "<channel> <value> vs median <baseline> (p=..., <direction> at
-    <scale>)", and the sentence never ends in a bare score.
+    The rule is deliberate: a value without its own median is a number, not evidence, and a
+    p-value without the family and the baseline behind it is exactly the bare 0.05 this layer
+    exists to stop printing. Every clause therefore reads "<family> family: <channel> <value>
+    vs median <baseline> (<direction> at <scale>, p=... over N baseline windows)". When the
+    p-value is the attainable floor it is printed as a bound with the floor named, never as if
+    it were a measured probability.
     """
     parts = []
     for item in sorted(chosen, key=lambda e: (e.pvalue, e.channel)):
+        family = channel_family(item.channel, item.family)
+        if item.at_floor():
+            p_text = (f"p<={item.pvalue:.3g}, the floor for {item.sample_count} baseline "
+                      f"windows")
+        else:
+            p_text = f"p={item.pvalue:.3g} over {item.sample_count} baseline windows"
         parts.append(
-            f"{item.channel} {_fmt(item.value)} vs median {_fmt(item.baseline_median)} "
-            f"(p={item.pvalue:.3g}, {item.direction or 'changed'} at {item.scale})"
+            f"{family} family: {item.channel} {_fmt(item.value)} vs median "
+            f"{_fmt(item.baseline_median)} ({item.direction or 'changed'} at {item.scale}; "
+            f"{p_text})"
         )
-    return f"ripple on {host} at {window_start:%Y-%m-%d %H:%M} UTC: " + "; ".join(parts) + "."
+    if single_family:
+        lead = (f"ripple on {host} at {window_start:%Y-%m-%d %H:%M} UTC — single family "
+                f"{families[0]} at the extreme bar, not cross-family corroboration")
+    else:
+        lead = (f"ripple on {host} at {window_start:%Y-%m-%d %H:%M} UTC — "
+                f"{len(families)} independent families: {', '.join(families)}")
+    return lead + ": " + "; ".join(parts) + "."
+
+
+def _usable(item: ChannelEvidence, *, max_p: float) -> bool:
+    """Whether a row is allowed to support a ripple at all.
+
+    THREE REFUSALS, ALL LOUD IN THE DATA. Too few baseline windows is a short baseline. A row
+    whose p-value is at the floor when the floor is not below `max_p` cannot claim `max_p`; the
+    test is out of resolution. Everything else is a measurement.
+    """
+    if item.baseline_short or item.sample_count < min_baseline_samples(item.scale):
+        return False
+    if not math.isfinite(item.pvalue) or not 0.0 < item.pvalue <= 1.0:
+        return False
+    return not (item.at_floor() and not item.resolves(max_p))
 
 
 def group_evidence(
     evidence: list[ChannelEvidence],
     *,
     window_s: int = RIPPLE_WINDOW_S,
-    max_p: float = DEFAULT_MAX_P,
+    max_p: float = DEFAULT_FAMILY_MAX_P,
     extreme_p: float = DEFAULT_EXTREME_P,
-    min_channels: int = 2,
+    min_families: int = DEFAULT_MIN_FAMILIES,
+    min_score: float = DEFAULT_MIN_RIPPLE_SCORE,
+    monitored: Iterable[Any] = (),
 ) -> list[Ripple]:
     """Group one host's evidence in one time window into ripples, newest window first.
 
     THE TWO WAYS A RIPPLE FORMS (phase 1):
-      (a) two or more distinct channels are significant (p <= `max_p`) in the same window; or
-      (b) one channel is significant at an extreme p (p <= `extreme_p`).
+      (a) two or more distinct FAMILIES are significant (p <= `max_p`) in the same window; or
+      (b) exactly one family is significant at the extreme bar (p <= `extreme_p`).
+    In both cases `score >= min_score` after the multiple-test guard.
+
+    A FAMILY IS ONE MEASUREMENT. Only the strongest member of each family is allowed to support
+    a ripple, so `flow_bytes` and `flow_volume` -- the byte sum and the row count of the same
+    flow records -- cannot add up to two pieces of evidence. When a ripple is formed by one
+    family under rule (b), the explanation says so; it is one signal at an extreme bar, not
+    independent corroboration.
+
+    ONLY MONITORED SUBJECTS. `monitored` is the operator's monitored-network list. A host
+    outside it is a peer, not an asset, and is never the subject of a ripple. An empty list is
+    not a licence: it produces no ripples rather than treating every address as ours.
 
     A ripple is not a verdict about an attack and this function never pages. It is the unit an
     operator reads: several measurements that moved together, named, with the history each was
     measured against.
     """
+    nets = tuple(monitored)
+    if not nets:
+        return []
     buckets: dict[tuple[str, datetime], list[ChannelEvidence]] = {}
     for item in evidence:
         if not item.host or item.observed_at is None or not item.present:
             continue
-        if not math.isfinite(item.pvalue) or not 0.0 < item.pvalue <= 1.0:
+        if not _in_scope(item.host, list(nets)):
             continue
         buckets.setdefault((item.host, _window_start(item.observed_at, window_s)),
                            []).append(item)
 
     out: list[Ripple] = []
     for (host, start), items in buckets.items():
-        # ONE VIEW PER CHANNEL: keep each channel's strongest scale, so a channel measured at
-        # three scales cannot vote three times for itself.
+        # ONE VIEW PER FAMILY: keep each family's strongest member, so two views of one
+        # measurement cannot vote twice and a channel measured at three scales cannot vote
+        # three times for itself.
         strongest: dict[str, ChannelEvidence] = {}
         for item in items:
-            held = strongest.get(item.channel)
-            if held is None or item.pvalue < held.pvalue:
-                strongest[item.channel] = item
+            if not _usable(item, max_p=max_p):
+                continue
+            family = channel_family(item.channel, item.family)
+            held = strongest.get(family)
+            if held is None or (item.pvalue, item.channel) < (held.pvalue, held.channel):
+                strongest[family] = item
         significant = [item for item in strongest.values() if item.pvalue <= max_p]
         alone = len(significant) == 1 and significant[0].pvalue <= extreme_p
-        if len(significant) < min_channels and not alone:
+        if len(significant) < min_families and not alone:
             continue
 
+        # SCORE IS THE JOINT SURPRISE OF THE SUPPORTING FAMILIES: the sum of -log10(p), which
+        # is -log10(product of the p-values). Two independent families at 0.01 score 4.0; one
+        # family at exactly 0.001 scores 3.0. Fisher's calibrated p is still reported as
+        # `combined_p`, but the score is deliberately the evidence product: a multiplicity
+        # multiplier on top of the family rule would make the stated 0.001 boundary
+        # unreachable whenever another family happened to be measured and quiet.
         combined = fisher_combined_p([item.pvalue for item in significant])
-        # THE GUARD: every channel measured in this window is a test that was run, not only the
-        # ones that came out significant. Without it, a host with fifty channels would produce
-        # a "ripple" from noise alone on a long enough timeline.
-        corrected = min(1.0, combined * max(1, len(strongest)))
-        score = -math.log10(max(corrected, 1e-12))
-        contributors = tuple(sorted(
-            (item for item in items if item.channel in {s.channel for s in significant}),
-            key=lambda e: (e.pvalue, e.channel, e.scale)))
+        score = sum(-math.log10(max(item.pvalue, 1e-12)) for item in significant)
+        if score + 1e-9 < min_score:
+            continue
+        chosen = sorted(significant, key=lambda e: (e.pvalue, e.channel))
+        families = tuple(sorted({channel_family(item.channel, item.family)
+                                 for item in significant}))
         out.append(Ripple(
             host=host,
             window_start=start,
             window_end=start + timedelta(seconds=int(window_s)),
             score=score,
-            combined_p=corrected,
-            channels=tuple(sorted({item.channel for item in significant})),
-            explanation=_explain(host, start, significant),
-            evidence=contributors,
+            combined_p=combined,
+            channels=tuple(item.channel for item in chosen),
+            explanation=_explain(host, start, chosen, families, alone),
+            families=families,
+            single_family=alone,
+            evidence=tuple(chosen),
         ))
     out.sort(key=lambda r: (r.window_start, r.host), reverse=True)
     return out
@@ -409,7 +572,10 @@ def evidence_from_shadow(
     return out
 
 
-__all__ = ["ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P",
-           "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS", "RIPPLE_WINDOW_S", "Ripple",
-           "RippleResult", "SCALES", "empirical_pvalue", "empirical_pvalue_two_sided",
-           "evidence_from_shadow", "fisher_combined_p", "fuse", "group_evidence"]
+__all__ = ["CHANNEL_FAMILIES", "ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_FAMILY_MAX_P",
+           "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P", "DEFAULT_MIN_RIPPLE_SCORE",
+           "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS", "MIN_BASELINE_BY_SCALE",
+           "MIN_BASELINE_SAMPLES", "RIPPLE_WINDOW_S", "Ripple", "RippleResult", "SCALES",
+           "channel_family", "empirical_pvalue", "empirical_pvalue_two_sided",
+           "evidence_from_shadow", "fisher_combined_p", "fuse", "group_evidence",
+           "min_baseline_samples", "pvalue_floor"]

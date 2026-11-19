@@ -6565,11 +6565,22 @@ function renderRipples(data) {
     return;
   }
   const rows = data.ripples || [];
-  note.textContent = rows.length
+  // THE FLOOR IS PART OF THE ANSWER. A scale that cannot express the ripple bar is named,
+  // with its window count, instead of letting a floor p-value read as if it meant something.
+  const unavailable = Object.keys(data.baseline || {}).filter(
+    (scale) => data.baseline[scale] && data.baseline[scale].usable === false);
+  const baselineNote = unavailable.length
+    ? " Baseline too short at: " + unavailable.map((scale) => {
+      const b = data.baseline[scale];
+      return scale + " (" + (b.baseline_windows || 0) + " of " +
+        (b.minimum_windows || 0) + " windows)";
+    }).join("; ") + "."
+    : "";
+  note.textContent = (rows.length
     ? rows.length + " ripple(s) in the last " + hours + "h, grouped from measured evidence. " +
       "Read-only: this card does not alert."
     : "No ripple formed in the last " + hours + "h: every measured channel stayed inside its " +
-      "host's own trailing history.";
+      "host's own trailing history.") + baselineNote;
   if (!rows.length) {
     body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
       text: "Nothing moved far enough, together, to be a ripple." })]));

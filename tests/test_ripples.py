@@ -1,34 +1,67 @@
-"""Phase 1 ripples: measure a host against its own history, then group the evidence honestly.
+"""Phase 1 ripples: attribute the subject, collapse families, and respect the p-value floor.
 
-No ClickHouse. The fake below ANSWERS THE SQL THE MODULE ACTUALLY BUILDS: it reads the anchor
-and bucket size out of the query, buckets synthetic events the same way, and returns the
-`(host, k, n, u, b)` shape. That means these tests fail if the SQL stops selecting the columns
-the module reads, which a hand-written row fixture would not catch.
+No ClickHouse. The fake below ANSWERS THE SQL THE MODULE ACTUALLY BUILDS: it reads the anchor,
+bucket size and monitored CIDRs out of the query, attributes each event to its monitored
+endpoint exactly as the SQL does, and returns the `(host, k, n, u, b)` shape. That means these
+tests fail if the SQL stops selecting the columns or the predicate the module relies on, which
+a hand-written row fixture would not catch.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from weirvern.admin import payloads
 from weirvern.models import ripple_evidence
-from weirvern.models.ripple import empirical_pvalue_two_sided, group_evidence
+from weirvern.models.ripple import (
+    ChannelEvidence,
+    empirical_pvalue_two_sided,
+    group_evidence,
+    pvalue_floor,
+)
 
 NOW = datetime(2026, 11, 19, 14, 0, tzinfo=UTC)
+WINDOW = datetime(2026, 11, 19, 14, 0, tzinfo=UTC)
 HOST = "198.51.100.10"
+EXTERNAL = "203.0.113.9"
+OTHER_EXTERNAL = "203.0.113.77"
+NET = ipaddress.ip_network("198.51.100.0/24")
+NETS = [NET]
 HOURS = 168
 
 _ANCHOR = re.compile(r"intDiv\((\d+) - toUnixTimestamp")
 _BUCKET = re.compile(r", (\d+)\) AS k")
+_SINCE = re.compile(r">= '([^']+)'")
+_UNTIL = re.compile(r"< '([^']+)'")
+_SCOPE = re.compile(r"isIPAddressInRange\([^,]+,\s*'([^']+)'\)")
+
+
+def _parse(text: str) -> datetime:
+    return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+
+
+def _in_scope(addr: str, nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in nets if net.version == ip.version)
 
 
 class FakeClient:
-    """A tiny event store that executes the module's SQL shape, not a fixed row list."""
+    """A tiny event store that executes the module's SQL shape, not a fixed row list.
 
-    def __init__(self, events: dict[str, list[tuple[str, datetime, str]]] | None = None,
-                 *, fail: bool = False):
+    An event is `(src, dst, when, value, bytes)`. `value` feeds a diversity channel; `bytes`
+    feeds a sum channel. The fake decides the SUBJECT the way the SQL does: source when the
+    source is monitored, otherwise destination only when the query has a destination column.
+    """
+
+    def __init__(self, events: dict[str, list[tuple[str, str, datetime, str, float]]] | None = None,
+                 *, scopes: tuple[str, ...] = ("198.51.100.0/24",), fail: bool = False):
         self.events = events or {}
+        self.scopes = list(scopes)
         self.fail = fail
         self.queries: list[str] = []
 
@@ -36,44 +69,81 @@ class FakeClient:
         self.queries.append(sql)
         if self.fail:
             raise ConnectionError("clickhouse is not reachable")
+        if "weirvern.network_scopes" in sql:
+            return SimpleNamespace(result_rows=[(cidr,) for cidr in self.scopes])
         table = next((name for name in self.events if name in sql), None)
         if table is None:
             return SimpleNamespace(result_rows=[])
         anchor_match = _ANCHOR.search(sql)
         bucket_match = _BUCKET.search(sql)
-        if anchor_match is None or bucket_match is None:
+        since_match = _SINCE.search(sql)
+        until_match = _UNTIL.search(sql)
+        if not anchor_match or not bucket_match or not since_match or not until_match:
             return SimpleNamespace(result_rows=[])
         anchor = int(anchor_match.group(1))
         bucket_s = int(bucket_match.group(1))
+        since = _parse(since_match.group(1))
+        until = _parse(until_match.group(1))
+        nets = [ipaddress.ip_network(cidr) for cidr in dict.fromkeys(_SCOPE.findall(sql))]
+        has_peer = "isIPAddressInRange(dst_addr" in sql
         distinct = "uniqExact" in sql
-        buckets: dict[tuple[str, int], tuple[int, set[str]]] = {}
-        for host, when, value in self.events[table]:
+        peer_diversity = "uniqExact(if(" in sql
+        buckets: dict[tuple[str, int], tuple[int, set[str], float]] = {}
+        for src, dst, when, value, nbytes in self.events[table]:
+            if not (since <= when < until):
+                continue
+            if has_peer:
+                subject, peer = ((src, dst) if _in_scope(src, nets)
+                                 else (dst, src) if _in_scope(dst, nets) else ("", ""))
+            else:
+                subject, peer = (src, dst) if _in_scope(src, nets) else ("", "")
+            if not subject:
+                continue
             index = (anchor - int(when.timestamp())) // bucket_s
             if index < 0:
                 continue
-            n, seen = buckets.get((host, index), (0, set()))
-            buckets[(host, index)] = (n + 1, seen | {value} if distinct else seen)
+            n, seen, total = buckets.get((subject, index), (0, set(), 0.0))
+            if distinct:
+                seen = seen | {peer if peer_diversity else value}
+            buckets[(subject, index)] = (n + 1, seen, total + float(nbytes))
         rows = []
-        for (host, index), (n, seen) in sorted(buckets.items()):
-            rows.append((host, index, n, len(seen) if distinct else 0, 0.0))
+        for (host, index), (n, seen, total) in sorted(buckets.items()):
+            rows.append((host, index, n, len(seen) if distinct else 0, total))
         return SimpleNamespace(result_rows=rows)
 
 
 def _series(table: str, *, counts: dict[int, int] | None = None, host: str = HOST,
-            values: int = 4, base: int = 6) -> list[tuple[str, datetime, str]]:
+            peer: str = EXTERNAL, values: int = 4, base: int = 6, hours: int = HOURS,
+            bytes_for: dict[int, float] | None = None, bytes_per: float = 100.0,
+            reverse: bool = False) -> list[tuple[str, str, datetime, str, float]]:
     """One event per unit of volume, half an hour inside each hourly bucket."""
     counts = counts or {}
     events = []
-    for index in range(HOURS):
+    for index in range(hours):
         when = NOW - timedelta(hours=index, minutes=30)
+        amount = float((bytes_for or {}).get(index, bytes_per))
         for slot in range(counts.get(index, base)):
-            events.append((host, when + timedelta(seconds=slot), f"{table}-{slot % values}"))
+            src, dst = (peer, host) if reverse else (host, peer)
+            events.append((src, dst, when + timedelta(seconds=slot),
+                           f"{table}-{slot % values}", amount))
     return events
 
 
-def _ripples(events: dict[str, list[tuple[str, datetime, str]]]) -> list:
+def _ripples(events: dict[str, list[tuple[str, str, datetime, str, float]]]) -> list:
     items = ripple_evidence.compute(FakeClient(events), now=NOW)
-    return group_evidence(items)
+    return group_evidence(items, monitored=NETS)
+
+
+def _evidence(channel: str, family: str, pvalue: float, *, scale: str = "1h",
+              samples: int = 2000, host: str = HOST) -> ChannelEvidence:
+    """One synthetic measurement for the grouping boundaries, with an explicit baseline size."""
+    return ChannelEvidence(
+        channel=channel, family=family, scale=scale, model_id=f"source:{channel}",
+        model_version="test", score=10.0, pvalue=pvalue, freshness_s=0.0, present=True,
+        host=host, observed_at=WINDOW, value=10.0, baseline_median=1.0,
+        sample_count=samples, coverage=1.0, direction="rose",
+        p_floor=pvalue_floor(samples),
+    )
 
 
 def test_a_steady_channel_raises_no_significant_evidence_and_no_ripple():
@@ -85,7 +155,7 @@ def test_a_steady_channel_raises_no_significant_evidence_and_no_ripple():
     assert all(item.pvalue > 0.5 for item in dns), \
         [(item.scale, item.value, item.baseline_median, item.pvalue) for item in dns]
     assert [item for item in items if item.pvalue <= 0.05] == []
-    assert group_evidence(items) == []
+    assert group_evidence(items, monitored=NETS) == []
 
 
 def test_a_step_change_in_one_channel_produces_evidence_with_a_small_p_value():
@@ -96,6 +166,10 @@ def test_a_step_change_in_one_channel_produces_evidence_with_a_small_p_value():
     assert len(hourly) == 1
     item = hourly[0]
     assert item.pvalue <= 0.01
+    assert item.pvalue == pvalue_floor(item.sample_count), \
+        "a value beyond every baseline sample is at the floor, and says so"
+    assert item.at_floor() is True
+    assert item.floor() < ripple_evidence.DEFAULT_FAMILY_MAX_P
     assert item.value == 60
     assert item.baseline_median == 6
     assert item.direction == "rose"
@@ -109,7 +183,7 @@ def test_a_channel_with_insufficient_history_produces_no_evidence_at_all():
     assert ripple_evidence.compute(FakeClient(events), now=NOW) == []
 
 
-def test_two_significant_channels_in_one_window_form_one_ripple_naming_both():
+def test_two_significant_families_in_one_window_form_one_ripple_naming_both():
     events = {
         "weirvern.zeek_dns": _series("dns", counts={0: 60}),
         "weirvern.zeek_conn": _series("conn", counts={0: 60}),
@@ -118,16 +192,20 @@ def test_two_significant_channels_in_one_window_form_one_ripple_naming_both():
 
     assert len(ripples) == 1, [(r.host, r.window_start, r.channels) for r in ripples]
     ripple = ripples[0]
+    assert ripple.host == HOST
+    assert ripple.families == ("conn", "dns")
+    assert ripple.single_family is False
     assert ripple.channels == ("conn_volume", "dns_volume")
-    assert "conn_volume" in ripple.explanation and "dns_volume" in ripple.explanation
+    assert "conn family" in ripple.explanation and "dns family" in ripple.explanation
+    assert "independent families" in ripple.explanation
     assert {item.channel for item in ripple.evidence} == {"conn_volume", "dns_volume"}
     assert ripple.window_start == datetime(2026, 11, 19, 14, 0, tzinfo=UTC)
 
 
 def test_significant_channels_in_different_windows_do_not_form_one_ripple():
     # Each channel moves in its own hour and only mildly: two baseline hours are at least as
-    # high, so p is significant (> 0.01) but not extreme. One such channel cannot ripple, and
-    # the two never share a window.
+    # high, so p is above the family bar. One such channel cannot ripple, and the two never
+    # share a window.
     dns_events = {"weirvern.zeek_dns": _series("dns", counts={0: 30, 10: 30, 11: 30})}
     conn_events = {"weirvern.zeek_conn": _series("conn", counts={0: 30, 10: 30, 11: 30})}
     later = ripple_evidence.compute(FakeClient(dns_events), now=NOW)
@@ -137,46 +215,146 @@ def test_significant_channels_in_different_windows_do_not_form_one_ripple():
     assert significant, "the fixture must actually produce significant evidence"
     assert all(item.pvalue > 0.01 for item in significant), \
         [(item.channel, item.scale, item.pvalue) for item in significant]
-    assert group_evidence(later + earlier) == []
+    assert group_evidence(later + earlier, monitored=NETS) == []
 
 
-def test_a_single_extreme_channel_can_form_a_ripple_on_its_own():
+def test_one_family_at_the_floor_is_not_a_ripple_when_it_cannot_reach_the_bar():
+    """A single channel at the 1-hour floor is 0.006: above extreme, below two-family."""
     events = {"weirvern.zeek_dns": _series("dns", counts={0: 60})}
     ripples = _ripples(events)
 
+    assert ripples == []
+
+
+def test_flow_bytes_and_flow_volume_are_one_family_and_cannot_corroborate():
+    """The exact 2026-11-19 defect: two units for the same flows counted as two channels."""
+    events = {
+        "weirvern.flows_window": _series("flow", counts={0: 6}, bytes_for={0: 5000.0}),
+    }
+    items = ripple_evidence.compute(FakeClient(events), now=NOW)
+    significant = [item for item in items if item.pvalue <= 0.01]
+    assert {item.channel for item in significant} == {"flow_bytes"}, \
+        [(i.channel, i.pvalue) for i in significant]
+
+    direct = [_evidence("flow_bytes", "flow", 0.005),
+              _evidence("flow_volume", "flow", 0.005)]
+    assert group_evidence(direct, monitored=NETS) == [], \
+        "one family is one measurement, however many channels it is viewed through"
+
+
+def test_p_at_the_attainable_floor_with_a_short_baseline_is_not_evidence():
+    short = _evidence("dns_volume", "dns", pvalue=1 / 21, samples=20)
+    short = ChannelEvidence(**{**short.__dict__, "baseline_short": True})
+
+    assert short.at_floor() is True
+    assert short.floor() == pvalue_floor(20)
+    assert short.as_dict()["baseline_short"] is True
+    assert short.as_dict()["p_floor"] == round(pvalue_floor(20), 8)
+    assert group_evidence([short], monitored=NETS) == []
+
+    # The same fact at the API level: the scale says why it cannot be used.
+    assert ripple_evidence.scale_report("6h")["usable"] is False
+    assert "baseline too short" in ripple_evidence.scale_report("6h")["reason"]
+    assert ripple_evidence.scale_report("1h")["usable"] is True
+    assert ripple_evidence.scale_report("1h")["p_floor"] == round(pvalue_floor(167), 6)
+
+    # And a lookback that cannot reach 30 windows emits no evidence at all.
+    assert ripple_evidence.compute(FakeClient({"weirvern.zeek_dns": _series("dns")}),
+                                   now=NOW, lookback_days=1) == []
+    assert "baseline too short" in ripple_evidence.scale_report("1h", 1)["reason"]
+
+
+def test_an_external_only_change_produces_no_ripple():
+    events = {"weirvern.zeek_conn": _series("conn", counts={0: 60},
+                                            host=EXTERNAL, peer=OTHER_EXTERNAL)}
+    items = ripple_evidence.compute(FakeClient(events), now=NOW)
+
+    assert items == []
+    assert _ripples(events) == []
+
+
+def test_an_inbound_change_is_attributed_to_the_monitored_destination():
+    """A remote peer changing is the internal host's ripple, never the peer's."""
+    events = {
+        "weirvern.zeek_conn": _series("conn", counts={0: 60}, reverse=True),
+        "weirvern.zeek_dns": _series("dns", counts={0: 60}, reverse=True),
+    }
+    items = ripple_evidence.compute(FakeClient(events), now=NOW)
+
+    assert {item.host for item in items} == {HOST}, \
+        sorted({item.host for item in items})
+    assert EXTERNAL not in {item.host for item in items}
+
+    ripples = _ripples(events)
     assert len(ripples) == 1
-    assert ripples[0].channels == ("dns_volume",)
-    assert ripples[0].score > 1.0
-    assert ripples[0].combined_p <= 0.05
+    assert ripples[0].host == HOST
+    assert ripples[0].explanation.startswith(f"ripple on {HOST} ")
+    assert EXTERNAL not in ripples[0].explanation
+
+
+def test_a_ripple_needs_two_families_at_0_01_or_one_at_0_001():
+    two = [_evidence("dns_volume", "dns", 0.01), _evidence("conn_volume", "conn", 0.01)]
+    ripples = group_evidence(two, monitored=NETS)
+    assert len(ripples) == 1
+    assert ripples[0].score >= 3.0
+
+    two_above = [_evidence("dns_volume", "dns", 0.011),
+                 _evidence("conn_volume", "conn", 0.011)]
+    assert group_evidence(two_above, monitored=NETS) == []
+
+    one = [_evidence("dns_volume", "dns", 0.001)]
+    ripples = group_evidence(one, monitored=NETS)
+    assert len(ripples) == 1
+    assert ripples[0].single_family is True
+    assert ripples[0].score >= 3.0
+    assert "single family dns" in ripples[0].explanation
+    assert "not cross-family corroboration" in ripples[0].explanation
+
+    one_above = [_evidence("dns_volume", "dns", 0.0011)]
+    assert group_evidence(one_above, monitored=NETS) == []
+
+
+def test_a_single_family_at_the_extreme_bar_is_stated_as_single_family():
+    """One family can ripple alone only at 0.001, and then the sentence says so."""
+    mixed = [_evidence("dns_volume", "dns", 0.001), _evidence("conn_volume", "conn", 0.02)]
+    ripples = group_evidence(mixed, monitored=NETS)
+    assert len(ripples) == 1
+    assert ripples[0].families == ("dns",)
+    assert ripples[0].single_family is True
+    assert "single family dns" in ripples[0].explanation
+
+
+def test_a_family_above_the_bar_does_not_corroborate():
+    mixed = [_evidence("dns_volume", "dns", 0.05), _evidence("conn_volume", "conn", 0.02)]
+    assert group_evidence(mixed, monitored=NETS) == []
 
 
 def test_one_channel_at_several_scales_is_still_one_channel():
-    """A channel measured at 1h and 6h must not corroborate itself into a ripple."""
-    # Four mildly elevated hours make the 1h view significant (4 of 168 baselines are at least
-    # as high, so p = 0.030, above the extreme bar) and the 6h view significant (p = 0.036).
-    events = {"weirvern.zeek_dns": _series("dns", counts={0: 10, 1: 10, 2: 10, 3: 10, 10: 10})}
+    """A channel measured at 1h and the same family elsewhere must not vote twice."""
+    events = {"weirvern.zeek_dns": _series("dns", counts={0: 60})}
     items = ripple_evidence.compute(FakeClient(events), now=NOW)
-
-    scales = {item.scale for item in items
-              if item.channel == "dns_volume" and item.pvalue <= 0.05}
-    assert scales == {"1h", "6h"}, \
-        [(item.scale, item.value, item.baseline_median, item.pvalue)
-         for item in items if item.channel == "dns_volume"]
-    assert group_evidence(items) == []
+    same_family = [item for item in items if item.family == "dns" and item.pvalue <= 0.01]
+    assert {item.channel for item in same_family} == {"dns_volume"}
+    assert group_evidence(same_family, monitored=NETS) == []
 
 
-def test_the_explanation_names_the_channels_and_never_a_number_without_its_baseline():
+def test_the_explanation_names_the_family_and_subject_and_never_a_bare_p_value():
     events = {
         "weirvern.zeek_dns": _series("dns", counts={0: 60}),
         "weirvern.zeek_conn": _series("conn", counts={0: 60}),
     }
     ripple = _ripples(events)[0]
 
-    for channel in ripple.channels:
-        assert re.search(rf"{channel} [\d.,]+ vs median [\d.,]+ \(p=", ripple.explanation), \
+    assert HOST in ripple.explanation
+    for channel, family in (("dns_volume", "dns"), ("conn_volume", "conn")):
+        assert re.search(rf"{family} family: {channel} [\d.,]+ vs median [\d.,]+ "
+                         rf"\((rose|fell|changed) at 1h; p[=<]=", ripple.explanation), \
             ripple.explanation
     assert ripple.explanation.count("vs median") == len(ripple.channels)
-    assert "198.51.100.10" in ripple.explanation
+    # Every p-value is tied to a family, a channel, a median, a direction and a window count.
+    for match in re.finditer(r"p[=<]=?[\d.e+-]+", ripple.explanation):
+        assert "baseline windows" in ripple.explanation[match.end():match.end() + 80]
+    assert "p=0.05" not in ripple.explanation
 
 
 def test_the_api_returns_an_empty_list_and_a_reason_when_the_read_fails():
@@ -200,7 +378,11 @@ def test_an_empty_window_is_available_not_a_failure():
 def test_no_channel_claims_a_scale_the_lookback_cannot_support():
     for row in ripple_evidence.inventory():
         assert "7d" not in row["scales"], row
-        assert row["scales"] == ["1h", "6h", "24h"], row
+        assert "6h" not in row["scales"], row
+        assert "24h" not in row["scales"], row
+        assert row["scales"] == ["1h"], row
+        assert row["scale_detail"]["6h"]["usable"] is False, row
+        assert "baseline too short" in row["scale_detail"]["6h"]["reason"], row
 
 
 def test_a_two_sided_p_value_sees_a_fall_as_clearly_as_a_rise():
@@ -214,29 +396,58 @@ def test_the_read_path_returns_ripples_with_their_evidence():
     window = datetime(2026, 11, 19, 14, 0)
     rows = [
         (window, window + timedelta(hours=1), HOST, "dns_volume", "dns", "1h", 60.0, 6.0,
-         0.006, 167, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
+         0.004, 500, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
         (window, window + timedelta(hours=1), HOST, "conn_volume", "conn", "1h", 41.0, 5.0,
-         0.012, 167, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
+         0.005, 500, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
     ]
-    client = SimpleNamespace(
-        query=lambda sql, parameters=None: SimpleNamespace(result_rows=rows))
 
-    out = ripple_evidence.overview(client, hours=24, now=NOW)
+    def query(sql, parameters=None):
+        if "weirvern.network_scopes" in sql:
+            return SimpleNamespace(result_rows=[("198.51.100.0/24",)])
+        return SimpleNamespace(result_rows=rows)
+
+    out = ripple_evidence.overview(SimpleNamespace(query=query), hours=24, now=NOW)
 
     assert out["available"] is True
     assert out["count"] == 1
+    assert out["monitored_networks"] == ["198.51.100.0/24"]
+    assert out["baseline"]["1h"]["usable"] is True
     ripple = out["ripples"][0]
-    assert ripple["channels"] == ["conn_volume", "dns_volume"]
+    assert ripple["host"] == HOST
+    assert ripple["channels"] == ["dns_volume", "conn_volume"]
+    assert ripple["families"] == ["conn", "dns"]
+    assert ripple["single_family"] is False
     assert len(ripple["evidence"]) == 2
     assert ripple["evidence"][0]["baseline_median"] in (6.0, 5.0)
     assert "vs median" in ripple["explanation"]
 
 
-def test_evidence_for_a_steady_channel_is_still_storable():
-    """Storing p~1 is the point: the operator sees what was measured, not only alarms."""
-    items = ripple_evidence.compute(FakeClient({"weirvern.zeek_dns": _series("dns")}), now=NOW)
-    row = next(item for item in items if item.channel == "dns_volume" and item.scale == "1h")
-    assert row.host == HOST
-    assert row.as_dict()["baseline_median"] == 6.0
-    assert row.as_dict()["p_value"] == 1.0
-    assert row.as_dict()["sample_count"] == 167
+def test_the_read_path_drops_stored_rows_for_external_subjects():
+    """Old rows from before the fix must not resurrect a peer as a ripple subject."""
+    window = datetime(2026, 11, 19, 14, 0)
+    rows = [
+        (window, window + timedelta(hours=1), EXTERNAL, "flow_bytes", "flow", "1h", 1.0, 1.0,
+         0.004, 500, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
+        (window, window + timedelta(hours=1), EXTERNAL, "flow_volume", "flow", "1h", 1.0, 1.0,
+         0.004, 500, 1.0, "rose", datetime(2026, 11, 19, 14, 37)),
+    ]
+
+    def query(sql, parameters=None):
+        if "weirvern.network_scopes" in sql:
+            return SimpleNamespace(result_rows=[("198.51.100.0/24",)])
+        return SimpleNamespace(result_rows=rows)
+
+    out = ripple_evidence.overview(SimpleNamespace(query=query), hours=24, now=NOW)
+
+    assert out["available"] is True
+    assert out["count"] == 0
+    assert out["evidence"]["monitored_rows"] == 0
+
+
+def test_no_monitored_scope_means_no_evidence_rather_than_everything():
+    events = {
+        "weirvern.zeek_dns": _series("dns", counts={0: 60}),
+        "weirvern.zeek_conn": _series("conn", counts={0: 60}),
+    }
+    assert ripple_evidence.compute(FakeClient(events, scopes=()), now=NOW) == []
+    assert _ripples(events)  # the same fixture does ripple when a scope exists
