@@ -154,9 +154,18 @@ def test_ico_is_multi_resolution():
 
 
 def test_readme_references_the_logo():
-    """A logo nobody references is a logo nobody sees."""
+    """A logo nobody references is a logo nobody sees.
+
+    The README shows docs/banner.png, which is composed from docs/logo.png: the mark,
+    the name and the claim in one lockup, instead of a small mark above an h1. The
+    reference moved with the design, so this asserts what the reader is actually shown
+    and that the asset behind it exists, rather than a filename that is now only a source.
+    """
     readme = (ROOT / "README.md").read_text()
-    assert "docs/logo.png" in readme
+    assert "docs/banner.png" in readme, "the README does not show the banner"
+    assert (DOCS / "banner.png").is_file(), "the README references a banner that is missing"
+    # The source mark must survive: the banner is generated from it.
+    assert LOGO.is_file(), "docs/logo.png is the source of the banner and must stay"
 
 
 def test_logo_is_not_used_as_an_html_element_in_a_code_block():
