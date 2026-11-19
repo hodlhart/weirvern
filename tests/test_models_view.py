@@ -448,3 +448,26 @@ def test_the_card_panel_compares_the_registry_with_what_is_installed(tmp_path):
     assert inv["DBSCAN"]["version"] == "v5"
     assert inv["Isolation Forest"]["hash"] and inv["Isolation Forest"]["written_at"]
     assert "notes.txt" not in {v["file"] for v in inv.values()}
+
+
+def test_the_models_payload_does_not_drop_fields_it_computed():
+    """The whitelist in models_payload is a wall: fields die at it unless they are named.
+
+    Measured on the live box (2026-11-19): payloads.models computed the artifact inventory, the
+    engine's training log and the normalized-pattern count on every request, and models_payload
+    dropped all three, so the tab fell back to an eight-day-old registry and looked stale no matter
+    what the engine did. This asserts the wall carries them.
+    """
+    from weirvern.admin.web_api import models_payload
+
+    out = models_payload({
+        "available": True,
+        "model_artifacts": {"DBSCAN": {"version": "v5"}},
+        "model_cards_behind": ["DBSCAN"],
+        "model_training": {"DBSCAN": {"trained_at": "2026-11-19 08:21:17"}},
+        "normalized": {"available": True, "total": 3, "by_source": {"zeek": 3}},
+    })
+    assert out["model_artifacts"]["DBSCAN"]["version"] == "v5"
+    assert out["model_cards_behind"] == ["DBSCAN"]
+    assert out["model_training"]["DBSCAN"]["trained_at"].startswith("2026-11-19")
+    assert out["normalized"]["total"] == 3

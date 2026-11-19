@@ -699,6 +699,14 @@ def models_payload(data: dict) -> dict:
                         for row in data.get("model_cards", [])],
         "model_cards_available": data.get("model_cards_available", False),
         "model_cards_reason": data.get("model_cards_reason", ""),
+        # WHAT IS INSTALLED, AND WHAT THE ENGINE HAS BEEN DOING (0.23.86). This function is a
+        # whitelist, so fields added in payloads.models die here unless they are named -- which is
+        # exactly what happened to artifacts, the engine's training log, and the normalized-pattern
+        # count: computed on every request, then dropped, and the page fell back to the registry.
+        "model_artifacts": data.get("model_artifacts", {}),
+        "model_cards_behind": data.get("model_cards_behind", []),
+        "model_training": data.get("model_training", {}),
+        "normalized": data.get("normalized", {}),
         # CE-4: the fixed-budget report's verification fields. No live auto-label evidence is
         # wired into this read yet; say `not measured` rather than presenting a silent zero.
         "review": data.get("review") or _latest_review(),
