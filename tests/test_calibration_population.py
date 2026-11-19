@@ -74,9 +74,14 @@ def test_record_population_writes_one_row_per_model_and_window():
     assert count == 2
     table, rows, columns = client.inserts[-1]
     assert table == "weirvern.ml_window_scores"
+    # `coverage`/`excluded` arrived with the missing-data work (schema 056). They are written on
+    # every row -- NULL and 0 when the flag is off -- so the population carries the evidence a
+    # coverage-excluding calibration needs without a second table.
     assert columns == ["window_start", "src_addr", "model_name", "score",
-                       "model_version", "computed_at"]
+                       "model_version", "computed_at", "coverage", "excluded"]
     assert len(rows) == 2
+    # The flag was not part of this sample, so coverage is UNKNOWN, not zero.
+    assert all(row[6] is None and row[7] == 0 for row in rows)
 
 
 def test_retrain_newer_than_calibration_forces_ineligible():

@@ -33,6 +33,14 @@ from weirvern import flow_windows, networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
+from weirvern.models.missing import (
+    DEFAULT_MIN_COVERAGE,
+    MissingAwarePreprocessor,
+    below_floor,
+    masked_distance,
+    model_input_columns,
+    null_absent_zeek,
+)
 from weirvern.models.scoring import (
     calibrate_distance,
     calibrate_isolation_forest,
@@ -133,6 +141,28 @@ class RobustPreprocessor:
         return self.scaler.transform(self.imputer.transform(np.nan_to_num(X)))
 
 
+Preprocessor = RobustPreprocessor | MissingAwarePreprocessor
+
+
+def _preprocessor_for(cfg: ModelConfig, *, indicators: bool = True) -> Preprocessor:
+    """The preprocessor this configuration calls for.
+
+    OFF (the default) is the historical median-impute-over-`nan_to_num` object, byte for
+    byte. ON is the missing-aware one, which keeps NaN through the fit so the median is the
+    training-time neutral rather than the median of a matrix that already turned every
+    absence into 0.
+    """
+    if getattr(cfg, "missing_features", False):
+        return MissingAwarePreprocessor(indicators=indicators)
+    return RobustPreprocessor()
+
+
+def _floor(cfg: ModelConfig) -> float:
+    """The coverage floor, with an explicit None check (0.0 is a valid, disabling value)."""
+    value = getattr(cfg, "min_feature_coverage", DEFAULT_MIN_COVERAGE)
+    return DEFAULT_MIN_COVERAGE if value is None else float(value)
+
+
 # ============================================================================
 class IsolationForestDetector(BaseDetector):
     name = "Isolation Forest"
@@ -141,7 +171,7 @@ class IsolationForestDetector(BaseDetector):
         super().__init__(model_dir)
         self.cfg = cfg or ModelConfig()
         self.model: IsolationForest | None = None
-        self.preprocessor = RobustPreprocessor()
+        self.preprocessor: Preprocessor = _preprocessor_for(self.cfg)
         self.X_train_unscaled: np.ndarray | None = None
         # Percentile calibration of score_samples (set at train time)
         self.calibration: dict[str, float] = {}
@@ -213,6 +243,10 @@ class IsolationForestDetector(BaseDetector):
             return False
 
         X = np.asarray(data, dtype=float)
+        if self.cfg.missing_features:
+            # The SQL coalesced every absent source to 0; recover "absent" as NaN so the
+            # median is taken over measured values only and the indicators are real.
+            X = null_absent_zeek(X, IF_FEATURES)
         Xs = self.preprocessor.fit_transform(X)
         self.X_train_unscaled = X  # gradient-boosting student (legacy coupling, kept)
         self.model = IsolationForest(contamination=self.cfg.contamination, random_state=self.cfg.random_state).fit(Xs)
@@ -233,6 +267,14 @@ class IsolationForestDetector(BaseDetector):
                 "contamination": self.cfg.contamination,
                 "n_samples": len(Xs),
                 "extremes": self.cfg.if_extremes,
+                # WHICH VECTOR THIS ARTIFACT LEARNS. Flipping the flag changes the model's
+                # input width (77 values vs 77 values + 77 indicators), so an artifact from
+                # the other mode cannot be scored against this vector. load() refuses a
+                # mismatch and the detector retrains instead of quietly answering nothing.
+                "missing_features": bool(self.cfg.missing_features),
+                "min_feature_coverage": _floor(self.cfg),
+                "model_input_columns": model_input_columns(
+                    IF_FEATURES, indicators=bool(self.cfg.missing_features)),
                 "calibration": {k: round(v, 6) for k, v in self.calibration.items()},
             },
             metrics={"anomaly_rate": round(ar, 4)},
@@ -246,12 +288,20 @@ class IsolationForestDetector(BaseDetector):
         self.save()
         return True
 
-    def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
         model = self.model
         if model is None:
             return 0.0
         try:
-            vec = feature_vector(features or {}, IF_FEATURES)
+            if self.cfg.missing_features:
+                # Below the floor there is no score to give: imputing most of a vector and
+                # calling the result a detector's opinion is how "no telemetry" became 0.33.
+                if below_floor(features, IF_FEATURES, _floor(self.cfg)):
+                    return 0.0
+                vec = feature_vector(features or {}, IF_FEATURES, preserve_missing=True)
+            else:
+                vec = feature_vector(features or {}, IF_FEATURES)
             X = self.preprocessor.transform(np.asarray([vec], dtype=float))
             s = model.score_samples(X)[0]
             return calibrate_isolation_forest(float(s), self.calibration)
@@ -267,7 +317,7 @@ class GradientBoostingDetector(BaseDetector):
         super().__init__(model_dir)
         self.cfg = cfg or ModelConfig()
         self.model: GradientBoostingClassifier | None = None
-        self.preprocessor = RobustPreprocessor()
+        self.preprocessor: Preprocessor = _preprocessor_for(self.cfg)
         # Percentile calibration of predict_proba (set at train time)
         self.calibration: dict[str, float] = {}
 
@@ -325,6 +375,12 @@ class GradientBoostingDetector(BaseDetector):
             params={
                 "scale_pos_weight": round(weight, 2),
                 "n_samples": len(Xtr),
+                # The student shares the teacher's preprocessor, so it shares the mode too;
+                # recorded so load() can refuse a student from the other vector shape.
+                "missing_features": bool(self.cfg.missing_features),
+                "min_feature_coverage": _floor(self.cfg),
+                "model_input_columns": model_input_columns(
+                    IF_FEATURES, indicators=bool(self.cfg.missing_features)),
                 "calibration": {k: round(v, 6) for k, v in self.calibration.items()},
             },
             metrics={"f1_score": round(f1, 4)},
@@ -338,12 +394,18 @@ class GradientBoostingDetector(BaseDetector):
         self.save()
         return True
 
-    def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
         model = self.model
         if model is None:
             return 0.0
         try:
-            vec = feature_vector(features or {}, IF_FEATURES)
+            if self.cfg.missing_features:
+                if below_floor(features, IF_FEATURES, _floor(self.cfg)):
+                    return 0.0
+                vec = feature_vector(features or {}, IF_FEATURES, preserve_missing=True)
+            else:
+                vec = feature_vector(features or {}, IF_FEATURES)
             X = self.preprocessor.transform(np.asarray([vec], dtype=float))
             p = model.predict_proba(X)[0]
             return calibrate_probability(float(p[1]), self.calibration)
@@ -365,7 +427,10 @@ class DBSCANDetector(BaseDetector):
         # 195-row failure with "DBSCAN needs >=100 rows", a cause its own log line contradicted.
         # "" = never trained, "ok", "insufficient-rows", "no-dense-structure".
         self.train_outcome = ""
-        self.preprocessor = RobustPreprocessor()
+        # No missing indicators: clustering degrades with dimensionality, and the masked
+        # distance already carries the "was this dimension observed" information. The
+        # preprocessor still imputes the median so DBSCAN has a dense space to fit.
+        self.preprocessor: Preprocessor = _preprocessor_for(self.cfg, indicators=False)
         # Percentile calibration of training distances to the nearest centre (set at
         # train time). See calibrate_distance for why the old fixed /5.0 had to go.
         self.calibration: dict[str, float] = {}
@@ -420,7 +485,10 @@ class DBSCANDetector(BaseDetector):
                 "longer seed window is what adds them.", self.name, len(data),
             )
             return False
-        Xs = self.preprocessor.fit_transform(np.asarray(data, dtype=float))
+        Xraw = np.asarray(data, dtype=float)
+        if self.cfg.missing_features:
+            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
+        Xs = self.preprocessor.fit_transform(Xraw)
         labels = DBSCAN(eps=self.cfg.dbscan_eps, min_samples=self.cfg.dbscan_min_samples).fit_predict(Xs)
         self.cluster_centers = [np.mean(Xs[labels == cid], axis=0) for cid in set(labels) if cid != -1]
         n_clusters, n_outliers = len(self.cluster_centers), int((labels == -1).sum())
@@ -448,6 +516,8 @@ class DBSCANDetector(BaseDetector):
             feature_columns=DBSCAN_FEATURES,
             params={"eps": self.cfg.dbscan_eps, "min_samples": self.cfg.dbscan_min_samples,
                     "n_samples": len(Xs),
+                    "missing_features": bool(self.cfg.missing_features),
+                    "min_feature_coverage": _floor(self.cfg),
                     "calibration": {k: round(v, 6) for k, v in self.calibration.items()}},
             metrics={"clusters": n_clusters, "outliers": n_outliers},
             window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
@@ -475,13 +545,32 @@ class DBSCANDetector(BaseDetector):
         self.train_outcome = "ok" if self.cluster_centers else "no-dense-structure"
         return bool(self.cluster_centers)
 
-    def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
         if not self.cluster_centers:
             return 0.0
         try:
-            vec = np.asarray(feature_vector(features or {}, DBSCAN_FEATURES), dtype=float)
-            Xp = self.preprocessor.transform(np.asarray([vec], dtype=float))[0]
-            dist = min(float(np.linalg.norm(Xp - c)) for c in self.cluster_centers)
+            if self.cfg.missing_features:
+                # ABSTAIN RATHER THAN CLUSTER A GUESS. Below the floor the window has too
+                # little measured data for a distance to mean anything; above it, the
+                # distance is taken over the observed dimensions only and rescaled, so a
+                # half-observed window is not "closer" merely for having fewer terms.
+                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
+                    return 0.0
+                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
+                pre = self.preprocessor
+                if not isinstance(pre, MissingAwarePreprocessor):
+                    raise RuntimeError(
+                        "missing-data scoring needs the missing-aware preprocessor; "
+                        "this detector was built with the legacy one"
+                    )
+                Xp, observed = pre.transform_with_mask(np.asarray([vec], dtype=float))
+                dist = min(masked_distance(Xp[0], c, observed[0]) for c in self.cluster_centers)
+            else:
+                legacy_vec = np.asarray(feature_vector(features or {}, DBSCAN_FEATURES),
+                                        dtype=float)
+                Xp = self.preprocessor.transform(np.asarray([legacy_vec], dtype=float))[0]
+                dist = min(float(np.linalg.norm(Xp - c)) for c in self.cluster_centers)
             # Graded against the training distribution (see calibrate_distance), not a
             # fixed divisor; falls back to the old shape for artifacts trained before
             # the calibration existed, so a stale artifact keeps its behaviour until
@@ -901,7 +990,8 @@ class AdaptiveBaselineDetector(BaseDetector):
                 hosts += 1
         return {"applied": applied, "hosts": hosts}
 
-    def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
         src = flow.get("src_addr") or ""
         b = self.baselines.get(src)
         if not b:
@@ -921,13 +1011,21 @@ class AdaptiveBaselineDetector(BaseDetector):
             # Gated on `zeek_seen`: a host with no Zeek baseline gets NO behavioural score
             # rather than a score of 0 against a zero baseline, which would either never fire
             # or fire constantly depending on how the divisor fell. Absence is not evidence.
+            #
+            # AND WITH MISSING-DATA HANDLING ON, a feature that is None means "not measured"
+            # rather than 0: the same rule applies to the window. Scoring a missing conn
+            # count as zero would price it as an infinitely quiet window, which is the
+            # defect the flag exists to remove, so the behavioural term is skipped instead.
             s_z = 0.0
-            if b.get("zeek_seen") and features:
+            conn = None if features is None else features.get("zeek_conn_count")
+            s0 = None if features is None else features.get("zeek_s0_ratio")
+            notices = None if features is None else features.get("zeek_notice_count")
+            if b.get("zeek_seen") and conn is not None and s0 is not None and notices is not None:
                 # Refused-and-unanswered connections relative to what is normal for THIS host.
                 # A host whose established S0 rate is ~0 and which suddenly shows 88 of them is
                 # the case this exists for; the same 88 on a host that always scans is not.
-                conn = float(features.get("zeek_conn_count", 0.0) or 0.0)
-                s0 = float(features.get("zeek_s0_ratio", 0.0) or 0.0)
+                conn = float(conn)
+                s0 = float(s0)
                 conn_z = (conn - b["avg_conn"]) / max(b["stddev_conn"], 1.0)
                 # The observation is an S0 COUNT (ratio x conns) and is compared against the
                 # host's own typical S0 COUNT, in the same units. The old ratio-vs-count
@@ -943,8 +1041,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                 # Notices are Zeek's own opinion; a host that normally raises none raising
                 # several is worth weighing even when its volume is unremarkable. The
                 # divisor is the measured sigma when available (was: the mean itself).
-                notices = float(features.get("zeek_notice_count", 0.0) or 0.0)
-                notice_z = (notices - b["avg_notices"]) / max(
+                notice_z = (float(notices) - b["avg_notices"]) / max(
                     float(b.get("stddev_notices", b["avg_notices"]) or 0.0), 1.0
                 )
                 s_z = max(normalize_zscore(conn_z), normalize_zscore(s0_z),

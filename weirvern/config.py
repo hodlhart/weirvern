@@ -211,6 +211,25 @@ class Settings:
         default_factory=lambda: os.environ.get("EPISODE_PAGE_MIN_SEVERITY", "high")
     )
     ml_calibration_days: int = field(default_factory=lambda: _env_int("ML_CALIBRATION_DAYS", 7))
+    # ── MISSING-DATA HANDLING (default OFF) ───────────────────────────────────────────────────
+    #
+    # ON: a feature whose source was not measured is None (NULL) rather than 0, Isolation
+    # Forest and Gradient Boosting impute the TRAINING-TIME median per feature and add one
+    # `<feature>__missing` indicator, DBSCAN takes its distance over observed dimensions only
+    # (or abstains below the coverage floor), and calibration excludes windows below the floor.
+    #
+    # OFF: every behaviour above is skipped and the score path is exactly the one that
+    # existed before this flag. Flipping it changes EVERY score in production and invalidates
+    # models trained on the old vector, which is why the default is OFF: the artifacts are
+    # refused at load (their recorded mode disagrees) and each detector retrains on its next
+    # cadence; until that retrain and a fresh calibration, the existing holdout lock keeps
+    # them out of the fused score.
+    ml_missing_features: bool = field(
+        default_factory=lambda: _env_bool("ML_MISSING_FEATURES", False))
+    # The share of a detector's vector that must be measured before the window is scored or
+    # used in calibration. See models/missing.DEFAULT_MIN_COVERAGE for why 0.15.
+    ml_min_feature_coverage: float = field(
+        default_factory=lambda: _env_float("ML_MIN_FEATURE_COVERAGE", 0.15))
     # Warm-up gate for a new deployment. The models can learn only after the local network
     # has produced enough distinct windows/hosts; until then the detection rows still land in
     # the console, but they do not page. This is the cold-start contract: no universal
@@ -571,6 +590,11 @@ class Settings:
             raise ValueError(
                 f"ML_CALIBRATION_DAYS must be >= 1, got {self.ml_calibration_days}"
             )
+        if not 0.0 <= self.ml_min_feature_coverage <= 1.0:
+            raise ValueError(
+                "ML_MIN_FEATURE_COVERAGE must be between 0 and 1, got "
+                f"{self.ml_min_feature_coverage}"
+            )
         if self.ml_warmup_hours < 0:
             raise ValueError(
                 f"ML_WARMUP_HOURS must be >= 0, got {self.ml_warmup_hours}"
@@ -662,6 +686,13 @@ class ModelConfig:
     # does not fill the table. Setting it to 1.0 disables banding entirely (nothing is
     # strictly below and at/above the threshold).
     near_miss_band: float = 0.85
+
+    # ── MISSING-DATA HANDLING (default OFF; see models/missing.py) ───────────────────────────
+    # These mirror `Settings.ml_missing_features` / `ml_min_feature_coverage`; the worker
+    # copies the operator's settings into this object so the detectors and the ensemble read
+    # ONE authority. Left as plain defaults here so a test can construct a detector directly.
+    missing_features: bool = False
+    min_feature_coverage: float = 0.15
 
     # Structural port-scan signature (diversity metrics) — lets a lone strong
     # specialist escalate when the window itself is direct scan evidence.

@@ -59,6 +59,15 @@ DBSCAN_FEATURES = [
     "burstiness",
 ] + ZEEK_DBSCAN_FEATURES
 
+# EVERY COLUMN THE ENSEMBLE CAN CONSUME, once each: the wide vector plus the two temporal
+# features only DBSCAN uses. This is the denominator for a window's telemetry coverage (see
+# models/missing.py) — the question it answers is "how much of what the models look at was
+# actually measured for this host-window", so it must span all four detectors, not just the
+# wide pair. 79 columns today; the number is not written down anywhere that can drift.
+TELEMETRY_FEATURES = IF_FEATURES + [
+    name for name in DBSCAN_FEATURES if name not in IF_FEATURES
+]
+
 # ── THE FEATURE SCHEMA VERSION (review round 2026-10-15) ─────────────────────────────────────
 #
 # Bump when the SHAPE of any feature list above changes -- a feature added, removed or
@@ -90,10 +99,31 @@ def _safe_log1p(v: float) -> float:
     return math.log1p(max(float(v), 0.0))
 
 
+def _number(source: dict[str, Any] | None, key: str, default: float,
+            preserve_missing: bool) -> float | None:
+    """One numeric value from a source dict, or None when it was not measured.
+
+    With `preserve_missing` False this reproduces the historical `float(x.get(k, d) or d)`
+    exactly, including the way a NULL in ClickHouse collapsed into the default. With it True,
+    an absent key or a None value is None — the caller decides how to impute, and 0 is no
+    longer allowed to mean both "zero" and "we never read this".
+    """
+    if source is None:
+        return None if preserve_missing else float(default)
+    raw = source.get(key)
+    if raw is None:
+        return None if preserve_missing else float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None if preserve_missing else float(default)
+
+
 def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = None,
                      temporal: dict[str, Any] | None = None,
                      zeek: dict[str, Any] | None = None,
-                     zeek_baseline: dict[str, Any] | None = None) -> dict[str, float]:
+                     zeek_baseline: dict[str, Any] | None = None,
+                     *, preserve_missing: bool = False) -> dict[str, float | None]:
     """Build the full feature dict for one aggregated flow row.
 
     `flow` keys expected: total_bytes, total_packets, unique_dst_ips, flow_count,
@@ -111,18 +141,28 @@ def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = No
     is defined by empty features, which is an artefact of two sensors seeing different
     traffic rather than a property of the network. Measured on the test box: 35 Zeek hosts
     against 88 NetFlow hosts with an overlap of 2, so this is the common case there.
-    """
-    total_bytes = float(flow.get("total_bytes", 0) or 0)
-    total_packets = float(flow.get("total_packets", 0) or 0)
-    unique_dsts = float(flow.get("unique_dst_ips", 0) or 0)
-    flow_count = float(flow.get("flow_count", 0) or 0)
 
-    f: dict[str, float] = {
-        "log_bytes": _safe_log1p(total_bytes),
-        "log_packets": _safe_log1p(total_packets),
-        "bytes_per_packet": total_bytes / max(total_packets, 1.0),
-        "log_unique_dsts": _safe_log1p(unique_dsts),
-        "log_flow_count": _safe_log1p(flow_count),
+    `preserve_missing=True` changes what "missing" produces: the absent source becomes None
+    (and `zeek_present` None too), which the missing-aware scorer imputes from the training
+    median against an explicit indicator. A measured zero stays 0 in both modes. The default
+    is False, so every existing caller gets the historical constants unchanged.
+    """
+    # THE FOUR FLOW TOTALS ARE ALWAYS PRESENT for a row that reached the ensemble — they are
+    # the group-by keys' own aggregates. `preserve_missing` still honours a genuinely absent
+    # key, because an aggregate row assembled by a caller that did not select it is not the
+    # same fact as a host that moved zero bytes.
+    total_bytes = _number(flow, "total_bytes", 0.0, preserve_missing)
+    total_packets = _number(flow, "total_packets", 0.0, preserve_missing)
+    unique_dsts = _number(flow, "unique_dst_ips", 0.0, preserve_missing)
+    flow_count = _number(flow, "flow_count", 0.0, preserve_missing)
+
+    f: dict[str, float | None] = {
+        "log_bytes": None if total_bytes is None else _safe_log1p(total_bytes),
+        "log_packets": None if total_packets is None else _safe_log1p(total_packets),
+        "bytes_per_packet": (None if total_bytes is None or total_packets is None
+                             else total_bytes / max(total_packets, 1.0)),
+        "log_unique_dsts": None if unique_dsts is None else _safe_log1p(unique_dsts),
+        "log_flow_count": None if flow_count is None else _safe_log1p(flow_count),
     }
 
     # ── TEMPORAL CYCLIC ENCODING, ON CLICKHOUSE'S DAY NUMBERING (audit: scale mismatch) ────────
@@ -156,48 +196,79 @@ def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = No
         # and the only Python accessor that is. Using it directly is what keeps this readable as
         # "the same number the query uses".
         dow = dt.isoweekday()
+        has_window = True
     except (KeyError, AttributeError):
         hour, dow = 0, 0
-    f["hour_sin"] = math.sin(2 * math.pi * hour / 24)
-    f["hour_cos"] = math.cos(2 * math.pi * hour / 24)
-    f["dow_sin"] = math.sin(2 * math.pi * dow / 7)
-    f["dow_cos"] = math.cos(2 * math.pi * dow / 7)
-    # ClickHouse: `toDayOfWeek(...) < 6` -> Mon..Fri, because 6 is Saturday. The same five days in
-    # Python's numbering would be `< 5`, so this predicate now reads on the SAME number as the
-    # query rather than on a translated one. A test pins the two against each other for all 7 days.
-    f["is_business_hours"] = 1.0 if 8 <= hour <= 18 and dow < 6 else 0.0
+        has_window = False
+    if preserve_missing and not has_window:
+        # Without a window there is no time of day to encode. The historical zeros are a
+        # timestamp of midnight, which is a MEASUREMENT the caller never supplied.
+        f["hour_sin"] = f["hour_cos"] = None
+        f["dow_sin"] = f["dow_cos"] = None
+        f["is_business_hours"] = None
+    else:
+        f["hour_sin"] = math.sin(2 * math.pi * hour / 24)
+        f["hour_cos"] = math.cos(2 * math.pi * hour / 24)
+        f["dow_sin"] = math.sin(2 * math.pi * dow / 7)
+        f["dow_cos"] = math.cos(2 * math.pi * dow / 7)
+        # ClickHouse: `toDayOfWeek(...) < 6` -> Mon..Fri, because 6 is Saturday. The same five
+        # days in Python's numbering would be `< 5`, so this predicate now reads on the SAME
+        # number as the query rather than on a translated one. A test pins the two against each
+        # other for all 7 days.
+        f["is_business_hours"] = 1.0 if 8 <= hour <= 18 and dow < 6 else 0.0
 
     # Diversity metrics (Phase 2)
     if diversity:
-        f["log_unique_dst_ports"] = _safe_log1p(diversity.get("unique_dst_ports", 0) or 0)
-        f["port_entropy"] = float(diversity.get("port_entropy", 0.0) or 0.0)
-        bytes_stddev = float(diversity.get("bytes_stddev", 0.0) or 0.0)
-        f["bytes_stddev_norm"] = bytes_stddev / max(total_bytes, 1.0)
-        unique_connections = float(diversity.get("unique_connections", 0.0) or 0.0)
-        f["connection_density"] = unique_connections / max(flow_count, 1.0)
+        ports = _number(diversity, "unique_dst_ports", 0.0, preserve_missing)
+        entropy = _number(diversity, "port_entropy", 0.0, preserve_missing)
+        bytes_stddev = _number(diversity, "bytes_stddev", 0.0, preserve_missing)
+        unique_connections = _number(diversity, "unique_connections", 0.0, preserve_missing)
+        f["log_unique_dst_ports"] = None if ports is None else _safe_log1p(ports)
+        f["port_entropy"] = entropy
+        f["bytes_stddev_norm"] = (
+            None if bytes_stddev is None or total_bytes is None
+            else bytes_stddev / max(total_bytes, 1.0)
+        )
+        f["connection_density"] = (
+            None if unique_connections is None or flow_count is None
+            else unique_connections / max(flow_count, 1.0)
+        )
     else:
-        f["log_unique_dst_ports"] = 0.0
-        f["port_entropy"] = 0.0
-        f["bytes_stddev_norm"] = 0.0
-        f["connection_density"] = 1.0
+        # No diversity table for this window: four features were not measured. With the flag
+        # off this stays the historical constants (0/0/0/1.0) the models were trained on;
+        # with it on they are None and the scorer imputes the training-time neutral.
+        f["log_unique_dst_ports"] = None if preserve_missing else 0.0
+        f["port_entropy"] = None if preserve_missing else 0.0
+        f["bytes_stddev_norm"] = None if preserve_missing else 0.0
+        f["connection_density"] = None if preserve_missing else 1.0
 
     # Temporal metrics (Phase 2)
     if temporal:
-        f["activity_regularity"] = float(temporal.get("activity_regularity", 1.0) or 1.0)
-        f["burstiness"] = float(temporal.get("burstiness", 1.0) or 1.0)
+        f["activity_regularity"] = _number(temporal, "activity_regularity", 1.0,
+                                           preserve_missing)
+        f["burstiness"] = _number(temporal, "burstiness", 1.0, preserve_missing)
     else:
-        f["activity_regularity"] = 1.0
-        f["burstiness"] = 1.0
+        f["activity_regularity"] = None if preserve_missing else 1.0
+        f["burstiness"] = None if preserve_missing else 1.0
 
     # Zeek-derived features. Imported here rather than at module scope only for the pure
     # function, so this module stays importable without the Zeek query builders.
     from weirvern.zeek_features import extract_zeek_features
 
-    f.update(extract_zeek_features(zeek or {}, zeek_baseline))
+    f.update(extract_zeek_features(zeek or {}, zeek_baseline,
+                                   preserve_missing=preserve_missing))
 
     return f
 
 
-def feature_vector(features: dict[str, float], names: list[str]) -> list[float]:
-    """Ordered vector for sklearn — matches the order used at train time."""
-    return [features.get(n, 0.0) for n in names]
+def feature_vector(features: dict[str, float | None], names: list[str],
+                   *, preserve_missing: bool = False) -> list[float | None]:
+    """Ordered vector for sklearn — matches the order used at train time.
+
+    `preserve_missing` is the flag's second half: with it False the vector is exactly what it
+    always was (a missing key is 0.0), and with it True a missing key stays None so the
+    preprocessor can impute the training-time neutral and record that it did.
+    """
+    if preserve_missing:
+        return [features.get(name) for name in names]
+    return [features.get(name, 0.0) for name in names]

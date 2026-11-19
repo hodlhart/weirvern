@@ -37,10 +37,19 @@ from weirvern.models.cards import production_allowed
 # caller passes the live setting so an environment override is not silently replaced by this.
 DEFAULT_TARGET_FAR = 0.01
 DEFAULT_ELIGIBILITY_MULTIPLE = 3.0
+# The share of the vector that must be measured for a calibration to be evidence about the
+# detector. Mirrors models.missing.DEFAULT_MIN_COVERAGE and Settings.ml_min_feature_coverage;
+# the caller passes the live setting so an override is never silently replaced by this.
+DEFAULT_MIN_COVERAGE = 0.15
 
 NOT_TRAINED = "not trained"
 CONTRIBUTING = "contributing"
 BARRED = "trained, barred by model card"
+# THE FIFTH STATE. A detector can be trained, correctly calibrated and within its false-alarm
+# budget, and still have no opinion about most of the traffic because most of its vector was
+# never measured. That is a different fact from "not contributing" (a measured overrun) and
+# from "not trained", and rendering it as either would send an operator to the wrong remedy.
+INSUFFICIENT_TELEMETRY = "insufficient telemetry — no score"
 
 
 def _number(value: Any) -> float | None:
@@ -61,8 +70,11 @@ def detector_status(row: dict[str, Any]) -> str:
 
     ORDER MATTERS. A detector that never trained and left no artifact says so before anything
     else, because a false-alarm rate for a model that does not exist would be a measurement of
-    nothing. Next the measured budget, then the card veto: a model can be within its budget and
-    still barred, and saying "not contributing" alone would hide which gate stopped it.
+    nothing. Then coverage: a calibration measured over a population that was mostly imputed
+    is not evidence about the detector's false-alarm rate, so it is reported as insufficient
+    telemetry rather than as a budget overrun or a pass. Next the measured budget, then the
+    card veto: a model can be within its budget and still barred, and saying "not contributing"
+    alone would hide which gate stopped it.
 
     A missing calibration row is worded as such. It must NOT print a number, and it must not
     borrow the target as if a measurement had happened -- `0.00 vs 0.01` would read as a pass.
@@ -71,6 +83,10 @@ def detector_status(row: dict[str, Any]) -> str:
     target = _number(row.get("target_far"))
     if not row.get("trained") and not row.get("artifact_version"):
         return NOT_TRAINED
+    cov = _number(row.get("coverage"))
+    floor = _number(row.get("min_coverage"))
+    if cov is not None and floor is not None and cov < floor:
+        return INSUFFICIENT_TELEMETRY
     if not row.get("eligible"):
         prefix = "trained, " if row.get("trained") else ""
         if row.get("calibration_stale"):
@@ -102,6 +118,7 @@ def detector_rows(
     *,
     target_far: float = DEFAULT_TARGET_FAR,
     multiple: float = DEFAULT_ELIGIBILITY_MULTIPLE,
+    min_coverage: float = DEFAULT_MIN_COVERAGE,
 ) -> list[dict[str, Any]]:
     """One row per detector the ENGINE knows, from the union of its log and the calibration.
 
@@ -128,9 +145,18 @@ def detector_rows(
         cal = calibration.get(name) or {}
         observed = _number(cal.get("observed_far"))
         measured_target = _number(cal.get("target_far"))
+        measured_coverage = _number(cal.get("coverage"))
         is_trained = bool(trained)
         is_barred = not bool(allowed.get(name, False))
         is_eligible = bool(eligible.get(name, False))
+        # INSUFFICIENT TELEMETRY IS NOT A PASS AND NOT AN OVERRUN. A calibration whose reference
+        # population sat below the coverage floor measured the imputer, not the detector; it
+        # cannot make the model eligible, and the row says so in words rather than borrowing a
+        # false-alarm rate that has no denominator behind it.
+        insufficient = bool(measured_coverage is not None
+                            and measured_coverage < float(min_coverage))
+        if insufficient:
+            is_eligible = False
         # THE HOLDOUT LOCK (calibration.eligibility's rule, kept in step here): a calibration
         # computed BEFORE the newest artifact is not evidence about the model serving now. Without
         # this the table could call a just-retrained model contributing on its predecessor's score.
@@ -149,7 +175,15 @@ def detector_rows(
             # against, so the column is never a bare number and never an empty promise.
             "target_far": measured_target if measured_target is not None else float(target_far),
             "eligible": is_eligible,
+            # THE COVERAGE EVIDENCE, carried on the row so the status is derived from a number
+            # rather than from a sentence, and so the table can show why it said what it said.
+            "coverage": measured_coverage,
+            "excluded_windows": int(_number(cal.get("excluded_windows")) or 0),
         }
+        # `min_coverage` is a DERIVED key, not a column: the schema audit's producer scan sees
+        # `row["key"] = ...` assignments, so spelling it out is what keeps it from being
+        # reported as a name nothing produces.
+        row["min_coverage"] = float(min_coverage)
         # THE DERIVED KEYS ARE ASSIGNED, NOT ONLY READ. The schema audit's producer scan sees
         # `row["key"] = ...` and not dict literals, and it is right to: this row is built by a
         # caller and is not a table. Spelling the keys out keeps them from being reported as
@@ -158,6 +192,7 @@ def detector_rows(
         row["artifact_version"] = str(artifact.get("version") or "")
         row["barred"] = is_barred
         row["calibration_stale"] = calibration_stale
+        row["insufficient_telemetry"] = insufficient
         row["contributing"] = bool(is_trained and is_eligible and not is_barred)
         row["status"] = detector_status(row)
         rows.append(row)
@@ -188,6 +223,7 @@ def detector_summary(rows: list[dict[str, Any]],
 
 
 __all__ = [
-    "BARRED", "CONTRIBUTING", "DEFAULT_ELIGIBILITY_MULTIPLE", "DEFAULT_TARGET_FAR", "NOT_TRAINED",
+    "BARRED", "CONTRIBUTING", "DEFAULT_ELIGIBILITY_MULTIPLE", "DEFAULT_MIN_COVERAGE",
+    "DEFAULT_TARGET_FAR", "INSUFFICIENT_TELEMETRY", "NOT_TRAINED",
     "detector_rows", "detector_status", "detector_summary",
 ]

@@ -430,7 +430,8 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
     data["detectors"] = detector_rows(
         data["model_training"], data["model_artifacts"], calibration, card_statuses,
         target_far=float(getattr(settings, "ml_target_far", 0.01) or 0.01),
-        multiple=float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0))
+        multiple=float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0),
+        min_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)))
     data["detector_summary"] = detector_summary(data["detectors"], calibration.get(FUSED_MODEL))
     return web_api.models_payload(data)
 
@@ -797,15 +798,32 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
     try:
         res = client.query(
             "SELECT model_name, argMax(observed_far, computed_at), "
-            "argMax(target_far, computed_at) "
+            "argMax(target_far, computed_at), argMax(coverage, computed_at), "
+            "argMax(excluded_windows, computed_at) "
             "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
-        logger.warning("model calibration rows unavailable: %s", exc)
-        return {}
+        # THE COVERAGE COLUMNS ARRIVED IN 056. A deployment still on the older schema must not
+        # lose the whole Detectors table to a field that only the missing-data path writes, so
+        # the read falls back to the three columns it has always been able to answer.
+        logger.warning("calibration coverage columns unavailable (%s); detector coverage will "
+                       "read as not measured", exc)
+        try:
+            res = client.query(
+                "SELECT model_name, argMax(observed_far, computed_at), "
+                "argMax(target_far, computed_at) "
+                "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning("model calibration rows unavailable: %s", exc2)
+            return {}
     out: dict[str, dict[str, Any]] = {}
     for row in (getattr(res, "result_rows", None) or []):
-        name, observed, target = (list(row) + [None, None, None])[:3]
-        out[str(name)] = {"observed_far": observed, "target_far": target}
+        values = list(row) + [None] * 5
+        out[str(values[0])] = {
+            "observed_far": values[1],
+            "target_far": values[2],
+            "coverage": values[3],
+            "excluded_windows": values[4],
+        }
     return out
 
 

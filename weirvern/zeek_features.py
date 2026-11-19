@@ -209,6 +209,60 @@ ZEEK_FEATURES = [
 # for this host-window, these are meaningless and must be imputed rather than set to 0.
 ZEEK_PRESENCE_FEATURE = "zeek_present"
 
+# ── THE FAMILIES WHOSE ABSENCE IS "NOT MEASURED", NOT "ZERO" ───────────────────────────────
+#
+# Every Zeek aggregate in `zeek_window_summary_sql` is LEFT JOINed and then `coalesce(..., 0)`,
+# so a host-window with no row in a log reads as a row of zeroes. For most logs that is the
+# correct reading: no SSH rows means the host spoke no SSH, and 0 is the measurement.
+#
+# DNS and the graph block are different. Measured on the live deployment: DNS is visible on
+# ~14 hosts against ~3,730 flow hosts, so for nearly every host the resolver was never
+# observed at all — and 13 features then read "no queries, no entropy, no errors, no new
+# domains", which is the most reassuring possible value on all 13 and is not evidence about
+# the host. The graph block is built from conn edges and has the same property when the host
+# has no observed edges.
+#
+# `extract_zeek_features(..., preserve_missing=True)` turns those families into None, and the
+# scoring path imputes the training-time neutral against an explicit missing indicator instead
+# of reading the absence as normality. With the flag off these names are unused and every
+# value stays exactly what it was.
+ZEEK_DNS_FEATURES = [
+    "zeek_dns_count",
+    "zeek_dns_mean_query_entropy",
+    "zeek_dns_mean_query_len",
+    "zeek_dns_rcode_error_ratio",
+    "zeek_dns_failed_ratio",
+    "zeek_dns_unique_ratio",
+    "zeek_dns_entropy_max",
+    "zeek_dns_query_len_std",
+    "zeek_dns_nxdomain_ratio",
+    "zeek_dns_txt_ratio",
+    "zeek_dns_null_ratio",
+    "zeek_dns_answer_count_mean",
+    "zeek_dns_new_domain_ratio",
+]
+
+ZEEK_GRAPH_FEATURES = [
+    "zeek_graph_fan_in",
+    "zeek_graph_dst_concentration",
+    "zeek_graph_peer_rarity",
+    "zeek_graph_reciprocity",
+    "zeek_graph_new_peer_ratio",
+]
+
+# The column that says whether the family was observed. A dns_agg row exists only when the
+# host made at least one query (count() >= 1), so `zeek_dns_count == 0` after the coalesce can
+# only mean "no dns_agg row" — there is no measured-zero case to confuse it with.
+ZEEK_FAMILY_COUNT_COLUMNS = {
+    "dns": "zeek_dns_count",
+    "graph": "zeek_graph_fan_in",
+}
+
+ZEEK_FAMILY_FEATURES = {
+    "dns": ZEEK_DNS_FEATURES,
+    "graph": ZEEK_GRAPH_FEATURES,
+}
+
 # Subset for DBSCAN, which uses a smaller set by design (clustering degrades with
 # dimensionality on few samples). These are the ones that separate clusters most: how much
 # the host talked, how varied it was, and how wrong the traffic looked.
@@ -1018,21 +1072,40 @@ def _as_list(value: Any) -> list[str] | None:
 
 
 def extract_zeek_features(row: dict[str, Any],
-                          baseline: dict[str, Any] | None = None) -> dict[str, float]:
+                          baseline: dict[str, Any] | None = None,
+                          *, preserve_missing: bool = False) -> dict[str, float | None]:
     """Turn one summary row into the model's Zeek feature dict.
 
     `row` is a row from `zeek_window_summary_sql`. A row of all-NULLs (or None) means Zeek
     had no record of this host in this window -- which sets `zeek_present` to 0 and lets
     every other feature fall to a neutral value that the CALLER can recognise and impute.
 
+    `preserve_missing` (default False, the legacy path) keeps the difference between "not
+    measured" and "measured zero":
+
+      * no row at all -> every Zeek feature is None, including `zeek_present`, because "Zeek
+        did not observe this host" is not the same claim as "this host was quiet";
+      * a row that exists but has no DNS aggregate (measured: DNS covers ~14 of ~3,730
+        hosts) -> the thirteen DNS features are None, not thirteen reassuring zeroes;
+      * the same rule for the five graph features, which need observed conn edges;
+      * every other family keeps its zero, because for those logs no rows really does mean
+        no events (a host that spoke no SSH had no SSH conversations, not an unknown number).
+
     The ratios guard their own denominators: a host with zero connections has no meaningful
     rejection ratio, and dividing by zero into `nan` would poison the whole feature vector,
     since sklearn treats nan as an error rather than as missing.
     """
-    out: dict[str, float] = {name: 0.0 for name in ZEEK_FEATURES}
-    out[ZEEK_PRESENCE_FEATURE] = 0.0
     if not row:
-        return out
+        # No row is not a row of zeroes. With the flag off this is the historical all-zero
+        # dict (the caller's model was trained on it); with the flag on it is honestly absent.
+        blank: dict[str, float | None] = {name: None for name in ZEEK_FEATURES}
+        if not preserve_missing:
+            blank = {name: 0.0 for name in ZEEK_FEATURES}
+        blank[ZEEK_PRESENCE_FEATURE] = None if preserve_missing else 0.0
+        return blank
+
+    out: dict[str, float | None] = {name: 0.0 for name in ZEEK_FEATURES}
+    out[ZEEK_PRESENCE_FEATURE] = 0.0
 
     # The summary columns are named after the FEATURES now, so presence is decided from the
     # feature names -- NOT from the pre-rename ones (`conn_count`, `dns_count`), which no
@@ -1070,21 +1143,43 @@ def extract_zeek_features(row: dict[str, Any],
     if explicit is not None and _f(explicit) > 0:
         out[ZEEK_PRESENCE_FEATURE] = 1.0
         _fill(out, row, baseline)
-        return out
+        return _absent_families(out) if preserve_missing else out
 
     if (conn_n == 0 and dns_n == 0 and ssl_n == 0 and notice_n == 0 and weird_n == 0
             and fan_in_n == 0):
         # Zeek knows nothing about this host-window. Reported as absence rather than as a
         # row of zeroes, because "we did not look" and "we looked and saw nothing" are
         # different facts and only one of them is evidence of normality.
+        if preserve_missing:
+            return {name: None for name in ZEEK_FEATURES}
         return out
 
     out[ZEEK_PRESENCE_FEATURE] = 1.0
     _fill(out, row, baseline)
+    return _absent_families(out) if preserve_missing else out
+
+
+def _absent_families(out: dict[str, float | None]) -> dict[str, float | None]:
+    """Turn a coalesced-zero family back into None when its count column proves it absent.
+
+    The summary query LEFT JOINs each log and coalesces the misses to 0, so `zeek_dns_count`
+    is 0 both for "this host made no queries" and "the resolver was never observed". A
+    dns_agg row only exists when count() >= 1, so after the coalesce 0 means NO ROW: there is
+    no measured-zero case to lose here. The same holds for the graph block, which needs
+    observed conn edges to exist at all.
+
+    A row that does not carry the count column at all (a hand-built test row, an older
+    caller) is left alone: absent evidence about absence is not a licence to null the value.
+    """
+    for family, column in ZEEK_FAMILY_COUNT_COLUMNS.items():
+        count = out.get(column)
+        if count is not None and _f(count) <= 0:
+            for name in ZEEK_FAMILY_FEATURES[family]:
+                out[name] = None
     return out
 
 
-def _fill(out: dict[str, float], row: dict[str, Any],
+def _fill(out: dict[str, float | None], row: dict[str, Any],
           baseline: dict[str, Any] | None = None) -> None:
     """Copy the feature-named columns out of the row, then compute the two features that
     cannot come from the row alone.
@@ -1141,7 +1236,7 @@ def _fill(out: dict[str, float], row: dict[str, Any],
     # rarity blind for any baseline above one (GitHub #58). expm1 inverts the query's transform
     # exactly, so this ratio is services/services again.
     svc_logged = out["zeek_service_count"]
-    svc = math.expm1(max(svc_logged, 0.0))
+    svc = math.expm1(max(float(svc_logged or 0.0), 0.0))
     # ONLY COMPARE WHEN THE HISTORY IS PRESENT (GitHub #62). A baseline dict can exist
     # without `baseline_service_count` when the auxiliary service query failed; treating
     # that as a baseline of ONE made every host with more than one service look novel

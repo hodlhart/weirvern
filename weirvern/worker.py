@@ -17,6 +17,7 @@ import signal
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1967,10 +1968,33 @@ def _heartbeat_thread(settings, siphon=None) -> None:
         _stop.wait(interval)
 
 
+def model_config(settings) -> ModelConfig:
+    """The model configuration the worker runs with: code defaults plus the operator's knobs.
+
+    ONE AUTHORITY FOR THE MISSING-DATA MODE. The detectors and the ensemble read `cfg`; the
+    operator sets the environment/ConfigMap keys that Settings already models. Folding them in
+    here (rather than reading Settings from inside a detector) keeps every constructor -- the
+    live worker, the candidate retrain, a test -- on the same contract. ModelConfig is frozen,
+    so this is a replacement, not a mutation.
+    """
+    return replace(
+        ModelConfig(),
+        missing_features=bool(getattr(settings, "ml_missing_features", False)),
+        min_feature_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)),
+    )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     settings = get_settings()
-    cfg = ModelConfig()
+    cfg = model_config(settings)
+    if cfg.missing_features:
+        logger.info(
+            "Missing-data handling is ON: absent sources stay NULL, IF/GB impute the training "
+            "median with __missing indicators, DBSCAN masks unobserved dimensions, and windows "
+            "below %.2f coverage are excluded from calibration.",
+            cfg.min_feature_coverage,
+        )
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
 

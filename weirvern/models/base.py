@@ -162,6 +162,27 @@ class BaseDetector(ABC):
                     self.name, len(have), len(expected),
                 )
                 return False
+            # ── THE MISSING-DATA MODE IS PART OF THE ARTIFACT'S IDENTITY ──────────────────
+            #
+            # With the flag on, the model's input is 77 values PLUS 77 missing indicators and
+            # the neutral comes from the training matrix; with it off it is the 77 values the
+            # old artifacts were fitted on. Scoring one against the other would either raise
+            # on the width or — worse — silently reinterpret the columns. An artifact from the
+            # other mode is refused here, so the detector falls into its normal retrain path
+            # instead of scoring every window as 0.0. Only vector-based detectors declare
+            # columns; the Adaptive Baseline reads per-host statistics and is unaffected.
+            if expected:
+                trained_mode = bool((getattr(meta, "params", {}) or {}).get(
+                    "missing_features", False))
+                wanted_mode = bool(getattr(getattr(self, "cfg", None), "missing_features", False))
+                if trained_mode != wanted_mode:
+                    logger.warning(
+                        "Refusing %s artifact: trained with missing-data handling %s, the "
+                        "running configuration has it %s -- retraining instead of loading",
+                        self.name, "ON" if trained_mode else "OFF",
+                        "ON" if wanted_mode else "OFF",
+                    )
+                    return False
             # AN ARTIFACT CANNOT REDIRECT ITS OWNER. `det` was built in the candidate
             # directory, and its pickled `model_dir` says so; adopting the whole dict moved
             # the LIVE detector's home to a directory `apply_candidate` deletes moments
@@ -186,7 +207,8 @@ class BaseDetector(ABC):
     def train(self, *args: Any, **kwargs: Any) -> bool: ...
 
     @abstractmethod
-    def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float: ...
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float: ...
 
     def is_ready(self) -> bool:
         return False

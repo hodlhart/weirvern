@@ -5854,9 +5854,14 @@ function renderDetectors(detectors, summary, cardsAvailable) {
     ]));
     return;
   }
+  // INSUFFICIENT TELEMETRY IS A QUIET STATE, NOT A WARNING. The detector is not broken and not
+  // over its budget -- most of its vector was simply never measured. Rendering it in the same
+  // colour as "not contributing (FAR 1.00 vs 0.01)" would send an operator to tune a model that
+  // has nothing to tune; muted says "look at the sensors".
   const statusClass = (status) => (
     status === "contributing" ? "sev-low"
-      : status === "not trained" ? "muted" : "sev-medium");
+      : status === "not trained" ? "muted"
+        : String(status || "").startsWith("insufficient telemetry") ? "muted" : "sev-medium");
   for (const d of detectors) {
     const target = (d.target_far === null || d.target_far === undefined)
       ? null : Number(d.target_far);

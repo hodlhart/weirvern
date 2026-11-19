@@ -11,9 +11,10 @@ import math
 from typing import Any
 
 from weirvern.config import FUSED_MODEL, ModelConfig, Settings
-from weirvern.features import extract_features
+from weirvern.features import TELEMETRY_FEATURES, extract_features
 from weirvern.models.base import BaseDetector
 from weirvern.models.detectors import AdaptiveBaselineDetector
+from weirvern.models.missing import DEFAULT_MIN_COVERAGE, coverage
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +376,11 @@ def detect_flows(
     # Index diversity/temporal data if the caller supplied it (worker joins);
     # flows here are already enriched by the worker.
     baseline_det = next((d for d in detectors if isinstance(d, AdaptiveBaselineDetector)), None)
+    # ONE reading of the missing-data settings for the whole pass (default OFF).
+    missing_mode = bool(getattr(cfg, "missing_features", False))
+    coverage_floor = getattr(cfg, "min_feature_coverage", DEFAULT_MIN_COVERAGE)
+    coverage_floor = (DEFAULT_MIN_COVERAGE if coverage_floor is None
+                      else float(coverage_floor))
 
     # Map detector display names to config weight keys (unknown detector
     # names fall back to weight 1.0 — a sweep must never crash on a name).
@@ -407,7 +413,21 @@ def detect_flows(
             flow, flow.get("_diversity") or None, flow.get("_temporal") or None,
             flow.get("_zeek") or None,
             (baseline_det.baselines.get(src) if baseline_det else None),
+            preserve_missing=missing_mode,
         )
+        # HOW MUCH OF THE VECTOR WAS MEASURED, once per window over the union of everything
+        # the four detectors consume (`None` with the flag off: not measured is not zero), and
+        # once per detector over its OWN vector, because DBSCAN's 19 columns and the wide
+        # pair's 77 are covered differently. Both feed calibration; the per-detector number is
+        # what a detector's row reports.
+        window_coverage = coverage(features, TELEMETRY_FEATURES) if missing_mode else None
+        model_coverage: dict[str, float] | None = None
+        if missing_mode:
+            model_coverage = {}
+            for det in detectors:
+                declared = getattr(det, "expected_feature_columns", None)
+                names = declared() if callable(declared) else []
+                model_coverage[det.name] = coverage(features, names or TELEMETRY_FEATURES)
         scores: dict[str, float] = {}
         for det in detectors:
             scores[det.name] = det.predict(flow, features)
@@ -420,6 +440,10 @@ def detect_flows(
                 "window_start": flow["window_start"],
                 "src_addr": src,
                 "scores": dict(scores),
+                "coverage": window_coverage,
+                "model_coverage": model_coverage,
+                "excluded": bool(window_coverage is not None
+                                 and window_coverage < coverage_floor),
             }
 
         has_baseline = bool(baseline_det and src in baseline_det.baselines)

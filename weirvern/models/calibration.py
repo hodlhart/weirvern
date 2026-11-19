@@ -212,26 +212,101 @@ def record_population(client: Client, population: Iterable[dict], *,
         src = str(sample.get("src_addr") or "")
         if start is None or not src:
             continue
+        # None means coverage was not measured (the flag was off for this sweep); 0 would
+        # claim a fully imputed window. The column is Nullable for exactly this distinction.
+        # Prefer this MODEL's own coverage (its vector may be much narrower than the window's
+        # union); fall back to the window figure when the caller did not supply one.
+        cov = sample.get("coverage")
+        per_model = sample.get("model_coverage")
+        if not isinstance(per_model, dict):
+            per_model = {}
+        excluded = 1 if sample.get("excluded") else 0
         for model_name, score in (sample.get("scores") or {}).items():
+            model_cov = per_model.get(model_name)
+            try:
+                chosen = model_cov if model_cov is not None else cov
+                coverage_value = None if chosen is None else float(chosen)
+            except (TypeError, ValueError):
+                coverage_value = None
             try:
                 value = float(score)
             except (TypeError, ValueError):
                 continue
             if not math.isfinite(value):
                 continue
-            rows.append([start, src, str(model_name), value, str(model_version), now])
+            rows.append([start, src, str(model_name), value, str(model_version), now,
+                         coverage_value, excluded])
     if not rows:
         return 0
     client.insert(
         "weirvern.ml_window_scores", rows,
         column_names=["window_start", "src_addr", "model_name", "score",
-                      "model_version", "computed_at"],
+                      "model_version", "computed_at", "coverage", "excluded"],
     )
     return len(rows)
 
 
+def usable_scores(rows: Iterable[tuple[float | None, float | None]],
+                  min_coverage: float | None) -> tuple[list[float], int]:
+    """Split a population into (scores to calibrate on, excluded-window count).
+
+    A WINDOW WHOSE TELEMETRY WAS INCOMPLETE IS NOT EVIDENCE about the detector's false-alarm
+    rate. Its score was computed from a vector that was mostly imputed, so including it in
+    the reference would fit the threshold to a population the detector cannot actually see —
+    and including it in the validation half would measure the imputer, not the model. Both
+    halves come from the same list here, so one split covers the fit and the FAR measurement.
+
+    `coverage is None` means coverage was not measured (the flag was off when the row was
+    written) and is NOT an exclusion: absent evidence about coverage is not evidence of
+    insufficient coverage. A floor of None or 0 excludes nothing.
+    """
+    floor = None
+    if min_coverage is not None:
+        try:
+            value = float(min_coverage)
+        except (TypeError, ValueError):
+            value = 0.0
+        floor = value if math.isfinite(value) and value > 0 else None
+
+    kept: list[float] = []
+    excluded = 0
+    for score, cov in rows:
+        if cov is not None and floor is not None:
+            try:
+                if float(cov) < floor:
+                    excluded += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
+        try:
+            value = float(score) if score is not None else float("nan")
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            kept.append(value)
+    return kept, excluded
+
+
+def _mean_coverage(rows: Iterable[tuple[float | None, float | None]]) -> float | None:
+    """Mean measured coverage over the rows that carry one, or None when none does."""
+    values = []
+    for _, cov in rows:
+        if cov is None:
+            continue
+        try:
+            value = float(cov)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            values.append(value)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def _population_scores(client: Client, days: int,
-                       model_version: str | None = None) -> dict[str, list[float]]:
+                       model_version: str | None = None
+                       ) -> dict[str, list[tuple[float | None, float | None]]]:
     """All scored host-window scores per model, deduped by the Replacing table.
 
     SCOPED TO `model_version` WHEN GIVEN, and that scoping is a correctness requirement rather than
@@ -242,10 +317,13 @@ def _population_scores(client: Client, days: int,
     moved the 1% threshold from 0.8165 to 0.7327 while the highest score the current engine had
     produced was 0.853, which is the difference between an engine that can alert and one that cannot.
 
-    A deployment that has not applied 038 yet has no population; return an empty mapping so
-    `run` takes its named fallback instead of failing the whole shadow pass.
+    Coverage rides alongside the score (NULL when it was not measured, which is every row written
+    before the flag existed). `usable_scores` decides what to do with it.
+
+    A deployment that has not applied the coverage migration has no such column; the read falls
+    back to the two-column form and says so, rather than failing the whole shadow pass.
     """
-    sql = ("SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
+    sql = ("SELECT model_name, score, coverage FROM weirvern.ml_window_scores FINAL "
            "WHERE computed_at >= now() - INTERVAL %(d)s DAY")
     params: dict[str, object] = {"d": int(days)}
     if model_version:
@@ -253,17 +331,24 @@ def _population_scores(client: Client, days: int,
         params["v"] = str(model_version)
     try:
         res = client.query(sql, parameters=params)
+        rows = res.result_rows
     except Exception as exc:  # noqa: BLE001
-        logger.warning("calibration population unavailable (%s); using named fallback", exc)
-        return {}
-    out: dict[str, list[float]] = {}
-    for model_name, score in res.result_rows:
+        logger.warning("calibration population with coverage unavailable (%s); reading scores "
+                       "only -- coverage is not measured for this reference", exc)
+        legacy = ("SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
+                  "WHERE computed_at >= now() - INTERVAL %(d)s DAY")
+        if model_version:
+            legacy += " AND model_version = %(v)s"
         try:
-            value = float(score)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(value):
-            out.setdefault(str(model_name), []).append(value)
+            rows = client.query(legacy, parameters=params).result_rows
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning("calibration population unavailable (%s); using named fallback", exc2)
+            return {}
+    out: dict[str, list[tuple[float | None, float | None]]] = {}
+    for row in rows:
+        model_name, score = row[0], row[1]
+        cov = row[2] if len(row) > 2 else None
+        out.setdefault(str(model_name), []).append((score, cov))
     return out
 
 
@@ -285,30 +370,26 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
     The primary reference is `ml_window_scores`: every host-window the ensemble scored, before
     the alert threshold. The anomaly tail is a labelled fallback for a deployment that has not
     produced population rows yet; `reference_source` states which one was used.
+
+    WITH MISSING-DATA HANDLING ON, windows below the coverage floor are removed before the
+    conformal fit, so they contribute to neither the threshold nor the measured FAR. The count
+    that was removed rides in `reference_source` (an operator reads it there) and in the
+    `excluded_windows` column (the Detectors table reads it there).
     """
     target = float(getattr(settings, "ml_target_far", 0.01) or 0.01)
     window_days = int(days if days is not None else
                       getattr(settings, "ml_calibration_days", 7) or 7)
+    min_coverage = getattr(settings, "ml_min_feature_coverage", None)
     population = _population_scores(client, window_days, __version__)
     rows: list[dict] = []
-    for model_name, column in MODEL_COLUMNS:
-        scores = population.get(model_name) or []
-        source = (f"all scored host-windows (ml_window_scores), model {__version__}, "
-                  f"last {window_days} days")
-        subject = "all scored host-windows"
-        if len(scores) < 20:
-            scores = _score_rows(client, column, days=30)
-            source = "fallback: stored anomaly scores (tail only); population rows unavailable"
-            subject = "fallback stored detections"
-        cal = fit(scores, target)
-        if cal is None:
-            continue
-        if cal.saturated:
-            # Say so where an operator reads it, rather than storing a threshold that silently
-            # cannot be crossed and leaving the cause to be rediscovered.
-            source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target FAR "
-                       f"is below what {cal.sample_count} samples can express")
-        rows.append({
+
+    def _row(model_name: str, cal: Calibration, source: str, subject: str,
+             reference: list[tuple[float | None, float | None]], excluded: int) -> dict:
+        # `coverage` is the mean over the WHOLE reference population, before the exclusion --
+        # that is the evidence about whether this detector has enough telemetry to be
+        # calibrated at all. A mean over the kept rows would sit above the floor by
+        # construction and could never say "insufficient".
+        return {
             "model_name": model_name,
             "scope": "global",
             "subject": subject,
@@ -323,37 +404,56 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
             "observed_far": cal.observed_far,
             "reference_source": source,
             "model_version": __version__,
-        })
-    fused = population.get(FUSED_MODEL) or []
-    if len(fused) >= 20:
-        cal = fit(fused, target)
+            "coverage": _mean_coverage(reference),
+            "excluded_windows": int(excluded),
+        }
+
+    for model_name, column in MODEL_COLUMNS:
+        reference: list[tuple[float | None, float | None]] = population.get(model_name) or []
+        scores, excluded = usable_scores(reference, min_coverage)
+        source = (f"all scored host-windows (ml_window_scores), model {__version__}, "
+                  f"last {window_days} days")
+        subject = "all scored host-windows"
+        if len(scores) < 20:
+            reference = [(score, None) for score in _score_rows(client, column, days=30)]
+            scores, excluded = usable_scores(reference, min_coverage)
+            source = "fallback: stored anomaly scores (tail only); population rows unavailable"
+            subject = "fallback stored detections"
+        if excluded:
+            source += (f"; excluded {excluded} window(s) below the "
+                       f"{float(min_coverage if min_coverage is not None else 0.0):.2f} "
+                       f"coverage floor")
+        cal = fit(scores, target)
+        if cal is None:
+            continue
+        if cal.saturated:
+            # Say so where an operator reads it, rather than storing a threshold that silently
+            # cannot be crossed and leaving the cause to be rediscovered.
+            source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target FAR "
+                       f"is below what {cal.sample_count} samples can express")
+        rows.append(_row(model_name, cal, source, subject, reference, excluded))
+
+    reference = population.get(FUSED_MODEL) or []
+    scores, excluded = usable_scores(reference, min_coverage)
+    if len(scores) >= 20:
+        cal = fit(scores, target)
         if cal is not None:
             source = (f"the fused score itself (ml_window_scores), model {__version__}, "
                       f"last {window_days} days")
+            if excluded:
+                source += (f"; excluded {excluded} window(s) below the "
+                           f"{float(min_coverage if min_coverage is not None else 0.0):.2f} "
+                           f"coverage floor")
             if cal.saturated:
                 source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target "
                            f"FAR is below what {cal.sample_count} samples can express")
-            rows.append({
-                "model_name": FUSED_MODEL,
-                "scope": "global",
-                "subject": "the fused score the decision compares",
-                "statistic": cal.statistic,
-                "target_far": cal.target_far,
-                "threshold": cal.threshold,
-                "p50": cal.p50,
-                "p95": cal.p95,
-                "p99": cal.p99,
-                "sample_count": cal.sample_count,
-                "validation_count": cal.validation_count,
-                "observed_far": cal.observed_far,
-                "reference_source": source,
-                "model_version": __version__,
-            })
+            rows.append(_row(FUSED_MODEL, cal, source,
+                             "the fused score the decision compares", reference, excluded))
     if not rows:
         return []
     columns = ["model_name", "scope", "subject", "statistic", "target_far", "threshold",
                "p50", "p95", "p99", "sample_count", "validation_count", "observed_far",
-               "reference_source", "model_version"]
+               "reference_source", "model_version", "coverage", "excluded_windows"]
     client.insert(
         "weirvern.ml_calibration",
         [[r[c] for c in columns] for r in rows],
@@ -369,7 +469,8 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
 
 
 __all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold",
-           "eligibility", "eligibility_from_rows", "fit", "record_population", "run"]
+           "eligibility", "eligibility_from_rows", "fit", "record_population", "run",
+           "usable_scores"]
 
 
 def calibrated_bar(client: Client, settings: Settings) -> float | None:
