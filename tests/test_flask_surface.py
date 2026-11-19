@@ -88,6 +88,26 @@ def test_the_note_survives_to_the_flask_surface():
     assert payload["note"] == "the user store could not be read"
 
 
+def test_an_anonymous_caller_is_not_told_that_accounts_exist():
+    """THE LEAK THIS PINS, seen on the live sign-in page: "accounts already exist".
+
+    The note field carried two different facts. With accounts OFF it explains why every read is
+    open, which an operator must see. With accounts ON it carried a bootstrap outcome, and the
+    console painted it on the sign-in gate, telling anyone who loaded that page that this
+    deployment has accounts before they presented a credential.
+
+    The anonymous caller is still told the gate is armed (`accounts: True`), which the page needs
+    in order to draw a sign-in form at all. What it is not told is anything about the accounts
+    themselves.
+    """
+    ctx = _ctx(_Store(True), accounts_note="accounts already exist")
+
+    payload = _client(ctx).get("/api/session").get_json()
+
+    assert payload["accounts"] is True, "the page still needs to know the gate is armed"
+    assert payload["note"] == "", "an anonymous caller is told nothing about the accounts"
+
+
 # ── the read gate must be the same decision ───────────────────────────────────────────────────
 
 def test_an_unauthenticated_read_is_refused_with_the_console_body():

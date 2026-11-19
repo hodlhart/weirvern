@@ -125,8 +125,9 @@ def session_payload(ctx: Any, headers: Any) -> dict:
     situation from a first run with nothing configured yet.
     """
     ident = identity(ctx, headers)
+    accounts = accounts_on(ctx)
     payload: dict = {
-        "accounts": accounts_on(ctx),
+        "accounts": accounts,
         "note": getattr(ctx, "accounts_note", "") or "",
     }
     if ident is not None:
@@ -144,6 +145,15 @@ def session_payload(ctx: Any, headers: Any) -> dict:
         else:
             payload.update({"authenticated": False, "username": "", "role": "",
                             "must_change": False, "via": ""})
+    # AN ANONYMOUS CALLER IS TOLD THE POSTURE ONLY WHEN THE POSTURE IS "READS ARE OPEN".
+    # Two different facts travelled in this one field. With accounts OFF, the note explains why
+    # every read is served without a session, and the console paints it as a banner: that is a
+    # fault an operator has to see, and withholding it would hide the thing that matters.
+    # With accounts ON, the same field carries a bootstrap outcome -- "accounts already exist" --
+    # which told anyone who reached the sign-in page that this deployment has accounts, before
+    # they presented a credential. Nothing on that page needs it.
+    if accounts and not payload.get("authenticated"):
+        payload["note"] = ""
     return payload
 
 
