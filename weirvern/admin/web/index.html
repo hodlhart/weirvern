@@ -22,8 +22,14 @@
 -->
 <div id="auth-gate" class="gate hidden">
   <div class="gate-card">
-    <img class="mark" src="/logo.png" alt="" width="36" height="36">
-    <h2>Weirvern</h2>
+    <!-- THE BRAND LOCKUP, at sign-in size. This was a 36px mark above an h2 reading
+         "Weirvern", which named the product twice at two sizes and gave the one screen
+         with room for it the smallest artwork in the console. The image carries its own
+         wordmark, so it sits inside the heading rather than beside a duplicate label.
+         Deliberately NOT class="mark": the harness requires every img.mark to be the
+         28px emblem (one mark everywhere), and this is the lockup, not the emblem. -->
+    <h2 class="gate-brand"><img src="/logo-full.png" alt="Weirvern"
+                                width="148" height="145"></h2>
     <p class="muted" id="gate-note">Sign in to view this dashboard.</p>
     <form id="gate-form" autocomplete="off">
       <label class="gate-field">username

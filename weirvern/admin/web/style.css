@@ -331,6 +331,17 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
   display: flex; flex-direction: column; gap: 10px;
 }
 .gate-card h2 { margin: 0; font-size: var(--fs-4); }
+/* The lockup on the sign-in gate. The art carries its own dark-navy background and its own
+ * WEIRVERN wordmark, so it is a rounded tile with nothing set beside it. The box-shadow ring
+ * keeps that baked-in background from reading as a mis-matched rectangle against the card,
+ * the same reasoning as the header's .mark. */
+.gate-brand { margin: 0 0 2px; }
+.gate-brand img {
+  /* 8px is the canon's largest legal radius. 18px was the shape the lockup wanted; the
+     ratchet rejected it as new debt, which is the canon doing its job. */
+  display: block; width: 148px; height: 145px; border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--border), 0 10px 28px rgba(0, 0, 0, .35);
+}
 .gate-card form { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
 .gate-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-2); color: var(--muted); }
 .gate-field input {
