@@ -82,19 +82,30 @@ fi
 # recreated the pod and it sat in ImagePullBackOff for ten minutes with capture down.
 echo
 missing=0
-while read -r image; do
-  [ -n "${image:-}" ] || continue
-  case "$image" in
-    *"netsampler/goflow2"*|busybox*) continue ;;   # upstream, digest-pinned, always pullable
-  esac
-  if ! ctr -n k8s.io images ls -q 2>/dev/null | grep -qx "$image"; then
-    printf 'MISSING %s -- named by a workload, absent from containerd; this pod cannot restart\n' \
-      "$image"
-    missing=1
-  fi
-done <<EOF
-$(kubectl -n "${NS:-weirvern}" get deploy,ds -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | sort -u)
-EOF
+# Only meaningful on the node itself: no ctr or no cluster means there is nothing to compare.
+# Both the tool and a reachable cluster are required: a laptop with `ctr` installed has no node
+# images to compare against and would report every workload as at risk.
+if command -v ctr >/dev/null 2>&1 && kubectl version --request-timeout=3s >/dev/null 2>&1; then
+  images=$(kubectl -n "${NS:-weirvern}" get deploy,ds \
+    -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' \
+    2>/dev/null || true)
+  # containerd reports fully-qualified names (docker.io/library/weirvern-zeek:0.5.0); a manifest
+  # says weirvern-zeek:0.5.0. Compare the last path component, or every local image looks missing.
+  present=$(ctr -n k8s.io images ls -q 2>/dev/null | sed 's#^.*/##')
+  for image in $images; do
+    case "$image" in
+      *netsampler/goflow2*|busybox*|*"@sha256"*) continue ;;   # upstream, digest-pinned
+      *:*) ;;                                                   # a tag: an image reference
+      *) continue ;;                                            # anything else is not one
+    esac
+    short=${image##*/}
+    if ! printf '%s\n' "$present" | grep -qx "$short"; then
+      printf 'MISSING %s -- named by a workload, absent from containerd; this pod cannot restart\n' \
+        "$image"
+      missing=1
+    fi
+  done
+fi
 if [ "$missing" -ne 0 ]; then
   echo
   echo "AT RISK: a workload names an image that is not on this node. It runs now; it will not"
@@ -102,5 +113,4 @@ if [ "$missing" -ne 0 ]; then
   exit 1
 fi
 
-echo
 echo "every workload runs $PIN and every image it names is present"
