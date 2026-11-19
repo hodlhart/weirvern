@@ -40,6 +40,50 @@
     return sel ? String(sel.value || "24") : "24";
   }
 
+  function sumBy(members, field) {
+    return members.reduce((n, r) => n + (Number(r[field]) || 0), 0);
+  }
+
+  function renderBuckets(body) {
+    const groups = new Map();
+    for (const r of ROWS) {
+      const b = bucketOf(r);
+      if (!groups.has(b)) groups.set(b, []);
+      groups.get(b).push(r);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => sumBy(b[1], "bytes") - sumBy(a[1], "bytes"));
+    for (const [name, members] of ordered) {
+      const keys = members.map(keyOf);
+      const all = keys.every((k) => SELECTED.has(k));
+      const box = el("input", {
+        class: "nz-box",
+        attrs: { type: "checkbox",
+                 "aria-label": `select all ${members.length} pattern(s) in ${name}` },
+        on: { change: (ev) => {
+          for (const r of members) {
+            const k = keyOf(r);
+            if (ev.target.checked) SELECTED.set(k, r); else SELECTED.delete(k);
+          }
+          renderFeed(ROWS);
+          updateApply();
+        } },
+      });
+      if (all) box.checked = true;
+      const hosts = new Set(members.map((r) => r.src_addr)).size;
+      body.appendChild(el("tr", { class: "nz-bucket" }, [
+        el("td", {}, [box]),
+        el("td", { class: "mono", text: "" }),
+        el("td", { text: GROUP_LABEL[GROUP] || GROUP }),
+        el("td", { class: "mono", text: name }),
+        el("td", { text: `${members.length} pattern(s) · ${hosts} host(s)` }),
+        el("td", { class: "muted", text: "sum of its members" }),
+        el("td", { class: "muted", text: "" }),
+        el("td", { class: "mono", text: sumBy(members, "flows").toLocaleString() }),
+        el("td", { class: "mono", text: fmtBytes(sumBy(members, "bytes")) }),
+      ]));
+    }
+  }
+
   function updateApply() {
     const btn = document.getElementById("nz-apply");
     if (!btn) return;
@@ -47,6 +91,29 @@
     btn.textContent = n ? `Normalize selected (${n})` : "Normalize selected";
     btn.disabled = n === 0;
     btn.setAttribute("aria-disabled", n === 0 ? "true" : "false");
+  }
+
+  // BUCKETS: a way of reading the feed, never a filter. Every row stays in ROWS; grouping only
+  // decides how they are stacked, and a bucket's box selects all of its members so "normalize all
+  // ssl" is one click rather than forty (operator, 2026-11-19).
+  const GROUP_LABEL = {
+    service: "service", port: "port", segment: "destination segment", source: "source host",
+  };
+  let GROUP = "";
+
+  function bucketOf(r) {
+    switch (GROUP) {
+      case "service":
+        // Zeek names the service; a DNS row IS dns; NetFlow has no service, so it is bucketed by
+        // the port it went to — said plainly rather than guessed at.
+        if (r.source === "zeek") return r.dns_name || "unnamed service";
+        if (r.source === "dns") return "dns";
+        return `port ${r.dst_port}`;
+      case "port": return String(r.dst_port ?? "—");
+      case "segment": return r.dst_prefix || "anywhere";
+      case "source": return r.src_addr || "—";
+      default: return "";
+    }
   }
 
   function renderFeed(rows) {
@@ -62,6 +129,7 @@
       updateApply();
       return;
     }
+    if (GROUP) { renderBuckets(body); updateApply(); return; }
     for (const r of ROWS) {
       const k = keyOf(r);
       const box = el("input", {
@@ -446,6 +514,15 @@ window.openNormalizeSheet = openNormalizeSheet;
     for (const id of ["nz-segment", "nz-port", "nz-minbytes", "nz-find"]) {
       const n = document.getElementById(id);
       if (n) n.addEventListener("change", () => loadNormalize());
+    }
+    // Grouping is a re-render, not a re-read: the same rows, stacked differently.
+    const group = document.getElementById("nz-group");
+    if (group) {
+      group.value = GROUP;
+      group.addEventListener("change", () => {
+        GROUP = group.value || "";
+        renderFeed(ROWS);
+      });
     }
     const apply = document.getElementById("nz-apply");
     if (apply) apply.addEventListener("click", applySelected);

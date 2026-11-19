@@ -650,6 +650,19 @@
         <option value="dns">DNS</option>
         <option value="zeek">Zeek</option>
         <option value="flow">Netflow</option>
+      </select>
+    </label>
+    <!-- BUCKET THE FEED (operator, 2026-11-19: "can we bucket traffic? like all ssl or all
+         something else"). Grouping is a way of READING the feed, not a filter: nothing is hidden,
+         and a bucket's box selects every pattern under it so one click normalizes the class. -->
+    <label class="nz-field">Group
+      <select id="nz-group" aria-label="bucket the feed">
+        <option value="">no grouping</option>
+        <option value="service">service (ssl, http, dns…)</option>
+        <option value="port">destination port</option>
+        <option value="segment">destination segment</option>
+        <option value="source">source host</option>
+      </select>
       </select></label>
       <label>segment <input id="nz-segment" type="search" placeholder="192.168.2" autocomplete="off"></label>
       <label>port <input id="nz-port" type="number" min="0" max="65535" placeholder="any"></label>

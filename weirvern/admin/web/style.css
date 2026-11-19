@@ -1717,6 +1717,15 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
    The feed is a log: dense rows, one control per row, and colour that says what the operator has
    already claimed. Green is the claim; the severity tints stay untouched everywhere else. */
 #nz-feed td:first-child, #nz-entries td:first-child { width: 28px; }
+/* A bucket is a heading in the feed, not a row to normalize: heavier type, a rule above, and the
+   member count where a timestamp would be. */
+#nz-feed tbody tr.nz-bucket td {
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+  padding-top: 0.55rem;
+}
+#nz-feed tbody tr.nz-bucket td:nth-child(3) { text-transform: none; color: var(--muted); }
+
 #nz-feed tbody tr.nz-normal td { background: rgba(46, 160, 67, 0.10); }
 #nz-feed tbody tr.nz-normal td:nth-child(3)::after {
   content: " normalized"; color: var(--ok); font-size: var(--fs-1); letter-spacing: .04em;

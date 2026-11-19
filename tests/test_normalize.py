@@ -224,3 +224,26 @@ def test_the_feed_pages_backwards_in_time_and_says_so():
     assert 'class: "pager-btn"' in js and 'class: "pager-info"' in js
     assert "\u2039" in js and "\u203a" in js
     assert "older traffic" in js and "newer traffic" in js
+
+
+def test_the_feed_can_bucket_traffic_without_hiding_any_of_it(tmp_path):
+    """The operator: "can we bucket traffic? like all ssl or all something else".
+
+    Grouping must be a way of READING the feed: every row stays in ROWS, and a bucket's checkbox
+    selects its members so one click normalizes the class. A bucket that filtered or dropped rows
+    would be a different feature -- and one that could quietly hide traffic.
+    """
+    js = (ROOT / "weirvern/admin/web/normalize.js").read_text()
+    html = (ROOT / "weirvern/admin/web/index.html").read_text()
+
+    assert 'id="nz-group"' in html
+    for value in ("service", "port", "segment", "source"):
+        assert f'<option value="{value}"' in html, value
+    assert "function bucketOf(" in js
+    assert "function renderBuckets(" in js
+    # the bucket view is a branch of renderFeed, and it never touches ROWS itself
+    branch = js.split("if (GROUP) { renderBuckets(body);")[1].split("return;")[0]
+    assert "ROWS" not in branch
+    # selecting a bucket selects its members (so Apply sees them), it does not write a new claim type
+    assert "SELECTED.set(k, r)" in js.split("function renderBuckets(")[1]
+    # the file-wide lexicon guard already refuses silencing vocabulary; no need to repeat it here

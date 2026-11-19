@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.83 — 2026-11-19
+
+THE FEED CAN BE BUCKETED, AND NOTHING DISAPPEARS WHEN IT IS.
+
+- **Group by service, port, destination segment, or source host.** NetFlow rows have no service
+  name, so in the service view they are bucketed by the port they went to, said plainly rather than
+  guessed at: a Zeek row reads `ssl`, a NetFlow row to 443 reads `port 443`.
+- **A bucket is a heading, not a filter.** Every row stays in the feed; grouping only changes how
+  the rows are stacked, and each bucket states how many patterns and hosts it covers, with its
+  flows and bytes.
+- **One click normalizes a class.** The bucket's checkbox selects every member pattern, so "all
+  ssl" is one click and still writes one honest entry per pattern — nothing claims more scope than
+  it covers, and the sheet still shows exactly what each entry will say.
+
 ## 0.23.82 — 2026-11-19
 
 AN IMAGE THAT IS GONE IS A POD THAT CANNOT COME BACK.
