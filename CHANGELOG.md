@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.23.79 — 2026-11-19
+
+A NORMALIZE ROW OPENS A SHEET, AND THE FEED PAGES BACK IN TIME.
+
+- **The row is the door.** Clicking any row in the Normalize feed opens the same right-hand sheet
+  as the weirlings fleet (one primitive, `sheets.js`): the pattern as it was counted, then the two
+  ways to change the claim.
+- **Broaden or reduce.** Destination scope is a choice of this one address (/32), this segment
+  (/24), the wider block (/16), or anywhere; port and protocol are editable; a DNS claim can be
+  the exact name or its parent domain, with the record type widened separately. The written prefix
+  is derived from the destination address server-side, so a sheet can never write a prefix the
+  address does not cover.
+- **A normalized row offers removal from the same sheet**, and the button only appears when there
+  is a claim to remove.
+- **The feed pages backwards in time.** One page is one window: `‹` walks back, `›` returns toward
+  now, and the range line states which window you are reading. It is the house pager — same
+  `.pager` row, same arrows, same range wording as Assets and Logs — because a long list should
+  page the same way wherever it lives.
+- **The retrain header stops quoting one detector as the run.** "4 of 4 detectors trained on
+  9,520 host-windows" sat above a table whose Isolation Forest row said 11,900; each detector
+  trains on its own matrix, so the header now names every trained detector with its own count and
+  unit (windows, a window sample, hosts) — the same facts as the table, in one line.
+- **The model registry is compared with what is installed.** The cards were seeded on 2026-11-11
+  and nothing updated them, so the tab showed v4 while v5 artifacts were written that morning.
+  The panel now reads the model directory and says, per card, which version is on disk — and
+  states how many cards are behind the engine instead of quietly looking current.
+- **A month-old candidate cannot look ready.** The retrain panel says how long ago the candidate's
+  training window closed; keeping a stale candidate would install a model built on traffic that
+  old.
+- **An empty page never offers a dead arrow:** the feed probes for one row older than the window
+  before enabling `‹`, and says "the oldest traffic we hold" when there is nothing further.
+
 ## 0.23.78 — 2026-11-19
 
 THE NORMALIZE TAB: NORMAL TRAFFIC IS LEARNED, NOT SILENCED.

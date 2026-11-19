@@ -250,16 +250,14 @@ def discard_candidate(settings) -> dict[str, Any]:
 
 
 def report_summary(report: dict[str, Any]) -> str:
-    """One sentence for the GUI header -- the same facts the report carries, in the order an
-    operator asks them: did it train, on how much, and was the window clean.
+    """One sentence for the GUI header: did it train, on how much, and was the window clean.
 
-    ONE UNIT PER CLAUSE (issue #37). The four detectors' `sample_count`s count DIFFERENT
-    things: the teacher's training windows, Isolation Forest's own sample of them, DBSCAN's
-    20% sample of the same window, and the baseline's HOST count. The previous sentence
-    summed them, so a 5000-window span with a 90-host baseline rendered as
-    "on 9840 host-window(s)" -- a number with no referent. The window is now stated ONCE, from
-    a detector whose count IS the window (the teacher first, then the detector that samples
-    the window), and the others carry their own units, or are omitted when they add nothing.
+    EVERY DETECTOR COUNTS A DIFFERENT THING, AND SAYS SO (operator, 2026-11-19: "in models this
+    doesn't add up"). The panel prints each detector's own `sample_count` beside it, so a header
+    that quotes ONE of those numbers as the run's basis contradicts the table under it -- the
+    screenshot that prompted this read "trained on 9,520 host-windows" above an Isolation Forest
+    row that said 11,900. The header now carries each trained detector's count with its own unit,
+    which is the same thing the table says, in one line.
     """
     if not report:
         return ""
@@ -272,37 +270,24 @@ def report_summary(report: dict[str, Any]) -> str:
         except (TypeError, ValueError):
             return 0
 
-    def _named(name: str) -> dict | None:
-        return next((d for d in trained if str(d.get("name") or "") == name), None)
-
+    # The unit belongs to the detector: a model trains on windows, DBSCAN on a sample of them,
+    # the baseline on HOSts. Printing them in one list with no units is how they got summed.
+    units = {"Gradient Boosting": "windows", "Isolation Forest": "windows",
+             "DBSCAN": "window sample", "Adaptive Baseline": "hosts"}
     parts = [f"{len(trained)} of {len(dets)} detector(s) trained"]
-    window = 0
-    for teacher in ("Gradient Boosting", "Isolation Forest"):
-        det = _named(teacher)
-        if det is not None and _count(det):
-            window = _count(det)
-            break
-    if window == 0:
-        # No named teacher in the report (older payloads): the largest count is the best
-        # available single-quantity statement -- still ONE number, never a cross-unit sum.
-        window = max((_count(d) for d in trained), default=0)
-    if window:
-        parts.append(f"on {window} host-window(s)")
-    dbscan = _named("DBSCAN")
-    if dbscan is not None and _count(dbscan) and _count(dbscan) != window:
-        parts.append(f"DBSCAN saw a {_count(dbscan)}-window sample")
-    baseline = _named("Adaptive Baseline")
-    if baseline is not None and _count(baseline):
-        parts.append(f"baselines cover {_count(baseline)} host(s)")
+    detail = [f"{d.get('name') or 'detector'} {_count(d):,} "
+              f"{units.get(str(d.get('name')), 'samples')}"
+              for d in trained if _count(d)]
+    if detail:
+        parts.append("each on its own matrix: " + " · ".join(detail))
     cont = report.get("contamination") or {}
+    if cont.get("available") and int(cont.get("detections") or 0) == 0:
+        parts.append("no detections were recorded inside the window")
     if cont.get("available") and int(cont.get("detections") or 0) > 0:
         parts.append(
-            f"WARNING: {int(cont['detections'])} detection(s) already recorded inside this "
-            f"window -- keeping it teaches the new model to treat that traffic as normal"
-        )
-    elif cont.get("available"):
-        parts.append("no detections were recorded inside the window")
-    return "; ".join(parts)
+            f"WARNING: {int(cont['detections']):,} detection(s) already recorded inside this "
+            "window -- keeping it teaches the new model to treat that traffic as normal")
+    return "; ".join(parts) + "."
 
 
 def parse_report(row_report: str) -> dict[str, Any]:

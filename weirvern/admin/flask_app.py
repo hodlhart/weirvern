@@ -1115,6 +1115,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         try:
             hours = web.window_arg(request.args, 24, 1, 24 * 14)
             port = int(request.args.get("port") or 0)
+            offset = int(request.args.get("offset") or 0)
             min_bytes = int(request.args.get("min_bytes") or 0)
         except ValueError as exc:
             return _json_error(400, f"bad filter: {exc}")
@@ -1123,7 +1124,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                 payload = normalize_store.feed(
                     client, hours=hours, source=request.args.get("source", ""),
                     segment=request.args.get("segment", ""), port=port,
-                    min_bytes=min_bytes, query=request.args.get("q", ""))
+                    min_bytes=min_bytes, query=request.args.get("q", ""), offset=offset)
         except Exception as exc:  # noqa: BLE001
             payload = {"available": False, "reason": str(exc), "rows": [], "entries": [],
                        "summary": {}}
@@ -1649,10 +1650,18 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         """One feed row -> the arguments `normalize.new_entry` accepts. Validation is its job."""
         if not isinstance(sel, dict):
             raise TypeError("each selection must be an object")
+        # A scope re-derives the prefix from the destination address: the sheet lets the
+        # operator widen a /24 to its /16 or narrow it to the one host.
+        prefix = sel.get("dst_prefix", "")
+        scope = str(sel.get("scope") or "").strip()
+        if scope:
+            from weirvern import normalize  # noqa: PLC0415
+            prefix = normalize.scope_prefix(
+                str(sel.get("dst_host") or sel.get("dst_addr") or ""), scope)
         return {
             "source": sel.get("source", "flow"),
             "src_addr": sel.get("src_addr", ""),
-            "dst_prefix": sel.get("dst_prefix", ""),
+            "dst_prefix": prefix,
             "dst_port": int(sel.get("dst_port") or 0),
             "proto": int(sel.get("proto") or 0),
             "dns_name": sel.get("dns_name", ""),

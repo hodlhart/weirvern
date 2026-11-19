@@ -397,6 +397,11 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
 
         data["model_cards"] = cards_mod.current_cards(client)
         data["model_cards_available"] = True
+        data["model_artifacts"] = cards_mod.artifact_inventory(getattr(settings, "model_dir", ""))
+        behind = [c["model_name"] for c in data["model_cards"]
+                  if str(c.get("version") or "") !=
+                  str((data["model_artifacts"].get(c.get("model_name")) or {}).get("version") or "")]
+        data["model_cards_behind"] = behind
     except Exception as card_exc:  # noqa: BLE001
         data["model_cards"] = []
         data["model_cards_available"] = False

@@ -415,3 +415,36 @@ def test_the_summary_uses_the_window_total_not_the_points_sample():
     assert "603 anomaly(ies)" in out["summary"]
     assert "low 300, medium 303" in out["summary"]
     assert "Latest 1 shown in the points sample." in out["summary"]
+
+
+def test_the_retrain_header_names_every_detector_and_never_one_number_for_all(tmp_path):
+    """The operator's screenshot: "trained on 9,520 host-windows" above an 11,900 row."""
+    from weirvern.models.retrain import report_summary
+
+    summary = report_summary({
+        "detectors": [
+            {"name": "Isolation Forest", "trained": True, "sample_count": 11900},
+            {"name": "Gradient Boosting", "trained": True, "sample_count": 9520},
+            {"name": "DBSCAN", "trained": True, "sample_count": 817},
+            {"name": "Adaptive Baseline", "trained": True, "sample_count": 10},
+        ],
+        "contamination": {"available": True, "detections": 1094},
+    })
+    for count in ("11,900 windows", "9,520 windows", "817 window sample", "10 hosts"):
+        assert count in summary, summary
+    assert "9,520 host-window(s)" not in summary
+    assert "1,094" in summary
+
+
+def test_the_card_panel_compares_the_registry_with_what_is_installed(tmp_path):
+    from weirvern.models.cards import artifact_inventory
+
+    (tmp_path / "Isolation Forest_v4.pkl").write_bytes(b"old")
+    (tmp_path / "Isolation Forest_v5.pkl").write_bytes(b"new")
+    (tmp_path / "DBSCAN_v5.pkl").write_bytes(b"db")
+    (tmp_path / "notes.txt").write_text("ignore me")
+    inv = artifact_inventory(str(tmp_path))
+    assert inv["Isolation Forest"]["version"] == "v5"          # newest, not the first found
+    assert inv["DBSCAN"]["version"] == "v5"
+    assert inv["Isolation Forest"]["hash"] and inv["Isolation Forest"]["written_at"]
+    assert "notes.txt" not in {v["file"] for v in inv.values()}

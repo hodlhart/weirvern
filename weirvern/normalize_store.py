@@ -32,6 +32,7 @@ SELECT
     max(timestamp)                            AS last_seen,
     min(timestamp)                            AS first_seen,
     src_addr,
+    any(dst_addr)                             AS dst_host,
     {prefix}                                  AS dst_prefix,
     dst_port,
     proto,
@@ -46,7 +47,8 @@ SELECT
     varPop(packets)                           AS var_packets,
     count(DISTINCT toStartOfFiveMinute(timestamp)) AS samples
 FROM weirvern.flows
-WHERE timestamp >= now() - INTERVAL {hours} HOUR
+WHERE timestamp >= now() - INTERVAL {back} HOUR
+  AND timestamp < now() - INTERVAL {ahead} HOUR
 GROUP BY src_addr, dst_prefix, dst_port, proto
 HAVING flows >= {min_flows}
 """
@@ -57,6 +59,7 @@ SELECT
     max(ts)                                   AS last_seen,
     min(ts)                                   AS first_seen,
     src_addr,
+    ''                                        AS dst_host,
     ''                                        AS dst_prefix,
     toUInt16(0)                               AS dst_port,
     toUInt8(0)                                AS proto,
@@ -71,7 +74,7 @@ SELECT
     0.0                                       AS var_packets,
     count(DISTINCT toStartOfFiveMinute(ts))   AS samples
 FROM weirvern.zeek_dns
-WHERE ts >= now() - INTERVAL {hours} HOUR
+WHERE ts >= now() - INTERVAL {back} HOUR AND ts < now() - INTERVAL {ahead} HOUR
 GROUP BY src_addr, dns_name, dns_qtype
 HAVING flows >= {min_flows}
 """
@@ -83,13 +86,22 @@ def _escape(value: str) -> str:
 
 
 def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = "",
-         port: int = 0, min_bytes: int = 0, query: str = "", limit: int = 400) -> dict[str, Any]:
-    """Near-similar traffic, newest first, with what has already been normalized marked."""
+         port: int = 0, min_bytes: int = 0, query: str = "", limit: int = 400,
+         offset: int = 0) -> dict[str, Any]:
+    """Near-similar traffic, newest first, with what has already been normalized marked.
+
+    `offset` pages BACKWARDS in time: page 2 is the window immediately before page 1. The feed is
+    a long list, and every long list in this console carries the same pager (operator, 2026-11-19).
+    """
     hours = max(1, min(int(hours), 24 * 14))
+    offset = max(0, min(int(offset), 500))
+    ahead, back = hours * offset, hours * (offset + 1)
     lanes = []
     flow_lane = (FLOW_LANE_T.replace("{prefix}", _PREFIX)
-                 .replace("{hours}", str(hours)).replace("{min_flows}", "2"))
-    dns_lane = DNS_LANE_T.replace("{hours}", str(hours)).replace("{min_flows}", "2")
+                 .replace("{back}", str(back)).replace("{ahead}", str(ahead))
+                 .replace("{min_flows}", "2"))
+    dns_lane = (DNS_LANE_T.replace("{back}", str(back)).replace("{ahead}", str(ahead))
+                .replace("{min_flows}", "2"))
     if source in ("", "flow"):
         lanes.append(flow_lane)
     if source in ("", "dns"):
@@ -112,7 +124,8 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
             f"positionCaseInsensitive(dns_name, '{q}') > 0)"
         )
     sql = f"""
-        SELECT source, last_seen, first_seen, src_addr, dst_prefix, dst_port, proto, dns_name,
+        SELECT source, last_seen, first_seen, src_addr, dst_host, dst_prefix,
+               dst_port, proto, dns_name,
                dns_qtype, flows, bytes_total AS bytes, packets_total AS packets, avg_bytes,
                var_bytes, avg_packets, var_packets, samples
         FROM ({body})
@@ -142,8 +155,22 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
         for k in ("last_seen", "first_seen"):
             if isinstance(r.get(k), datetime):
                 r[k] = r[k].isoformat()
+    # IS THERE ANYTHING OLDER TO PAGE TO? Ask for one row before this window's start rather than
+    # guessing from the page size: an empty page that still offers "older" is a dead arrow.
+    older = False
+    try:
+        probe = client.query(
+            "SELECT count() FROM ("
+            f"SELECT ts FROM weirvern.flows WHERE ts < now() - INTERVAL {back} HOUR LIMIT 1"
+            ")")
+        older = bool(probe.result_rows and probe.result_rows[0][0])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("normalize older probe failed: %s", exc)
+
+    newest = rows[0]["last_seen"] if rows else ""
     return {"available": True, "reason": "", "rows": rows, "entries": live,
-            "summary": normalize.summarise(live)}
+            "summary": normalize.summarise(live),
+            "window": {"offset": offset, "hours": hours, "newest": newest, "older": older}}
 
 
 def entries(client: Client, *, include_removed: bool = False) -> list[dict[str, Any]]:

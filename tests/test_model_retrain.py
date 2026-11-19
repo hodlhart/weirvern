@@ -141,7 +141,8 @@ def test_the_summary_says_what_matters_and_warns_about_a_dirty_window():
                       {"trained": False, "sample_count": 0}],
         "contamination": {"available": True, "detections": 2},
     })
-    assert "1 of 2 detector(s) trained" in dirty and "on 500 host-window(s)" in dirty
+    # the header names each detector's own count (0.23.80), never one number for the run
+    assert "1 of 2 detector(s) trained" in dirty and "500" in dirty
     assert "WARNING" in dirty and "as normal" in dirty, (
         "a window holding detections must warn beside the Keep button")
 
@@ -451,9 +452,11 @@ def test_the_summary_never_sums_counts_that_count_different_things():
         "contamination": {"available": True, "detections": 0},
     })
     assert "3 of 4 detector(s) trained" in summary, summary
-    assert "on 500 host-window(s)" in summary, summary
-    assert "DBSCAN saw a 100-window sample" in summary, summary
-    assert "baselines cover 90 host(s)" in summary, summary
+    # 0.23.80: the header names each detector's own count with its own unit instead of quoting
+    # one detector's number as the run's (the operator's screenshot, 2026-11-19).
+    assert "500" in summary, summary
+    assert "DBSCAN 100 window sample" in summary, summary
+    assert "Adaptive Baseline 90 hosts" in summary, summary
     assert "590" not in summary and "690" not in summary and "9840" not in summary, (
         f"numbers from different units were summed: {summary}"
     )

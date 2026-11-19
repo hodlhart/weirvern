@@ -660,6 +660,7 @@
         <th>Port / proto</th><th>DNS</th><th>Bytes</th><th>Flows</th></tr></thead>
       <tbody></tbody>
     </table>
+    <div id="nz-pager" class="pager"></div>
   </div>
   <div class="card">
     <h2>Normalized <span class="muted" id="nz-active-note"></span></h2>
@@ -672,6 +673,24 @@
     </table>
   </div>
 </section>
+<!-- THE NORMALIZE SHEET (operator, 2026-11-19): "clicking a normalize row should have the same
+     type of slide out from the right settings piece as weirlings, allowing you do broaden or
+     reduce the normalization values." Same primitive as the weirling sheet (sheets.js): one
+     scrim, one Escape, focus returns to the row that opened it. -->
+<div class="card sheet hidden" id="nz-detail-card" tabindex="-1" role="dialog" aria-modal="true"
+     aria-labelledby="nz-detail-title" aria-hidden="true">
+  <h2><span id="nz-detail-title">Normalize this pattern</span>
+    <span id="nz-detail-id" class="muted"></span>
+    <button id="nz-detail-close" class="sheet-close" type="button"
+            aria-label="close this panel (Escape also closes)">Close</button></h2>
+  <p class="muted" id="nz-detail-note"></p>
+  <div id="nz-detail-body"></div>
+  <div class="controls sheet-actions">
+    <button id="nz-detail-apply" class="primary" type="button">Normalize this pattern</button>
+    <button id="nz-detail-remove" class="quiet hidden" type="button">Remove this normalization</button>
+    <button id="nz-detail-cancel" class="quiet" type="button">Cancel</button>
+  </div>
+</div>
 <div class="info-text hidden" id="nz-info">
   <p><strong>What it is.</strong> A feed of near-similar traffic — flows and DNS — that you read the
      way you read a log. Select the rows that are normal for this network and press Normalize.</p>

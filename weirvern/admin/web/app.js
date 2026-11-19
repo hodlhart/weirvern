@@ -6201,7 +6201,17 @@ function renderModelCards(data) {
     ]));
     return;
   }
+  const onDisk = (data && data.model_artifacts) || {};
+  const behind = (data && data.model_cards_behind) || [];
   note.textContent = `${cards.length} card(s); only a production card may contribute to the fused score.`;
+  if (behind.length) {
+    // THE REGISTRY IS A CURATED SNAPSHOT; THE ARTIFACTS ARE WHAT RUNS. Saying only "4 cards"
+    // while v5 files sit on disk from this morning is the difference between a console that
+    // reports and one that reassures (operator, 2026-11-19).
+    note.textContent += ` ${behind.length} of ${cards.length} card(s) name an older artifact ` +
+      `than the one installed (${behind.join(", ")}) — the registry has not been re-approved ` +
+      "since the engine last saved.";
+  }
   for (const c of cards) {
     const status = String(c.status || "unknown");
     const shortHash = c.artifact_hash ? String(c.artifact_hash).slice(0, 12) + "…" : "not recorded";
@@ -6210,7 +6220,20 @@ function renderModelCards(data) {
     body.appendChild(el("tr", {}, [
       el("td", { text: c.model_name || c.model_id || "—" }),
       el("td", {}, [el("span", { class: "card-status" + (status === "production" ? " production" : ""), text: status })]),
-      el("td", { text: c.version || "—" }),
+      el("td", {}, (function () {
+        const live = onDisk[c.model_name];
+        if (!live || String(live.version) === String(c.version)) {
+          return [el("span", { text: c.version || "—" })];
+        }
+        return [
+          el("span", { text: c.version || "—" }),
+          el("span", {
+            class: "muted",
+            attrs: { title: `${live.file} · written ${fmtTime(live.written_at)} · ${live.hash}` },
+            text: ` \u2192 disk ${live.version}`,
+          }),
+        ];
+      })()),
       el("td", { class: "mono", attrs: { title: c.artifact_hash || "" }, text: shortHash }),
       el("td", { text: c.feature_version || "—" }),
       el("td", { text: c.calibration_version || "—" }),
@@ -6612,6 +6635,16 @@ async function loadRetrain() {
   note.textContent = d.summary || "";
 
   const rep = d.report || {};
+  // HOW OLD IS THIS CANDIDATE? A panel that says "Candidate ready" about a window that closed a
+  // month ago is telling the truth about the file and a lie about the model (2026-11-19).
+  const endMs = rep.window_end ? Date.parse(rep.window_end) : NaN;
+  if (Number.isFinite(endMs)) {
+    const days = (Date.now() - endMs) / 86400000;
+    if (days > 2) {
+      note.textContent += ` This candidate's training window closed ${Math.floor(days)} day(s) ` +
+        "ago — keeping it installs a model built on traffic this old.";
+    }
+  }
   for (const det of rep.detectors || []) {
     body.appendChild(el("tr", {}, [
       el("td", { text: det.name || "?" }),

@@ -138,3 +138,27 @@ def summarise(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 def sigma(avg: float, var: float) -> float:
     """The detector wants a standard deviation; the pool carries a variance."""
     return math.sqrt(max(0.0, float(var or 0.0)))
+
+
+# THE SCOPE OF A CLAIM IS THE OPERATOR'S TO WIDEN OR NARROW (2026-11-19). A feed row arrives as
+# "198.51.100.0/24" because that is how the bucket was counted; that is not the only honest claim.
+# These are the three widths the sheet offers, per family, and "host" needs the address itself.
+SCOPES = {"host": {"v4": 32, "v6": 128}, "subnet": {"v4": 24, "v6": 64},
+          "supernet": {"v4": 16, "v6": 48}}
+
+
+def scope_prefix(addr: str, scope: str) -> str:
+    """The destination prefix a chosen scope covers. Raises ValueError on nonsense."""
+    import ipaddress  # noqa: PLC0415
+
+    scope = (scope or "subnet").strip().lower()
+    if scope == "any":
+        return ""
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r}")
+    try:
+        ip = ipaddress.ip_address((addr or "").strip())
+    except ValueError as exc:
+        raise ValueError(f"a {scope} scope needs the destination address: {exc}") from exc
+    fam = "v4" if ip.version == 4 else "v6"
+    return str(ipaddress.ip_network(f"{ip}/{SCOPES[scope][fam]}", strict=False))

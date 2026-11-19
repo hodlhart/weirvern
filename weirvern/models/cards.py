@@ -72,7 +72,50 @@ def require_production(client: Any, names: list[str]) -> dict[str, bool]:
     return {name: bool(registered.get(name, False)) for name in names}
 
 
+def artifact_inventory(model_dir: str) -> dict[str, dict[str, Any]]:
+    """The newest artifact on disk per model: file, version, mtime, short hash.
+
+    WHY THIS EXISTS (operator, 2026-11-19: "make sure that the models tab reflects our newest
+    build of the ml engine data"). `ml_model_cards` is a curated registry, seeded once and written
+    only when someone edits a card; the engine saves a new artifact every retrain. Reading only
+    the registry made the console show v4 / 2026-11-11 while v5 files sat on disk from that
+    morning. This returns what is actually installed so the two can be compared out loud.
+    """
+    import hashlib  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    out: dict[str, dict[str, Any]] = {}
+    pattern = re.compile(r"^(?P<name>.+)_v(?P<version>\d+)\.pkl$")
+    try:
+        entries = os.listdir(model_dir)
+    except OSError:
+        return out
+    for entry in entries:
+        m = pattern.match(entry)
+        if not m:
+            continue
+        path = os.path.join(model_dir, entry)
+        try:
+            stat = os.stat(path)
+            with open(path, "rb") as fh:            # noqa: PTH123 -- one read, no path object
+                digest = hashlib.sha256(fh.read()).hexdigest()[:16]
+        except OSError:
+            continue
+        version = int(m.group("version"))
+        name = m.group("name")
+        if name in out and out[name]["version_num"] >= version:
+            continue
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        out[name] = {"file": entry, "version": f"v{version}", "version_num": version,
+                     "written_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                     "hash": digest, "bytes": stat.st_size}
+    return out
+
+
 __all__ = [
+    "artifact_inventory",
     "CARD_STATUSES", "PRODUCTION", "RETIRED", "current_cards", "production_allowed",
     "registration", "require_production", "status_map",
 ]

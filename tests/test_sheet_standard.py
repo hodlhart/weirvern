@@ -39,7 +39,8 @@ def test_every_sheet_is_a_labelled_dialog_with_one_close():
         assert f'aria-labelledby="{title_id}"' in tag, f"{card_id} has no label"
         assert 'aria-hidden="true"' in tag, f"{card_id} hides with a class but not from AT"
         assert f'<span id="{title_id}"' in html, f"{title_id} missing"
-    assert html.count('class="sheet-close"') == 2, "not exactly one close per sheet"
+    # 3 since the Normalize sheet (operator, 2026-11-19): weirlings, identity detail, normalize.
+    assert html.count('class="sheet-close"') == 3, "not exactly one close per sheet"
 
 
 def test_the_sheets_share_one_opener_and_build_no_private_machinery():

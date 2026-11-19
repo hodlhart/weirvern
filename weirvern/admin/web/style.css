@@ -1724,3 +1724,13 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 #nz-feed tbody tr.nz-selected td { background: rgba(56, 139, 253, 0.14); }
 #nz-feed tbody tr:hover td { background: rgba(255, 255, 255, 0.03); }
 #nz-feed .nz-box { margin: 0; }
+
+/* ── The Normalize sheet (0.23.79) ────────────────────────────────────────────────────────────
+   One claim per sheet: the pattern it covers, then the two ways to widen or narrow it. Reads as
+   a form but is not one — there is no submit until the primary verb at the foot. */
+#nz-detail-card .nz-pattern { margin: 4px 0 2px; font-size: var(--fs-2); }
+.nz-field { display: block; margin: 14px 0 0; }
+.nz-field-label { display: block; font-size: var(--fs-1); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.nz-field select, .nz-field input { width: 100%; }
+.nz-field-hint { display: block; margin-top: 4px; }

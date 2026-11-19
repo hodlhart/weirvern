@@ -101,13 +101,13 @@ def test_the_feed_reads_both_lanes_and_filters_server_side():
             return FakeResult()
 
     c = FakeClient()
-    normalize_store.feed(c, hours=24, source="", segment="192.168.2", port=443, min_bytes=1000,
+    normalize_store.feed(c, hours=24, source="", segment="192.0.2", port=443, min_bytes=1000,
                          query="example")
     feed_sql = c.sql[0]
     assert "UNION ALL" in feed_sql
     assert "'dns'" in feed_sql and "'flow'" in feed_sql
     assert "INTERVAL 24 HOUR" in feed_sql
-    assert "dst_prefix LIKE '%192.168.2%'" in feed_sql
+    assert "dst_prefix LIKE '%192.0.2%'" in feed_sql
     assert "dst_port = 443" in feed_sql and "bytes_total >= 1000" in feed_sql
     assert "positionCaseInsensitive(dns_name, 'example')" in feed_sql
 
@@ -149,3 +149,78 @@ def test_nothing_in_the_feature_suppresses_or_mutes_an_alert():
         code = "\n".join(line for line in text.splitlines()
                          if not line.strip().startswith(("//", "*", "/*", "<!--")))
         assert not banned.search(code), f"{name} grew suppression vocabulary"
+
+
+def test_a_scope_widens_or_narrows_the_destination():
+    """The sheet's whole job: the same row claimed at three widths."""
+    from weirvern.normalize import scope_prefix
+
+    assert scope_prefix("198.51.100.17", "host") == "198.51.100.17/32"
+    assert scope_prefix("198.51.100.17", "subnet") == "198.51.100.0/24"
+    assert scope_prefix("198.51.100.17", "supernet") == "198.51.0.0/16"
+    assert scope_prefix("198.51.100.17", "any") == ""
+    assert scope_prefix("2001:db8::1", "subnet") == "2001:db8::/64"
+    with pytest.raises(ValueError):
+        scope_prefix("198.51.100.17", "galaxy")
+    with pytest.raises(ValueError):
+        scope_prefix("", "host")
+
+
+def test_the_sheet_is_a_sheet_and_a_row_opens_it():
+    html = (WEB / "index.html").read_text()
+    js = (WEB / "normalize.js").read_text()
+    assert 'id="nz-detail-card"' in html
+    assert 'class="card sheet hidden"' in html
+    assert "sheets.js" in html
+    for control in ("nz-detail-body", "nz-detail-apply", "nz-detail-remove", "nz-detail-cancel",
+                    "nz-detail-close"):
+        assert f'id="{control}"' in html, f"the sheet lost {control}"
+    # the row is the door, and the checkbox is not
+    assert "openNormalizeSheet(r, tr)" in js
+    assert 'if (ev.target.closest("input")) return;' in js
+    assert 'openSheet(card, { scrimId: "nz-detail-scrim"' in js
+    # broaden or reduce, both offered
+    assert '"subnet"' in js and '"host"' in js and '"supernet"' in js and '"any"' in js
+    assert "parentDomain" in js
+
+
+def test_the_scope_reaches_the_written_prefix_not_just_the_wire():
+    """A scope on the wire is only real if the row that lands has the derived prefix."""
+    from weirvern import normalize
+
+    e = normalize.new_entry(source="flow", src_addr="192.0.2.163",
+                            dst_prefix=normalize.scope_prefix("198.51.100.17", "supernet"),
+                            dst_port=2049, proto=6, flows=10, samples=10)
+    assert e["dst_prefix"] == "198.51.0.0/16"
+
+
+def test_the_feed_pages_backwards_in_time_and_says_so():
+    """A long list needs the house pager pointed at time (operator, 2026-11-19)."""
+    from weirvern import normalize_store
+
+    class FakeResult:
+        column_names: list[str] = []
+        result_rows: list[tuple] = []
+
+    class FakeClient:
+        def __init__(self):
+            self.sql: list[str] = []
+
+        def query(self, sql, **_kw):
+            self.sql.append(sql)
+            return FakeResult()
+
+    c = FakeClient()
+    payload = normalize_store.feed(c, hours=24, offset=3)
+    sql = c.sql[0]
+    assert "INTERVAL 96 HOUR" in sql and "INTERVAL 72 HOUR" in sql, sql[:400]
+    assert payload["window"]["offset"] == 3
+    assert payload["window"]["hours"] == 24
+    assert payload["window"]["older"] is False      # the probe returned nothing
+
+    html = (WEB / "index.html").read_text()
+    js = (WEB / "normalize.js").read_text()
+    assert 'id="nz-pager" class="pager"' in html
+    assert 'class: "pager-btn"' in js and 'class: "pager-info"' in js
+    assert "\u2039" in js and "\u203a" in js
+    assert "older traffic" in js and "newer traffic" in js
