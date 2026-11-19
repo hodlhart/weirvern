@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.84 — 2026-11-19
+
+THE MODELS TAB REPORTS THE ENGINE, NOT ITS OWN PAPERWORK.
+
+- **The engine's training record rides with both panels.** `ml_models` holds one row per training;
+  the tab read only the curated card registry (frozen at its approval date) and the last
+  operator-requested retrain. That is how "DBSCAN retired" and a candidate dated 14 October sat
+  above four detectors that had retrained that morning at 08:21. Both payloads now carry the
+  newest training per model, and both panels say it.
+- **A disagreement is named, not smoothed over.** When a card says retired and the engine is still
+  training that model, the panel says exactly that and says which record is older — the registry.
+- **The retrain panel distinguishes a candidate from the schedule.** Keep/Trash act on the
+  operator's candidate; the sentence next to them states when the engine last trained and on what
+  window, so a month-old candidate cannot read as the current model.
+
 ## 0.23.83 — 2026-11-19
 
 THE FEED CAN BE BUCKETED, AND NOTHING DISAPPEARS WHEN IT IS.

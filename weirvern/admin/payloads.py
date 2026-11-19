@@ -398,6 +398,10 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         data["model_cards"] = cards_mod.current_cards(client)
         data["model_cards_available"] = True
         data["model_artifacts"] = cards_mod.artifact_inventory(getattr(settings, "model_dir", ""))
+        # WHAT THE ENGINE ACTUALLY DID, not only what an operator approved (2026-11-19: "in models
+        # this still looks wrong. dbscan says retired and the retraining says october 14"). The
+        # registry is a curation snapshot; ml_models is the engine's own log, one row per training.
+        data["model_training"] = model_training(client)
         behind = [c["model_name"] for c in data["model_cards"]
                   if str(c.get("version") or "") !=
                   str((data["model_artifacts"].get(c.get("model_name")) or {}).get("version") or "")]
@@ -710,6 +714,31 @@ def findings_failure(exc: BaseException) -> dict[str, Any]:
             "reason": "the data could not be read"}
 
 
+def model_training(client: Client) -> dict[str, dict[str, Any]]:
+    """The newest training run per model, from the engine's own table.
+
+    The Models tab used to read only the curated card registry (frozen at its approval date) and
+    the last OPERATOR-requested retrain (an action row). Neither says what the engine has been
+    doing, so a month-old operator candidate and an eight-day-old registry looked like the present
+    while every detector retrained that morning.
+    """
+    try:
+        res = client.query(
+            "SELECT model_type, toString(max(trained_at)) AS trained_at, "
+            "toString(max(training_window_end)) AS window_end, "
+            "argMax(training_sample_count, trained_at) AS samples "
+            "FROM weirvern.ml_models GROUP BY model_type")
+    except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
+        logger.warning("model training history unavailable: %s", exc)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in (getattr(res, "result_rows", None) or []):
+        name, trained_at, window_end, samples = (list(row) + ["", "", "", 0])[:4]
+        out[str(name)] = {"trained_at": str(trained_at), "window_end": str(window_end),
+                          "samples": int(samples or 0)}
+    return out
+
+
 def model_retrain(client: Client) -> dict[str, Any]:
     """The last forced retrain: what state it is in, and what it produced.
 
@@ -725,7 +754,7 @@ def model_retrain(client: Client) -> dict[str, Any]:
                     or actions.latest(client, actions.TRASH))
     except Exception as exc:  # noqa: BLE001
         return model_retrain_failure(exc)
-    return web_api.retrain_payload(row, decision)
+    return web_api.retrain_payload(row, decision, training=model_training(client))
 
 
 def model_retrain_failure(exc: BaseException) -> dict[str, Any]:

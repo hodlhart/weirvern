@@ -6189,6 +6189,17 @@ function renderModelCards(data) {
   const onDisk = (data && data.model_artifacts) || {};
   const behind = (data && data.model_cards_behind) || [];
   note.textContent = `${cards.length} card(s); only a production card may contribute to the fused score.`;
+  const training = (data && data.model_training) || {};
+  const retiredButTraining = cards
+    .filter((c) => String(c.status) === "retired" && training[c.model_name])
+    .map((c) => c.model_name);
+  if (retiredButTraining.length) {
+    note.textContent += ` ${retiredButTraining.join(", ")} is retired in this registry but the ` +
+      "engine still trains it — the registry is the older record.";
+  }
+  if (Object.keys(training).length) {
+    note.textContent += engineTrainingSentence(training);
+  }
   if (behind.length) {
     // THE REGISTRY IS A CURATED SNAPSHOT; THE ARTIFACTS ARE WHAT RUNS. Saying only "4 cards"
     // while v5 files sit on disk from this morning is the difference between a console that
@@ -6562,6 +6573,20 @@ async function loadModels() {
  */
 let RETRAIN_STATE = null;
 
+
+/** Say what the ENGINE did, not only what an operator last asked for. */
+function engineTrainingSentence(training) {
+  const entries = Object.entries(training || {});
+  if (!entries.length) return "";
+  const newest = entries
+    .map(([name, v]) => ({ name, ...v }))
+    .sort((x, y) => String(y.trained_at).localeCompare(String(x.trained_at)))[0];
+  const when = String(newest.trained_at || "").replace("T", " ").slice(0, 16);
+  const win = String(newest.window_end || "").replace("T", " ").slice(0, 16);
+  return ` The engine's own record: ${entries.length} detector(s) trained, newest ${newest.name} ` +
+    `at ${when}${win ? ` (window to ${win})` : ""}.`;
+}
+
 async function loadRetrain() {
   const state = document.getElementById("mr-state");
   const note = document.getElementById("mr-note");
@@ -6580,6 +6605,7 @@ async function loadRetrain() {
   // to keep or trash it"). Keep/Trash need a FINISHED candidate; every other state gets a
   // sentence -- waiting, training, trained-nothing, failed -- instead of a control that
   // silently vanishes.
+  if (note && d.training) { note.textContent = (note.textContent || "") + engineTrainingSentence(d.training); }
   const stand = document.getElementById("mr-stand");
   if (stand) {
     const st = String(d.state || "none");

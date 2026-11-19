@@ -487,7 +487,7 @@ def overview_payload(services: list, report, anomalies: list[dict],
     }
 
 def retrain_payload(row: dict | None, decision: dict | None, *, available: bool = True,
-                    reason: str = "") -> dict:
+                    reason: str = "", training: dict | None = None) -> dict:
     """The state of the operator's forced retrain, and what it produced.
 
     EVERYTHING HERE COMES FROM THE ROW, not from the artifact directory: the GUI pod does not mount
@@ -501,11 +501,13 @@ def retrain_payload(row: dict | None, decision: dict | None, *, available: bool 
 
     if not available:
         return {"available": False, "reason": reason or "the model actions could not be read",
-                "state": "", "report": {}, "summary": "", "can_keep": False, "decision": None}
+                "state": "", "report": {}, "summary": "", "can_keep": False, "decision": None,
+                "training": training or {}}
     if row is None:
         return {"available": True, "reason": "", "state": "none", "action_id": "",
                 "requested_by": "", "requested_at": None, "note": "",
-                "report": {}, "summary": "", "can_keep": False, "decision": None}
+                "report": {}, "summary": "", "can_keep": False, "decision": None,
+                "training": training or {}}
     try:
         report = _json.loads(row.get("report") or "{}")
     except (TypeError, ValueError):
@@ -523,6 +525,7 @@ def retrain_payload(row: dict | None, decision: dict | None, *, available: bool 
         # retrain, so a month-old candidate kept reporting the old sentence -- one detector's count
         # presented as the run's -- long after the formatter was fixed. Recompute from the report.
         "summary": _retrain_summary(report, row.get("note")),
+        "training": training or {},
         "can_keep": (state == "done" and bool((report or {}).get("trained_any"))),
         "decision": ({"state": str(decision.get("state") or ""),
                       "note": str(decision.get("note") or ""),
