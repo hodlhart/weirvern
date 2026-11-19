@@ -193,6 +193,13 @@ spec:
             - name: tap-state
               mountPath: /var/lib/weirvern/tap
               readOnly: true
+            # THE MODEL ARTIFACTS, READ-ONLY (operator, 2026-11-19: "make sure that the models
+            # tab reflects our newest build of the ml engine data"). The worker owns this volume;
+            # the GUI only reads it, to compare each model card with the artifact actually
+            # installed. Without it the console could see the registry but not the engine.
+            - name: models
+              mountPath: /models
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
         # bytecode caches and temp files. An emptyDir is the minimum that allows.
@@ -212,6 +219,9 @@ spec:
           hostPath:
             path: /var/lib/weirvern/tap
             type: DirectoryOrCreate
+        - name: models
+          persistentVolumeClaim:
+            claimName: models
 ---
 apiVersion: v1
 kind: Service

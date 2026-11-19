@@ -519,12 +519,27 @@ def retrain_payload(row: dict | None, decision: dict | None, *, available: bool 
         "requested_at": _jsonable(row.get("ts")),
         "note": str(row.get("note") or ""),
         "report": report if isinstance(report, dict) else {},
-        "summary": str(row.get("note") or ""),
+        # DERIVED, NOT FROZEN (0.23.79): the stored note was written by whichever build filed the
+        # retrain, so a month-old candidate kept reporting the old sentence -- one detector's count
+        # presented as the run's -- long after the formatter was fixed. Recompute from the report.
+        "summary": _retrain_summary(report, row.get("note")),
         "can_keep": (state == "done" and bool((report or {}).get("trained_any"))),
         "decision": ({"state": str(decision.get("state") or ""),
                       "note": str(decision.get("note") or ""),
                       "at": _jsonable(decision.get("ts"))} if decision else None),
     }
+
+
+def _retrain_summary(report: object, note: str | None) -> str:
+    """The header sentence for a stored retrain report, or the note when there is no report."""
+    if isinstance(report, dict) and report.get("detectors"):
+        try:
+            from weirvern.models.retrain import report_summary  # noqa: PLC0415
+
+            return report_summary(report)
+        except Exception:  # noqa: BLE001 - a summary must never take the panel down
+            pass
+    return str(note or "")
 
 
 def gates_payload(fleet: dict, local_name: str, stale_after_s: int,
