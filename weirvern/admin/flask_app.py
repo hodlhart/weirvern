@@ -564,6 +564,23 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         return _payload_route(payloads.ml_ripple)
 
+    @app.get("/api/ripples")
+    @gated
+    def ripples():
+        """Phase-1 ripple evidence. A failed read is a 200 with an empty list and a reason.
+
+        NOT `_payload_route`: that answers a failed read with a 503, and this card's contract
+        (like /api/assets) is that the panel can draw around the failure. `_soft_route` keeps
+        the connection failure in the payload layer too, so both surfaces say the same thing.
+        """
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 7)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.ripples, payloads.ripples_failure, hours=hours)
+
     @app.get("/api/ml/data-contract")
     @gated
     def ml_data_contract():

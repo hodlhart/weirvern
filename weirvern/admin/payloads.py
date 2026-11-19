@@ -212,6 +212,31 @@ def ml_ripple(client: Client) -> dict[str, Any]:
                 "counts": {}, "contributors": [], "scales": [], "families": [], "unknown": []}
 
 
+def ripples(client: Client, *, hours: int) -> dict[str, Any]:
+    """Phase-1 ripples plus the evidence they were grouped from. Read-only, never pages.
+
+    The failure shape is built HERE rather than left to the route: the Models card has to tell
+    "the evidence could not be read" apart from "no ripple formed", and both must be a 200 with
+    an empty list rather than an error page.
+    """
+    from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+    try:
+        return ripple_evidence.overview(client, hours=hours)
+    except Exception as exc:  # noqa: BLE001 - a read failure is a state, not a crash
+        return ripples_failure(exc, hours=hours)
+
+
+def ripples_failure(exc: BaseException | None = None, *, hours: int = 0) -> dict[str, Any]:
+    """The console's own empty-and-named shape for `/api/ripples`."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+    from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+    logger.warning("ripple evidence unavailable: %s", exc)
+    return {"available": False, "reason": read_failure(exc), "ripples": [], "count": 0,
+            "window_hours": int(hours), "model_version": ripple_evidence.MODEL_VERSION}
+
+
 def ml_data_contract(client: Client) -> dict[str, Any]:
     """What 'covered' means, measured against the live tables."""
     try:

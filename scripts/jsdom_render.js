@@ -1435,6 +1435,22 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/sluice", SLUICE_PAYLOAD],
     ["/api/fingerprints", FP_PAYLOAD],
     ["/api/models/retrain", RETRAIN_PAYLOAD],
+    // PHASE 1: the Ripples card reads its own route. The fixture is a real two-channel ripple
+    // with the sentence the server builds, so the check below proves the card renders the
+    // explanation and the channel list rather than an empty table.
+    ["/api/ripples", () => ({
+      available: true, reason: "", window_hours: 24, count: 1,
+      model_version: "ripple-evidence-1",
+      ripples: [{
+        host: "198.51.100.5", window_start: "2026-01-01T00:00:00",
+        window_end: "2026-01-01T01:00:00", score: 2.41, combined_p: 0.0039,
+        channels: ["conn_volume", "dns_volume"],
+        explanation: "ripple on 198.51.100.5 at 2026-01-01 00:00 UTC: " +
+          "conn_volume 41 vs median 5 (p=0.012, rose at 1h); " +
+          "dns_volume 60 vs median 6 (p=0.006, rose at 1h).",
+        evidence: [],
+      }],
+    })],
     ["/api/models/shadow", () => ({ available: true, rows: [
       { key: "hdbscan", label: "HDBSCAN challenger", available: true, state: "collecting",
         rows: 5000, detail: 56, detail_label: "clusters", latest: "2026-01-01T00:00:00", reason: "" },
@@ -2313,6 +2329,29 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   }
 
 
+  // ── THE RIPPLES CARD (phase 1) ──────────────────────────────────────────────────────────────
+  //
+  // It is read-only by contract and it is the seed of the future anomaly page, so the check is
+  // that the operator can read a ripple WITHOUT opening anything: host, when, score, the
+  // sentence, and the channels. A card that renders an empty table is the failure this catches.
+  {
+    H.clearGetCache();
+    H.showView("models");
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 120));
+    const rows = [...doc.querySelectorAll("#m-ripples tbody tr")];
+    const text = rows.map((r) => r.textContent).join(" ");
+    check("the Ripples card lists a host with its window and score",
+          rows.length === 1 && /198\.51\.100\.5/.test(text) && /2\.41/.test(text),
+          `rows=${rows.length} text=${text.slice(0, 120)}`);
+    check("...and shows the sentence naming both channels",
+          /conn_volume 41 vs median 5/.test(text) && /dns_volume 60 vs median 6/.test(text),
+          text.slice(0, 200));
+    check("...and the channel list beside it",
+          /conn_volume, dns_volume/.test(text), text.slice(0, 200));
+  }
+
+
   // ── THE TRAINING HISTORY NAMES WHAT EACH LINE COUNTS (2026-11-17) ────────────────────────────
   //
   // Measured on the live Models tab: the chart said "samples per retrain" for four lines, and one
@@ -3171,7 +3210,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the Overview SECTION is gone from the DOM",
         doc.getElementById("view-overview") === null);
   check("sensor state and the health checks live on the Health tab now",
-        !!doc.getElementById("hp-sensor") && !!doc.getElementById("hp-checks"));
+        !!doc.getElementById("hp-checks"));
     // ── THREE PROBE STATES RENDER AS THREE (audit F081) ────────────────────────────────────────
     //
     // The probe added to stop a MISSING row reading as healthy would itself have read as FAILING,

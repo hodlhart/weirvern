@@ -61,6 +61,23 @@ class ChannelSpec:
     #: makes every ratio look like noise. The denominator must be "rows where the field is
     #: meaningful", not "all rows".
     denominator: str | None = None
+    # ── the multi-scale evidence layer (phase 1) ────────────────────────────────────────────
+    #: The timestamp the window is built from. `flows_window` is keyed on `window_start`.
+    time_column: str = "ts"
+    #: The scales this source can be measured at. `compute()` skips any scale the lookback
+    #: cannot supply a baseline for, so declaring 7d costs nothing where retention is 7 days.
+    scales: tuple[str, ...] = ("5m",)
+    #: How long the table keeps rows. Used only to say, in the inventory, which scales are
+    #: structurally possible; the live check is the sample count against the lookback.
+    retention_days: int = 7
+    #: A PRE-AGGREGATED source stores one row per five-minute host-window with aggregate
+    #: STATES, not values. `flows_window` is the case: it must be read with `-Merge`
+    #: combinators, and `uniqMerge` is the only way to get a true distinct count across a
+    #: larger bucket. When `count_state` is set the table is read that way; otherwise it is
+    #: read as raw rows, exactly as before.
+    count_state: str | None = None
+    sum_state: str | None = None
+    uniq_state: str | None = None
 
     def sql(self, *, since_s: int) -> str:
         if self.kind == "diversity":
@@ -78,6 +95,54 @@ class ChannelSpec:
                 f"FROM {self.table} "
                 f"WHERE ts >= now() - INTERVAL {int(since_s)} SECOND "
                 f"GROUP BY {self.host_column}, w ORDER BY w")
+
+    def sql_anchored(self, *, bucket_s: int, anchor: datetime, since: datetime,
+                     until: datetime) -> str:
+        """One bucket-per-host query whose buckets end exactly at `anchor`.
+
+        WHY NOT `toStartOfInterval`. Calendar-aligned buckets make the CURRENT bucket partial:
+        at 14:37 the 1h window holds 37 minutes while every baseline bucket holds 60, so every
+        host looks quiet at the moment it is measured. Here bucket 0 is exactly
+        `[anchor - bucket_s, anchor)` and bucket k reaches back k buckets, so the current value
+        and its history are the same length.
+
+        Returns `(host, k, n, u, b)`: rows in the bucket, distinct/numerator, and sum. The
+        caller picks the one its `kind` needs. `k` is counted back from the anchor.
+        """
+        if self.count_state:
+            n_expr = f"countMerge({self.count_state})"
+            u_expr = f"uniqMerge({self.uniq_state})" if self.uniq_state else "0"
+            b_expr = f"sumMerge({self.sum_state})" if self.sum_state else "0"
+            if self.kind == "diversity" and not self.uniq_state:
+                raise ValueError(f"{self.channel}: a diversity channel needs a uniq state")
+            if self.kind == "sum" and not self.sum_state:
+                raise ValueError(f"{self.channel}: a sum channel needs a sum state")
+        else:
+            n_expr = f"countIf({self.denominator})" if self.denominator else "count()"
+            u_expr = "0"
+            b_expr = "0"
+            if self.kind == "diversity":
+                if not self.value_column:
+                    raise ValueError(f"{self.channel}: a diversity channel needs a value column")
+                u_expr = f"uniqExact({self.value_column})"
+            elif self.kind == "ratio":
+                if not self.predicate:
+                    raise ValueError(f"{self.channel}: a ratio channel needs a predicate")
+                u_expr = f"countIf({self.predicate})"
+            elif self.kind == "sum":
+                if not self.value_column:
+                    raise ValueError(f"{self.channel}: a sum channel needs a value column")
+                b_expr = f"sum({self.value_column})"
+        anchor_ts = int(anchor.timestamp())
+        return (
+            f"SELECT {self.host_column} AS host, "
+            f"intDiv({anchor_ts} - toUnixTimestamp({self.time_column}), {int(bucket_s)}) AS k, "
+            f"{n_expr} AS n, {u_expr} AS u, {b_expr} AS b "
+            f"FROM {self.table} "
+            f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}' "
+            f"GROUP BY host, k"
+        )
 
 
 #: The sources this deployment already collects and the ripple layer could not hear.

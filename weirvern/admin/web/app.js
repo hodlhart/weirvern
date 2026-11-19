@@ -6547,6 +6547,45 @@ function renderRipple(data) {
   }
 }
 
+function renderRipples(data) {
+  // PHASE 1: the seed of the future anomaly page. Read-only by contract -- no buttons, no
+  // acknowledgement, no alerting. It answers one question: which hosts moved, together, against
+  // their OWN history, and in which channels. An empty list is a measurement, not a blank.
+  const note = document.getElementById("m-ripples-note");
+  const body = document.querySelector("#m-ripples tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  const hours = (data && data.window_hours) || 0;
+  if (!data || data.available === false) {
+    note.textContent = "Ripple evidence unavailable: " +
+      ((data && data.reason) || "the read failed") +
+      " — that is not the same as a quiet network.";
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+      text: "No ripple evidence was read." })]));
+    return;
+  }
+  const rows = data.ripples || [];
+  note.textContent = rows.length
+    ? rows.length + " ripple(s) in the last " + hours + "h, grouped from measured evidence. " +
+      "Read-only: this card does not alert."
+    : "No ripple formed in the last " + hours + "h: every measured channel stayed inside its " +
+      "host's own trailing history.";
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+      text: "Nothing moved far enough, together, to be a ripple." })]));
+    return;
+  }
+  for (const r of rows) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: r.host || "—" }),
+      el("td", { text: r.window_start ? fmtTime(r.window_start) : "—" }),
+      el("td", { class: "num", text: Number(r.score || 0).toFixed(2) }),
+      el("td", { text: r.explanation || "—" }),
+      el("td", { class: "muted", text: (r.channels || []).join(", ") || "—" }),
+    ]));
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -6563,6 +6602,10 @@ async function loadModels() {
   // channel inventory, and a dead channel must not hide the fused answer.
   const ripplePromise = getJSON("/api/ml/ripple")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
+  // PHASE 1's evidence list is its own read for the same reason: a broken evidence table must
+  // not hide the fused answer, and a dead fusion must not hide the measurements under it.
+  const ripplesPromise = getJSON("/api/ripples?hours=" + encodeURIComponent(hours))
+    .catch((e) => ({ available: false, reason: String(e && e.message || e), ripples: [] }));
   // The asset-posture scorer is its own read: it scores the CHANGE ledger, not the flow model,
   // so a failure here must not take the production model view down.
   const posturePromise = getJSON("/api/asset-posture")
@@ -6578,6 +6621,7 @@ async function loadModels() {
   renderCalibration(await calPromise);
   renderShadow(await shadowPromise);
   renderRipple(await ripplePromise);
+  renderRipples(await ripplesPromise);
   renderAssetPosture(await posturePromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");

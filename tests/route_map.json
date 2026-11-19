@@ -139,6 +139,10 @@
     "verb": "GET",
     "path": "/api/ml/ripple"
   },
+  "_ripples": {
+    "verb": "GET",
+    "path": "/api/ripples"
+  },
   "_ml_slo": {
     "verb": "GET",
     "path": "/api/ml/slo"

@@ -2428,6 +2428,22 @@ def main() -> None:
                             # Its own guard: a broken host-hour build must name itself rather
                             # than be reported as a failure of the specialists beside it.
                             logger.warning("ML host-hour shadow failed: %s", exc)
+                        # PHASE 1: the evidence a ripple is made of. It measures every channel
+                        # at every scale the lookback can support, against the host's OWN
+                        # trailing week, and stores the rows the Ripples card groups on read.
+                        # Its own table and its own guard: a measurement failure must name
+                        # itself, not be reported as a fusion failure.
+                        try:
+                            from weirvern.models import ripple_evidence as _rev  # noqa: PLC0415
+
+                            ev = _rev.run(client)
+                            logger.info(
+                                "ML ripple evidence: %s row(s), %s host(s), %s channel(s), "
+                                "scales %s", ev["rows"], ev["hosts"], ev["channels"],
+                                ",".join(ev["scales"]) or "none")
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "ML ripple evidence pass failed (detection continues): %s", exc)
                         # RIP-5: the fusion pass runs where the evidence was just written, not
                         # on a separate timer. The specialists above are hourly, so a fusion on
                         # the 5-minute detection cycle would almost always find every channel

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 SCALES = ("5m", "1h", "24h")
@@ -25,6 +26,27 @@ DEFAULT_MAX_P = 0.05
 DEFAULT_MAX_FRESHNESS_S = 900
 DEFAULT_MIN_FAMILIES = 2
 DEFAULT_MIN_SCALES = 2
+
+# ── the multi-scale evidence layer (phase 1) ────────────────────────────────────────────────
+#
+# A ripple here is a small, statistically significant change in one channel for one host,
+# measured against that host's OWN trailing history. The scales below are the lengths of the
+# window being compared; `7d` is declared because the algorithm supports it, but it produces
+# no evidence at this deployment's retention (see ripple_evidence.SCALE_SECONDS and the
+# inventory in that module). Declaring it is honest; inventing a baseline for it would not be.
+EVIDENCE_SCALES = ("1h", "6h", "24h", "7d")
+EVIDENCE_SCALE_SECONDS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+
+#: One grouping window for phase 1. Evidence from one hour is one ripple candidate.
+RIPPLE_WINDOW_S = 3600
+
+#: A single channel must be this extreme to stand alone. Two channels only need `max_p`.
+DEFAULT_EXTREME_P = 0.01
+
+
+def _round(value: float, digits: int = 6) -> float | None:
+    """JSON has no NaN: a measurement that was not taken is reported as null, not a number."""
+    return round(float(value), digits) if math.isfinite(float(value)) else None
 
 
 @dataclass(frozen=True)
@@ -38,6 +60,34 @@ class ChannelEvidence:
     pvalue: float
     freshness_s: float
     present: bool = True
+    # ── phase-1 measurement, all optional so the shadow path constructs this unchanged ──────
+    #: The host and the instant the measurement ended. The fusion path keys by host in a dict
+    #: and did not need these; a stored evidence row does, and a ripple groups on them.
+    host: str = ""
+    observed_at: datetime | None = None
+    #: The statistic itself and the host's baseline median it was ranked against. Both are
+    #: carried because an explanation that states a number without its baseline is not evidence.
+    value: float = float("nan")
+    baseline_median: float = float("nan")
+    sample_count: int = 0
+    coverage: float = 0.0
+    direction: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        """The shape the API and the Models card read. `p_value` is spelled out here."""
+        return {
+            "channel": self.channel,
+            "family": self.family,
+            "scale": self.scale,
+            "model_id": self.model_id,
+            "value": _round(self.value),
+            "baseline_median": _round(self.baseline_median),
+            "p_value": _round(self.pvalue, 8),
+            "sample_count": int(self.sample_count),
+            "coverage": _round(self.coverage, 4),
+            "direction": self.direction,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else "",
+        }
 
     def valid(self, *, max_freshness_s: float = DEFAULT_MAX_FRESHNESS_S) -> bool:
         return (
@@ -173,6 +223,159 @@ def empirical_pvalue(score: float, reference: list[float]) -> float:
     return float((1 + sum(1 for x in ref if x >= float(score))) / (len(ref) + 1))
 
 
+def empirical_pvalue_two_sided(score: float, reference: list[float]) -> float:
+    """The share of the host's own history that is at least as far from normal as this value.
+
+    ONE-SIDED WOULD MISS HALF THE SIGNAL. A host going quiet is a change: a DNS channel that
+    falls to zero because malware switched to DoH, or a connection count that collapses while a
+    beacon moves to a different protocol, are exactly what an operator needs to see. So both
+    tails are measured and the smaller one is reported -- the standard empirical two-sided
+    p-value. It is conservative for small references by construction (the +1 in each tail), and
+    an empty reference returns NaN rather than a fabricated 1.0.
+    """
+    ref = [float(x) for x in reference if math.isfinite(float(x))]
+    if not ref:
+        return float("nan")
+    n = len(ref)
+    upper = (1 + sum(1 for x in ref if x >= float(score))) / (n + 1)
+    lower = (1 + sum(1 for x in ref if x <= float(score))) / (n + 1)
+    return float(min(1.0, min(upper, lower)))
+
+
+@dataclass(frozen=True)
+class Ripple:
+    """One host, one window, and the evidence that lined up inside it.
+
+    WHAT THE SCORE IS, EXACTLY. `score = -log10(corrected_p)` where
+
+        corrected_p = min(1, Fisher(one p per significant channel) * tests_in_window)
+
+    and `tests_in_window` is the number of DISTINCT channels measured for that host in that
+    window (not the number of scales: one channel measured at three scales is one view, and
+    counting it three times is how a single signal would manufacture corroboration). Fisher is
+    applied to each channel's strongest scale. Higher score = stronger combined evidence; 2.0
+    means "about one in a hundred after the guard". The score is a ranking aid, not a
+    probability, and this pass never pages on it.
+    """
+
+    host: str
+    window_start: datetime
+    window_end: datetime
+    score: float
+    combined_p: float
+    channels: tuple[str, ...]
+    explanation: str
+    evidence: tuple[ChannelEvidence, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "host": self.host,
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+            "score": round(float(self.score), 4),
+            "combined_p": round(float(self.combined_p), 8),
+            "channels": list(self.channels),
+            "explanation": self.explanation,
+            "evidence": [item.as_dict() for item in self.evidence],
+        }
+
+
+def _window_start(moment: datetime, window_s: int) -> datetime:
+    """Floor an instant to its grouping window, in UTC, without relying on local time."""
+    aware = moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+    epoch = int(aware.timestamp())
+    return datetime.fromtimestamp((epoch // window_s) * window_s, tz=UTC)
+
+
+def _fmt(value: float) -> str:
+    """A number a person can read: no exponent for ordinary counts, three digits otherwise."""
+    if not math.isfinite(float(value)):
+        return "not measured"
+    if abs(float(value)) >= 1000:
+        return f"{float(value):,.0f}"
+    return f"{float(value):.4g}"
+
+
+def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence]) -> str:
+    """One sentence naming every channel that moved, each with the baseline it moved from.
+
+    The rule is deliberate: a value without its own median is a number, not evidence. Every
+    clause therefore reads "<channel> <value> vs median <baseline> (p=..., <direction> at
+    <scale>)", and the sentence never ends in a bare score.
+    """
+    parts = []
+    for item in sorted(chosen, key=lambda e: (e.pvalue, e.channel)):
+        parts.append(
+            f"{item.channel} {_fmt(item.value)} vs median {_fmt(item.baseline_median)} "
+            f"(p={item.pvalue:.3g}, {item.direction or 'changed'} at {item.scale})"
+        )
+    return f"ripple on {host} at {window_start:%Y-%m-%d %H:%M} UTC: " + "; ".join(parts) + "."
+
+
+def group_evidence(
+    evidence: list[ChannelEvidence],
+    *,
+    window_s: int = RIPPLE_WINDOW_S,
+    max_p: float = DEFAULT_MAX_P,
+    extreme_p: float = DEFAULT_EXTREME_P,
+    min_channels: int = 2,
+) -> list[Ripple]:
+    """Group one host's evidence in one time window into ripples, newest window first.
+
+    THE TWO WAYS A RIPPLE FORMS (phase 1):
+      (a) two or more distinct channels are significant (p <= `max_p`) in the same window; or
+      (b) one channel is significant at an extreme p (p <= `extreme_p`).
+
+    A ripple is not a verdict about an attack and this function never pages. It is the unit an
+    operator reads: several measurements that moved together, named, with the history each was
+    measured against.
+    """
+    buckets: dict[tuple[str, datetime], list[ChannelEvidence]] = {}
+    for item in evidence:
+        if not item.host or item.observed_at is None or not item.present:
+            continue
+        if not math.isfinite(item.pvalue) or not 0.0 < item.pvalue <= 1.0:
+            continue
+        buckets.setdefault((item.host, _window_start(item.observed_at, window_s)),
+                           []).append(item)
+
+    out: list[Ripple] = []
+    for (host, start), items in buckets.items():
+        # ONE VIEW PER CHANNEL: keep each channel's strongest scale, so a channel measured at
+        # three scales cannot vote three times for itself.
+        strongest: dict[str, ChannelEvidence] = {}
+        for item in items:
+            held = strongest.get(item.channel)
+            if held is None or item.pvalue < held.pvalue:
+                strongest[item.channel] = item
+        significant = [item for item in strongest.values() if item.pvalue <= max_p]
+        alone = len(significant) == 1 and significant[0].pvalue <= extreme_p
+        if len(significant) < min_channels and not alone:
+            continue
+
+        combined = fisher_combined_p([item.pvalue for item in significant])
+        # THE GUARD: every channel measured in this window is a test that was run, not only the
+        # ones that came out significant. Without it, a host with fifty channels would produce
+        # a "ripple" from noise alone on a long enough timeline.
+        corrected = min(1.0, combined * max(1, len(strongest)))
+        score = -math.log10(max(corrected, 1e-12))
+        contributors = tuple(sorted(
+            (item for item in items if item.channel in {s.channel for s in significant}),
+            key=lambda e: (e.pvalue, e.channel, e.scale)))
+        out.append(Ripple(
+            host=host,
+            window_start=start,
+            window_end=start + timedelta(seconds=int(window_s)),
+            score=score,
+            combined_p=corrected,
+            channels=tuple(sorted({item.channel for item in significant})),
+            explanation=_explain(host, start, significant),
+            evidence=contributors,
+        ))
+    out.sort(key=lambda r: (r.window_start, r.host), reverse=True)
+    return out
+
+
 def evidence_from_shadow(
     rows: list[dict[str, Any]],
     *,
@@ -206,5 +409,7 @@ def evidence_from_shadow(
     return out
 
 
-__all__ = ["ChannelEvidence", "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P", "RippleResult",
-           "SCALES", "empirical_pvalue", "evidence_from_shadow", "fisher_combined_p", "fuse"]
+__all__ = ["ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P",
+           "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS", "RIPPLE_WINDOW_S", "Ripple",
+           "RippleResult", "SCALES", "empirical_pvalue", "empirical_pvalue_two_sided",
+           "evidence_from_shadow", "fisher_combined_p", "fuse", "group_evidence"]
