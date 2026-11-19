@@ -646,9 +646,10 @@
         <option value="168">Last 7 days</option>
       </select></label>
       <label>source <select id="nz-source">
-        <option value="">Flows and DNS</option>
-        <option value="flow">Flows only</option>
-        <option value="dns">DNS only</option>
+        <option value="">All sources</option>
+        <option value="dns">DNS</option>
+        <option value="zeek">Zeek</option>
+        <option value="flow">Netflow</option>
       </select></label>
       <label>segment <input id="nz-segment" type="search" placeholder="192.168.2" autocomplete="off"></label>
       <label>port <input id="nz-port" type="number" min="0" max="65535" placeholder="any"></label>
@@ -657,7 +658,7 @@
     </div>
     <table id="nz-feed">
       <thead><tr><th></th><th>Last seen</th><th>Source</th><th>Host</th><th>Segment</th>
-        <th>Port / proto</th><th>DNS</th><th>Bytes</th><th>Flows</th></tr></thead>
+        <th>Port / proto</th><th>DNS / service</th><th>Bytes</th><th>Flows</th></tr></thead>
       <tbody></tbody>
     </table>
     <div id="nz-pager" class="pager"></div>

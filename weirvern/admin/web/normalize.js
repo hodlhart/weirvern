@@ -15,6 +15,10 @@
   let WINDOW = { offset: 0, hours: 24, older: false };   // where the feed is looking             // the active entries, so a row can find its own claim
   let LOADED = false;
 
+  // THE THREE LANES, NAMED THE WAY THE OPERATOR NAMES THEM (2026-11-19: "For source do DNS,
+  // Zeek, Netflow"). The stored value for Netflow is still `flow`; only the label changed.
+  const SOURCE_LABEL = { dns: "DNS", zeek: "Zeek", flow: "Netflow" };
+
   function keyOf(r) {
     return r.source === "dns"
       ? `dns|${r.src_addr}|${r.dns_name}|${r.dns_qtype}`
@@ -73,7 +77,7 @@
                                      (SELECTED.has(k) ? " nz-selected" : "") }, [
         el("td", {}, [box]),
         el("td", { class: "mono", text: (r.last_seen || "").replace("T", " ").slice(0, 19) }),
-        el("td", { text: r.source === "dns" ? "DNS" : "Flow" }),
+        el("td", { text: SOURCE_LABEL[r.source] || r.source }),
         el("td", { class: "mono", text: r.src_addr }),
         el("td", { class: "mono", text: r.dst_prefix || "—" }),
         el("td", { class: "mono", text: r.source === "dns" ? "—" : `${r.dst_port}/${r.proto}` }),
@@ -307,7 +311,8 @@ function renderNormalizeSheet(row) {
     : "Narrow the claim to one address, or widen it to the whole segment or block. The baseline learns whatever this covers — nothing is silenced.";
 
   body.appendChild(el("p", { class: "mono nz-pattern", text: isDns
-    ? `DNS · ${row.src_addr} → ${row.dns_name} (qtype ${row.dns_qtype || "any"})`
+    ? `${SOURCE_LABEL[row.source]} · ${row.src_addr} → ${row.dns_name}` +
+      (row.source === "dns" ? ` (qtype ${row.dns_qtype || "any"})` : ` · service ${row.dns_name}`)
     : `Flow · ${row.src_addr} → ${row.dst_prefix || "anywhere"}${row.dst_port ? ":" + row.dst_port : ""}${row.proto ? " / proto " + row.proto : ""}` }));
   body.appendChild(el("p", { class: "muted", text:
     `${num(row.flows)} flows · ${fmtBytes(row.bytes)} · ${num(row.packets)} packets · mean ${fmtBytes(Math.round(row.avg_bytes || 0))} per flow` }));

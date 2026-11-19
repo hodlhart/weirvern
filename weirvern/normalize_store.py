@@ -80,6 +80,43 @@ HAVING flows >= {min_flows}
 """
 
 
+# THE ZEEK LANE (operator, 2026-11-19: "normalize has nothing for zeek"). NetFlow sees packets;
+# Zeek saw the session and named the service. A normalized service is as much a claim about what
+# is normal as a normalized port, and it carries the responder's own byte counts rather than a
+# sampler's estimate. `dns_name` carries the label for every source: a domain for DNS, the service
+# for Zeek (http, ssl, ssh, dns) -- one column, one meaning: WHAT this row is, not just where.
+ZEEK_LANE_T = """
+SELECT
+    'zeek'                                    AS source,
+    max(ts)                                   AS last_seen,
+    min(ts)                                   AS first_seen,
+    src_addr,
+    any(dst_addr)                             AS dst_host,
+    if(position(dst_addr, '.') > 0,
+       concat(splitByChar('.', dst_addr)[1], '.', splitByChar('.', dst_addr)[2], '.',
+              splitByChar('.', dst_addr)[3], '.0/24'), dst_addr)   AS dst_prefix,
+    dst_port,
+    multiIf(proto = 'tcp', toUInt16(6), proto = 'udp', toUInt16(17),
+            proto = 'icmp', toUInt16(1), toUInt16(0))  AS proto,
+    service                                   AS dns_name,
+    toUInt16(0)                               AS dns_qtype,
+    count()                                   AS flows,
+    sum(orig_bytes + resp_bytes)              AS bytes_total,
+    sum(orig_pkts + resp_pkts)                AS packets_total,
+    avg(orig_bytes + resp_bytes)              AS avg_bytes,
+    varPop(orig_bytes + resp_bytes)           AS var_bytes,
+    avg(orig_pkts + resp_pkts)                AS avg_packets,
+    varPop(orig_pkts + resp_pkts)             AS var_packets,
+    count(DISTINCT toStartOfFiveMinute(ts))   AS samples
+FROM weirvern.zeek_conn
+WHERE ts >= now() - INTERVAL {back} HOUR
+  AND ts < now() - INTERVAL {ahead} HOUR
+  AND service != ''
+GROUP BY src_addr, dst_prefix, dst_port, proto, service
+HAVING flows >= {min_flows}
+"""
+
+
 def _escape(value: str) -> str:
     """The feed takes user text; it reaches SQL only as a quoted literal, escaped here."""
     return str(value).replace("\\", "\\\\").replace("'", "\\'")
@@ -102,12 +139,16 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
                  .replace("{min_flows}", "2"))
     dns_lane = (DNS_LANE_T.replace("{back}", str(back)).replace("{ahead}", str(ahead))
                 .replace("{min_flows}", "2"))
+    zeek_lane = (ZEEK_LANE_T.replace("{back}", str(back)).replace("{ahead}", str(ahead))
+                 .replace("{min_flows}", "2"))
     if source in ("", "flow"):
         lanes.append(flow_lane)
     if source in ("", "dns"):
         lanes.append(dns_lane)
+    if source in ("", "zeek"):
+        lanes.append(zeek_lane)
     if not lanes:
-        lanes = [flow_lane, dns_lane]
+        lanes = [flow_lane, dns_lane, zeek_lane]
     body = " UNION ALL ".join(lanes)
     where = ["1 = 1"]
     if segment:
@@ -146,7 +187,7 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
     by_dns = {(e["src_addr"], e["dns_name"], int(e["dns_qtype"]))
               for e in live if e["source"] == "dns"}
     for r in rows:
-        if r["source"] == "flow":
+        if r["source"] in ("flow", "zeek"):
             flow_key = (r["src_addr"], r["dst_prefix"], int(r["dst_port"]), int(r["proto"]))
             r["normalized"] = flow_key in by_flow
         else:

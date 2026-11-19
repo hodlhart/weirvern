@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.80 — 2026-11-19
+
+THE THIRD LANE: ZEEK, AND THE SOURCE FILTER SAYS WHAT IT MEANS.
+
+- **Zeek is a source in the feed.** `zeek_conn` sessions in their own lane, with the service Zeek
+  named (http, ssl, ssh, dns) carried as the row's label and the responder's own byte and packet
+  counts instead of a sampler's estimate. Proto is normalised to a number in every lane, so a Zeek
+  row and a NetFlow row mean the same thing to the writer and the sheet.
+- **The filter is DNS · Zeek · Netflow.** The stored value for Netflow is still `flow`; only the
+  words changed, so old entries keep their meaning.
+- **Zeek rows normalize like any other claim**: destination scope, port and protocol in the sheet;
+  the service travels with the entry as its label.
+
 ## 0.23.79 — 2026-11-19
 
 A NORMALIZE ROW OPENS A SHEET, AND THE FEED PAGES BACK IN TIME.

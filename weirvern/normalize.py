@@ -24,7 +24,7 @@ from uuid import uuid4
 
 ACTIVE = "active"
 REMOVED = "removed"
-SOURCES = ("flow", "dns")
+SOURCES = ("flow", "dns", "zeek")
 
 
 def new_entry(*, source: str, src_addr: str, dst_prefix: str = "", dst_port: int = 0,
