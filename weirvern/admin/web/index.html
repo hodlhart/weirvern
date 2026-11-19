@@ -1377,16 +1377,11 @@
         <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th><th>Trend <span class="muted">24h</span></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
-    <div class="card">
-      <h2>Weirling <button class="info-btn" data-info="hp-sensor-info" aria-label="how to read this card" aria-expanded="false">i</button></h2>
-      <div class="info-text hidden" id="hp-sensor-info">
-  <p><strong>What it is.</strong> This host's sensor: the interfaces it can capture on, the mode it reports, and whether the tap is alive.</p>
-  <p><strong>What writes it.</strong> The sensor's own heartbeat; nothing here is editable.</p>
-  <p><strong>Last changed.</strong> Each heartbeat.</p>
-  <p><strong>Where to see it.</strong> Here for the host's view; the Weirlings tab for the fleet and, for this hub, its settings.</p>
-</div>
-      <div id="hp-sensor"><p class="muted">loading…</p></div>
-    </div>
+    <!-- NO WEIRLING CARD ON HEALTH (operator, 2026-11-19: "can you remove weirling from the
+         health tab?"). Health is about the pipeline -- what is flowing and whether each stage is
+         keeping up. The sensor's own state lives on the Weirlings tab, which is where a sensor is
+         selected and configured; repeating a subset of it here made two places to look for one
+         fact, and the card could only ever show the hub's own heartbeat. -->
   </section>
 
 

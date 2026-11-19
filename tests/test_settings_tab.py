@@ -262,7 +262,7 @@ def test_the_overview_tab_is_gone_and_health_is_the_landing_view():
 def test_the_moved_panels_exist_on_the_health_tab():
     """Sensor and the health checks must be reachable after the move, not lost with Overview."""
     index = (WEB / "index.html").read_text()
-    for element in ("hp-sensor", "hp-checks", "hp-ingest", "hp-tables"):
+    for element in ("hp-checks", "hp-ingest", "hp-tables"):
         assert f'id="{element}"' in index, (
             f"#{element} is missing from Health; the Overview removal lost a panel"
         )
