@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.77 — 2026-11-19
+
+ONE JOIN FOR A NIC LIST.
+
+- **The fleet table printed whatever the payload happened to send**: the hub reports `eth1, eth2`
+  and a remote weirling reports `eth1,eth2`, so two identical rows looked different. Every row now
+  goes through one normaliser, which also accepts an array and renders a missing list as an em dash.
+
 ## 0.23.76 — 2026-11-18
 
 THE ML TAB GETS A SPINE.

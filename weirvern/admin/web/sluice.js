@@ -317,6 +317,13 @@ function renderSluiceGates(d) {
   renderSluiceFleet(d.gates || []);
 }
 
+/** A NIC list, normalised: "eth1,eth2" and "eth1, eth2" are the same two interfaces. */
+function ifaceList(value) {
+  const parts = Array.isArray(value) ? value : String(value || "").split(",");
+  const names = parts.map((v) => String(v).trim()).filter(Boolean);
+  return names.length ? names.join(", ") : "—";
+}
+
 function renderSluiceFleet(gates) {
   const host = document.getElementById("sl2-fleet");
   const card = document.getElementById("sl2-fleet-card");
@@ -351,7 +358,9 @@ function renderSluiceFleet(gates) {
       el("td", {}, [el("span", { class: "mono", text: g.sensor || "—" }),
         g.local ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
       el("td", {}, [sluiceStateChip(g.state, g.stale)]),
-      el("td", { class: "mono", text: g.iface || "—" }),
+      // ONE JOIN FOR EVERY ROW. The hub reports "eth1, eth2" and a remote weirling reports
+      // "eth1,eth2"; printing each as it arrived made two identical rows look different.
+      el("td", { class: "mono", text: ifaceList(g.iface) }),
       el("td", { text: `${Number(g.rules_active || 0)} / ${Number(g.rules_total || 0)}` }),
       el("td", { class: "muted", text: g.age_s == null ? "—" : `${fmtAge(g.age_s)} ago` }),
     ]);
