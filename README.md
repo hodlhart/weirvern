@@ -1,11 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Weirvern" width="150">
-</p>
-
-<h1 align="center">Weirvern</h1>
-
-<p align="center">
-  <strong>See the network. Prove the anomaly. Block the traffic.</strong>
+  <img src="docs/banner.png" alt="Weirvern: see the network, prove the anomaly, block the traffic">
 </p>
 
 <p align="center">
