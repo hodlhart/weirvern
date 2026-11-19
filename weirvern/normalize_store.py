@@ -151,9 +151,12 @@ def entries(client: Client, *, include_removed: bool = False) -> list[dict[str, 
     where = "" if include_removed else "WHERE status = 'active'"
     try:
         result = client.query(
-            "SELECT entry_id, created_at, created_by, source, status, src_addr, dst_prefix, "
-            "dst_port, proto, dns_name, dns_qtype, flows, bytes, samples, first_seen, last_seen, "
-            "note FROM weirvern.normal_traffic FINAL "
+            # EVERY COLUMN the writer needs: a removal re-writes the whole row, and a partial
+            # read produced `int(None)` on the missing numbers the first time this ran live.
+            "SELECT entry_id, created_at, created_by, source, status, removed_at, removed_by, "
+            "src_addr, dst_prefix, dst_port, proto, dns_name, dns_qtype, flows, bytes, packets, "
+            "samples, avg_bytes, var_bytes, avg_packets, var_packets, first_seen, last_seen, note "
+            "FROM weirvern.normal_traffic FINAL "
             f"{where} ORDER BY created_at DESC LIMIT 2000"
         )
         rows = [dict(zip(result.column_names, r, strict=False)) for r in result.result_rows]

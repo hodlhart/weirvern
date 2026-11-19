@@ -174,9 +174,11 @@
       const data = await postJSON("/api/normalize", { selections });
       if (!data || data.ok === false) throw new Error((data && data.error) || "refused");
       SELECTED.clear();
+      await loadNormalize();
+      // AFTER the reload: loadNormalize sets the standing note, and a confirmation the reader
+      // never sees is not a confirmation.
       setNote(`Normalized ${data.added} pattern${data.added === 1 ? "" : "s"}. ` +
               "The host baseline absorbs them at the next retrain.");
-      await loadNormalize();
     } catch (e) {
       setNote("Could not normalize: " + (e && e.message ? e.message : e));
     } finally {
@@ -188,8 +190,8 @@
     try {
       const data = await postJSON("/api/normalize/remove", { entry_id: entryId });
       if (!data || data.ok === false) throw new Error((data && data.error) || "refused");
-      setNote("Removed. The pattern leaves the baseline at the next retrain; the record stays.");
       await loadNormalize();
+      setNote("Removed. The pattern leaves the baseline at the next retrain; the record stays.");
     } catch (e) {
       setNote("Could not remove: " + (e && e.message ? e.message : e));
     }
