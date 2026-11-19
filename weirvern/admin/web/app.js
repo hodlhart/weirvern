@@ -4921,7 +4921,6 @@ function showView(name) {
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") {
     loadModels().then(clearError).catch(showError);
-    loadRetrain().catch(showError);
   }
   if (name === "settings") {
     loadSettings().then(clearError).catch(showError);
@@ -5319,10 +5318,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // registered after this point.
   const mrForce = document.getElementById("mr-force");
   if (mrForce) mrForce.addEventListener("click", () => retrainAction("retrain").catch(showError));
-  const mrKeep = document.getElementById("mr-keep");
-  if (mrKeep) mrKeep.addEventListener("click", () => retrainAction("keep").catch(showError));
-  const mrTrash = document.getElementById("mr-trash");
-  if (mrTrash) mrTrash.addEventListener("click", () => retrainAction("trash").catch(showError));
 
   // ── fingerprint lookup (identity view) ─────────────────────────────────────
   // Guarded like the module wirings below: if the markup is absent the page should lose one
@@ -6297,79 +6292,7 @@ function renderAssetPosture(data) {
  * identity. A status that is not `production` means the name must not contribute to the fused
  * score; the worker enforces that, and this table says so in words.
  */
-function renderModelCards(data) {
-  const note = document.getElementById("m-cards-note");
-  const body = document.querySelector("#m-cards tbody");
-  if (!note || !body) return;
-  body.replaceChildren();
-  const cards = (data && data.model_cards) || [];
-  if (!data || data.model_cards_available === false) {
-    note.textContent = "Unavailable: " + ((data && data.model_cards_reason) || "the model registry was not read");
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "muted", attrs: { colspan: 9 }, text: "No card can be shown, so no model is represented as registered." }),
-    ]));
-    return;
-  }
-  if (!cards.length) {
-    note.textContent = "No model card is registered. No model may contribute to the fused score.";
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "muted", attrs: { colspan: 9 }, text: "The registry is empty." }),
-    ]));
-    return;
-  }
-  const onDisk = (data && data.model_artifacts) || {};
-  const behind = (data && data.model_cards_behind) || [];
-  note.textContent = `${cards.length} card(s); only a production card may contribute to the fused score.`;
-  const training = (data && data.model_training) || {};
-  const retiredButTraining = cards
-    .filter((c) => String(c.status) === "retired" && training[c.model_name])
-    .map((c) => c.model_name);
-  if (retiredButTraining.length) {
-    note.textContent += ` ${retiredButTraining.join(", ")} is retired in this registry but the ` +
-      "engine still trains it — the registry is the older record.";
-  }
-  if (Object.keys(training).length) {
-    note.textContent += engineTrainingSentence(training);
-  }
-  if (behind.length) {
-    // THE REGISTRY IS A CURATED SNAPSHOT; THE ARTIFACTS ARE WHAT RUNS. Saying only "4 cards"
-    // while v5 files sit on disk from this morning is the difference between a console that
-    // reports and one that reassures (operator, 2026-11-19).
-    note.textContent += ` ${behind.length} of ${cards.length} card(s) name an older artifact ` +
-      `than the one installed (${behind.join(", ")}) — the registry has not been re-approved ` +
-      "since the engine last saved.";
-  }
-  for (const c of cards) {
-    const status = String(c.status || "unknown");
-    const shortHash = c.artifact_hash ? String(c.artifact_hash).slice(0, 12) + "…" : "not recorded";
-    const approved = (c.approved_by ? String(c.approved_by) : "not recorded") +
-      (c.approved_at ? " · " + fmtTime(c.approved_at) : "");
-    body.appendChild(el("tr", {}, [
-      el("td", { text: c.model_name || c.model_id || "—" }),
-      el("td", {}, [el("span", { class: "card-status" + (status === "production" ? " production" : ""), text: status })]),
-      el("td", {}, (function () {
-        const live = onDisk[c.model_name];
-        if (!live || String(live.version) === String(c.version)) {
-          return [el("span", { text: c.version || "—" })];
-        }
-        return [
-          el("span", { text: c.version || "—" }),
-          el("span", {
-            class: "muted",
-            attrs: { title: `${live.file} · written ${fmtTime(live.written_at)} · ${live.hash}` },
-            text: ` \u2192 disk ${live.version}`,
-          }),
-        ];
-      })()),
-      el("td", { class: "mono", attrs: { title: c.artifact_hash || "" }, text: shortHash }),
-      el("td", { text: c.feature_version || "—" }),
-      el("td", { text: c.calibration_version || "—" }),
-      el("td", { text: c.eval_report_id || "not measured" }),
-      el("td", { text: approved }),
-      el("td", { text: c.rollback_ref || "—" }),
-    ]));
-  }
-}
+
 
 /* CE-2: every channel has one disposition; no blank and no automatic promote. */
 function renderDispositions(r) {
@@ -6631,7 +6554,6 @@ async function loadModels() {
   }
 
   mRenderChips();
-  renderModelCards(data);
   renderDispositions(data.dispositions || {});
   renderPromotionLedger(data.promotion_policy || {}, data.ledger || {});
   renderEvalReport(data.eval_report || {});
@@ -6716,149 +6638,16 @@ async function loadModels() {
  * has nothing to install, and a Keep button there would be an offer to replace working models with
  * an empty set.
  */
-let RETRAIN_STATE = null;
-
-
-/** Say what the ENGINE did, not only what an operator last asked for. */
-function engineTrainingSentence(training) {
-  const entries = Object.entries(training || {});
-  if (!entries.length) return "";
-  const newest = entries
-    .map(([name, v]) => ({ name, ...v }))
-    .sort((x, y) => String(y.trained_at).localeCompare(String(x.trained_at)))[0];
-  const when = String(newest.trained_at || "").replace("T", " ").slice(0, 16);
-  const win = String(newest.window_end || "").replace("T", " ").slice(0, 16);
-  return ` The engine's own record: ${entries.length} detector(s) trained, newest ${newest.name} ` +
-    `at ${when}${win ? ` (window to ${win})` : ""}.`;
-}
-
-async function loadRetrain() {
-  const state = document.getElementById("mr-state");
-  const note = document.getElementById("mr-note");
-  const body = document.querySelector("#mr-report tbody");
-  const force = document.getElementById("mr-force");
-  const keep = document.getElementById("mr-keep");
-  const trash = document.getElementById("mr-trash");
-  if (!state || !note || !body || !force || !keep || !trash) return;
-
-  const d = await getJSON("/api/models/retrain");
-  RETRAIN_STATE = d;
-  body.replaceChildren();
-  keep.classList.toggle("hidden", !d.can_keep);
-  trash.classList.toggle("hidden", !d.can_keep);
-  // WHY THE BUTTONS ARE NOT THERE (the operator, 2026-10-16: "forcing a retrain doesn't allow me
-  // to keep or trash it"). Keep/Trash need a FINISHED candidate; every other state gets a
-  // sentence -- waiting, training, trained-nothing, failed -- instead of a control that
-  // silently vanishes.
-  const stand = document.getElementById("mr-stand");
-  if (stand) {
-    const st = String(d.state || "none");
-    stand.textContent = {
-      none: "No forced retrain has been filed.",
-      requested: "Filed \u2014 waiting for the worker to pick it up.",
-      running: "Training the candidate now; this takes minutes. A worker restart cancels it.",
-      done: d.can_keep
-        ? "Candidate ready: Keep installs it over the live models, Trash discards it."
-        : "The candidate trained nothing (no data in its window), so there is nothing to keep "
-          + "or trash. File it again once traffic has accumulated.",
-      failed: `Failed: ${d.note || "no reason recorded"} \u2014 file it again to retry.`,
-    }[st] || st;
-    if ((st === "requested" || st === "running") && d.requested_at) {
-      // HOW LONG IT HAS BEEN WAITING, said out loud: a request that sits there must be able to
-      // say since when, or "waiting" and "stuck" look alike.
-      const t = new Date(d.requested_at);
-      if (!Number.isNaN(t.getTime())) {
-        stand.textContent += ` Filed ${fmtAge(Math.max(0, (Date.now() - t.getTime()) / 1000))}.`;
-      }
-    }
-  }
-  force.disabled = d.state === "requested" || d.state === "running";
-
-  if (!d.available) {
-    state.textContent = "";
-    note.textContent = `The retrain state could not be read — ${d.reason}. This says nothing `
-      + "about whether a candidate exists.";
-    return;
-  }
-  if (d.state === "none") {
-    state.textContent = "never run";
-    note.textContent = "No forced retrain has been run. One trains a candidate on the last "
-      + "training window and reports it here; the models currently scoring are not touched.";
-    return;
-  }
-  state.textContent = d.state + (d.requested_by ? ` (${d.requested_by})` : "");
-  note.textContent = d.summary || "";
-  // AFTER the assignment, never before it: an append placed above this line is overwritten by
-  // the summary a few statements later (measured on the live page, 2026-11-19).
-  if (d.training) note.textContent += engineTrainingSentence(d.training);
-
-  const rep = d.report || {};
-  // HOW OLD IS THIS CANDIDATE? A panel that says "Candidate ready" about a window that closed a
-  // month ago is telling the truth about the file and a lie about the model (2026-11-19).
-  const endMs = rep.window_end ? Date.parse(rep.window_end) : NaN;
-  if (Number.isFinite(endMs)) {
-    const days = (Date.now() - endMs) / 86400000;
-    if (days > 2) {
-      note.textContent += ` This candidate's training window closed ${Math.floor(days)} day(s) ` +
-        "ago — keeping it installs a model built on traffic this old.";
-    }
-  }
-  for (const det of rep.detectors || []) {
-    body.appendChild(el("tr", {}, [
-      el("td", { text: det.name || "?" }),
-      el("td", {}, [el("span", { class: det.trained ? "ok" : "muted",
-                                text: det.trained ? "trained" : "no data" })]),
-      el("td", { class: "num", text: String(det.sample_count ?? "—") }),
-      el("td", { class: "muted mono",
-                 text: `${fmtTime(rep.window_start)} → ${fmtTime(rep.window_end)}` }),
-    ]));
-  }
-  if (!(rep.detectors || []).length && d.state !== "requested" && d.state !== "running") {
-    body.appendChild(el("tr", {}, [el("td", {
-      class: "muted", attrs: { colspan: 4 },
-      text: rep.error ? `the retrain failed: ${rep.error}` : "no report",
-    })]));
-  }
-  if (d.decision && d.decision.state) {
-    // AN EARLIER CANDIDATE'S FATE, LABELLED AS SUCH (the operator, 2026-10-16: "Retraining
-    // requested (operator) \u2014 decision: discarded ... this doesnt make sense"). The decision on
-    // record judges the candidate that produced it; without the label, "requested" beside
-    // "discarded" read as this request being discarded.
-    note.textContent += ` \u2014 last decision on record (an earlier candidate): ${d.decision.state}`;
-  }
-}
-
 async function retrainAction(action) {
   const note = document.getElementById("mr-note");
-  // BF-9: keep and trash decide what this deployment SERVES; they echo the target and require
-  // the note the server records on the action row (with the actor and the time).
-  let why = "";
-  if (action === "keep" || action === "trash") {
-    const cand = (RETRAIN_STATE && (RETRAIN_STATE.candidate_id || RETRAIN_STATE.action_id)) || "this candidate";
-    const verdict = await confirmDestructive({
-      title: action === "trash"
-        ? "Trash this candidate: it is discarded and the model in service keeps running."
-        : "Keep this candidate: it becomes the model this deployment serves.",
-      target: String(cand),
-      blast: action === "trash"
-        ? "the candidate's artifacts are discarded; scoring continues on the current model set"
-        : "the candidate's artifacts become the served model; the previous candidate is retired",
-      reasonHint: action === "trash" ? "why this candidate is not wanted" : "why this one is",
-    });
-    if (!verdict.ok) { note.textContent = "not filed — you declined the confirmation"; return; }
-    why = verdict.reason;
-  }
-  const body = action === "retrain"
-    ? { action }
-    : { action, target_id: (RETRAIN_STATE && RETRAIN_STATE.action_id) || "", note: why };
-  note.textContent = "filing…";
+  if (!note) return;
+  note.textContent = "filing\u2026";
   try {
-    const out = await postJSON("/api/models/retrain", body);
+    const out = await postJSON("/api/models/retrain", { action });
     note.textContent = (out && (out.ok ? (out.note || "filed") : out.error)) || "filed";
   } catch (err) {
     note.textContent = String(err.message || err);
   }
-  await loadRetrain();
 }
 
 /* ── Passive host identification ────────────────────────────────────────────────────────── */

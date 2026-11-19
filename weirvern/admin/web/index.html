@@ -793,32 +793,18 @@
         
       </div>
     </div>
-    <div class="card">
-      <h2>Retraining <span class="muted" id="mr-state"></span></h2>
-      <p class="muted" id="mr-note">Loading…</p>
-      <div class="controls">
-        <button id="mr-force" class="primary">Force retrain</button>
-        <p id="mr-stand" class="muted"></p>
-      <button id="mr-keep" class="hidden">Keep this model</button>
-        <button id="mr-trash" class="hidden">Trash it</button>
-      </div>
-      <table id="mr-report">
-        <thead><tr><th>Detector</th><th>Outcome</th><th>Host-windows</th><th>Training window</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h2>Model cards <span class="muted">registry</span></h2>
-      <p class="muted" id="m-cards-note">loading…</p>
-      <div class="tablewrap">
-        <table id="m-cards">
-          <thead><tr><th>Model</th><th>Status</th><th>Version</th><th>Artifact hash</th><th>Feature</th><th>Calibration</th><th>Evaluation</th><th>Owner / approved</th><th>Rollback</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
+    <!-- NO RETRAINING OR MODEL-CARDS PANEL (operator, 2026-11-19: "remove the Retraining and
+         model cards registry from the models tab. we dont need them anymore"). The retraining panel
+         asked an operator to keep or trash an October candidate while the engine trained every six
+         hours; the cards were a hand-curated snapshot that disagreed with the artifacts on disk.
+         Both described paperwork, not the engine. What survives is the one control they contained,
+         Force retrain, beside the table that says when each detector last trained. -->
     <div class="card">
       <h2>Detection freshness <span class="muted" id="m-stale-window"></span></h2>
+      <div class="controls">
+        <button id="mr-force" class="primary">Force retrain</button>
+        <p id="mr-note" class="muted"></p>
+      </div>
       <div id="m-stale-note"></div>
       <table id="m-stale">
         <thead><tr><th>Detector</th><th>Last retrained</th><th>Last usable</th><th>Age</th><th>Status</th></tr></thead>

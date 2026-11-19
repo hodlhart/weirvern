@@ -61,10 +61,22 @@ def test_eligibility_is_card_gated_not_just_calibrated():
     assert "barred by model card" in src
 
 
-def test_payload_and_view_carry_the_card():
+def test_the_cards_panel_is_gone_but_the_payload_still_carries_the_registry():
+    """The panel went; the registry did not (operator, 2026-11-19).
+
+    "remove the Retraining and model cards registry from the models tab. we dont need them
+    anymore" -- the VIEW is gone. Eligibility still reads the cards, so the payload must keep
+    carrying them; deleting the backend too would quietly make every model card-gated-eligible.
+    """
     api = (ROOT / "weirvern" / "admin" / "web_api.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
+    # the registry is still a fact the engine consults
     assert "model_cards" in api
-    assert "renderModelCards" in js and "m-cards" in js
-    assert "Model cards" in html and "m-cards" in html
+    # the two panels are gone, markup and script both
+    assert "renderModelCards" not in js and "m-cards" not in js
+    assert "Model cards" not in html and "m-cards" not in html
+    assert "Retraining <span" not in html and "mr-report" not in html
+    # the one control they carried survives beside the truth it belongs to
+    assert "Detection freshness" in html
+    assert 'id="mr-force"' in html and 'id="mr-note"' in html
