@@ -232,8 +232,8 @@ class GuiContext:
     """
 
     def __init__(self, connect_factory, settings, backend=None, capabilities=None,
-                 auth=None, config_client=None, user_store=None, sessions=None,
-                 throttle=None, accounts_note=""):
+                 auth=None, config_client=None, user_store=None, token_store=None,
+                 sessions=None, throttle=None, accounts_note=""):
         self.connect_factory = connect_factory
         self.settings = settings
         self.backend = backend
@@ -248,6 +248,9 @@ class GuiContext:
         # The account store, read once at startup then served from memory, so a login
         # never puts a Kubernetes API call on the hot path.
         self.user_store = user_store
+        # The per-token credential store. Separate from `auth` (which holds the legacy
+        # break-glass value) and consulted by it; see weirvern/admin/tokens.py.
+        self.token_store = token_store
         # Sessions and the login throttle. Both in memory; see weirvern/admin/users.py
         # for why a restart signing everyone out is the right trade.
         self.sessions = sessions
@@ -843,6 +846,16 @@ def user_write_args(body: dict, *, kind: str) -> dict:
     return {"username": username}
 
 
+def token_create_args(body: dict) -> dict:
+    """The mint's fields. Validation belongs to the store, which words the refusals once."""
+    return {"name": str(body.get("name") or ""), "role": str(body.get("role") or "")}
+
+
+def token_revoke_args(body: dict) -> dict:
+    """The revoke's handle. An empty id is the store's refusal to word, not this parser's."""
+    return {"token_id": str(body.get("token_id") or "").strip()}
+
+
 def scan_job_args(body: dict) -> dict:
     """One address, and it must be ONE address: a range or a name is a 400 with a sentence."""
     raw_ip = str(body.get("ip") or "").strip()
@@ -1334,15 +1347,31 @@ def build_context(connect_factory, settings, project_dir: Path,
             backend = get_backend(project_dir, caps)
     except Exception as exc:  # noqa: BLE001
         logger.debug("GUI starting without cluster access: %s", exc)
+    # THE PER-TOKEN CREDENTIAL STORE. Built BEFORE the auth state, because the auth state is handed
+    # the store and consults it after the legacy break-glass token has missed. It is a separate
+    # ConfigMap from weirvern-users (see weirvern/admin/tokens.py), read once at startup; a failed
+    # read leaves it empty rather than stopping the GUI, and the legacy token is unaffected either
+    # way.
+    token_store = None
+    try:
+        from weirvern.admin import tokens as tokens_mod
+        from weirvern.admin.cluster_config import ClusterConfig as _TokenCC
+
+        token_store = tokens_mod.TokenStore(_TokenCC(configmap=tokens_mod.TOKENS_CONFIGMAP))
+        token_store.load()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not initialise the token store: %s", exc)
+        token_store = None
+
     # WRITES ARE OFF UNLESS A TOKEN IS CONFIGURED. `from_env` reads it once, so a partially
     # applied ConfigMap cannot serve a half-written token mid-request.
     auth = None
     try:
         from weirvern.admin import gui_auth
 
-        auth = gui_auth.from_env()
+        auth = gui_auth.from_env(token_store=token_store)
         if auth.enabled:
-            logger.info("GUI writes enabled (operator token configured)")
+            logger.info("GUI token authentication enabled (operator token and/or token store)")
         else:
             logger.info("GUI is read-only: %s", auth.reason)
     except Exception as exc:  # noqa: BLE001
@@ -1389,6 +1418,7 @@ def build_context(connect_factory, settings, project_dir: Path,
 
     return GuiContext(connect_factory, settings, backend=backend, capabilities=caps,
                       auth=auth, config_client=config_client, user_store=user_store,
-                      sessions=sessions, throttle=throttle, accounts_note=accounts_note)
+                      token_store=token_store, sessions=sessions, throttle=throttle,
+                      accounts_note=accounts_note)
 
 

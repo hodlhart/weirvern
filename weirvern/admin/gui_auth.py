@@ -5,11 +5,16 @@ a LAN port with NO authentication, so anything an HTTP request could write would
 reconfigure a sensor from the network. That was the right default and it is now the thing being
 changed -- carefully -- because an operator asked to manage settings from the GUI.
 
-WHAT CHANGES AND WHAT DOES NOT. WRITES require admin rights: an admin session or the deployment
-operator token. READS were open until accounts were added; they now require a signed-in account
-(either role), because flow data is sensitive and "a viewer may read" only means something if
-reading is attributable. The break-glass token still works everywhere an admin does, so a lost
-admin password cannot lock a deployment out, and it remains the credential for automation.
+WHAT CHANGES AND WHAT DOES NOT. WRITES require admin rights: an admin session or an admin token.
+READS require a signed-in account (either role) whenever accounts are provisioned, because flow
+data is sensitive and "a viewer may read" only means something if reading is attributable.
+
+THREE KINDS OF TOKEN, AND WHY. `WEIRVERN_GUI_TOKEN` is the deployment's BREAK-GLASS credential:
+one value, admin everywhere, read from the environment, and deliberately independent of the token
+store so a broken store cannot lock an operator out. A PER-TOKEN credential (weirvern.admin.tokens)
+is the opposite trade: it belongs to one automation or one person, carries admin or viewer, is
+revocable individually, and is attributable in the audit trail. A SESSION is a signed-in account;
+it is the only kind of credential that may mint or revoke a token.
 
 THREAT MODEL, STATED PLAINLY. This is not a public service and is not built like one. It defends
 against:
@@ -83,9 +88,13 @@ class AuthState:
     cannot be mutated by a request handler by accident.
     """
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(self, token: str | None = None, token_store=None) -> None:
         # `or None` collapses "" and None deliberately: an empty token must not authenticate.
         self._token = (token or "").strip() or None
+        # THE PER-TOKEN STORE, optionally. It is consulted only after the legacy token has missed,
+        # and every read of it is wrapped: a broken store must degrade to "the legacy token still
+        # works", never to an exception in the gate and never to "nobody can authenticate".
+        self._tokens = token_store
         self._failures: dict[str, list] = {}
         self._lock = threading.Lock()
 
@@ -103,17 +112,34 @@ class AuthState:
 
     @property
     def enabled(self) -> bool:
-        """Whether a token is configured. False means writes are refused, not hidden."""
-        return self._token is not None
+        """Whether a token credential is configured at all.
+
+        True when the deployment has the legacy operator token, OR the token store holds at least
+        one LIVE token. A store object alone is not enough: on a deployment with neither, the UI
+        must keep saying "writes are disabled, here is the variable to set" rather than offering
+        controls that every request would then refuse. Revoking the last token flips this back, and
+        minting one flips it on, because the store's cache is refreshed by its own writes.
+        """
+        if self._token is not None:
+            return True
+        store = self._tokens
+        if store is None:
+            return False
+        try:
+            return bool(store.has_tokens())
+        except Exception:  # noqa: BLE001
+            # An unreadable store is not a credential path. It is also not an error here: the
+            # caller's next question is a refusal with a reason, not a stack trace.
+            return False
 
     @property
     def reason(self) -> str:
-        """Why writes are unavailable, in the operator's terms.
+        """Why token access is unavailable, in the operator's terms.
 
         Returned to the UI so a disabled control can say WHAT is missing. A greyed-out button with
         no explanation sends someone hunting through manifests to guess.
         """
-        if self._token is not None:
+        if self.enabled:
             return ""
         return (
             f"write access is disabled: {TOKEN_ENV} is not set. Set it in the "
@@ -121,29 +147,70 @@ class AuthState:
             f"`weirvern config set`."
         )
 
-    def check(self, presented: str | None, *, client: str = "") -> bool:
-        """Whether a presented token authorizes a write.
+    def role_for(self, presented: str | None, *, client: str = "") -> str:
+        """The role this presented token grants, or "" when it grants nothing.
 
-        A constant-time comparison, and an equal amount of work when no token is configured, so
-        the response time does not reveal whether the gate is even armed.
+        THE ONLY PLACE A TOKEN IS CHECKED. `check()` asks this function rather than keeping a
+        second comparison, because two copies of a credential check are free to disagree -- and
+        the disagreement would be a token that authenticates on one route and not another.
+
+        ORDER: the LEGACY token first, so a broken token store cannot take the break-glass
+        credential down with it. Then the per-token store, whose read is wrapped for the same
+        reason: an exception there is a store that cannot answer, not an authenticated request.
         """
         # STRIPPED DELIBERATELY. A human pastes a token and picks up a trailing newline or a
         # leading space; refusing that would be a security theatre that teaches operators to
         # fight their clipboard. It does not widen the search space in any way that matters --
         # an attacker still has to find the same characters.
         presented = (presented or "").strip()
-        if self._token is None:
+        if not self.enabled:
             # Still do a comparison, against a value of the same shape, so timing does not leak
             # the configured/unconfigured distinction.
             hmac.compare_digest(presented, presented)
             self._record_failure(client)
-            return False
-        ok = bool(presented) and hmac.compare_digest(presented, self._token)
-        if ok:
+            return ""
+
+        if self._token is not None and hmac.compare_digest(presented, self._token):
+            from weirvern.admin import users as users_mod  # noqa: PLC0415
+
             self._clear(client)
-        else:
-            self._record_failure(client)
-        return ok
+            # The legacy token is the deployment's break-glass credential and stays ADMIN. It has
+            # no record to carry a role, and demoting it would remove the recovery path.
+            return users_mod.ROLE_ADMIN
+
+        record = self._store_lookup(presented)
+        if record is not None:
+            self._clear(client)
+            return str(record.role or "")
+        self._record_failure(client)
+        return ""
+
+    def _store_lookup(self, presented: str):
+        """The matching record from the per-token store, or None on any failure.
+
+        EVERY FAILURE IS A MISS, NOT AN ERROR. A store that cannot be read must not raise out of
+        the gate (that turns a credential check into a 500) and must not accept anything; the
+        legacy token was already checked above it.
+        """
+        store = self._tokens
+        if store is None:
+            return None
+        try:
+            return store.authenticate(presented)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "the token store could not be read; only the break-glass operator token can "
+                "authenticate until it recovers: %s", exc,
+            )
+            return None
+
+    def check(self, presented: str | None, *, client: str = "") -> bool:
+        """Whether a presented token authorizes a write.
+
+        A constant-time comparison inside `role_for`, and an equal amount of work when no token is
+        configured, so the response time does not reveal whether the gate is even armed.
+        """
+        return bool(self.role_for(presented, client=client))
 
     # -- failure tracking ---------------------------------------------------
 
@@ -183,15 +250,16 @@ class AuthState:
             return len(self._failures.get(client, []))
 
 
-def from_env(environ: dict | None = None) -> AuthState:
+def from_env(environ: dict | None = None, *, token_store=None) -> AuthState:
     """Build the auth state from the environment.
 
     Read once, at startup. An env var is a snapshot of the deployment's configuration; re-reading
     per request would pick up a partially-applied ConfigMap update and could serve a half-written
-    token.
+    token. The per-token store is PASSED IN rather than built here: its lifecycle belongs to the
+    context, which already owns the cluster client it reads through.
     """
     env = environ if environ is not None else os.environ
-    return AuthState(env.get(TOKEN_ENV))
+    return AuthState(env.get(TOKEN_ENV), token_store=token_store)
 
 
 def token_from_request(handler) -> str | None:

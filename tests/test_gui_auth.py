@@ -140,12 +140,23 @@ def test_a_wrong_token_is_refused():
 
 def test_the_comparison_is_constant_time_not_equality():
     """`==` returns early on the first differing byte, so response time reveals how much of a
-    guess was correct -- enough to recover a token one character at a time."""
+    guess was correct -- enough to recover a token one character at a time.
+
+    THE COMPARISON MOVED into `role_for` when per-token credentials were added: `check()` is now
+    the boolean form of the same answer and must not keep a second comparison of its own, because
+    two copies of a credential check are free to disagree. So the comparison is asserted where it
+    lives, and `check` is asserted to be a delegation rather than a duplicate.
+    """
     src = AUTH_SRC.read_text()
-    body = src[src.index("    def check(self"):]
+    body = src[src.index("    def role_for(self"):]
     body = body[:body.index("\n    def ", 10)]
     assert "compare_digest" in body, "the comparison is not constant-time"
     assert "presented == self._token" not in body, "the token is compared with =="
+    check = src[src.index("    def check(self"):]
+    check = check[:check.index("\n    # -- failure tracking")]
+    assert "compare_digest" not in check, (
+        "check() kept its own comparison, so the two credential checks can disagree")
+    assert "role_for(" in check, "check() no longer delegates to the one comparison"
 
 
 def test_the_token_is_read_once_at_startup_not_per_request():

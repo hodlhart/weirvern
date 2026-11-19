@@ -275,11 +275,30 @@ value is in it.
 The dashboard itself runs on Flask behind waitress, with every API route served by that app; nothing
 is proxied to an older handler.
 
+### API tokens
+
+The operator token above is the deployment's **break-glass** credential: one value, admin
+everywhere, and independent of everything else so it can recover a broken deployment. For
+day-to-day automation, an admin signs in and mints a **per-token credential** under
+**Settings → Access and security → API tokens**. Each token:
+
+- carries one role — `admin` (read and write, like an admin account) or `viewer` (read only);
+- is revoked on its own, and the next request presenting it is refused — no restart;
+- is recorded in the audit trail by name when it is minted or revoked, never by value;
+- cannot mint or revoke another token. That requires a signed-in admin **session**, so a leaked
+  token cannot outlive its own revocation.
+
+The secret is shown **once**, in the create response. The store keeps only its SHA-256 digest and
+an eight-character prefix for the list, so a lost token is revoked and replaced, never recovered.
+Tokens live in a `weirvern-tokens` ConfigMap created on first mint; the GUI's ServiceAccount is
+already scoped to patch `weirvern-env`, `weirvern-users` and `weirvern-tokens` by name.
+
 ## Security and trust
 
 - **No payload inspection.** Flow metadata and Zeek protocol logs only; TLS is never decrypted.
 - **Break-glass access is explicit.** The GUI token is a Secret, not a URL parameter; sessions
-  and roles are recorded.
+  and roles are recorded. Per-token credentials are individually revocable, role-scoped, and
+  stored as digests.
 - **Every write is audited.** Settings, plans, revocations and rules carry actor, time and reason.
 - **Fail-open by default.** A sensor that cannot enforce says so; the siphon watchdog restores
   every mapping on stop, crash or a stalled forward.

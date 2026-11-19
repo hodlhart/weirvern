@@ -1325,6 +1325,93 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         return _account_write("reset", payloads.user_reset)
 
+    # ── per-token credentials: mint, list, revoke ────────────────────────────────────────────────
+    #
+    # A TOKEN MAY NOT MANAGE TOKENS. Every route below requires a SIGNED-IN ADMIN SESSION, and the
+    # check is on `identity()` -- the session path -- not on `token_role()` and not on
+    # `write_refusal()`. That is deliberate: `write_refusal` admits an admin token, and a credential
+    # that can mint or revoke credentials is a credential that can outlive its own revocation. The
+    # legacy break-glass token is no exception, because losing control of it must still be fixable
+    # by a person who can sign in.
+    #
+    # CSRF: these are JSON routes, reached the same way `/api/settings/apply` is. The session rides
+    # in the X-Weirvern-Session header (or the SameSite=Strict signed cookie this app folds into
+    # that header), which a cross-site form cannot set, and a form-encoded body is refused by the
+    # shared JSON parser. There is no nonce here for the same reason there is none on the other API
+    # writes; the rendered-form nonce protects the pages that post forms, not this surface.
+
+    def _admin_session() -> tuple[Any, Any]:
+        """The signed-in admin for this request, and the refusal response when there is none.
+
+        BOTH POSITIONS ARE `Any` ON PURPOSE: the caller branches on `refused is not None`, which is
+        the invariant this function guarantees (exactly one of the two is set).
+        """
+        from weirvern.admin import requestauth  # noqa: PLC0415
+
+        ident = requestauth.identity(ctx, _auth_headers())
+        if ident is None:
+            return None, _json_error(
+                403, "managing tokens requires a signed-in admin account; a token cannot mint "
+                     "or revoke tokens")
+        if ident.must_change:
+            return None, _json_error(403, "change your password before managing tokens")
+        if not ident.is_admin:
+            return None, _json_error(403, "admin access is required to manage tokens")
+        return ident, None
+
+    @app.get("/api/tokens")
+    def tokens_view():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        _ident, refused = _admin_session()
+        if refused is not None:
+            return refused
+        return jsonify(payloads.tokens_list(store=getattr(ctx, "token_store", None)))
+
+    @app.post("/api/tokens/create")
+    def tokens_create():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ident, refused = _admin_session()
+        if refused is not None:
+            return refused
+        store = getattr(ctx, "token_store", None)
+        if store is None:
+            return _json_error(503, payloads.TOKENS_UNAVAILABLE)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        args = web.token_create_args(body)
+        code, payload = payloads.token_create(store, created_by=ident.username, **args)
+        if code == 200:
+            # THE AUDIT ROW CARRIES THE NAME AND ROLE, NEVER THE SECRET. `audit_auth` has no
+            # parameter that could carry it, which is the point.
+            requestauth.audit_auth(ctx, "token-create", args["name"],
+                                   f"created a {args['role']} token")
+        return jsonify(payload), code
+
+    @app.post("/api/tokens/revoke")
+    def tokens_revoke():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ident, refused = _admin_session()
+        if refused is not None:
+            return refused
+        store = getattr(ctx, "token_store", None)
+        if store is None:
+            return _json_error(503, payloads.TOKENS_UNAVAILABLE)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        args = web.token_revoke_args(body)
+        code, payload = payloads.token_revoke(store, revoked_by=ident.username, **args)
+        if code == 200:
+            record = payload.get("record") or {}
+            requestauth.audit_auth(ctx, "token-revoke", str(record.get("name") or ""), "revoked")
+        return jsonify(payload), code
+
     # ── the session routes: sign in, sign out, change your own password ───────────────────────
     #
     # THESE THREE DO NOT USE `_account_write` OR `gated`. /api/login is the door itself, and the other

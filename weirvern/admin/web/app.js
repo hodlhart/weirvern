@@ -1610,8 +1610,10 @@ async function loadSettings() {
           + "apply. Secrets are reported as set or not set, never in value."));
   }
   // The Users panel is admin-only; load it here so navigating to Settings does not leave a
-  // "loading…" nobody resolves -- the same orphaned-placeholder bug class.
+  // "loading…" nobody resolves -- the same orphaned-placeholder bug class. The API tokens panel
+  // has the same shape and the same failure mode.
   await loadUsers();
+  await loadTokens();
 }
 
 /* ── accounts: the admin Users panel ─────────────────────────────────────────
@@ -1747,6 +1749,122 @@ async function createUser() {
     usersResult(String(err.message || err), true);
   }
 }
+
+/* ── per-token credentials: the admin API tokens panel ───────────────────────
+ *
+ * A TOKEN IS NOT AN ACCOUNT, and the panel says so by what it offers: no password, no role that
+ * can be changed after the fact, and a Revoke button rather than a Delete. The role is fixed at
+ * creation because a token has no owner to re-authenticate; rotating means minting a replacement
+ * and revoking the old one, which also leaves the audit trail of both.
+ *
+ * RENDERED ONLY FROM THE SERVER'S ANSWER, like the Users panel: the list comes from /api/tokens,
+ * and every action POSTs then re-reads it. The one piece of local state is the freshly minted
+ * secret, which exists ONLY in the create response -- deliberately. Once this panel re-reads, the
+ * value is gone from the page and cannot be recovered.
+ *
+ * THE PANEL IS HIDDEN FROM A TOKEN CALLER even when its role is admin: minting and revoking need a
+ * signed-in account, so showing the controls would offer a button the server must refuse.
+ */
+
+async function loadTokens() {
+  const card = document.getElementById("st-tokens-card");
+  const note = document.getElementById("st-tokens-note");
+  const body = document.querySelector("#st-tokens tbody");
+  if (!card || !note || !body) return;
+  const canManage = AUTH.accounts && AUTH.authenticated && AUTH.role === "admin"
+    && AUTH.via !== "token";
+  card.classList.toggle("hidden", !canManage);
+  if (!canManage) return;
+  let data = null;
+  try { data = await getJSON("/api/tokens"); }
+  catch (err) { data = { available: false, reason: err.message }; }
+  body.replaceChildren();
+  if (!data || !data.available) {
+    note.textContent = "Tokens are unavailable: " + ((data && data.reason) || "no reason given");
+    return;
+  }
+  const tokens = data.tokens || [];
+  const live = tokens.filter((t) => !t.revoked);
+  const count = document.getElementById("st-tokens-count");
+  if (count) count.textContent = `${live.length} live`;
+  note.textContent = live.length
+    ? `${live.length} live token${live.length === 1 ? "" : "s"}. The prefix identifies a row; the `
+      + "secret is shown once at creation and never again."
+    : "No live tokens. Create one below for automation, or for someone who should not share "
+      + "your account.";
+  for (const t of tokens) {
+    const revoked = !!t.revoked;
+    body.appendChild(el("tr", {}, [
+      el("td", {}, [el("span", { class: "mono", text: t.name })]),
+      el("td", {}, [el("span", { class: "mono", text: t.prefix || "—" })]),
+      el("td", {}, [el("span", { text: t.role })]),
+      el("td", { class: "muted mono", text: t.created_at || "—" }),
+      el("td", { class: "muted mono",
+                 text: revoked ? `revoked ${t.revoked_at}` : (t.last_used_at || "never") }),
+      el("td", {}, [
+        revoked
+          ? el("span", { class: "muted", text: "revoked" })
+          : el("button", {
+            class: "user-act danger", text: "Revoke",
+            attrs: { type: "button", "aria-label": `revoke the token ${t.name}` },
+            on: { click: () => revokeToken(t.token_id, t.name) },
+          }),
+      ]),
+    ]));
+  }
+}
+
+function tokensResult(message, isError) {
+  const out = document.getElementById("st-token-result");
+  if (!out) return;
+  out.textContent = message || "";
+  out.style.color = isError ? "var(--danger)" : "";
+}
+
+function showTokenValue(value) {
+  const box = document.getElementById("st-token-reveal");
+  const input = document.getElementById("st-token-value");
+  if (!box || !input) return;
+  input.value = value || "";
+  box.classList.remove("hidden");
+  input.focus();
+  input.select();
+}
+
+async function createToken() {
+  const nameField = document.getElementById("st-new-token-name");
+  const roleField = document.getElementById("st-new-token-role");
+  const name = ((nameField && nameField.value) || "").trim();
+  const role = (roleField && roleField.value) || "viewer";
+  if (!name) {
+    tokensResult("give the token a name, so the list can say what it is for.", true);
+    return;
+  }
+  try {
+    const data = await postJSON("/api/tokens/create", { name, role });
+    tokensResult(`created ${name} (${role}). Copy the token now — it is not shown again.`);
+    showTokenValue((data && data.token) || "");
+    if (nameField) nameField.value = "";
+    await loadTokens();
+  } catch (err) {
+    tokensResult(String(err.message || err), true);
+  }
+}
+
+async function revokeToken(tokenId, name) {
+  if (!window.confirm(`Revoke the token ${name}? Anything using it stops working immediately.`)) {
+    return;
+  }
+  try {
+    await postJSON("/api/tokens/revoke", { token_id: tokenId });
+    tokensResult(`revoked ${name}.`);
+    await loadTokens();
+  } catch (err) {
+    tokensResult(String(err.message || err), true);
+    await loadTokens();
+  }
+}
+
 /* ── anomalies ──────────────────────────────────────────────────────────── */
 
 /* SOC-1: REVIEW STATE.
@@ -5331,6 +5449,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const userCreate = document.getElementById("st-user-create");
   if (userCreate) userCreate.addEventListener("click", () => createUser());
+
+  const tokenCreate = document.getElementById("st-token-create");
+  if (tokenCreate) tokenCreate.addEventListener("click", () => createToken());
+
+  // The minted secret lives in that input only until the operator is done. Clearing it on Done
+  // is not cosmetic: a shared workstation must not leave a live credential on screen.
+  const tokenDone = document.getElementById("st-token-done");
+  if (tokenDone) tokenDone.addEventListener("click", () => {
+    const box = document.getElementById("st-token-reveal");
+    const input = document.getElementById("st-token-value");
+    if (input) input.value = "";
+    if (box) box.classList.add("hidden");
+  });
 
   // THE BOOT SEQUENCE. The gate is resolved BEFORE anything loads a dashboard panel: a read
   // against the wrong identity would render an empty page that looks like a quiet network --

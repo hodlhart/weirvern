@@ -1048,6 +1048,57 @@ def users_list(*, store: Any, accounts_on: bool, note: str) -> dict[str, Any]:
 
 
 ACCOUNTS_UNAVAILABLE = "the account store is not available on this GUI"
+TOKENS_UNAVAILABLE = "the token store is not available on this GUI"
+
+
+def tokens_list(*, store: Any) -> dict[str, Any]:
+    """Every token record, revoked ones included, with the digest removed.
+
+    REVOKED ROWS ARE KEPT. A revoke disappears from the live credential set but not from the
+    operator's view of what happened; hiding it would make "did I revoke the right one?" a question
+    the GUI cannot answer. `public()` carries `revoked` so the row can say which state it is in.
+
+    NO PLAINTEXT AND NO DIGEST EVER APPEARS HERE. The only credential-shaped field is `prefix`, the
+    eight-character display label.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    if store is None:
+        return {"available": False, "tokens": [], "roles": list(users_mod.ROLES),
+                "reason": TOKENS_UNAVAILABLE}
+    return {"available": True, "tokens": store.public_tokens(), "roles": list(users_mod.ROLES)}
+
+
+def token_create(store: Any, *, name: str, role: str,
+                 created_by: str) -> tuple[int, dict[str, Any]]:
+    """Mint a token and return its plaintext ONCE.
+
+    THE ONLY RESPONSE THAT EVER CARRIES THE SECRET. The store keeps a digest and a display prefix;
+    the audit row records the name and role; a log line records the name and prefix. Nothing else
+    has the value, which is why the UI says "shown once" rather than pretending it can be recovered.
+    """
+    from weirvern.admin import tokens as tokens_mod  # noqa: PLC0415
+
+    try:
+        record, plaintext = store.create_token(name, role, created_by=created_by)
+    except tokens_mod.TokenError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not create the token: {exc}", "code": 502}
+    return 200, {"ok": True, "token": plaintext, "record": record.public()}
+
+
+def token_revoke(store: Any, *, token_id: str, revoked_by: str) -> tuple[int, dict[str, Any]]:
+    """Revoke one token. Takes effect on the next request; the caller audits who did it."""
+    from weirvern.admin import tokens as tokens_mod  # noqa: PLC0415
+
+    try:
+        record = store.revoke(token_id, revoked_by=revoked_by)
+    except tokens_mod.TokenError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not revoke the token: {exc}", "code": 502}
+    return 200, {"ok": True, "token_id": record.token_id, "record": record.public()}
 
 
 def user_create(store: Any, *, username: str, role: str, password: str,

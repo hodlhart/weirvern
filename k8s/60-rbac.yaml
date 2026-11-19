@@ -156,13 +156,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log", "pods/portforward"]
     verbs: ["get", "create"]
-  # THE CONFIG WRITE PATH. `patch` is NAME-SCOPED to the two objects the GUI writes: `weirvern-env`
-  # (settings) and `weirvern-users` (the account store). An unscoped configmap write let this Role
-  # patch ANY ConfigMap in the namespace -- including sensor configuration a root pod executes.
-  # `update` is deliberately NOT granted anywhere on configmaps: a PUT replaces every key.
+  # THE CONFIG WRITE PATH. `patch` is NAME-SCOPED to the objects the GUI writes: `weirvern-env`
+  # (settings), `weirvern-users` (the account store) and `weirvern-tokens` (the per-token credential
+  # store). An unscoped configmap write let this Role patch ANY ConfigMap in the namespace --
+  # including sensor configuration a root pod executes. `update` is deliberately NOT granted
+  # anywhere on configmaps: a PUT replaces every key.
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["weirvern-env", "weirvern-users"]
+    resourceNames: ["weirvern-env", "weirvern-users", "weirvern-tokens"]
     verbs: ["patch"]
   #
   # The first-startup CREATE cannot be named -- same measurement as the jobs grant above: a live

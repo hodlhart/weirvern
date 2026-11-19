@@ -129,6 +129,23 @@ finds an existing k3s without the flag.
 Reference: <https://docs.k3s.io/security/secrets-encryption>. The k3s default when the flag is
 absent is no encryption at rest.
 
+### GUI credentials at rest
+
+The GUI's account store (`weirvern-users`) and per-token credential store (`weirvern-tokens`) are
+**ConfigMaps**, not Secrets, because the GUI pod's ServiceAccount deliberately has no access to
+Secrets at all — that absence is what stops a compromised pod from reading the Pushover
+credentials, and widening the grant would trade a proven guard for a weaker one. What each store
+holds bounds the exposure:
+
+- `weirvern-users`: scrypt password hashes with a per-user salt (n=2^14, r=8, p=1);
+- `weirvern-tokens`: a **SHA-256 digest** per token plus an eight-character display prefix. The
+  token's secret half is never stored, logged, or written to the audit trail; it exists in the
+  create response and nowhere else. A 256-bit random token is not guessable offline, so a slow KDF
+  would add request latency without adding protection.
+
+Anyone who can read ConfigMaps in this namespace can already reconfigure the deployment, so this
+is a bounded trade rather than an assumption that the store is private.
+
 ### Per-weirling database credentials
 
 Every weirling used to ship with the hub's own ClickHouse user and password. One compromised

@@ -214,6 +214,16 @@ lock a deployment out of its own configuration. Accounts live in a `weirvern-use
 ConfigMap, created on first startup; password hashes are scrypt with a per-user salt, and
 sessions are in memory, so a restart signs everyone out.
 
+**Per-token credentials** are the third way in, and the one to use for automation. An admin
+signs in and mints one under **Settings → Access and security → API tokens**. It carries one of
+the same two roles — a `viewer` token reads everything and writes nothing; an `admin` token is
+admin-equivalent — and it is revoked individually, taking effect on the next request. The secret
+is returned once, at creation; the `weirvern-tokens` ConfigMap holds only its SHA-256 digest and
+an eight-character display prefix. A token **cannot** mint or revoke tokens or change a role:
+those require a signed-in admin session, so a leaked token cannot protect itself from revocation.
+Treat a token like a password and hand it to the automation that needs it, not to a person who
+could have an account.
+
 | View | What it answers |
 |---|---|
 | Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status), the health probes, ingestion trend, table sizes, and the **alert audit** — every alerting decision, including what was suppressed and why, paged 15 at a time like the inventory and stating when the list is capped. Sits between Models and Settings; still the landing view |

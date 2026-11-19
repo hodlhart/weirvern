@@ -83,17 +83,31 @@ def identity(ctx: Any, headers: Any) -> Any:
 
 
 def token_role(ctx: Any, headers: Any, *, client: str = "") -> str:
-    """users_mod.ROLE_ADMIN when this request presents the operator token, else "".
+    """The role the presented token carries, or "" when it carries none.
+
+    THE ROLE COMES FROM THE CREDENTIAL, NOT FROM A CONSTANT. There are two kinds of token now:
+    the deployment's legacy operator token, which is always admin, and a per-token credential
+    from `weirvern-tokens`, which carries the role it was minted with. A viewer token must read
+    as a viewer everywhere -- the write gate, the settings payload and the session probe all ask
+    this one function.
 
     The PASSIVE form, for reporting state. It records no failures and applies no delay -- those
     belong to the gate -- so a read that merely might carry a token cannot be used to rack up
     delays against someone else's address. `client` is passed only by callers that ARE the gate.
     """
     auth = getattr(ctx, "auth", None)
-    if auth is None or not getattr(auth, "enabled", False):
+    if auth is None:
         return ""
     presented = gui_auth.token_from_request(headers_only(headers))
-    if presented and auth.check(presented, client=client):
+    if not presented:
+        return ""
+    role_for = getattr(auth, "role_for", None)
+    if callable(role_for):
+        return str(role_for(presented, client=client) or "")
+    # A duck-typed stand-in with only `check()` (the shape the older tests build) can answer
+    # whether the deployment's ONE token matched; it cannot carry a role, and the only token an
+    # object of that shape ever represented was the admin break-glass value.
+    if getattr(auth, "enabled", False) and auth.check(presented, client=client):
         return users_mod.ROLE_ADMIN
     return ""
 
@@ -119,12 +133,17 @@ def session_payload(ctx: Any, headers: Any) -> dict:
         payload.update({"authenticated": True, "username": ident.username,
                         "role": ident.role, "must_change": ident.must_change,
                         "via": "session"})
-    elif token_role(ctx, headers):
-        payload.update({"authenticated": True, "username": "", "role": users_mod.ROLE_ADMIN,
-                        "must_change": False, "via": "token"})
     else:
-        payload.update({"authenticated": False, "username": "", "role": "",
-                        "must_change": False, "via": ""})
+        # THE TOKEN'S OWN ROLE, not a constant, and asked ONCE: a viewer token that reported
+        # itself as an admin here would light up every admin control in the UI and then refuse
+        # each one at the gate.
+        role = token_role(ctx, headers)
+        if role:
+            payload.update({"authenticated": True, "username": "", "role": role,
+                            "must_change": False, "via": "token"})
+        else:
+            payload.update({"authenticated": False, "username": "", "role": "",
+                            "must_change": False, "via": ""})
     return payload
 
 
@@ -273,8 +292,12 @@ def write_refusal(ctx: Any, headers: Any, *,
     """Whether this request may WRITE, and the refusal to send when it may not.
 
     Two credentials open the write path, both admin-equivalent: a signed-in admin account session,
-    or the deployment operator token (break-glass: it recovers a lost admin password and drives
-    automation).
+    or an ADMIN token (the deployment operator token, break-glass: it recovers a lost admin
+    password and drives automation).
+
+    A VIEWER TOKEN IS REFUSED, with the same 403 shape a viewer account gets. Before per-token
+    credentials existed every token was admin, so "a token is a write credential" was true; it is
+    not true now, and the role has to be read rather than assumed.
 
     `addr` is the caller's real address, and passing it is what makes the token check GATED: a wrong
     token then counts toward the escalating delay. A caller that passes "" gets the passive probe.
@@ -282,10 +305,17 @@ def write_refusal(ctx: Any, headers: Any, *,
 
     Returns `(True, None)` to proceed, or `(False, (code, message))`.
     """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
     auth = getattr(ctx, "auth", None)
 
-    # TOKEN FIRST, regardless of the session. See the note above.
-    if gui_auth.token_from_request(headers_only(headers)) and token_role(ctx, headers, client=addr):
+    # TOKEN FIRST, regardless of the session. See the note above. A viewer token is REMEMBERED
+    # rather than refused here: a request that also carries a valid admin session has a stronger
+    # credential on it, and refusing it because a weaker one rode along would be the mirror of
+    # F049 -- the same request answered by which credential happened to be present.
+    presented = gui_auth.token_from_request(headers_only(headers))
+    token_granted = token_role(ctx, headers, client=addr) if presented else ""
+    if token_granted == users_mod.ROLE_ADMIN:
         return True, None
 
     ident = identity(ctx, headers)
@@ -296,6 +326,13 @@ def write_refusal(ctx: Any, headers: Any, *,
             return True, None
         return False, (403, "this account is a viewer: it can read every view but cannot change "
                             "settings or manage accounts. Ask an admin.")
+
+    if token_granted:
+        # A live, correctly presented, non-admin token. 403 like a viewer account, and the wording
+        # says which credential is short of rights so an operator does not go looking for a session.
+        return False, (403, "this token is a viewer: it can read every view but cannot change "
+                            "settings or manage accounts. Ask an admin for a token with the "
+                            "admin role.")
 
     if auth is None:
         return False, (503, "write access is not available: the GUI started without an "

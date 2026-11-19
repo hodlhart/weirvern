@@ -1984,6 +1984,43 @@
     </div>
 
     <!--
+      API TOKENS, admin-only. A token is a CREDENTIAL, not an account: it carries one of the two
+      roles, it is revoked rather than deleted, and it can never mint or revoke another token. The
+      server enforces that last part with a signed-in admin session, and this card is hidden from a
+      token caller for the same reason -- offering a button that can only be refused teaches the
+      operator nothing.
+    -->
+    <div class="card hidden" id="st-tokens-card">
+      <h2>API tokens <span class="muted" id="st-tokens-count"></span> <button class="info-btn" data-info="st-tokens-info" aria-label="how to read this card" aria-expanded="false">i</button></h2>
+      <p class="muted" id="st-tokens-note">loading…</p>
+      <table id="st-tokens">
+        <thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="controls" id="st-token-add">
+        <input id="st-new-token-name" type="text" placeholder="what is it for"
+               aria-label="new token name" autocomplete="off" spellcheck="false">
+        <select id="st-new-token-role" aria-label="new token role">
+          <option value="viewer" selected>viewer</option>
+          <option value="admin">admin</option>
+        </select>
+        <button id="st-token-create" type="button">Create token</button>
+      </div>
+      <div class="controls hidden" id="st-token-reveal">
+        <input id="st-token-value" type="text" readonly aria-label="the new token; copy it now"
+               spellcheck="false">
+        <button id="st-token-done" class="quiet" type="button">Done</button>
+      </div>
+      <p class="muted" id="st-token-result"></p>
+<div class="info-text hidden" id="st-tokens-info">
+  <p><strong>What it is.</strong> Credentials for automation and for people who should not share yours. Each carries one role, admin or viewer, and is revoked on its own — no restart, and no effect on the others.</p>
+  <p><strong>What writes it.</strong> A signed-in admin. A token cannot mint or revoke another token: a credential that can do that can outlive its own revocation.</p>
+  <p><strong>Last changed.</strong> The secret is shown once, when it is created, and never again — the store keeps only its SHA-256 digest. A lost token is revoked and replaced, not recovered.</p>
+  <p><strong>Where to see it.</strong> The prefix identifies a row here; the audit records who minted or revoked it, never its value.</p>
+</div>
+    </div>
+
+    <!--
       THE TOKEN CONTROL. Shown when no accounts are provisioned (so the operator knows what to
       set) and when they are (so a token can still be used as the break-glass credential). The
       token is the deployment-wide recovery credential: it recovers a lost admin account and
