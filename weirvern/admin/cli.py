@@ -1421,6 +1421,10 @@ def cmd_demo_seed(args: argparse.Namespace) -> int:
     argv = ["--hours", str(args.hours), "--hosts", str(args.hosts), "--seed", str(args.seed)]
     if args.force:
         argv.append("--force")
+    if args.scope:
+        argv.append("--scope")
+    if args.no_evidence:
+        argv.append("--no-evidence")
     if args.dry_run:
         argv.append("--dry-run")
     return demo_seed.main(argv)
@@ -1605,11 +1609,12 @@ def build_parser() -> argparse.ArgumentParser:
     # --force. It generates records and pushes them through the real Zeek mappers rather than writing
     # finished rows, because the mapper is the layer whose bugs actually reach production.
     s = sub.add_parser("demo-seed", help="fill ClickHouse with plausible demo traffic ending now")
-    s.add_argument("--hours", type=int, default=6, help="hours of data to generate (default 6)")
-    s.add_argument("--hosts", type=int, default=22, help="internal hosts to simulate (default 22)")
-    s.add_argument("--seed", type=int, default=1337, help="RNG seed, so a demo is reproducible")
-    s.add_argument("--force", action="store_true", help="seed even though recent flow data exists")
-    s.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    # The flags are declared once, in the module that implements them. This parser used to carry a
+    # second copy with its own defaults, so the CLI could default to six hours while the module
+    # defaulted to six days and both looked correct in their own help text.
+    from weirvern import demo_seed as _demo_seed  # noqa: PLC0415
+
+    _demo_seed.add_arguments(s)
     s.set_defaults(func=cmd_demo_seed)
 
     return p

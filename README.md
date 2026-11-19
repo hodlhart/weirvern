@@ -188,12 +188,14 @@ A fresh install is empty, and every query in the console is relative to now, so 
 has nothing to show until traffic arrives. To fill it for a demo:
 
 ```sh
-weirvern demo-seed --hours 6          # six hours of traffic, ending at the current minute
-weirvern demo-seed --hours 6 --dry-run   # print the row counts, write nothing
+weirvern demo-seed                  # six days of traffic, ending at the current minute
+weirvern demo-seed --dry-run        # print the row counts, write nothing
+weirvern demo-seed --hours 6        # a quick fill, for a console that only needs traffic
 ```
 
-That writes `zeek_conn`, `zeek_dns`, `zeek_ssl`, `zeek_http` and `flows` for 22 simulated
-hosts. Two properties are deliberate.
+That writes `zeek_conn` (116,397 rows), `zeek_dns` (23,323), `zeek_ssl` (22,549), `zeek_http`
+(22,900) and `flows` (116,397) for 22 simulated hosts, 301,566 rows in all. Two properties are
+deliberate.
 
 **The records go through the real mappers.** Every generated record is built in Zeek's own
 field shape and pushed through `ingester.map_zeek_*`, the same functions the tailer calls. A
@@ -203,9 +205,21 @@ bugs actually live untested, and a test fails if the mapper stops being called.
 **The flow view and the Zeek view come from the same conversations**, so the two channels
 agree about volume instead of contradicting each other.
 
-The data includes two anomalies on purpose: a steady small beacon to one external address every
-window, which a per-host volume baseline will not flag on size, and one port sweep with high
-flow count and almost no bytes, which the diversity and volume models read differently.
+The data includes three anomalies on purpose, and they are graded rather than decorative.
+
+A steady small beacon to one external address every window, which a per-host volume baseline will
+not flag on size. One port sweep with high flow count and almost no bytes, which the diversity and
+volume models read differently. And, in the final hour, one host whose flows and DNS lookups run
+tens of times above anything it has done before, which is the only one of the three the Ripples
+card can see.
+
+That last one is deliberate arithmetic. A ripple needs two families to clear p <= 0.01 on the same
+host in the same window, the p-value is empirical against the host's own past, and the evidence
+measures the current hour only. So the burst has to land in the final hour and beat every hour the
+host has had; 0.006 is "more extreme than all 167 baseline windows", and nothing subtle reaches it.
+Without this the demo fills 300,000 rows and still shows an empty Ripples card, which reads as a
+broken feature and is really a seed that asked too little of itself. Measured on a seeded
+database: `combined_p` 4.3e-05 across three families, one ripple.
 
 **It is generated, not a capture.** `--seed` makes it reproducible, and nothing is derived from
 real traffic. If you have your own capture and want genuine packets, replay it instead:
@@ -220,9 +234,32 @@ you shift it with `tcprewrite`. Replay needs capture privileges on the interface
 container usually does not have. And `--topspeed` can outrun Zeek, which shows up as
 `capture_loss` rather than as a clean demo.
 
+### Why the default is six days
+
+The Ripples card is built from evidence measured against each host's own recent past, and it has a
+floor: a scale is only measured when the host has at least 30 baseline windows behind it. At the
+hourly scale that is about 30 hours of history, so a six-hour seed fills every table and still
+shows an empty Ripples card, which looks exactly like a broken feature. Six days clears the floor
+with room to spare and stays inside the seven-day lookback.
+
+The seeder runs that evidence pass itself, because the worker only does it on its shadow tick and
+a demo should not wait for one. `--no-evidence` skips it.
+
+### Scope
+
+Every seeded host sits in `192.0.2.0/24`. The console treats an address as ours only when a
+monitored network in `network_scopes` covers it, and an address that is not ours is a peer with no
+evidence measured against it. So with no covering scope the Ripples card is empty for a scope
+reason, which is a correct absence that an audience reads as a broken card.
+
+The seeder reports that gap and stops there, because that table also decides what the scanner is
+allowed to touch and a demo seeder must not widen it quietly. Re-run with `--scope` to declare
+`192.0.2.0/24` as monitored, or add it under Settings > Networks.
+
 **After seeding, let the worker run one sweep.** The derived tables the ML panels read
 (`flows_window`, `ml_window_scores`) are produced by the normal detection loop, not by the
-seeder, so those panels stay empty until a sweep completes over the new data.
+seeder, so those panels stay empty until a sweep completes over the new data. This does not apply
+to the aggregate views, which are materialized views on `flows` and fill as the seed inserts.
 
 The seeder refuses to run when recent flow data exists, because mixing demo rows into a working
 install is not recoverable by deleting rows you can no longer identify. `--force` overrides it

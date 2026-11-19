@@ -199,3 +199,185 @@ def test_the_flow_row_names_every_column_the_schema_needs():
     assert all(len(r) == width for r in data["flows"])
     assert all(v is not None for r in data["flows"] for v in r), "a flow value came out None"
 
+# --- the demo has to be demonstrable, not just populated -------------------------------------
+#
+# A seed that fills every table and leaves the Ripples card empty is the failure these cover. Two
+# separate reasons for that, and both used to be invisible:
+#
+#   NO SCOPE.    Seeded hosts live in 192.0.2.0/24. With no monitored network covering it every
+#                seeded host is a peer, the evidence pass measures nothing for them, and the card
+#                reports a scope reason. A correct absence that looks exactly like a broken feature.
+#
+#   NO HISTORY.  The 1h scale needs MIN_BASELINE_SAMPLES windows of the host's own past, about 30
+#                hours, so a short seed cannot produce evidence however many rows it writes.
+
+
+class _FakeClient:
+    """Enough of a client to let the helpers read a scope list and record a write."""
+
+    def __init__(self, nets=()):
+        self.nets = list(nets)
+        self.inserted = []
+
+    def query(self, sql, *_args, **_kwargs):
+        rows = [[net] for net in self.nets]
+
+        class _Result:
+            result_rows = rows
+
+        return _Result()
+
+    def insert(self, table, rows, **_kwargs):
+        self.inserted.append((table, rows))
+
+
+def test_the_default_span_can_produce_evidence():
+    """The default must clear the 30-hour floor, or `weirvern demo-seed` ships a broken demo."""
+    assert demo_seed.DEFAULT_HOURS >= 30, (
+        "the default seed is shorter than the evidence floor, so the Ripples card renders empty"
+    )
+
+
+def test_a_covered_scope_is_reported_and_not_rewritten(capsys):
+    client = _FakeClient(nets=["192.0.2.0/24"])
+    demo_seed._report_scope(client, declare=False)
+    out = capsys.readouterr().out
+    assert "is monitored" in out
+    assert client.inserted == [], "a covered scope must not be written again"
+
+
+def test_an_uncovered_scope_warns_and_writes_nothing(capsys):
+    """The scope table decides what the scanner may touch. A seeder must not widen it on its own."""
+    client = _FakeClient(nets=["198.51.100.0/24"])
+    demo_seed._report_scope(client, declare=False)
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "--scope" in out, "the warning has to name the flag that fixes it"
+    assert client.inserted == [], "widening scope has to be asked for by name"
+
+
+def test_declaring_the_scope_writes_it_when_asked(capsys):
+    client = _FakeClient(nets=["198.51.100.0/24"])
+    demo_seed._report_scope(client, declare=True)
+    out = capsys.readouterr().out
+    assert "declared 192.0.2.0/24" in out
+    assert len(client.inserted) == 1
+    table, rows = client.inserted[0]
+    assert table == "weirvern.network_scopes"
+    assert rows[0][2] == "internal", "the label is a closed vocabulary; demo is not one of them"
+    assert "demo" in rows[0][5], "the description is where the synthetic origin belongs"
+    assert rows[0][3] == 1, "a demo scope has to be monitored to be attributed at all"
+
+
+def test_a_short_seed_says_why_the_evidence_is_empty(capsys, monkeypatch):
+    """An empty result has to name the floor, not render as a silent zero."""
+    from weirvern.models import ripple_evidence
+
+    monkeypatch.setattr(ripple_evidence, "run", lambda _c: {"rows": 0, "hosts": 0,
+                                                            "channels": 0, "scales": []})
+    demo_seed._run_evidence(_FakeClient(), hours=6)
+    out = capsys.readouterr().out
+    assert "no scale is measurable from 6h" in out
+    assert "30 hours" in out, "the message must say what the actual limit is"
+
+
+def test_a_measured_pass_reports_what_it_measured(capsys, monkeypatch):
+    from weirvern.models import ripple_evidence
+
+    monkeypatch.setattr(ripple_evidence, "run", lambda _c: {"rows": 144, "hosts": 18,
+                                                            "channels": 4, "scales": ["1h"]})
+    demo_seed._run_evidence(_FakeClient(), hours=144)
+    out = capsys.readouterr().out
+    assert "144 row(s)" in out and "18 host(s)" in out and "scales 1h" in out
+
+
+def test_a_failed_evidence_pass_does_not_lose_the_seed(capsys, monkeypatch):
+    """The rows are already written; a measurement failure must not look like a failed seed."""
+    from weirvern.models import ripple_evidence
+
+    def boom(_client):
+        raise RuntimeError("clickhouse unavailable")
+
+    monkeypatch.setattr(ripple_evidence, "run", boom)
+    demo_seed._run_evidence(_FakeClient(), hours=144)
+    out = capsys.readouterr().out
+    assert "pass failed" in out and "clickhouse unavailable" in out
+
+def test_a_two_host_seed_does_not_raise():
+    """The anomaly roles are positional, and a small smoke seed used to crash on the third one."""
+    data = demo_seed.build(hours=1, hosts=2, seed=3)
+    assert data["flows"], "a two-host seed produced no flows at all"
+
+
+def test_the_final_hour_is_extreme_enough_to_be_an_incident(data):
+    """ANOMALY 3 is the only thing here the Ripples card can see, so its shape is a requirement.
+
+    A ripple is two families under p <= 0.01 on one host in one window, and the p-value is
+    empirical, so the burst has to beat every hour that host has had. A gentle nudge seeds a demo
+    whose flagship card is empty, which is the bug this test exists to prevent.
+
+    The comparison groups the windows into twelves backwards from the end, because that is the hour
+    the evidence measures. Bucketing on the clock instead would straddle the burst: a two-hour
+    fixture does not begin on an hour boundary, so the last clock hour holds only part of it.
+    """
+    from collections import Counter
+
+    per_window = Counter()
+    for row in data["flows"]:
+        flow = dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))
+        per_window[(flow["src_addr"], flow["time_flow_start"])] += 1
+
+    rippled = demo_seed._hosts(__import__("random").Random(7), 6)[2]
+    windows = sorted(w for (host, w) in per_window if host == rippled)
+    assert len(windows) >= 24, "the fixture must be long enough to have a history to beat"
+
+    counts = [per_window[(rippled, w)] for w in windows]
+    hours = [sum(counts[i:i + 12]) for i in range(0, len(counts) - 11, 12)]
+    assert len(hours) >= 2, "need at least the burst hour and one hour of history"
+    final, history = hours[-1], hours[:-1]
+    assert final >= 5 * max(history), (
+        f"the final hour has {final} flows against a historical max of {max(history)}; "
+        "an empirical p-value below 0.01 needs the final hour to beat every window before it"
+    )
+
+
+def test_the_ripple_plant_also_moves_a_second_family(data):
+    """Two families have to corroborate, so the burst cannot be flows alone.
+
+    A DNS row's `ts` is the event time inside a window, never the window start, so this buckets each
+    lookup into the window that contains it. Looking rows up by an exact timestamp match returns
+    zero for every hour and makes the comparison below vacuous, which is how the first version of
+    this test passed with the burst deleted.
+    """
+    from collections import Counter
+    from datetime import timedelta
+
+    rippled = demo_seed._hosts(__import__("random").Random(7), 6)[2]
+
+    windows = sorted({
+        dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["time_flow_start"]
+        for row in data["flows"]
+        if dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["src_addr"] == rippled
+    })
+    dns = Counter()
+    for row in data["zeek_dns"]:
+        rec = dict(zip(demo_seed.COLUMNS["zeek_dns"], row, strict=True))
+        if rec["src_addr"] != rippled:
+            continue
+        for start_at in reversed(windows):
+            if start_at <= rec["ts"] < start_at + timedelta(minutes=5):
+                dns[start_at] += 1
+                break
+
+    counts = [dns.get(w, 0) for w in windows]
+    hours = [sum(counts[i:i + 12]) for i in range(0, len(counts) - 11, 12)]
+    assert len(hours) >= 2, "need the burst hour plus history"
+    final, history = hours[-1], hours[:-1]
+    burst_floor = int(0.8 * demo_seed.RIPPLE_LOOKUPS_PER_WINDOW * demo_seed.RIPPLE_WINDOWS)
+    assert final >= burst_floor, (
+        f"the final hour holds {final} lookups, below the {burst_floor} the plant should produce; "
+        "one family alone cannot make a ripple"
+    )
+    assert final >= 5 * max(history), (
+        f"the final hour holds {final} lookups against a historical max of {max(history)}"
+    )

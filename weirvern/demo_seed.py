@@ -53,6 +53,19 @@ COLUMNS: dict[str, list[str]] = {
 
 # Documentation ranges only. Nothing here is a real address, and nothing is derived from a capture.
 INTERNAL_PREFIX = "192.0.2."
+# The ripple evidence cannot measure a scale without MIN_BASELINE_SAMPLES windows of the
+# host's own history, which is about 30 hours at the 1h scale. A default below that ships a
+# demo whose Ripples card is empty for a reason nobody can see, so the default clears it.
+DEFAULT_HOURS = 144
+
+#: The ripple plant. A ripple needs two FAMILIES to clear p <= 0.01 on the same host in the same
+#: window, and the evidence measures only the current hour, so the burst has to sit in the final hour
+#: and beat every hour the host has ever had. The p-value is empirical: 0.006 means "more extreme
+#: than all 167 baseline windows", which a gentle nudge never reaches. A normal host here makes
+#: about 36 flows an hour, so this is tens of times that.
+RIPPLE_WINDOWS = 12            # one hour of the five-minute windows
+RIPPLE_CONNS_PER_WINDOW = 60
+RIPPLE_LOOKUPS_PER_WINDOW = 40
 EXTERNAL = ["198.51.100.10", "198.51.100.23", "203.0.113.66", "203.0.113.90"]
 BEACON_TARGET = "203.0.113.66"
 SERVICES = [(443, "ssl"), (80, "http"), (53, "dns"), (22, "ssh"), (8080, "http")]
@@ -203,8 +216,12 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
     end = utcnow().replace(second=0, microsecond=0)
     windows = max(1, int(hours * 60 / (WINDOW.total_seconds() / 60)))
     segment = _hosts(rng, hosts)
+    # Modulo, not indexing: a seed with one or two hosts is a legitimate smoke run, and it used to
+    # raise IndexError. With fewer than three hosts the roles land on the same machine, which is
+    # odd-looking but honest, and it beats refusing to build a small demo at all.
     beacon = segment[0]
-    scanner = segment[1]
+    scanner = segment[1 % len(segment)]
+    rippled = segment[2 % len(segment)]  # whose final hour is extreme enough to be an incident
 
     out: dict[str, list[list[Any]]] = {name: [] for name in COLUMNS}
 
@@ -276,6 +293,34 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
                 sflow["timestamp"] = w_start
                 out["flows"].append(_flow_values(sflow))
 
+        # ANOMALY 3: the ripple, and the only anomaly here the Ripples card can see. The other two
+        # are shapes a per-host baseline is meant to survive; this one is deliberately past the bar.
+        # It has to be: a ripple is two families under p <= 0.01 on one host in one window, and the
+        # evidence measures the current hour only, so the burst sits in the final hour and clears
+        # everything that host has ever done.
+        if w >= windows - RIPPLE_WINDOWS:
+            for _ in range(RIPPLE_CONNS_PER_WINDOW):
+                dport, service = rng.choice(SERVICES)
+                dst = rng.choice(EXTERNAL)
+                ts = w_epoch + rng.uniform(0, 290)
+                orig, resp = rng.randint(120, 4000), rng.randint(200, 60000)
+                conn = _conn(ts, rippled, dst, dport, service, rng,
+                             orig_bytes=orig, resp_bytes=resp)
+                brow = ingester.map_zeek_conn(conn)
+                if brow:
+                    out["zeek_conn"].append([brow[c] for c in COLUMNS["zeek_conn"]])
+                flow = _flows_row(ts, rippled, dst, dport, orig, resp)
+                flow["time_flow_start"] = w_start
+                flow["time_flow_end"] = w_start + timedelta(seconds=rng.uniform(1, 240))
+                flow["timestamp"] = w_start
+                out["flows"].append(_flow_values(flow))
+            # The DNS family too, so two families corroborate instead of one carrying it alone.
+            for _ in range(RIPPLE_LOOKUPS_PER_WINDOW):
+                ts = w_epoch + rng.uniform(0, 290)
+                lookup = ingester.map_zeek_dns(_dns(ts, rippled, rng.choice(DOMAINS), rng))
+                if lookup:
+                    out["zeek_dns"].append([lookup[c] for c in COLUMNS["zeek_dns"]])
+
     return out
 
 
@@ -305,17 +350,124 @@ def insert_all(client, data: dict[str, list[list[Any]]]) -> dict[str, int]:
     return written
 
 
+def _report_scope(client, *, declare: bool) -> None:
+    """Say whether the seeded addresses are inside a monitored network, and only widen on request.
+
+    `network_scopes.monitored = 1` decides what the console treats as OURS, and in the end what the
+    scanner is allowed to touch. A demo seeder must not widen that quietly, so this reports the gap
+    and only writes a scope when the caller asked for it by name.
+
+    IT MATTERS BECAUSE OTHERWISE THE DEMO LOOKS BROKEN AND IS NOT. Every seeded host is in
+    192.0.2.0/24, so with no covering scope the ripple evidence classifies all of them as peers,
+    measures nothing, and the Ripples card reports a scope reason. That is a correct absence, and
+    it is indistinguishable to an audience from a feature that does not work.
+    """
+    import ipaddress  # noqa: PLC0415
+
+    from weirvern import monitored as monitored_mod  # noqa: PLC0415
+    from weirvern import networks  # noqa: PLC0415
+
+    # IPv4Network directly, not ip_network(): that returns a union, and the stub then binds
+    # subnet_of to the IPv6 arm and reports a mismatch that cannot happen at runtime.
+    seeded = ipaddress.IPv4Network(f"{INTERNAL_PREFIX}0/24")
+    nets = monitored_mod.networks(client)
+    # Rebuilt as IPv4 networks rather than filtered or cast: mypy resolves the stub's generic
+    # subnet_of to IPv6 for a union, and a cast would silence that instead of proving the version.
+    v4 = [ipaddress.IPv4Network(str(n)) for n in nets if n.version == 4]
+    covered = any(seeded.subnet_of(n) for n in v4)
+
+    if covered:
+        print(f"  scope:    {seeded} is monitored, so seeded hosts will be attributed")
+        return
+
+    if declare:
+        try:
+            # The label is a closed vocabulary (internal, vpn, dmz, external), so "demo" is not a
+            # choice here: these addresses stand in for an internal network, and the description is
+            # where the fact that they are synthetic belongs.
+            networks.save_scope(client, {
+                "cidr": str(seeded),
+                "label": "internal",
+                "monitored": True,
+                "description": "declared by `weirvern demo-seed --scope` for seeded demo traffic",
+            })
+        except Exception as exc:  # noqa: BLE001 - a scope write failure must not lose the seed
+            print(f"  scope:    could not declare {seeded}: {exc}")
+            return
+        print(f"  scope:    declared {seeded} as a monitored network "
+              "(labelled internal, described as demo data)")
+        return
+
+    print(
+        f"  scope:    WARNING. No monitored network covers {seeded}, so these hosts are peers and "
+        "the Ripples card will report a scope reason instead of evidence.\n"
+        "            Fix: re-run with --scope, or add the network under Settings > Networks."
+    )
+
+
+def _run_evidence(client, *, hours: int) -> None:
+    """Measure the ripple evidence over the seeded span, so the demo does not wait for a tick.
+
+    The worker runs this on its shadow cycle, which is the right place in production and the wrong
+    place for a demo: the time between seeding and a ripple existing is however long the next tick
+    takes, and a demo that depends on that is not reproducible.
+
+    A measurement that produced no scales says WHY rather than reporting a silent zero. The 1h scale
+    needs MIN_BASELINE_SAMPLES windows of the host's own history, which is about 30 hours, so a
+    short seed is the usual reason for an empty result here.
+    """
+    from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+    try:
+        measured = ripple_evidence.run(client)
+    except Exception as exc:  # noqa: BLE001 - the seed is already written; say so and stop here
+        print(f"  evidence: pass failed: {exc}")
+        return
+
+    scales = ", ".join(measured.get("scales") or []) or "none"
+    print(f"  evidence: {measured.get('rows', 0)} row(s), {measured.get('hosts', 0)} host(s), "
+          f"scales {scales}")
+    if not measured.get("scales"):
+        print(
+            f"  evidence: no scale is measurable from {hours}h. The 1h scale needs about 30 hours "
+            "of a host's own history, and the lookback is 7 days, so seed at least 30 hours "
+            "(144 is the default) before expecting a ripple."
+        )
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declare the seeder's flags on a parser.
+
+    ONE DECLARATION, TWO FRONT DOORS. `weirvern demo-seed` and `python -m weirvern.demo_seed` both
+    end up in `main`, and the CLI used to carry its own copy of these flags with its own defaults.
+    A default fixed in one place and not the other is how a demo ships six hours of data while the
+    module says six days.
+    """
+    parser.add_argument(
+        "--hours", type=int, default=DEFAULT_HOURS,
+        help=f"how many hours of data to generate (default {DEFAULT_HOURS}: the ripple evidence "
+             "needs at least 30 hours of a host's own history before any scale can be measured, "
+             "so a 6-hour seed renders an empty Ripples card)",
+    )
+    parser.add_argument("--hosts", type=int, default=22, help="how many internal hosts to simulate")
+    parser.add_argument("--seed", type=int, default=1337, help="RNG seed, so the demo is reproducible")
+    parser.add_argument("--force", action="store_true",
+                        help="seed even though recent flow data exists")
+    parser.add_argument("--scope", action="store_true",
+                        help=f"declare {INTERNAL_PREFIX}0/24 as a monitored network, so seeded "
+                             "hosts are attributed; without it the seeder only reports the gap")
+    parser.add_argument("--no-evidence", action="store_true",
+                        help="skip the ripple evidence pass, leaving the Ripples card empty until "
+                             "the worker's next shadow tick")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="weirvern demo-seed",
         description="Fill ClickHouse with plausible demo traffic ending now, for a reproducible demo.",
     )
-    parser.add_argument("--hours", type=int, default=6, help="how many hours of data to generate")
-    parser.add_argument("--hosts", type=int, default=22, help="how many internal hosts to simulate")
-    parser.add_argument("--seed", type=int, default=1337, help="RNG seed, so the demo is reproducible")
-    parser.add_argument("--force", action="store_true",
-                        help="seed even though recent flow data exists")
-    parser.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    add_arguments(parser)
     args = parser.parse_args(argv)
 
     data = build(hours=args.hours, hosts=args.hosts, seed=args.seed)
@@ -345,11 +497,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         written = insert_all(client, data)
-    for table, count in written.items():
-        print(f"  wrote {table:12s} {count:7,d}")
-    empty = [t for t, n in written.items() if n == 0]
-    if empty:
-        print(f"  NOTE: no rows generated for {', '.join(empty)}; that view will be empty")
+        for table, count in written.items():
+            print(f"  wrote {table:12s} {count:7,d}")
+        empty = [t for t, n in written.items() if n == 0]
+        if empty:
+            print(f"  NOTE: no rows generated for {', '.join(empty)}; that view will be empty")
+        # After the writes, and in this order: whether the hosts will be attributed at all, then
+        # whether anything measurable came of them. Both print below the row counts, so the output
+        # reads as a sequence instead of interleaving with what the seed just wrote.
+        _report_scope(client, declare=args.scope)
+        if not args.no_evidence:
+            _run_evidence(client, hours=args.hours)
     return 0
 
 
