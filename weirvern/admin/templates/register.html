@@ -1,7 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Register - Weirvern{% endblock %}
-{% block body %}
-  <h1>Register</h1>
+  {% block title %}Register - Weirvern{% endblock %}
+  {% block body %}
+    <div class="auth-lockup">
+      <img src="/logo-full.png" alt="Weirvern" width="148" height="145">
+    </div>
+    <h1>Register</h1>
   <p class="lede">
     This creates a <strong>{{ role }}</strong> account. The role is not chosen by the form: a
     self-service registration that accepted a role would be a privilege escalation.

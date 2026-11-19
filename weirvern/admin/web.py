@@ -131,6 +131,12 @@ STATIC_FILES = {
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
     "/logo.png": ("logo.png", "image/png"),
+    # THE FULL BRAND MARK, for the sign-in and register pages. logo.png above is a 180x180
+    # square crop with the wordmark removed, which is right at 28px in the header and wrong
+    # at sign-in size where the name should be legible. This is the brand art at 444x435
+    # (three times its 148px presentation, so it stays crisp on a high-density screen)
+    # rather than the 490x480 original, which is 380KB for no visible gain.
+    "/logo-full.png": ("logo-full.png", "image/png"),
     # Installable web app: the manifest, its two raster sizes, and the network-only service
     # worker that gives the installed app an app shell without caching stale dashboards.
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),

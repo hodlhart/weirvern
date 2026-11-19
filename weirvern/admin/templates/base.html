@@ -35,6 +35,17 @@
     h1 { font-size: 22px; margin: 0 0 4px; }
     h2 { font-size: 17px; margin: 24px 0 8px; }
     p.lede { color: var(--muted); margin: 0 0 20px; }
+    /* The mark, at sign-in size. The art carries its own dark-navy background and its
+     * own WEIRVERN wordmark, so it is presented as a rounded tile with nothing set
+     * beside it: a text label here would say the name twice at two sizes.
+     * The served asset is 444x435, so 148x145 keeps its ratio and the attributes reserve the
+     * space before it loads. */
+    .auth-lockup { margin: 4px 0 26px; }
+    .auth-lockup img {
+      display: block; width: 148px; height: 145px;
+      border-radius: 18px;
+      box-shadow: 0 0 0 1px var(--line), 0 12px 34px rgba(0, 0, 0, .38);
+    }
     input:focus, select:focus, textarea:focus {
       outline: 2px solid var(--accent); outline-offset: 1px;
     }
