@@ -339,7 +339,9 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
 .gate-brand img {
   /* 8px is the canon's largest legal radius. 18px was the shape the lockup wanted; the
      ratchet rejected it as new debt, which is the canon doing its job. */
-  display: block; width: 148px; height: 145px; border-radius: 8px;
+  /* Centered: the card is a flex column, so a block image sits hard left against the field
+     labels. The brand is the one element here that is not part of the form. */
+  display: block; width: 148px; height: 145px; margin: 0 auto; border-radius: 8px;
   box-shadow: 0 0 0 1px var(--border), 0 10px 28px rgba(0, 0, 0, .35);
 }
 .gate-card form { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
