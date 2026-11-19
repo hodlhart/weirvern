@@ -6619,7 +6619,6 @@ async function loadRetrain() {
   // to keep or trash it"). Keep/Trash need a FINISHED candidate; every other state gets a
   // sentence -- waiting, training, trained-nothing, failed -- instead of a control that
   // silently vanishes.
-  if (note && d.training) { note.textContent = (note.textContent || "") + engineTrainingSentence(d.training); }
   const stand = document.getElementById("mr-stand");
   if (stand) {
     const st = String(d.state || "none");
@@ -6658,6 +6657,9 @@ async function loadRetrain() {
   }
   state.textContent = d.state + (d.requested_by ? ` (${d.requested_by})` : "");
   note.textContent = d.summary || "";
+  // AFTER the assignment, never before it: an append placed above this line is overwritten by
+  // the summary a few statements later (measured on the live page, 2026-11-19).
+  if (d.training) note.textContent += engineTrainingSentence(d.training);
 
   const rep = d.report || {};
   // HOW OLD IS THIS CANDIDATE? A panel that says "Candidate ready" about a window that closed a
