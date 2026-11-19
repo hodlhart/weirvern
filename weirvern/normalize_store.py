@@ -38,8 +38,8 @@ SELECT
     ''                                        AS dns_name,
     toUInt16(0)                               AS dns_qtype,
     count()                                   AS flows,
-    sum(bytes)                                AS bytes,
-    sum(packets)                              AS packets,
+    sum(bytes)                                AS bytes_total,
+    sum(packets)                              AS packets_total,
     avg(bytes)                                AS avg_bytes,
     varPop(bytes)                             AS var_bytes,
     avg(packets)                              AS avg_packets,
@@ -63,8 +63,8 @@ SELECT
     query                                     AS dns_name,
     qtype                                     AS dns_qtype,
     count()                                   AS flows,
-    sum(query_len)                            AS bytes,
-    toUInt64(0)                               AS packets,
+    sum(query_len)                            AS bytes_total,
+    toUInt64(0)                               AS packets_total,
     avg(query_len)                            AS avg_bytes,
     varPop(query_len)                         AS var_bytes,
     0.0                                       AS avg_packets,
@@ -103,7 +103,7 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
     if port:
         where.append(f"dst_port = {int(port)}")
     if min_bytes:
-        where.append(f"bytes >= {int(min_bytes)}")
+        where.append(f"bytes_total >= {int(min_bytes)}")
     if query:
         q = _escape(query)
         where.append(
@@ -112,9 +112,12 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
             f"positionCaseInsensitive(dns_name, '{q}') > 0)"
         )
     sql = f"""
-        SELECT * FROM ({body})
+        SELECT source, last_seen, first_seen, src_addr, dst_prefix, dst_port, proto, dns_name,
+               dns_qtype, flows, bytes_total AS bytes, packets_total AS packets, avg_bytes,
+               var_bytes, avg_packets, var_packets, samples
+        FROM ({body})
         WHERE {' AND '.join(where)}
-        ORDER BY bytes DESC
+        ORDER BY bytes_total DESC
         LIMIT {max(1, min(int(limit), 2000))}
     """
     try:

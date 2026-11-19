@@ -108,7 +108,7 @@ def test_the_feed_reads_both_lanes_and_filters_server_side():
     assert "'dns'" in feed_sql and "'flow'" in feed_sql
     assert "INTERVAL 24 HOUR" in feed_sql
     assert "dst_prefix LIKE '%192.168.2%'" in feed_sql
-    assert "dst_port = 443" in feed_sql and "bytes >= 1000" in feed_sql
+    assert "dst_port = 443" in feed_sql and "bytes_total >= 1000" in feed_sql
     assert "positionCaseInsensitive(dns_name, 'example')" in feed_sql
 
 
