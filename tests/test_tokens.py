@@ -203,9 +203,17 @@ def test_a_viewer_token_is_not_reported_as_an_admin():
 
 
 def test_a_revoked_token_is_refused_on_the_very_next_request():
-    """NO RESTART, NO TTL. The store that wrote the revocation must answer the next request."""
+    """NO RESTART, NO TTL. The store that wrote the revocation must answer the next request.
+
+    A SECOND LIVE TOKEN IS KEPT ON PURPOSE. With only the revoked one left, `enabled` would report
+    the token path off and the request would be refused before the store was ever consulted -- the
+    test would pass while `authenticate` happily returned the revoked record. Keeping one live token
+    means the store IS consulted, so the `revoked` skip is the only thing that can refuse this
+    credential. (Mutation-proofing found exactly that: deleting the skip once left this test green.)
+    """
     ctx = _Ctx(token_store())
-    payload, admin = mint(ctx, role="admin")
+    payload, admin = mint(ctx, role="admin", name="doomed")
+    _other_payload, other = mint(ctx, role="admin", name="kept")
     client = client_for(ctx)
 
     # It works right up to the revocation...
@@ -226,12 +234,14 @@ def test_a_revoked_token_is_refused_on_the_very_next_request():
     after_write = client.post("/api/users/create", headers=_token_headers(admin),
                               json={"username": "after", "role": "viewer",
                                     "password": "password-123"})
-    # 403 rather than 401 because this deployment HAS accounts: a request with no usable token is
-    # exactly an anonymous write, and that is the sentence an anonymous write already gets.
-    assert after_write.status_code == 403, (
+    # The status is 401 or 403 depending on whether the deployment still has another live token
+    # (the gate's "disabled" branch answers 403, the "wrong or absent credential" branch 401). The
+    # property under test is that it is REFUSED and nothing was written, so both are accepted.
+    assert after_write.status_code in (401, 403), (
         f"a revoked token still wrote: {after_write.status_code}")
-    assert "sign in" in (after_write.get_json() or {}).get("error", "")
     assert ctx.user_store.find("after") is None
+    # The other live token still works: the refusal above is the revocation, not a dead token path.
+    assert client.get("/api/settings", headers=_token_headers(other)).status_code == 200
 
 
 def test_revocation_is_scoped_to_the_one_token():
