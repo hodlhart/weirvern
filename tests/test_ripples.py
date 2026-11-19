@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from weirvern.admin import payloads
 from weirvern.models import ripple_evidence
 from weirvern.models.ripple import (
+    CHANNEL_FAMILIES,
     ChannelEvidence,
     empirical_pvalue_two_sided,
     group_evidence,
@@ -56,13 +57,17 @@ class FakeClient:
     An event is `(src, dst, when, value, bytes)`. `value` feeds a diversity channel; `bytes`
     feeds a sum channel. The fake decides the SUBJECT the way the SQL does: source when the
     source is monitored, otherwise destination only when the query has a destination column.
+    It also answers `system.columns` when `columns` is supplied, which is how the availability
+    tests prove that a missing REQUIRED column is declared rather than silently empty.
     """
 
     def __init__(self, events: dict[str, list[tuple[str, str, datetime, str, float]]] | None = None,
-                 *, scopes: tuple[str, ...] = ("198.51.100.0/24",), fail: bool = False):
+                 *, scopes: tuple[str, ...] = ("198.51.100.0/24",), fail: bool = False,
+                 columns: dict[str, set[str]] | None = None):
         self.events = events or {}
         self.scopes = list(scopes)
         self.fail = fail
+        self.columns = columns
         self.queries: list[str] = []
 
     def query(self, sql: str, parameters=None):
@@ -71,6 +76,11 @@ class FakeClient:
             raise ConnectionError("clickhouse is not reachable")
         if "weirvern.network_scopes" in sql:
             return SimpleNamespace(result_rows=[(cidr,) for cidr in self.scopes])
+        if "system.columns" in sql:
+            requested = re.findall(r"'([^']+)'", sql.split("table IN (")[-1])
+            rows = [(table, name) for table in requested
+                    for name in sorted((self.columns or {}).get(table, set()))]
+            return SimpleNamespace(result_rows=rows)
         table = next((name for name in self.events if name in sql), None)
         if table is None:
             return SimpleNamespace(result_rows=[])
@@ -88,7 +98,9 @@ class FakeClient:
         has_peer = "isIPAddressInRange(dst_addr" in sql
         distinct = "uniqExact" in sql
         peer_diversity = "uniqExact(if(" in sql
+        values_mode = " AS v " in sql
         buckets: dict[tuple[str, int], tuple[int, set[str], float]] = {}
+        value_buckets: dict[tuple[str, int], set[str]] = {}
         for src, dst, when, value, nbytes in self.events[table]:
             if not (since <= when < until):
                 continue
@@ -102,10 +114,17 @@ class FakeClient:
             index = (anchor - int(when.timestamp())) // bucket_s
             if index < 0:
                 continue
+            if values_mode:
+                value_buckets.setdefault((subject, index), set()).add(value)
+                continue
             n, seen, total = buckets.get((subject, index), (0, set(), 0.0))
             if distinct:
                 seen = seen | {peer if peer_diversity else value}
             buckets[(subject, index)] = (n + 1, seen, total + float(nbytes))
+        if values_mode:
+            rows = [(host, index, value) for (host, index), values
+                    in sorted(value_buckets.items()) for value in sorted(values)]
+            return SimpleNamespace(result_rows=rows)
         rows = []
         for (host, index), (n, seen, total) in sorted(buckets.items()):
             rows.append((host, index, n, len(seen) if distinct else 0, total))
@@ -115,9 +134,17 @@ class FakeClient:
 def _series(table: str, *, counts: dict[int, int] | None = None, host: str = HOST,
             peer: str = EXTERNAL, values: int = 4, base: int = 6, hours: int = HOURS,
             bytes_for: dict[int, float] | None = None, bytes_per: float = 100.0,
-            reverse: bool = False) -> list[tuple[str, str, datetime, str, float]]:
-    """One event per unit of volume, half an hour inside each hourly bucket."""
+            reverse: bool = False,
+            extra_for: dict[int, list[str]] | None = None
+            ) -> list[tuple[str, str, datetime, str, float]]:
+    """One event per unit of volume, half an hour inside each hourly bucket.
+
+    `extra_for` appends values to one bucket: that is how a fingerprint/version CHANGE is
+    modelled (the steady values are still there, one new one appears) without hand-building a
+    fixture that would stop testing the SQL.
+    """
     counts = counts or {}
+    extra_for = extra_for or {}
     events = []
     for index in range(hours):
         when = NOW - timedelta(hours=index, minutes=30)
@@ -126,6 +153,9 @@ def _series(table: str, *, counts: dict[int, int] | None = None, host: str = HOS
             src, dst = (peer, host) if reverse else (host, peer)
             events.append((src, dst, when + timedelta(seconds=slot),
                            f"{table}-{slot % values}", amount))
+        for slot, value in enumerate(extra_for.get(index, [])):
+            src, dst = (peer, host) if reverse else (host, peer)
+            events.append((src, dst, when + timedelta(seconds=30 + slot), value, amount))
     return events
 
 
@@ -451,3 +481,139 @@ def test_no_monitored_scope_means_no_evidence_rather_than_everything():
     }
     assert ripple_evidence.compute(FakeClient(events, scopes=()), now=NOW) == []
     assert _ripples(events)  # the same fixture does ripple when a scope exists
+
+
+# ── the four independent families (2026-11-19) ──────────────────────────────────────────────
+
+OLD_FAMILIES = {"flow", "conn", "dns", "identity"}
+NEW_FAMILIES = {"tls", "http", "ssh", "notice"}
+NEW_CHANNELS = ("tls_fingerprint_diversity", "http_host_diversity", "http_ua_novelty",
+                "ssh_version_change", "zeek_notice_volume", "zeek_weird_volume")
+
+
+def _channels(items: list[ChannelEvidence], channel: str) -> list[ChannelEvidence]:
+    return [item for item in items if item.channel == channel]
+
+
+def test_the_four_new_families_are_independent_of_the_existing_four():
+    """A family is one measurement, so a new one must add a view, not re-count an old one."""
+    declared = {spec.channel: spec.family for spec in ripple_evidence.SPECS}
+    assert declared == CHANNEL_FAMILIES, "the specs and the family map must not drift apart"
+    assert not (NEW_FAMILIES & OLD_FAMILIES)
+    assert {declared[name] for name in NEW_CHANNELS} == NEW_FAMILIES
+    # The four channels the operator asked for are one per family, not four views of one.
+    one_each = ["tls_fingerprint_diversity", "http_host_diversity", "ssh_version_change",
+                "zeek_notice_volume"]
+    assert len({declared[name] for name in one_each}) == 4
+    # Two fields of the same HTTP request, and two outputs of the same Zeek pipeline, are
+    # deliberately one family each: they may not corroborate themselves.
+    assert declared["http_ua_novelty"] == declared["http_host_diversity"] == "http"
+    assert declared["zeek_weird_volume"] == declared["zeek_notice_volume"] == "notice"
+
+
+def test_a_new_tls_fingerprint_pair_produces_evidence_and_a_steady_one_does_not():
+    steady = {"weirvern.zeek_ssl": _series("ssl", values=4)}
+    steady_items = _channels(ripple_evidence.compute(FakeClient(steady), now=NOW),
+                             "tls_fingerprint_diversity")
+    assert steady_items, "a host with a week of TLS history must be measured"
+    assert all(item.value == 4 for item in steady_items), [i.value for i in steady_items]
+    assert all(item.pvalue > 0.5 for item in steady_items)
+    assert group_evidence(steady_items, monitored=NETS) == []
+
+    changed = {"weirvern.zeek_ssl": _series("ssl", values=4, extra_for={0: ["ssl-new"]})}
+    items = _channels(ripple_evidence.compute(FakeClient(changed), now=NOW),
+                      "tls_fingerprint_diversity")
+    assert len(items) == 1
+    item = items[0]
+    assert item.value == 5, "the new (SNI, JA4) pair is one more distinct value this hour"
+    assert item.baseline_median == 4
+    assert item.direction == "rose"
+    assert item.pvalue <= 0.01
+    assert item.at_floor(), "a value beyond every baseline window is at the floor and says so"
+
+
+def test_a_new_user_agent_produces_novelty_and_a_returning_one_does_not():
+    returning = {"weirvern.zeek_http": _series("http", values=4)}
+    returning_items = _channels(ripple_evidence.compute(FakeClient(returning), now=NOW),
+                                "http_ua_novelty")
+    assert returning_items, "the UA channel must be measured for a host with history"
+    assert all(item.value == 0 for item in returning_items)
+    assert all(item.pvalue > 0.5 for item in returning_items)
+    assert [item for item in returning_items if item.pvalue <= 0.01] == []
+
+    new_ua = {"weirvern.zeek_http": _series("http", values=4, extra_for={0: ["http-new"]})}
+    items = _channels(ripple_evidence.compute(FakeClient(new_ua), now=NOW), "http_ua_novelty")
+    assert len(items) == 1
+    assert items[0].value == 1, "one user-agent this host has never sent"
+    assert items[0].baseline_median == 0
+    assert items[0].pvalue <= 0.01
+    assert items[0].at_floor()
+
+
+def test_an_ssh_version_pair_change_produces_evidence_and_a_steady_pair_does_not():
+    steady = {"weirvern.zeek_ssh": _series("ssh", values=1)}
+    steady_items = _channels(ripple_evidence.compute(FakeClient(steady), now=NOW),
+                             "ssh_version_change")
+    assert steady_items, "a host with a week of SSH history must be measured"
+    assert all(item.value == 0 for item in steady_items), [i.value for i in steady_items]
+    assert all(item.pvalue > 0.5 for item in steady_items)
+
+    changed = {"weirvern.zeek_ssh": _series("ssh", values=1,
+                                            extra_for={0: ["ssh-upgraded"]})}
+    items = _channels(ripple_evidence.compute(FakeClient(changed), now=NOW),
+                      "ssh_version_change")
+    assert len(items) == 1
+    assert items[0].value == 1, "the banner pair changed, and the channel is a boolean"
+    assert items[0].baseline_median == 0
+    assert items[0].pvalue <= 0.01
+
+
+def test_notice_volume_obeys_the_same_thirty_window_floor():
+    """Zeek's own findings get no exemption from the baseline rule."""
+    short = {"weirvern.zeek_notice": _series("notice", hours=20)}
+    assert _channels(ripple_evidence.compute(FakeClient(short), now=NOW),
+                     "zeek_notice_volume") == []
+
+    full = {"weirvern.zeek_notice": _series("notice", counts={0: 60})}
+    items = _channels(ripple_evidence.compute(FakeClient(full), now=NOW), "zeek_notice_volume")
+    assert len(items) == 1
+    assert items[0].value == 60
+    assert items[0].sample_count >= 100
+    assert items[0].pvalue <= 0.01
+
+    # The same short-lookback rule as every other channel: no baseline, no evidence.
+    assert _channels(ripple_evidence.compute(FakeClient(full), now=NOW, lookback_days=1),
+                     "zeek_notice_volume") == []
+
+
+def test_a_channel_missing_a_required_column_is_declared_unavailable():
+    """A renamed column must read as 'unavailable', never as 'this host was quiet'."""
+    columns = {"zeek_ssl": {"ts", "src_addr", "dst_addr", "server_name"}}   # no ja4
+    client = FakeClient({}, columns=columns)
+    rows = {row["channel"]: row for row in ripple_evidence.availability(client)}
+
+    tls = rows["tls_fingerprint_diversity"]
+    assert tls["available"] is False
+    assert tls["missing_columns"] == ["ja4"]
+    assert "ja4" in tls["reason"]
+    # A table the probe said nothing about is NOT declared broken.
+    assert rows["http_host_diversity"]["available"] is True
+
+    events = {"weirvern.zeek_ssl": _series("ssl", values=4, extra_for={0: ["ssl-new"]})}
+    assert _channels(ripple_evidence.compute(FakeClient(events, columns=columns), now=NOW),
+                     "tls_fingerprint_diversity") == []
+
+    inventory = {row["channel"]: row for row in ripple_evidence.inventory()}
+    assert "ja4" in inventory["tls_fingerprint_diversity"]["required_columns"]
+    assert "ja4_orig" not in inventory["tls_fingerprint_diversity"]["required_columns"], \
+        "ja4_orig exists but is empty on every live row, so it cannot be required"
+
+
+def test_http_host_diversity_counts_the_header_not_the_subject_alias():
+    """ClickHouse substitutes the `host` alias: unqualified, this would always measure 1."""
+    spec = next(item for item in ripple_evidence.HTTP_SPECS
+                if item.channel == "http_host_diversity")
+    sql = spec.sql_anchored(bucket_s=3600, anchor=NOW, since=NOW - timedelta(days=7),
+                            until=NOW, scope_cidrs=("198.51.100.0/24",))
+    assert "uniqExact(weirvern.zeek_http.host)" in sql
+    assert "uniqExact(host)" not in sql

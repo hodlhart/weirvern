@@ -72,6 +72,32 @@ DEFAULT_MIN_RIPPLE_SCORE = 3.0
 #: views, all `identity`). Different pipelines (flow vs conn vs dns vs identity) are separate
 #: families: they are collected by different code paths, can disagree because of sampling or
 #: visibility, and therefore carry information the other does not.
+#:
+#: THE FOUR LATER FAMILIES ARE INDEPENDENT, NOT MORE VIEWS (2026-11-19). The operator asked
+#: "do we need more channels? we have lots of data", and the answer is only where the new
+#: channel observes something the existing four cannot:
+#:
+#:   tls    the TLS handshake itself: the SNI the client asked for and the JA4 fingerprint it
+#:          offered. flow/conn see that a connection happened and how big it was; dns sees the
+#:          name that was resolved BEFORE it. Neither sees what the client offered on the wire,
+#:          so a new client stack reusing the same DNS answer and the same flow profile is
+#:          invisible to all four existing families and visible here.
+#:   http   application request metadata: the Host header and the User-Agent. conn sees the TCP
+#:          connection, not the request on it; dns sees the resolution, not the request. A host
+#:          that keeps its connections and its DNS exactly as they were but starts sending a
+#:          user-agent it has never sent is a change only this family can report.
+#:   ssh    the SSH banner exchange (client/server version pair). conn counts the session and
+#:          its bytes; it does not parse the banner, so an upgraded SSH client on a host whose
+#:          connection volume is unchanged moves this family and no other.
+#:   notice Zeek's OWN CONCLUSIONS (`notice` and `weird`), not a protocol observation. This is
+#:          the only family produced by an analyst (Zeek's scripts) rather than by a parser, and
+#:          its population is sensor findings rather than traffic; no flow/conn/dns/identity
+#:          channel can corroborate a notice because none of them emit one.
+#:
+#: WITHIN a new family the same one-measurement rule applies: http_host_diversity and
+#: http_ua_novelty are two fields of the SAME zeek_http request, and zeek_notice_volume and
+#: zeek_weird_volume are two outputs of the same Zeek finding pipeline, so neither pair may
+#: corroborate itself.
 CHANNEL_FAMILIES: dict[str, str] = {
     "flow_volume": "flow",
     "flow_bytes": "flow",
@@ -90,6 +116,13 @@ CHANNEL_FAMILIES: dict[str, str] = {
     "ntlm_user_diversity": "identity",
     "smb_file_volume": "identity",
     "smb_path_diversity": "identity",
+    # ── the four independent families added 2026-11-19 ─────────────────────────────────────
+    "tls_fingerprint_diversity": "tls",
+    "http_host_diversity": "http",
+    "http_ua_novelty": "http",
+    "ssh_version_change": "ssh",
+    "zeek_notice_volume": "notice",
+    "zeek_weird_volume": "notice",
 }
 
 

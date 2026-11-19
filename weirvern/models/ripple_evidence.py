@@ -42,10 +42,53 @@ collection layer owns freshness.
 WHO THE SUBJECT IS. A ripple is a change in a MONITORED host's behaviour, never in a remote
 peer's. Every row is attributed to its monitored endpoint: the source if the source is inside a
 monitored CIDR, otherwise the destination. A flow row with no monitored endpoint is dropped.
-`flows_window` is pre-aggregated by source and has no destination column, so a row there whose
-source is external cannot be attributed to one of ours and is dropped too -- it is never
-reported under the external address. An empty scope list produces no evidence, because "we
-could not work out what we own" is not permission to measure everything.
+
+THE SCHEMA, VERIFIED ON THE LIVE BOX (2026-11-19), NOT ASSUMED. `flows_window` has exactly
+`window_start, src_addr, flow_count, total_bytes, total_packets, unique_dst_ips, updated_at`.
+There is NO destination column, and `unique_dst_ips` is a COUNT, not a list, so an inbound flow
+cannot be attributed to the internal host that received it. Those rows are dropped rather than
+reported under the remote address -- this is unchanged and it is a real gap, not a design
+preference. The blocking schema change is a `dst_addr` column (or a second aggregate keyed by
+destination) on `flows_window`; `weirvern.flows` itself carries both endpoints, so the data
+exists upstream and the roll-up is what loses it. No column is added by this module.
+
+THE FOUR FAMILIES ADDED 2026-11-19, one per new collection pipeline. They are independent of
+flow/conn/dns/identity in the sense that matters: each observes something none of those four
+can see, so it can CORROBORATE rather than re-count. See `ripple.CHANNEL_FAMILIES`.
+
+  tls    `tls_fingerprint_diversity` (zeek_ssl): distinct (server_name, ja4) pairs per host.
+         LIVE COLUMN CHECK: there is no JA3, no JA3S and no issuer column, and `ja4_orig` is
+         present but EMPTY on every row (0 of 80,982). `ja4` is populated on 84% and
+         `server_name` on 78%. So the channel counts the SNI the client asked for plus the JA4
+         fingerprint it offered; "server-name/issuer" is not available and claiming it would be
+         a lie about what is measured.
+  http   `http_host_diversity` (distinct Host values) and `http_ua_novelty` (a User-Agent this
+         host has never sent). Both columns exist (`host` 87% populated, `user_agent` 80%).
+  ssh    `ssh_version_change`: the (client, server) banner pair per host, and evidence only
+         when that pair differs from the host's previous non-empty window. A boolean/timestamp
+         channel, not a rate. Both columns exist (`client` 82%, `server` 99.9%).
+  notice `zeek_notice_volume` and `zeek_weird_volume`: Zeek's own findings per host per window.
+         Both address columns exist. Measured caveat: 616 of 624 notices in the last seven days
+         are `CaptureLoss::*` with `0.0.0.0` at BOTH ends -- they describe the sensor, not a
+         host -- and the only host-attributed notice class covers four hours, below the
+         thirty-window floor. The channel is declared and correct; at this site it currently
+         emits nothing, and that is reported rather than papered over.
+
+WHAT WAS REFUSED, AND WHY. Every source below is collected and none of it is channelised.
+Adding a channel that re-counts an existing population would repeat the defect this module
+already fixed once (`flow_bytes` and `flow_volume` counted as two pieces of evidence).
+
+  zeek_quic         RE-COUNT. QUIC carries TLS 1.3, so its `server_name` is the same egress TLS
+                    handshake the tls family already measures, over a different transport.
+  zeek_files        RE-COUNT. The transfers are already counted by conn/http volume, and the
+                    SMB subset by identity's `smb_file_volume`/`smb_path_diversity`.
+  zeek_dhcp         TOO SPARSE AT THIS SITE: 395 rows in seven days (18 clients), and a lease
+                    is device management, not traffic the host produced.
+  zeek_tunnel       TOO SPARSE: 132 rows in seven days from ONE host, far below the floor.
+  zeek_dce_rpc      DARK: 0 rows in seven days. A channel would be permanently unavailable.
+  zeek_ldap_search  DARK: 0 rows in seven days, for the same reason.
+  zeek_x509         UNATTRIBUTABLE: the table has no `src_addr`, `dst_addr` or `uid` at all, so
+                    a certificate cannot be tied to a host without inventing a join.
 
 WHAT THIS DOES NOT DO: it never writes `netflow_anomalies`, never pages, never promotes a model
 and never touches the anomaly page. Phase 1 is measurement and a read-only card.
@@ -72,7 +115,7 @@ from weirvern.models.ripple import (
     pvalue_floor,
 )
 
-MODEL_VERSION = "ripple-evidence-2"
+MODEL_VERSION = "ripple-evidence-3"
 
 #: The trailing history every baseline is drawn from. One constant, as phase 1 requires.
 LOOKBACK_DAYS = 7
@@ -115,41 +158,54 @@ FLOW_SPECS: tuple[ChannelSpec, ...] = (
     # partial states as if they were values; the `-Merge` combinators are mandatory.
     ChannelSpec("flow_volume", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="count", count_state="flow_count",
+                required_columns=("window_start", "src_addr", "flow_count"),
                 scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("flow_bytes", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="sum", count_state="flow_count",
-                sum_state="total_bytes", scales=EVIDENCE_SCALES, retention_days=7),
+                sum_state="total_bytes",
+                required_columns=("window_start", "src_addr", "total_bytes"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("flow_dst_diversity", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="diversity", count_state="flow_count",
-                uniq_state="unique_dst_ips", scales=EVIDENCE_SCALES, retention_days=7),
+                uniq_state="unique_dst_ips",
+                required_columns=("window_start", "src_addr", "unique_dst_ips"),
+                scales=EVIDENCE_SCALES, retention_days=7),
 )
 
 CONN_SPECS: tuple[ChannelSpec, ...] = (
     ChannelSpec("conn_volume", "conn", "weirvern.zeek_conn", "src_addr",
-                peer_column="dst_addr", scales=EVIDENCE_SCALES, retention_days=7),
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("conn_dst_diversity", "conn", "weirvern.zeek_conn", "src_addr",
-                "dst_addr", peer_column="dst_addr", kind="diversity", scales=EVIDENCE_SCALES,
-                retention_days=7),
+                "dst_addr", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("conn_service_diversity", "conn", "weirvern.zeek_conn", "src_addr",
-                "service", peer_column="dst_addr", kind="diversity", scales=EVIDENCE_SCALES,
-                retention_days=7),
+                "service", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "service"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("conn_reset_ratio", "conn", "weirvern.zeek_conn", "src_addr",
                 peer_column="dst_addr", kind="ratio",
                 predicate="conn_state IN ('RSTO','RSTR','S0','REJ')",
+                required_columns=("ts", "src_addr", "dst_addr", "conn_state"),
                 scales=EVIDENCE_SCALES, retention_days=7),
 )
 
 DNS_SPECS: tuple[ChannelSpec, ...] = (
     ChannelSpec("dns_volume", "dns", "weirvern.zeek_dns", "src_addr",
-                peer_column="dst_addr", scales=EVIDENCE_SCALES, retention_days=7),
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("dns_query_diversity", "dns", "weirvern.zeek_dns", "src_addr",
-                "query", peer_column="dst_addr", kind="diversity", scales=EVIDENCE_SCALES,
-                retention_days=7),
+                "query", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "query"),
+                scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("dns_nxdomain_ratio", "dns", "weirvern.zeek_dns", "src_addr",
                 peer_column="dst_addr", kind="ratio", predicate="rcode = 3",
+                required_columns=("ts", "src_addr", "dst_addr", "rcode"),
                 scales=EVIDENCE_SCALES, retention_days=7),
     ChannelSpec("dns_reverse_ratio", "dns", "weirvern.zeek_dns", "src_addr",
                 peer_column="dst_addr", kind="ratio", predicate="query LIKE '%in-addr.arpa%'",
+                required_columns=("ts", "src_addr", "dst_addr", "query"),
                 scales=EVIDENCE_SCALES, retention_days=7),
 )
 
@@ -157,23 +213,97 @@ DNS_SPECS: tuple[ChannelSpec, ...] = (
 # only sources that could ever support a longer lookback without a schema change.
 IDENTITY_SPECS: tuple[ChannelSpec, ...] = (
     ChannelSpec("kerberos_volume", "identity", "weirvern.zeek_kerberos", "src_addr",
-                peer_column="dst_addr", scales=EVIDENCE_SCALES, retention_days=90),
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=90),
     ChannelSpec("kerberos_service_diversity", "identity", "weirvern.zeek_kerberos", "src_addr",
                 "service", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "service"),
                 scales=EVIDENCE_SCALES, retention_days=90),
     ChannelSpec("ntlm_volume", "identity", "weirvern.zeek_ntlm", "src_addr",
-                peer_column="dst_addr", scales=EVIDENCE_SCALES, retention_days=60),
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=60),
     ChannelSpec("ntlm_user_diversity", "identity", "weirvern.zeek_ntlm", "src_addr",
-                "username", peer_column="dst_addr", kind="diversity", scales=EVIDENCE_SCALES,
-                retention_days=60),
+                "username", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "username"),
+                scales=EVIDENCE_SCALES, retention_days=60),
     ChannelSpec("smb_file_volume", "identity", "weirvern.zeek_smb_files", "src_addr",
-                peer_column="dst_addr", scales=EVIDENCE_SCALES, retention_days=30),
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=30),
     ChannelSpec("smb_path_diversity", "identity", "weirvern.zeek_smb_files", "src_addr",
-                "path", peer_column="dst_addr", kind="diversity", scales=EVIDENCE_SCALES,
-                retention_days=30),
+                "path", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "path"),
+                scales=EVIDENCE_SCALES, retention_days=30),
 )
 
-SPECS: tuple[ChannelSpec, ...] = FLOW_SPECS + CONN_SPECS + DNS_SPECS + IDENTITY_SPECS
+# ── the four independent families ───────────────────────────────────────────────────────────
+#
+# Each observes something the four families above cannot (see `ripple.CHANNEL_FAMILIES`), which
+# is the only reason to add it: a second view of the same events is one measurement counted
+# twice. The columns below were verified against `system.columns` on the live deployment, and
+# the docstring at the top of this module records what was found and what was refused.
+
+TLS_SPECS: tuple[ChannelSpec, ...] = (
+    # NO JA3, NO JA3S, NO ISSUER. The live table has `ja4` and `ja4_orig`; `ja4_orig` is empty
+    # on all 80,982 rows, so counting it would produce a constant. The channel counts distinct
+    # (SNI, JA4) pairs: the name the client asked for plus the fingerprint it offered.
+    # `value_filter` keeps a session with neither from becoming one anonymous "distinct" pair
+    # that every host carries permanently.
+    ChannelSpec("tls_fingerprint_diversity", "tls", "weirvern.zeek_ssl", "src_addr",
+                "concat(server_name, '|', ja4)", peer_column="dst_addr", kind="diversity",
+                value_filter="server_name != '' OR ja4 != ''",
+                required_columns=("ts", "src_addr", "dst_addr", "server_name", "ja4"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+)
+
+HTTP_SPECS: tuple[ChannelSpec, ...] = (
+    # THE COLUMN IS QUALIFIED ON PURPOSE. The subject is aliased `host` in the generated SQL,
+    # and ClickHouse substitutes aliases in the SELECT list: `uniqExact(host)` silently counts
+    # the subject (always 1) instead of the Host header (measured: 1 vs 2 on a live group).
+    # `weirvern.zeek_http.host` is the request header, which is what this channel means.
+    ChannelSpec("http_host_diversity", "http", "weirvern.zeek_http", "src_addr",
+                "weirvern.zeek_http.host", peer_column="dst_addr", kind="diversity",
+                required_columns=("ts", "src_addr", "dst_addr", "host"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+    # Novelty, not volume: a UA this host has never sent is rare even on a noisy host, while
+    # the number of requests is a rate the conn family already sees.
+    ChannelSpec("http_ua_novelty", "http", "weirvern.zeek_http", "src_addr",
+                "user_agent", peer_column="dst_addr", kind="novelty",
+                required_columns=("ts", "src_addr", "dst_addr", "user_agent"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+)
+
+SSH_SPECS: tuple[ChannelSpec, ...] = (
+    # A boolean, not a rate: the value is 1 when this window's banner pair differs from the
+    # pair in the host's previous non-empty window, and 0 when it is the same. A host that
+    # upgrades its SSH client changes this and nothing in conn, which only counted bytes.
+    ChannelSpec("ssh_version_change", "ssh", "weirvern.zeek_ssh", "src_addr",
+                "concat(client, '|', server)", peer_column="dst_addr", kind="change",
+                required_columns=("ts", "src_addr", "dst_addr", "client", "server"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+)
+
+NOTICE_SPECS: tuple[ChannelSpec, ...] = (
+    # Zeek's own conclusions. Low volume and high signal by construction: the finding has
+    # already been made by the sensor's scripts, so this is not another parser of the traffic.
+    ChannelSpec("zeek_notice_volume", "notice", "weirvern.zeek_notice", "src_addr",
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+    # `weird` is the same pipeline (Zeek's scripts deciding something is anomalous) at a much
+    # higher volume, which is why it is one family with `notice` and not a family of its own.
+    ChannelSpec("zeek_weird_volume", "notice", "weirvern.zeek_weird", "src_addr",
+                peer_column="dst_addr", required_columns=("ts", "src_addr", "dst_addr"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+)
+
+SPECS: tuple[ChannelSpec, ...] = (
+    FLOW_SPECS + CONN_SPECS + DNS_SPECS + IDENTITY_SPECS
+    + TLS_SPECS + HTTP_SPECS + SSH_SPECS + NOTICE_SPECS
+)
+
+#: Kinds whose value is a SET per bucket, not a number that can be summed or averaged. They
+#: need `sql_values` (which values?) rather than `sql_anchored` (how many?), and are therefore
+#: measured at each scale instead of being rolled up from one-hour buckets.
+SET_KINDS = frozenset({"novelty", "change"})
 
 
 def effective_lookback_days(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS) -> int:
@@ -245,6 +375,10 @@ def statistic(spec: ChannelSpec) -> str:
         return f"sum of {spec.value_column or spec.sum_state} per window"
     if spec.kind == "diversity":
         return f"distinct {spec.value_column or spec.uniq_state} per window"
+    if spec.kind == "novelty":
+        return f"{spec.value_column} values never seen in this host's history"
+    if spec.kind == "change":
+        return f"1 when {spec.value_column} differs from the host's previous window"
     return f"fraction where {spec.predicate}"
 
 
@@ -254,7 +388,8 @@ def inventory(lookback_days: int = LOOKBACK_DAYS) -> list[dict[str, Any]]:
     `scales` is what the channel can be measured at TODAY; `scale_detail` says why each declared
     scale is or is not usable, including the baseline's p-value floor. A scale missing from
     `scales` is missing for a reason, and the reason is visible in `baseline_windows` and
-    `p_floor` rather than hidden in a comment.
+    `p_floor` rather than hidden in a comment. `required_columns` is what `availability()`
+    checks against the live schema, so the inventory states the contract as well as the result.
     """
     out: list[dict[str, Any]] = []
     for spec in SPECS:
@@ -267,6 +402,49 @@ def inventory(lookback_days: int = LOOKBACK_DAYS) -> list[dict[str, Any]]:
             "scales": supported_scales(spec, lookback_days),
             "scale_detail": {scale: scale_report(scale, effective) for scale in spec.scales},
             "retention_days": spec.retention_days,
+            "required_columns": list(spec.required_columns),
+        })
+    return out
+
+
+def availability(client: Any, *,
+                 specs: tuple[ChannelSpec, ...] = SPECS) -> list[dict[str, Any]]:
+    """Which channels this deployment can actually read, and why not when it cannot.
+
+    A CHANNEL WHOSE TABLE LACKS A COLUMN MUST NOT LOOK QUIET. `compute()` used to catch every
+    exception and move on, so a renamed column produced zero evidence indistinguishable from a
+    host with nothing to report. This compares each spec's `required_columns` with the live
+    `system.columns` once and reports the missing names.
+
+    NO INFORMATION IS NOT A MISSING COLUMN. A table that is absent from the reply -- an older
+    ClickHouse, a fake client in a unit test, a probe that failed -- is reported as available
+    and left to the read to decide. Refusing on absence of evidence would make a working
+    channel disappear behind one failed probe.
+    """
+    tables = sorted({spec.table.split(".")[-1] for spec in specs})
+    in_list = ", ".join(f"'{table}'" for table in tables)
+    columns: dict[str, set[str]] = {}
+    try:
+        rows = client.query(
+            "SELECT table, name FROM system.columns "
+            f"WHERE database = 'weirvern' AND table IN ({in_list})"
+        ).result_rows
+    except Exception:  # noqa: BLE001 - an unreadable catalogue is not a missing column
+        rows = []
+    for table, name in rows or []:
+        columns.setdefault(str(table or ""), set()).add(str(name or ""))
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        present = columns.get(spec.table.split(".")[-1])
+        missing = sorted(set(spec.required_columns) - present) if present is not None else []
+        out.append({
+            "channel": spec.channel,
+            "family": spec.family,
+            "table": spec.table,
+            "available": not missing,
+            "missing_columns": missing,
+            "reason": "" if not missing else
+                      f"{spec.table} is missing column(s): {', '.join(missing)}",
         })
     return out
 
@@ -333,6 +511,146 @@ def _buckets(
     return _fold(rows, factor=max(1, seconds // step))
 
 
+def _value_sets(
+    client: Any, spec: ChannelSpec, *, scale: str, moment: datetime, lookback_days: int,
+    scope_cidrs: tuple[str, ...] | None,
+) -> dict[str, dict[int, set[str]]]:
+    """One channel's per-bucket VALUE SETS for one scale, including the current bucket at k=0.
+
+    Only for `SET_KINDS`: a novelty or change channel asks WHICH values a window held, and the
+    server returns them deduplicated rather than one row per event.
+    """
+    seconds = EVIDENCE_SCALE_SECONDS[scale]
+    sql = spec.sql_values(
+        bucket_s=seconds,
+        anchor=moment,
+        since=moment - timedelta(days=int(lookback_days)),
+        until=moment,
+        scope_cidrs=scope_cidrs,
+    )
+    rows = list(client.query(sql).result_rows)
+    out: dict[str, dict[int, set[str]]] = {}
+    for row in rows:
+        host = str(row[0] or "")
+        if not host or row[1] is None:
+            continue
+        index = int(row[1])
+        if index < 0:
+            continue
+        out.setdefault(host, {}).setdefault(index, set()).add(str(row[2] or ""))
+    return out
+
+
+def _novelty_series(by_index: dict[int, set[str]]) -> tuple[float, list[float]]:
+    """(values new in the current bucket, how many were new in each earlier bucket).
+
+    NOVELTY IS A SET DIFFERENCE, NOT A COUNT. "This host has never sent this user-agent" can
+    only be answered by remembering WHICH values its earlier windows held; a per-window distinct
+    count cannot be re-derived into it. Each historical bucket is scored against the buckets
+    OLDER than itself, which is the same question the current bucket is asked -- otherwise the
+    reference would measure something else and the rank would be meaningless.
+    """
+    reference: list[float] = []
+    seen: set[str] = set()
+    oldest = True
+    for index in sorted(by_index, reverse=True):
+        values = by_index[index]
+        if index == 0:
+            continue
+        # THE OLDEST BUCKET IS NOT A NOVELTY MEASUREMENT. Everything in it would be "new"
+        # against a history this window cannot see, so scoring it puts one guaranteed positive
+        # value in every reference and doubles the smallest p the test can express. It enters
+        # `seen` (its values ARE part of the host's history) but scores zero.
+        if oldest:
+            reference.append(0.0)
+            seen |= values
+            oldest = False
+            continue
+        reference.append(float(len(values - seen)))
+        seen |= values
+    current = float(len(by_index.get(0, set()) - seen))
+    return current, reference
+
+
+def _change_series(by_index: dict[int, set[str]]) -> tuple[float, list[float]]:
+    """(changed in the current bucket?, changed in each earlier bucket?).
+
+    A BOOLEAN, NOT A RATE. 1 means this bucket's value set differs from the bucket the host was
+    last seen in; 0 means it is the same. The first bucket a host ever appears in scores 0:
+    there is no previous observation to differ from, and inventing one would report a change on
+    every host's first window.
+    """
+    reference: list[float] = []
+    previous: str | None = None
+    current = 0.0
+    for index in sorted(by_index, reverse=True):
+        signature = "|".join(sorted(by_index[index]))
+        changed = 0.0 if previous is None or signature == previous else 1.0
+        if index == 0:
+            current = changed
+            continue
+        reference.append(changed)
+        previous = signature
+    return current, reference
+
+
+def _measure(spec: ChannelSpec, *, scale: str, host: str, moment: datetime, value: float,
+             reference: list[float], coverage: float) -> ChannelEvidence | None:
+    """One measurement, or None when there is nothing a p-value could be computed from.
+
+    THE TWO REFUSALS ARE MADE HERE so every kind of channel refuses identically: a non-finite
+    statistic, and an empty reference. `baseline_short` and `p_floor` travel with the row so the
+    reader can tell a measurement from a result.
+    """
+    reference = [item for item in reference if math.isfinite(item)]
+    if not math.isfinite(value) or not reference:
+        return None
+    median = float(statistics.median(reference))
+    pvalue = empirical_pvalue_two_sided(value, reference)
+    if not math.isfinite(pvalue):
+        return None
+    direction = "rose" if value > median else "fell" if value < median else "unchanged"
+    return ChannelEvidence(
+        channel=spec.channel, family=spec.family, scale=scale,
+        model_id=f"source:{spec.channel}", model_version=MODEL_VERSION,
+        score=value, pvalue=pvalue, freshness_s=0.0, present=True,
+        host=host, observed_at=moment, value=value, baseline_median=median,
+        sample_count=len(reference), coverage=round(coverage, 4), direction=direction,
+        p_floor=pvalue_floor(len(reference)),
+        baseline_short=len(reference) < min_baseline_samples(scale),
+    )
+
+
+def _series_evidence(spec: ChannelSpec, *, scale: str,
+                     buckets: dict[str, dict[int, set[str]]], moment: datetime,
+                     wanted: set[str] | None,
+                     lookback_days: int) -> list[ChannelEvidence]:
+    """Evidence for a novelty/change channel, under the same floor and coverage rules."""
+    expected = baseline_windows(scale, lookback_days)
+    minimum = min_baseline_samples(scale)
+    out: list[ChannelEvidence] = []
+    for host, by_index in buckets.items():
+        if wanted is not None and host not in wanted:
+            continue
+        # NO CURRENT BUCKET, NO EVIDENCE, for the same reason as every other channel: silence
+        # and a broken collector are indistinguishable here.
+        if not by_index.get(0):
+            continue
+        history = {index: values for index, values in by_index.items() if index >= 1}
+        coverage = len(history) / expected if expected else 0.0
+        if len(history) < minimum or coverage < MIN_COVERAGE:
+            continue
+        if spec.kind == "novelty":
+            value, reference = _novelty_series(by_index)
+        else:
+            value, reference = _change_series(by_index)
+        item = _measure(spec, scale=scale, host=host, moment=moment, value=value,
+                        reference=reference, coverage=coverage)
+        if item is not None:
+            out.append(item)
+    return out
+
+
 def _evidence_for_scale(spec: ChannelSpec, *, scale: str, buckets: dict[str, dict[int, tuple]],
                         moment: datetime, wanted: set[str] | None,
                         lookback_days: int) -> list[ChannelEvidence]:
@@ -354,21 +672,10 @@ def _evidence_for_scale(spec: ChannelSpec, *, scale: str, buckets: dict[str, dic
             continue
         value = _value(spec, current)
         reference = [_value(spec, bucket) for bucket in history.values()]
-        if not math.isfinite(value) or not reference:
-            continue
-        median = float(statistics.median(reference))
-        pvalue = empirical_pvalue_two_sided(value, reference)
-        if not math.isfinite(pvalue):
-            continue
-        direction = "rose" if value > median else "fell" if value < median else "unchanged"
-        out.append(ChannelEvidence(
-            channel=spec.channel, family=spec.family, scale=scale,
-            model_id=f"source:{spec.channel}", model_version=MODEL_VERSION,
-            score=value, pvalue=pvalue, freshness_s=0.0, present=True,
-            host=host, observed_at=moment, value=value, baseline_median=median,
-            sample_count=len(reference), coverage=round(coverage, 4), direction=direction,
-            p_floor=pvalue_floor(len(reference)), baseline_short=len(reference) < minimum,
-        ))
+        item = _measure(spec, scale=scale, host=host, moment=moment, value=value,
+                        reference=reference, coverage=coverage)
+        if item is not None:
+            out.append(item)
     return out
 
 
@@ -384,8 +691,8 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
     "we could not work out what we own" must not degrade into "measure everything".
 
     A source that cannot be read is skipped, not fatal: one missing table must not silence the
-    other sixteen channels. The skip is visible because the channel is absent from the result
-    while its siblings are present.
+    other channels. A channel whose table lacks a REQUIRED COLUMN is skipped deliberately and
+    named by `availability()`; one missing table must not become sixteen unexplained silences.
     """
     nets = (monitored_nets if monitored_nets is not None
             else monitored_mod.networks(client))
@@ -393,9 +700,13 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
         return []
     cidrs = tuple(str(net) for net in nets)
     moment = _aware(now or datetime.now(UTC)).replace(microsecond=0)
+    missing_columns = {row["channel"] for row in availability(client, specs=specs)
+                       if not row["available"]}
     wanted = set(hosts) if hosts is not None else None
     out: list[ChannelEvidence] = []
     for spec in specs:
+        if spec.channel in missing_columns:
+            continue
         effective = effective_lookback_days(spec, lookback_days)
         scales = supported_scales(spec, lookback_days)
         if not scales:
@@ -410,6 +721,15 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
                     folded = _fold_from_buckets(base, factor)
                     out.extend(_evidence_for_scale(
                         spec, scale=scale, buckets=folded, moment=moment,
+                        wanted=wanted, lookback_days=effective))
+            elif spec.kind in SET_KINDS:
+                # A SET cannot be rolled up from smaller buckets: "was this value new?" is a
+                # question about the whole window, so each scale is queried at its own length.
+                for scale in scales:
+                    value_sets = _value_sets(client, spec, scale=scale, moment=moment,
+                                             lookback_days=effective, scope_cidrs=cidrs)
+                    out.extend(_series_evidence(
+                        spec, scale=scale, buckets=value_sets, moment=moment,
                         wanted=wanted, lookback_days=effective))
             else:
                 for scale in scales:
@@ -522,11 +842,15 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
     """
     items = compute(client, now=now, hosts=hosts, lookback_days=lookback_days)
     stored = store(client, items)
+    unavailable = [{"channel": row["channel"], "reason": row["reason"]}
+                   for row in availability(client) if not row["available"]]
     return {
         "evidence": len(items),
         "rows": stored,
         "hosts": len({item.host for item in items}),
         "channels": len({item.channel for item in items}),
+        "declared_channels": len(SPECS),
+        "unavailable": unavailable,
         "scales": sorted({item.scale for item in items}),
         "model_version": MODEL_VERSION,
     }
@@ -579,6 +903,6 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
 
 
 __all__ = ["COLUMNS", "LOOKBACK_DAYS", "MAX_HOSTS", "MIN_BASELINE_SAMPLES", "MIN_COVERAGE",
-           "MODEL_VERSION", "SPECS", "baseline_windows", "compute", "effective_lookback_days",
-           "inventory", "overview", "read", "run", "scale_report", "statistic", "store",
-           "supported_scales"]
+           "MODEL_VERSION", "SET_KINDS", "SPECS", "availability", "baseline_windows", "compute",
+           "effective_lookback_days", "inventory", "overview", "read", "run", "scale_report",
+           "statistic", "store", "supported_scales"]

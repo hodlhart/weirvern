@@ -61,6 +61,10 @@ class ChannelSpec:
     #: makes every ratio look like noise. The denominator must be "rows where the field is
     #: meaningful", not "all rows".
     denominator: str | None = None
+    #: Rows that carry a value at all, for a diversity channel. A TLS session with neither SNI
+    #: nor a JA4 fingerprint is ONE anonymous pair, not a distinct one; counting the empty string
+    #: would give every host a permanent +1 and make the diversity mostly a row count.
+    value_filter: str | None = None
     # ── the multi-scale evidence layer (phase 1) ────────────────────────────────────────────
     #: The timestamp the window is built from. `flows_window` is keyed on `window_start`.
     time_column: str = "ts"
@@ -83,6 +87,10 @@ class ChannelSpec:
     count_state: str | None = None
     sum_state: str | None = None
     uniq_state: str | None = None
+    #: The physical columns this channel reads. `availability()` checks these against
+    #: `system.columns` so a channel whose table lacks one is DECLARED UNAVAILABLE with the
+    #: missing names, rather than silently producing nothing and looking like a quiet host.
+    required_columns: tuple[str, ...] = ()
 
     def sql(self, *, since_s: int) -> str:
         if self.kind == "diversity":
@@ -100,6 +108,66 @@ class ChannelSpec:
                 f"FROM {self.table} "
                 f"WHERE ts >= now() - INTERVAL {int(since_s)} SECOND "
                 f"GROUP BY {self.host_column}, w ORDER BY w")
+
+    def _attribution(
+        self, scope_cidrs: tuple[str, ...] | None
+    ) -> tuple[str, str, str]:
+        """`(subject expression, peer expression, scope WHERE fragment)` for one query.
+
+        THE SUBJECT IS THE MONITORED ENDPOINT, never a remote peer: the source when it is
+        inside a monitored network, otherwise the destination. `scope_cidrs=None` keeps the
+        old source-only shape for callers that do not have a scope list (there are none in
+        this package). An empty scope list becomes the predicate `0`, so a caller that passes
+        nothing can only under-report rather than measure the whole internet.
+        """
+        host_expr = self.host_column
+        peer_expr = self.peer_column or self.host_column
+        scope_where = ""
+        if scope_cidrs is None:
+            return host_expr, peer_expr, scope_where
+        src_in = " OR ".join(
+            f"isIPAddressInRange({self.host_column}, '{cidr}')" for cidr in scope_cidrs)
+        src_in = src_in or "0"
+        if self.peer_column:
+            dst_in = " OR ".join(
+                f"isIPAddressInRange({self.peer_column}, '{cidr}')" for cidr in scope_cidrs)
+            dst_in = dst_in or "0"
+            host_expr = f"if(({src_in}), {self.host_column}, {self.peer_column})"
+            peer_expr = f"if(({src_in}), {self.peer_column}, {self.host_column})"
+            scope_where = f" AND (({src_in}) OR ({dst_in}))"
+        else:
+            # PRE-AGGREGATED BY SOURCE, with no destination column to fall back to. A row
+            # whose source is not monitored cannot be attributed to one of ours, so it is
+            # dropped rather than reported under the remote address.
+            scope_where = f" AND ({src_in})"
+        return host_expr, peer_expr, scope_where
+
+    def sql_values(self, *, bucket_s: int, anchor: datetime, since: datetime,
+                   until: datetime,
+                   scope_cidrs: tuple[str, ...] | None = None) -> str:
+        """One row per DISTINCT VALUE per subject per bucket, for novelty/change channels.
+
+        `sql_anchored` can only say HOW MANY distinct values a bucket held. A novelty channel
+        needs to know WHICH values: "a user-agent this host has never sent" is a fact about
+        set difference across buckets, and no count can be re-derived into it afterwards.
+        The server deduplicates, so the caller never sees one row per event.
+
+        Returns `(host, k, v)` with the same anchored bucket arithmetic and the same subject
+        attribution as `sql_anchored`.
+        """
+        if not self.value_column:
+            raise ValueError(f"{self.channel}: a novelty channel needs a value column")
+        host_expr, _peer_expr, scope_where = self._attribution(scope_cidrs)
+        anchor_ts = int(anchor.timestamp())
+        return (
+            f"SELECT {host_expr} AS host, "
+            f"intDiv({anchor_ts} - toUnixTimestamp({self.time_column}), {int(bucket_s)}) AS k, "
+            f"{self.value_column} AS v "
+            f"FROM {self.table} "
+            f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where} "
+            "GROUP BY host, k, v"
+        )
 
     def sql_anchored(self, *, bucket_s: int, anchor: datetime, since: datetime,
                      until: datetime,
@@ -138,6 +206,8 @@ class ChannelSpec:
                 if not self.value_column:
                     raise ValueError(f"{self.channel}: a diversity channel needs a value column")
                 u_expr = f"uniqExact({self.value_column})"
+                if self.value_filter:
+                    u_expr = f"uniqExactIf({self.value_column}, {self.value_filter})"
             elif self.kind == "ratio":
                 if not self.predicate:
                     raise ValueError(f"{self.channel}: a ratio channel needs a predicate")
@@ -147,33 +217,14 @@ class ChannelSpec:
                     raise ValueError(f"{self.channel}: a sum channel needs a value column")
                 b_expr = f"sum({self.value_column})"
 
-        host_expr = self.host_column
-        peer_expr = self.peer_column or self.host_column
-        scope_where = ""
-        if scope_cidrs is not None:
-            src_in = " OR ".join(
-                f"isIPAddressInRange({self.host_column}, '{cidr}')" for cidr in scope_cidrs)
-            # An empty scope list is not a licence: the predicate becomes `0`, so no row can
-            # pass and the caller can only under-report.
-            src_in = src_in or "0"
-            if self.peer_column:
-                dst_in = " OR ".join(
-                    f"isIPAddressInRange({self.peer_column}, '{cidr}')" for cidr in scope_cidrs)
-                dst_in = dst_in or "0"
-                host_expr = f"if(({src_in}), {self.host_column}, {self.peer_column})"
-                peer_expr = f"if(({src_in}), {self.peer_column}, {self.host_column})"
-                scope_where = f" AND (({src_in}) OR ({dst_in}))"
-            else:
-                # PRE-AGGREGATED BY SOURCE, with no destination column to fall back to. A row
-                # whose source is not monitored cannot be attributed to one of ours, so it is
-                # dropped rather than reported under the remote address.
-                scope_where = f" AND ({src_in})"
-            # A diversity channel whose value IS the peer column (flow_dst_diversity,
-            # conn_dst_diversity) must count the peer FROM THE SUBJECT'S SIDE. Counting
-            # dst_addr when the subject is the destination would measure the subject itself
-            # and read as a constant one.
-            if (self.kind == "diversity" and self.value_column == self.peer_column):
-                u_expr = f"uniqExact({peer_expr})"
+        host_expr, peer_expr, scope_where = self._attribution(scope_cidrs)
+        # A diversity channel whose value IS the peer column (flow_dst_diversity,
+        # conn_dst_diversity) must count the peer FROM THE SUBJECT'S SIDE. Counting
+        # dst_addr when the subject is the destination would measure the subject itself
+        # and read as a constant one.
+        if (scope_cidrs is not None and self.kind == "diversity"
+                and self.value_column == self.peer_column):
+            u_expr = f"uniqExact({peer_expr})"
 
         anchor_ts = int(anchor.timestamp())
         return (
