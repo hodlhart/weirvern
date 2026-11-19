@@ -73,12 +73,25 @@ def detector_status(row: dict[str, Any]) -> str:
         return NOT_TRAINED
     if not row.get("eligible"):
         prefix = "trained, " if row.get("trained") else ""
+        if row.get("calibration_stale"):
+            return prefix + "not contributing (calibration older than the artifact)"
         if observed is None or target is None:
             return prefix + "not contributing (no calibration row)"
         return f"{prefix}not contributing (FAR {observed:.2f} vs {target:.2f})"
     if row.get("barred"):
         return BARRED
     return CONTRIBUTING
+
+
+def _stamp(value: Any) -> str:
+    """A comparable timestamp from either spelling, or "" when there is nothing to compare.
+
+    `ml_models.trained_at` can arrive as `2026-11-19 08:21:17` and calibration as ISO with a `T`.
+    Comparing the two spellings as raw strings would order them wrongly, so both are normalised to
+    the same `YYYY-MM-DD HH:MM:SS` shape before the holdout lock looks at them.
+    """
+    text = str(value or "").strip().replace("T", " ")
+    return text[:19]
 
 
 def detector_rows(
@@ -118,6 +131,14 @@ def detector_rows(
         is_trained = bool(trained)
         is_barred = not bool(allowed.get(name, False))
         is_eligible = bool(eligible.get(name, False))
+        # THE HOLDOUT LOCK (calibration.eligibility's rule, kept in step here): a calibration
+        # computed BEFORE the newest artifact is not evidence about the model serving now. Without
+        # this the table could call a just-retrained model contributing on its predecessor's score.
+        cal_when = _stamp(cal.get("computed_at"))
+        train_when = _stamp(trained)
+        calibration_stale = bool(train_when and cal_when and cal_when < train_when)
+        if calibration_stale:
+            is_eligible = False
         row: dict[str, Any] = {
             "name": name,
             "trained_at": trained,
@@ -136,6 +157,7 @@ def detector_rows(
         row["trained"] = is_trained
         row["artifact_version"] = str(artifact.get("version") or "")
         row["barred"] = is_barred
+        row["calibration_stale"] = calibration_stale
         row["contributing"] = bool(is_trained and is_eligible and not is_barred)
         row["status"] = detector_status(row)
         rows.append(row)

@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.23.91</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.23.92</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">

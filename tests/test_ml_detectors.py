@@ -184,3 +184,36 @@ def test_the_card_and_its_summary_are_wired_in_both_files() -> None:
     assert cells == headers, (
         f"{headers} header cells but {cells} data cells -- the table would render misaligned")
     assert "d.status" in row, "the row does not render the derived status"
+
+
+def test_a_calibration_older_than_the_artifact_is_not_evidence_about_it():
+    """THE HOLDOUT LOCK. `calibration.eligibility` already refuses to let a retrain re-enable a
+    model on its predecessor's calibration; the table must apply the same rule or it will call a
+    freshly retrained model contributing on a score that measured a model no longer on disk.
+    """
+    from weirvern.models.detector_status import detector_rows
+
+    rows = detector_rows(
+        {"DBSCAN": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
+        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
+        {"DBSCAN": {"observed_far": 0.0, "target_far": 0.01,
+                    "computed_at": "2026-11-19 09:00:00"}},
+        {"DBSCAN": "production"},
+    )
+    row = rows[0]
+    assert row["contributing"] is False
+    assert "calibration older than the artifact" in row["status"]
+
+
+def test_a_calibration_newer_than_the_artifact_still_contributes():
+    """The lock must not become a permanent bar: rerun the calibration and the model is back."""
+    from weirvern.models.detector_status import detector_rows
+
+    rows = detector_rows(
+        {"DBSCAN": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
+        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
+        {"DBSCAN": {"observed_far": 0.0, "target_far": 0.01,
+                    "computed_at": "2026-11-19 11:00:00"}},
+        {"DBSCAN": "production"},
+    )
+    assert rows[0]["contributing"] is True
