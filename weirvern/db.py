@@ -200,6 +200,30 @@ def apply_schema(client: Client, settings: Settings) -> None:
         )
 
     logger.info("Applied schema files: %s", ", ".join(applied))
+
+    # ── RETENTION CONVERGES HERE, ON EVERY START ─────────────────────────────────────────────
+    #
+    # THE SCHEMA FILES CREATE these tables with the 7-day FLOOR as a bootstrap: a brand-new
+    # database has no ingest history to measure, and the floor is the safe direction. An
+    # EXISTING deployment keeps whatever TTL it was created with -- `CREATE TABLE IF NOT EXISTS`
+    # is a no-op -- so without this pass a deployment upgraded from the 3/7-day era would still
+    # be stuck there while the Settings tab said otherwise.
+    #
+    # `auto` derives from CURRENT free disk and OBSERVED ingest (weirvern/retention.py), so a
+    # restart after the disk fills or the traffic grows re-sizes the window with nobody editing
+    # a day count. The schema Job and every worker start call this function: no manual step.
+    #
+    # NOT FATAL: a retention pass that cannot run leaves the previous TTL in place and says
+    # so; taking the detector down over a TTL would trade history for alerts. `ensure` logs
+    # the table and the reason, and the Settings apply path reports the same failure to the
+    # operator directly.
+    from weirvern import retention  # noqa: PLC0415
+
+    retention.ensure(
+        client,
+        getattr(settings, "data_retention_days", retention.AUTO),
+        getattr(settings, "data_retention_ratio", retention.DEFAULT_RATIO_PERCENT),
+    )
     try:
         client.command(
             "INSERT INTO weirvern.schema_versions (applied_at, version) VALUES (now(), %s)",

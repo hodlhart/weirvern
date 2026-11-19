@@ -251,6 +251,17 @@ data:
   DETECT_INTERVAL_S: "300"
   RETRAIN_EVERY_H: "6"
   RETRAIN_WINDOW_H: "72"
+  # ── Retention (derived from free disk) ─────────────────────────────────────
+  #
+  # "auto" DERIVES the window from the free space on ClickHouse's disk and the ingest rate
+  # the managed tables have actually measured -- at startup and on every apply -- so nobody
+  # edits a day count and a filling disk moves the number by itself. An explicit 7-365
+  # overrides it and is refused above what the disk can hold. The Settings row shows the
+  # arithmetic; lowering it EXPIRES older rows on ClickHouse's next merge.
+  DATA_RETENTION_DAYS: "auto"
+  # Share of FREE space the retained tables may occupy: 40% default, 10-70 bounds. The rest
+  # is merge headroom -- ClickHouse must be able to compact, so >70% is refused.
+  DATA_RETENTION_RATIO: "40"
   BASE_THRESHOLD: "0.35"
   MIN_AGREEMENT: "0.33"
   # Local-learning warm-up: a new deployment records detections but does not page until the

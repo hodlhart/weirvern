@@ -61,8 +61,8 @@
 -- read from the record definitions rather than from a documentation example.
 --
 -- RETENTION follows the rule established in 004_zeek_identity.sql: every table BOUNDED, shortest
--- where the exposure is greatest. None of these take the flow tables' 7 days, which is a volume
--- bound rather than a privacy one, and none are unbounded.
+-- where the exposure is greatest. None of these take the detection tables' unified window, which
+-- is a baseline requirement stated in weirvern/retention.py, and none are unbounded.
 
 -- ── dhcp: L2 identity, the pivot for everything else ───────────────────────────
 CREATE TABLE IF NOT EXISTS weirvern.zeek_dhcp

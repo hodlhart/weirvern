@@ -37,9 +37,9 @@ from weirvern.admin import status
 
 WEB = Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web"
 
-# The four kinds the front end implements in `settingControl()`. A fifth kind would render as
+# The kinds the front end implements in `settingControl()`. A further kind would render as
 # nothing until the JS side learns it, so the set is asserted rather than assumed.
-KNOWN_CONTROL_KINDS = {"toggle", "select", "number", "text"}
+KNOWN_CONTROL_KINDS = {"toggle", "select", "number", "text", "auto_number"}
 
 
 def _rows() -> dict[str, dict]:

@@ -10,9 +10,10 @@ what this design does not do yet.
 **The data flow, in one pass.** NetFlow/sFlow exports (switches, pfSense, VMs) arrive at the
 goflow2 collector, which writes them as JSONL; the worker tails that file and batch-inserts
 into ClickHouse. Mirrored packets (a SPAN or mirror port, or a NIC in the path) feed Zeek,
-whose log files the same worker tails and parses. ClickHouse holds the raw flows (TTL: 3
-days), the aggregated windows with their diversity and temporal tables, the Tier-3 Zeek
-tables, and the model outputs — `netflow_anomalies`, `near_misses`, `alert_reviews`,
+whose log files the same worker tails and parses. ClickHouse holds the raw flows (TTL
+derived from free disk — `DATA_RETENTION_DAYS=auto`), the aggregated windows with their
+diversity and temporal tables, the Tier-3 Zeek tables, and the model outputs —
+`netflow_anomalies`, `near_misses`, `alert_reviews`,
 `alert_events`, and the model and baseline history. The worker's second stage trains the
 ensemble and scores every window; the SOC console and the API read what all of that recorded,
 and Pushover carries the alerts that pass the hygiene gates.
@@ -278,8 +279,10 @@ pin both to 1 with `Recreate` strategy, and the reasons are documented in
   transport must change to a broker.
 - **Detection depth**: the ensemble is bounded by flow volume, not by the number
   of hosts.
-- **Retention**: per-type TTLs in `weirvern/schema/001_weirvern.sql` let
-  high-volume data (`flows`) expire quickly while low-volume, high-value data
-  (`notice`, `files`) persists far longer.
+- **Retention**: one window for the tables the detection and ripple layers read
+  (`weirvern/retention.py`), **derived from free disk and the ingest rate those tables have
+  measured** — 40% of free space by default, 7-day floor, 365-day cap, re-derived at startup
+  and on apply. Every other table keeps its own per-table TTL, so high-volume data expires
+  while low-volume, high-value records persist longer.
 
 ---

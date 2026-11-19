@@ -1072,6 +1072,15 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting-ctl-group { display: flex; align-items: center; gap: 8px; }
 /* The range hint beside a number input: visible so the legal range is never a surprise. */
 .setting-unit { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; }
+/* AUTO RETENTION. The checkbox and the day count sit on one line; the arithmetic the server
+ * used sits under them, because a derived number without its reasoning cannot be checked.
+ * While auto is on the input is DISABLED -- it shows the outcome, it is not an input. */
+.setting-ctl-block { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.setting-auto-label { display: flex; align-items: center; gap: 6px; cursor: pointer;
+  font-size: var(--fs-2); color: var(--muted); white-space: nowrap; }
+.setting-auto { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.setting-derived { font-size: var(--fs-1); color: var(--muted); max-width: 58ch; }
+.setting-input:disabled { opacity: .7; }
 
 /* THE "?" BUTTON. Round, quiet, and identical on every row -- it is a discovery affordance, not
  * a control competing with the value beside it. `open` marks the expanded state. */

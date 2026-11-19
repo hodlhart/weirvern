@@ -105,6 +105,14 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "SENSOR_MODE",
     "WEIRVERN_EXCLUDE_CIDRS",
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
+    # ONE RETENTION WINDOW for the tables the detection and ripple layers read
+    # (weirvern/retention.py). Written to the ConfigMap like every other key; the apply path
+    # then derives/validates it and ALTERs the live tables, because a ConfigMap value alone
+    # would say one thing while ClickHouse kept another.
+    "DATA_RETENTION_DAYS",
+    # The share of FREE disk the retention window may occupy. 40% default, 10-70 bounds:
+    # ClickHouse needs the rest for merges, so >70% is refused rather than merely warned.
+    "DATA_RETENTION_RATIO",
 )
 
 # ROW KEY -> CONFIGMAP KEY, for the entries where lower-casing is not enough.
@@ -335,6 +343,14 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
                                "restarts the detection worker"),
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": (("ds/zeek",),
                                        "restarts the capture sensor (brief capture gap)"),
+    # NO RESTART: a TTL is ClickHouse metadata, and the apply path runs the ALTER itself. An
+    # empty target tuple still gives the row an honest badge ("applies with Apply — ..."),
+    # and this entry exists because a settings key with no declared effect is a key the UI
+    # would call saved while nothing changed (tests/test_gui_auth.py enforces that).
+    "DATA_RETENTION_DAYS": ((), "derives again from free disk on every start and apply; "
+                                "lowering it expires older rows on the next merge"),
+    "DATA_RETENTION_RATIO": ((), "re-derives the window from free disk on every start and "
+                                 "apply; no restart"),
 }
 
 
@@ -367,6 +383,10 @@ class Proposal:
     restarts: tuple[str, ...] = ()
     blast: str = ""
     warning: str = ""
+    #: True when applying this change DESTROYS data rather than only reconfiguring. The UI
+    #: uses it to pick the destructive echo (reason required, recorded) over the ordinary
+    #: "allowed but costly" confirm. Retention lowering is the only one today.
+    destructive: bool = False
 
 
 @dataclass
@@ -420,6 +440,9 @@ NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
     # or above that fused score. The step is 0.05 -- finer than the ensemble's own confidence
     # granularity, and coarse enough that the control does not invite false precision.
     "SLUICE_AUTO_SCORE": (0.0, 1.0, "a score fraction (0 disables)", 0.05),
+    # The share of FREE disk the retention window may occupy. Below 10% a busy hour moves the
+    # answer by days; above 70% ClickHouse has no room for merges, so both ends are refused.
+    "DATA_RETENTION_RATIO": (10, 70, "% of free disk", 1),
 }
 
 # HOW THE SETTINGS TAB RENDERS EACH EDITABLE KEY: its natural control, so an operator CHOOSES a
@@ -432,6 +455,12 @@ NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
 SETTING_CONTROLS: dict[str, dict] = {
     **{k: {"control": "number", "min": lo, "max": hi, "step": step, "unit": what}
        for k, (lo, hi, what, step) in NUMERIC_RANGES.items()},
+    # AUTO OR A NUMBER, as one control: a checkbox ("Auto — derive from free disk") beside a
+    # days input that is read-only while auto is on. "auto" is a legal value the numeric
+    # registry cannot express, which is why this spec is explicit rather than generated.
+    "DATA_RETENTION_DAYS": {"control": "auto_number", "min": 7, "max": 365, "step": 1,
+                            "unit": "days", "auto_value": "auto",
+                            "auto_label": "Auto — derive from free disk"},
     "PUSHOVER_ENABLED": {"control": "toggle"},
     "SENSOR_MODE": {"control": "select", "options": ["loch", "siphon"]},
     "WEIRVERN_REVERSE_DNS": {"control": "select", "options": ["private", "all", "off"]},
@@ -563,6 +592,30 @@ def validate(key: str, value: str) -> str:
             )
         if raw and not raw.startswith(("eth", "en", "bond", "wl")):
             return f"'{raw}' does not look like a network interface name"
+        return ""
+
+    if key == "DATA_RETENTION_DAYS":
+        # ONE PARSER, SHARED WITH THE MIGRATION. `retention` decides what "auto" and what
+        # 7..365 mean, so the form, this validator and the ALTER cannot disagree. An empty
+        # value is AUTO (the default), because a ConfigMap that never set the key means
+        # "derive it", not "zero days".
+        from weirvern import retention  # noqa: PLC0415
+
+        if retention.is_auto(raw):
+            return ""
+        try:
+            retention.normalise_days(raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from None
+        return ""
+
+    if key == "DATA_RETENTION_RATIO":
+        from weirvern import retention  # noqa: PLC0415
+
+        try:
+            retention.normalise_ratio(raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from None
         return ""
 
     numeric = NUMERIC_RANGES
@@ -715,6 +768,53 @@ def receipt_items(changes: dict[str, str], landed: dict[str, str] | None,
     return items
 
 
+def _retention_destructive(proposed: str, current: str,
+                           now_days: int | None) -> tuple[bool, str]:
+    """(destructive, warning) for a retention change. The comparison the UI must be told about.
+
+    `now_days` is the cluster's CURRENT effective window when the caller could measure it.
+    Without it, an explicit current value is still comparable; when the current value is auto
+    and nothing could be measured, the change is treated as destructive rather than guessed
+    safe -- an extra confirmation costs a click, and the other direction has no undo.
+    """
+    from weirvern import retention  # noqa: PLC0415
+
+    if retention.is_auto(proposed):
+        return False, ""
+    want = retention.normalise_days(proposed)
+    if now_days is not None:
+        now: int | None = int(now_days)
+    else:
+        try:
+            now = retention.normalise_days(current)
+        except ValueError:
+            now = None
+    if now is None:
+        return True, (
+            "LOWERING RETENTION IS DESTRUCTIVE: the cluster's current window could not be "
+            "measured, so this explicit value cannot be compared with what it holds. ClickHouse "
+            "expires every row older than the new window on its next merge, and that cannot be "
+            "undone."
+        )
+    if want < now:
+        return True, (
+            f"LOWERING RETENTION IS DESTRUCTIVE: ClickHouse expires every row older than "
+            f"{want} days on its next merge, and that cannot be undone. The cluster keeps "
+            f"{now} days today."
+        )
+    return False, ""
+
+
+def _ratio_percent(raw: str) -> int:
+    """The current disk-budget percentage, or the default when nothing usable is stored."""
+    from weirvern import retention  # noqa: PLC0415
+
+    try:
+        return retention.normalise_ratio(raw)
+    except ValueError:
+        return retention.DEFAULT_RATIO_PERCENT
+
+
 def _iface_list(raw: str) -> list[str]:
     """The interface names in a comma/semicolon-separated setting."""
     out: list[str] = []
@@ -746,8 +846,13 @@ def _channel_capture_guard(proposed: dict[str, str]) -> None:
             )
 
 
-def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
+def plan(changes: dict[str, str], current: dict[str, str], *,
+         retention_now_days: int | None = None) -> Plan:
     """Compute what a set of changes would do. Touches nothing.
+
+    `retention_now_days` is the cluster's CURRENT effective retention when the caller measured
+    it; the plan route and the apply path pass it so a lowering is marked destructive against
+    what the tables really hold, not only against the stored string.
 
     Raises ConfigError if any single change is unacceptable, so a multi-key apply is all-or-nothing
     -- a partial apply would leave the deployment in a state nobody chose.
@@ -761,6 +866,34 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
         key = to_configmap_key(key)
         warning = validate(key, value)
         was = current.get(key, "")
+        destructive = False
+        if key == "DATA_RETENTION_DAYS":
+            # LOWERING IS DESTRUCTIVE, and the plan says so in the payload the UI renders.
+            # `validate` cannot answer this because it sees one value, not the pair; the
+            # comparison belongs here, where the current value and (when measurable) the
+            # cluster's effective window are in hand.
+            destructive, warning = _retention_destructive(value, was, retention_now_days)
+        elif key == "DATA_RETENTION_RATIO":
+            # The ratio only moves the window while retention is AUTO: 10% of free space
+            # derives half the days 20% does, and the rows that fall outside expire on the
+            # next merge. In manual mode the ratio is just the budget check, so it is not
+            # destructive and the warning would be a lie.
+            from weirvern import retention  # noqa: PLC0415
+
+            proposed_mode = proposed.get("DATA_RETENTION_DAYS",
+                                         current.get("DATA_RETENTION_DAYS", retention.AUTO))
+            try:
+                want_ratio = retention.normalise_ratio(value)
+            except ValueError:
+                want_ratio = retention.DEFAULT_RATIO_PERCENT
+            was_ratio = _ratio_percent(was)
+            if retention.is_auto(proposed_mode) and want_ratio < was_ratio:
+                destructive = True
+                warning = (
+                    f"LOWERING THE DISK BUDGET SHORTENS RETENTION: at {want_ratio}% of free "
+                    f"space (was {was_ratio}%) the derived window is shorter, and ClickHouse "
+                    f"expires the extra rows on its next merge. That cannot be undone."
+                )
         proposed[key] = (value or "").strip()
         targets: tuple[str, ...]
         targets, blast = _RESTART_FOR.get(key, ((), ""))
@@ -771,6 +904,7 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
             restarts=tuple(targets),
             blast=blast,
             warning=warning,
+            destructive=destructive,
         ))
     _channel_capture_guard(proposed)
     return out

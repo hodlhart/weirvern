@@ -635,6 +635,72 @@ function settingControl(row, shown, spec) {
     return sel;
   }
 
+  if (s.control === "auto_number") {
+    // AUTO OR A NUMBER, ONE CONTROL. "auto" is a legal value a numeric input cannot express,
+    // and while it is on the day count is an OUTCOME, not an input: the number is read-only
+    // and the server's own arithmetic is printed under it. The number shown while auto is on
+    // is the DERIVED one from the payload -- the browser never computes it.
+    const autoV = s.auto_value !== undefined ? String(s.auto_value) : "auto";
+    const raw = String(shown == null ? "" : shown).trim();
+    const derived = row.retention || null;
+    const isAuto = raw === "" || raw.toLowerCase() === autoV.toLowerCase();
+    const derivedDays = derived && derived.days !== null && derived.days !== undefined
+      ? String(derived.days) : "";
+    const input = el("input", {
+      class: "setting-input setting-number", value: isAuto ? derivedDays : raw,
+      attrs: { type: "number", "data-key": key, inputmode: "decimal", spellcheck: "false",
+               autocomplete: "off", "aria-label": label },
+      on: { input: (ev) => stage(ev.target.value) },
+    });
+    if (s.min !== undefined) input.setAttribute("min", String(s.min));
+    if (s.max !== undefined) input.setAttribute("max", String(s.max));
+    if (s.step !== undefined) input.setAttribute("step", String(s.step));
+    input.disabled = isAuto;
+    const box = el("input", {
+      class: "setting-auto",
+      attrs: { type: "checkbox", "data-auto-for": key,
+               "aria-label": s.auto_label || "Auto" },
+      on: { change: (ev) => {
+        const on = ev.target.checked;
+        input.disabled = on;
+        if (on) {
+          // Back to auto: stage the literal value, so "auto" is what an apply writes. The
+          // derived days stay visible but are no longer an input.
+          input.value = derivedDays;
+          stage(autoV);
+        } else {
+          // Off: seed the input with the currently derived days, so the operator edits a
+          // real number instead of an empty box.
+          const seed = input.value || derivedDays;
+          input.value = seed;
+          stage(seed);
+        }
+      } },
+    });
+    box.checked = isAuto;
+    const autoLabel = el("label", { class: "setting-auto-label" }, [
+      box, el("span", { text: s.auto_label || "Auto" }),
+    ]);
+    const hint = el("span", {
+      class: "setting-unit", attrs: { id: `hint-${key}` },
+      text: `${s.min}\u2013${s.max}${s.unit ? " " + s.unit : ""}`,
+    });
+    input.setAttribute("aria-describedby", `hint-${key}`);
+    const group = el("span", { class: "setting-ctl-group" }, [autoLabel, input, hint]);
+    if (!derived || !derived.sentence) return group;
+    // THE ARITHMETIC, in the server's words: "Auto — 38 days from 214 GB free at 1.9 GB/day
+    // (40% budget). Merge headroom kept." A number without its reasoning is a number the
+    // operator cannot check.
+    return el("span", { class: "setting-ctl-block" }, [
+      group,
+      el("div", {
+        class: "setting-derived" + (derived.available === false ? " muted" : ""),
+        text: derived.sentence,
+        attrs: { "data-retention-sentence": "1" },
+      }),
+    ]);
+  }
+
   if (s.control === "number") {
     // A NUMBER INPUT with the server's own bounds and step. min/max mean the browser refuses
     // most bad values before Apply; the server still validates (it must), and the hint states
@@ -1006,6 +1072,21 @@ function renderApplyInto(out) {
   for (const e of (R.restart_errors || [])) {
     out.appendChild(el("div", { class: "stage-res-item fail", text: "restart failed \u2014 " + e }));
   }
+  // RETENTION READ-BACK: one line per managed table, with the EFFECTIVE TTL the cluster
+  // reported. A table the ALTER could not change is named with its previous value still in
+  // place, so "applied" never covers a table that is still on the old window.
+  if (R.retention && (R.retention.tables || []).length) {
+    for (const t of R.retention.tables) {
+      const ok = t.ok === true;
+      const text = ok
+        ? `${t.table} — TTL ${t.effective_days} days (read back)`
+        : `${t.table} — NOT CHANGED: ${t.error || "the read-back disagrees"}`;
+      out.appendChild(el("div", {
+        class: "stage-res-item" + (ok ? " muted" : " fail"), text,
+        attrs: { "data-retention-table": t.table },
+      }));
+    }
+  }
   if (R.blocked) {
     // A refused plan is still a plan. The receipt says so and offers the one verb that ends it,
     // so the card can never be a dead end (the reason the QA walk filed this).
@@ -1057,8 +1138,13 @@ async function applyStage(skipWarnConfirm, opts = {}) {
     // means a stray proposal can never block an apply with a confirmation prompt for a change the
     // operator did not make.
     const stagedKeys = new Set(Object.keys(STAGE.changes));
-    const warns = (STAGE.plan.proposals || [])
-      .filter((p) => p.warning && stagedKeys.has(p.key));
+    const planned = (STAGE.plan.proposals || []).filter((p) => stagedKeys.has(p.key));
+    // LOWERING RETENTION IS DESTRUCTIVE, NOT MERELY COSTLY: it expires data. It takes the
+    // stronger echo -- a written reason, recorded in the trail -- rather than the generic
+    // "allowed but costly" confirm, and it is EXCLUDED from that confirm so the operator is
+    // asked once, in the form that matches what the change does.
+    const destructive = planned.filter((p) => p.destructive);
+    const warns = planned.filter((p) => p.warning && !p.destructive);
     if (warns.length && !skipWarnConfirm) {
       const ok = window.confirm(
         "This change is allowed but costly:\n\n" +
@@ -1069,6 +1155,23 @@ async function applyStage(skipWarnConfirm, opts = {}) {
     // BF-9: a staged set that puts this deployment in path gets the echo first -- target,
     // blast radius, and a reason that is recorded with the actor and the time.
     let applyReason = "";
+    if (destructive.length) {
+      const verdict = await confirmDestructive({
+        title: "Lowering retention DELETES history. This cannot be undone.",
+        target: destructive
+          .map((p) => `${p.key}: ${p.current || "(default)"} \u2192 ${p.proposed} days`)
+          .join(", "),
+        blast: "ClickHouse expires every row older than the new window on its next merge, "
+               + "not when you press Apply. The ripple layer's 6h and 24h baselines need that "
+               + "history, and raising the value again does not bring the rows back.",
+        reasonHint: "why the older history can go",
+      });
+      if (!verdict.ok) {
+        setStageNote("not applied — you declined the retention confirmation");
+        return;
+      }
+      applyReason = verdict.reason;
+    }
     const siphonStaged = Object.entries(STAGE.changes || {}).some(
       ([k, v]) => String(k).toLowerCase() === "sensor_mode" && String(v).toLowerCase() === "siphon");
     if (siphonStaged && !opts.skipSiphonConfirm) {
@@ -1084,7 +1187,7 @@ async function applyStage(skipWarnConfirm, opts = {}) {
         setStageNote("not applied — you declined the siphon confirmation");
         return;
       }
-      applyReason = verdict.reason;
+      applyReason = applyReason || verdict.reason;
     }
     const res = await postJSON("/api/settings/apply", {
       changes: STAGE.changes, confirmed: true,
@@ -1105,12 +1208,21 @@ async function applyStage(skipWarnConfirm, opts = {}) {
       at: res.at || "", items: res.items || [],
       restarted: res.restarted || [], restart_errors: res.restart_errors || [],
       tests: res.tests || [], blocked: false,
+      // THE CLUSTER'S OWN ANSWER for the retention tables, when this apply moved the window:
+      // effective TTLs read back from system.tables, not the value that was requested.
+      retention: res.retention || null,
     };
     renderApplyResults();
     const parts = ["saved: " + Object.entries(res.applied || {}).map(([k, v]) => `${k}=${v || "(empty)"}`).join(", ")];
     if ((res.restarted || []).length) parts.push("restarted " + res.restarted.join(", "));
     if ((res.restart_errors || []).length) {
       parts.push("NOT APPLIED — " + res.restart_errors.join("; "));
+    }
+    // A SAVED SETTING IS NOT AN APPLIED CLUSTER: when the ALTER or the read-back disagreed,
+    // the note says so in the server's words instead of printing "saved" and moving on.
+    if (res.retention) {
+      parts.push((res.retention.ok === false ? "NOT APPLIED — " : "")
+        + (res.retention.summary || "retention read back"));
     }
     LAST_APPLY.text = parts.join(" · ");
     setStageNote(LAST_APPLY.text);

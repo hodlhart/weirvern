@@ -2084,6 +2084,36 @@ def network_autofill_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
     return 500, {"error": f"could not auto-fill network scopes: {str(exc)[:200]}", "code": 500}
 
 
+def _retention_now(ctx: Any, current: dict[str, str], changes: dict) -> int | None:
+    """The cluster's CURRENT effective retention, when this change touches retention.
+
+    ONLY THEN, and only when the caller can reach ClickHouse: the plan route deliberately
+    opens no database connection for an ordinary settings change, and inventing one would
+    add a failure mode the console does not have. A failed measurement returns None, and the
+    plan treats an explicit window as destructive rather than guessing it safe.
+    """
+    from weirvern import retention as retention_mod  # noqa: PLC0415
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+    rows = {cc.to_configmap_key(k) for k in changes}
+    if not rows & {retention_mod.RETENTION_DAYS_KEY, retention_mod.RETENTION_RATIO_KEY}:
+        return None
+    connect = getattr(ctx, "connect_factory", None)
+    if connect is None:
+        return None
+    try:
+        with connect(getattr(ctx, "settings", None)) as ch:
+            days, _report = retention_mod.resolve(
+                ch,
+                current.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO),
+                current.get(retention_mod.RETENTION_RATIO_KEY, retention_mod.DEFAULT_RATIO_PERCENT),
+            )
+        return days
+    except Exception as exc:  # noqa: BLE001 - unmeasured is a state the plan can express
+        logger.debug("settings plan: the current retention could not be measured: %s", exc)
+        return None
+
+
 def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
     """Validate and describe a proposed change WITHOUT touching anything.
 
@@ -2107,7 +2137,8 @@ def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
         return 502, {"error": f"could not read the configuration: {exc}", "code": 502}
 
     try:
-        p = cc.plan({k: str(v) for k, v in changes.items()}, current)
+        p = cc.plan({k: str(v) for k, v in changes.items()}, current,
+                    retention_now_days=_retention_now(ctx, current, changes))
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2117,11 +2148,27 @@ def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
         "proposals": [
             {"key": caller_key.get(x.key, x.key), "current": x.current,
              "proposed": x.proposed, "restarts": x.restarts, "blast": x.blast,
-             "warning": x.warning}
+             "warning": x.warning, "destructive": x.destructive}
             for x in p.proposals
         ],
         "restart_targets": p.restart_targets,
     }
+
+
+def _proposed_value(changes: dict, config_key: str, current: dict, default: Any) -> Any:
+    """The value an apply would write for a ConfigMap key, accepting EITHER vocabulary.
+
+    The GUI stages ROW keys (`data_retention_days`); an API caller may send the ConfigMap
+    key (`DATA_RETENTION_DAYS`). Looking up only one spelling silently falls back to the
+    CURRENT value for the other, which would skip the disk-budget check on exactly the
+    request that needs it.
+    """
+    row_key = config_key.lower()
+    if config_key in changes:
+        return changes[config_key]
+    if row_key in changes:
+        return changes[row_key]
+    return current.get(config_key, default)
 
 
 def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, reason: str,
@@ -2140,6 +2187,7 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     which is the same `mode.validate` the CLI runs. A GUI session must not be a way around it.
     """
     from weirvern import apply_checks, fleet_store  # noqa: PLC0415
+    from weirvern import retention as retention_mod  # noqa: PLC0415
     from weirvern.admin import cluster_config as cc  # noqa: PLC0415
     from weirvern.admin import web as web_mod  # noqa: PLC0415
 
@@ -2158,7 +2206,65 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
     try:
         current = client.read()
-        p = cc.plan(raw_changes, current)
+    except cc.ConfigError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not read the configuration: {exc}", "code": 502}
+
+    # ── RETENTION IS MEASURED BEFORE IT IS JUDGED ────────────────────────────────────────────
+    #
+    # Three decisions read the same numbers: whether an explicit value fits the disk, whether
+    # the change lowers what the tables hold, and what `auto` resolves to after the write.
+    # Measured ONCE here, against the CURRENT setting (so "destructive" compares with what the
+    # cluster has today); resolved again after the write with the new values.
+    retention_touched = any(
+        cc.to_configmap_key(k) in (retention_mod.RETENTION_DAYS_KEY,
+                                   retention_mod.RETENTION_RATIO_KEY)
+        for k in raw_changes)
+    proposed_setting = _proposed_value(raw_changes, retention_mod.RETENTION_DAYS_KEY,
+                                       current, retention_mod.AUTO)
+    proposed_ratio = _proposed_value(raw_changes, retention_mod.RETENTION_RATIO_KEY,
+                                     current, retention_mod.DEFAULT_RATIO_PERCENT)
+    current_days: int | None = None
+    budget_report: dict[str, Any] | None = None
+    measure_error = ""
+    if retention_touched:
+        # VALIDATE FIRST, so a bad number is refused with its own sentence rather than
+        # surfacing as a measurement failure. These are the same parsers `cc.plan` uses.
+        want_days: int | None = None
+        if not retention_mod.is_auto(proposed_setting):
+            try:
+                want_days = retention_mod.normalise_days(proposed_setting)
+            except ValueError as exc:
+                return 400, {"ok": False, "error": str(exc)}
+        try:
+            ratio = retention_mod.normalise_ratio(proposed_ratio)
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+        try:
+            with connect() as ch:
+                current_days, _now = retention_mod.resolve(
+                    ch, current.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO),
+                    current.get(retention_mod.RETENTION_RATIO_KEY,
+                                retention_mod.DEFAULT_RATIO_PERCENT))
+                budget_report = retention_mod.auto_report(ch, ratio)
+        except Exception as exc:  # noqa: BLE001 - an unmeasured disk is reported below
+            measure_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            logger.warning("settings: could not measure retention before applying: %s", exc)
+            budget_report = retention_mod.unavailable(measure_error)
+        if want_days is not None:
+            if measure_error:
+                # NO GUESSING. A window that cannot be compared with the disk is refused
+                # rather than written blind; `auto` is the safe alternative and says why.
+                return 400, {"ok": False, "error": (
+                    f"cannot verify that {want_days} days fits this disk: {measure_error}. "
+                    f"Set it to auto, or restore the database connection and try again.")}
+            refusal = retention_mod.budget_refusal(want_days, budget_report or {})
+            if refusal:
+                return 400, {"ok": False, "error": refusal}
+
+    try:
+        p = cc.plan(raw_changes, current, retention_now_days=current_days)
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
@@ -2170,8 +2276,20 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
         return 409, {
             "ok": False, "needs_confirmation": True,
             "proposals": [{"key": x.key, "current": x.current, "proposed": x.proposed,
-                           "warning": x.warning} for x in p.proposals if x.warning],
+                           "warning": x.warning, "destructive": x.destructive}
+                          for x in p.proposals if x.warning],
         }
+
+    # LOWERING RETENTION IS DESTRUCTIVE, so it takes the same reason the in-path mode does:
+    # the write trail has to answer who deleted history and why. The flag comes from the PLAN,
+    # not from a second comparison here, so what the UI was shown and what the server demands
+    # cannot disagree. The value is legal; that is a different question from whether it was
+    # deliberate.
+    if not reason and any(x.destructive for x in p.proposals):
+        return 400, {"ok": False, "error": (
+            "lowering data retention is destructive: ClickHouse expires every older row on its "
+            "next merge, and that cannot be undone. A reason is required and is recorded with "
+            "your name and the time.")}
 
     mode_error = web_mod.mode_gate(ctx, changes)
     if mode_error:
@@ -2198,7 +2316,7 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
             logger.warning("could not derive capture ports from intercept_plans: %s", exc)
     # The EFFECTIVE plan, including the reconciled keys, is what every later step uses.
     try:
-        p = cc.plan(raw_changes, current)
+        p = cc.plan(raw_changes, current, retention_now_days=current_days)
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2248,6 +2366,38 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
         except cc.ConfigError as exc:
             restart_errors.append(str(exc))
 
+    # ── RETENTION: THE CONFIGMAP VALUE IS NOT THE ENFORCEMENT ────────────────────────────────
+    #
+    # Writing DATA_RETENTION_DAYS records a decision; ClickHouse keeps its old TTL until
+    # something ALTERs it. This is that something, in the same request. In `auto` the value is
+    # DERIVED AGAIN here -- from current free disk and the ingest actually observed -- so the
+    # receipt carries the arithmetic and the operator never edits a day count to follow the
+    # disk. `converge` then reads `system.tables` back: `effective_days` is what the tables
+    # actually have, a table the ALTER could not change is named with its previous TTL still
+    # in place, and a read-back that disagrees is reported in `mismatched`.
+    retention_report: dict[str, Any] | None = None
+    if retention_touched:
+        landing_window = landed.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO)
+        landing_ratio = landed.get(retention_mod.RETENTION_RATIO_KEY,
+                                   retention_mod.DEFAULT_RATIO_PERCENT)
+        try:
+            with connect() as ch:
+                days, derivation = retention_mod.resolve(ch, landing_window, landing_ratio)
+                retention_report = (
+                    retention_mod.not_derived_report(derivation) if days is None
+                    else retention_mod.converge(ch, days, derivation=derivation))
+        except Exception as exc:  # noqa: BLE001 - an ALTER failure is a report, not a 500
+            logger.warning("settings: retention could not be applied: %s", exc)
+            retention_report = {
+                "ok": False, "applied": False, "requested_days": None,
+                "derivation": retention_mod.unavailable(str(exc)),
+                "tables": [], "changed": [], "failed": [], "failed_reasons": {},
+                "missing": [], "mismatched": [],
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                "summary": ("the setting was saved, but the tables' TTLs could not be read or "
+                            "changed: " + str(exc)[:160]),
+            }
+
     # US-10: THE TRAIL GETS THE SETTINGS WRITE TOO, one row PER KEY so a multi-key apply stays
     # linkable from a single key's provenance row. A failed audit write does not fail the apply.
     action = "revert" if revert else "apply"
@@ -2260,7 +2410,7 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     except Exception as exc:  # noqa: BLE001
         logger.warning("settings audit write failed: %s", exc)
 
-    return 200, {
+    payload: dict[str, Any] = {
         "ok": True,
         # TRANSLATED AT THE BOUNDARY: `changes` is ROW-keyed (what the GUI staged) and `landed` is
         # the ConfigMap's own data (ConfigMap keys). `landed.get(row_key)` returned "" for every key,
@@ -2276,6 +2426,13 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
         "tests": checks.get("results") or [],
         "summary": checks.get("summary") or "",
     }
+    if retention_report is not None:
+        payload["retention"] = retention_report
+        # A SAVED SETTING OVER A CLUSTER THAT DID NOT CHANGE IS NOT A SUCCESS. The ConfigMap
+        # write did land, and `applied` says so; `ok: false` is the summary verdict, and the
+        # per-table rows say which ALTER or read-back disagreed.
+        payload["ok"] = bool(retention_report.get("ok"))
+    return 200, payload
 
 
 def settings_test(ctx: Any, connect: Any, *, seconds: float) -> tuple[int, dict[str, Any]]:
@@ -2707,7 +2864,7 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
 
 def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
                      auth: Any = None, role: str = "", via: str = "", identity: Any = None,
-                     accounts_on: bool = False) -> dict[str, Any]:
+                     accounts_on: bool = False, connect: Any = None) -> dict[str, Any]:
     """The effective configuration, plus whether THIS caller may change it.
 
     THE LIVE CLUSTER CONFIG IS THE SOURCE, not this pod's startup environment: a settings change
@@ -2719,6 +2876,8 @@ def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
     being re-derived here: they belong to the request, and the two surfaces compute them from the
     same shared helpers.
     """
+    import os  # noqa: PLC0415
+
     from weirvern.admin import cluster_config as cc  # noqa: PLC0415
 
     configmap = None
@@ -2732,8 +2891,27 @@ def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
     try:
         # The backend is passed so the VERSION row reports the running image tag rather than the
         # package's own literal, which had drifted (0.4.0 vs 0.5.6).
+        #
+        # THE RETENTION ARITHMETIC rides the payload because 'auto' is not a number the UI can
+        # derive itself: free space and the observed ingest are measured HERE, against the LIVE
+        # ConfigMap's ratio (a pod's startup env would be stale exactly like the values the live
+        # map already corrects). A failed measurement is a sentence, not a blank row.
+        retention_status = None
+        if connect is not None:
+            from weirvern import retention as retention_mod  # noqa: PLC0415
+
+            try:
+                ratio = ((configmap or {}).get(retention_mod.RETENTION_RATIO_KEY)
+                         or os.environ.get(retention_mod.RETENTION_RATIO_KEY)
+                         or retention_mod.DEFAULT_RATIO_PERCENT)
+                with connect() as ch:
+                    retention_status = retention_mod.auto_report(ch, ratio)
+            except Exception as exc:  # noqa: BLE001 - the tab still renders without it
+                retention_status = retention_mod.unavailable(
+                    f"{type(exc).__name__}: {str(exc)[:160]}")
         payload = status_mod.settings_overview(
-            settings=settings, backend=backend, configmap=configmap
+            settings=settings, backend=backend, configmap=configmap,
+            retention_status=retention_status,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("settings view unavailable: %s", exc)

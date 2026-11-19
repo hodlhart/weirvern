@@ -143,6 +143,20 @@ class Settings:
     clickhouse_user: str = field(default_factory=lambda: os.environ.get("CLICKHOUSE_USER", "default"))
     clickhouse_password: str = field(default_factory=lambda: os.environ.get("CLICKHOUSE_PASSWORD", ""))
 
+    # ── RETENTION (derived from free disk, not fixed) ─────────────────────────────────────────
+    #
+    # 'auto' (the default) derives the window from the disk that holds this database and the
+    # ingest rate the managed tables have ACTUALLY observed -- see weirvern.retention. An
+    # explicit day count (7-365) overrides it, and is refused above the measured budget.
+    #
+    # `DATA_RETENTION_RATIO` is the share of FREE space the tables may occupy: 40% by default,
+    # never more than 70%, because ClickHouse needs room for merges. Both are ConfigMap keys,
+    # so the schema Job and every worker start read the operator's choice through Settings.
+    data_retention_days: str = field(
+        default_factory=lambda: _env_str("DATA_RETENTION_DAYS", "auto"))
+    data_retention_ratio: int = field(
+        default_factory=lambda: _env_int("DATA_RETENTION_RATIO", 40))
+
     # Detection loop
     detect_interval_s: int = field(default_factory=lambda: _env_int("DETECT_INTERVAL_S", 300))
     retrain_every_h: int = field(default_factory=lambda: _env_int("RETRAIN_EVERY_H", 6))

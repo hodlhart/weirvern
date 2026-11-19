@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS weirvern.ml_ripple_evidence
 ENGINE = ReplacingMergeTree(computed_at)
 PARTITION BY toYYYYMM(window_start)
 ORDER BY (window_start, src_addr, channel, scale)
--- Thirty days of hourly windows is enough to compare a ripple against the recent past and
--- small enough that the table stays a measurement store rather than another flow log.
-TTL window_start + INTERVAL 30 DAY;
+-- The same unified window as the sources it measures (DATA_RETENTION_DAYS, default "auto"):
+-- an evidence store that expires before the rows it was computed from cannot be audited
+-- against them, and a longer one would be a second retention policy to keep in step. The
+-- TTL below is the 7-day bootstrap floor; the startup migration derives the real value.
+TTL window_start + INTERVAL 7 DAY;

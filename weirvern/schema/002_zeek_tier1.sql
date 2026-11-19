@@ -13,21 +13,27 @@
 -- request?" and "what files moved?" are unanswerable, and those are the first two
 -- questions an analyst asks after an alert.
 --
--- RETENTION IS PER-TABLE, DELIBERATELY, because the privacy exposure differs sharply:
+-- RETENTION IS ONE WINDOW, DELIBERATELY -- and it is DERIVED, not written here.
 --
---   zeek_http    30 days  URLs contain usernames, session tokens and query parameters.
---                         The most PII-dense table here. Shortest retention.
---   zeek_files   30 days  Filenames can be personal; mime_type and hashes are safer.
---                         Kept together because a hash without its conn context is
---                         much less useful, and hashes alone cannot be correlated.
---   zeek_ssh     90 days  No payload and no credentials (capture_password stays OFF).
---                         Low exposure, and auth history is what shows a slow brute
---                         force or a lateral-movement pattern over weeks.
---   zeek_weird   90 days  Protocol anomalies only: no payload, no PII. Cheap to keep.
+-- These tables used to keep 30 (http/files) and 90 (ssh/weird) days, per table, on the
+-- argument that exposure and analytic value differ. They do differ, but the ripple layer
+-- compares a host against its OWN trailing history at 1h/6h/24h/7d scales with a 30-window
+-- minimum, so a table that keeps less than 35 days cannot answer the 24h scale no matter
+-- what it contains. One window for every source is what makes a multi-scale baseline
+-- possible at all -- and how long that window can be is decided by the disk.
 --
--- A single uniform TTL would force the shortest period onto zeek_ssh and zeek_weird --
--- exactly the logs whose value is in their history -- so per-table TTLs are a
--- requirement here, not a refinement. See USAGE_POLICY.md for the handling rules.
+-- SO THE TTL BELOW IS A BOOTSTRAP, NOT A POLICY. It is the 7-day floor: a brand-new database
+-- has no ingest history to measure, and the floor is the safe direction. weirvern/retention.py
+-- derives the real value from free disk and the observed ingest at startup and on every apply
+-- (DATA_RETENTION_DAYS, default "auto"), and converges every table here with ALTER MODIFY TTL.
+--
+-- The privacy consequence is stated rather than hidden: a deployment that derives 35 days
+-- keeps `zeek_http` five days LONGER than its old 30, and `zeek_ssh`/`zeek_weird` 55 days
+-- SHORTER than their old 90. `zeek_files` is NOT governed by this control (it is not a
+-- ripple source) and stays at its 30-day budget; so does every other Zeek log in 004/006.
+--
+-- LOWERING THE WINDOW IS DESTRUCTIVE: ClickHouse expires the older rows on the next merge.
+-- See docs/runbooks/data-retention.md for the per-table contract.
 
 CREATE TABLE IF NOT EXISTS zeek_http
 (
@@ -54,7 +60,7 @@ CREATE TABLE IF NOT EXISTS zeek_http
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts, uid)
-TTL ts + INTERVAL 30 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 CREATE TABLE IF NOT EXISTS zeek_files
 (
@@ -111,7 +117,7 @@ CREATE TABLE IF NOT EXISTS zeek_ssh
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts, uid)
-TTL ts + INTERVAL 90 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 CREATE TABLE IF NOT EXISTS zeek_weird
 (
@@ -131,4 +137,4 @@ CREATE TABLE IF NOT EXISTS zeek_weird
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts, uid)
-TTL ts + INTERVAL 90 DAY;
+TTL ts + INTERVAL 7 DAY;

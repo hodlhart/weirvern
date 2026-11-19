@@ -340,7 +340,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     },
     caller: { username: "", role: "", via: "" },
     editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "channel_netflow", "intercept_segment",
-                    "pushover_enabled", "sluice_auto_score"],
+                    "pushover_enabled", "sluice_auto_score", "data_retention_days",
+                    "data_retention_ratio"],
     // The control spec rides with the payload (see cluster_config.SETTING_CONTROLS): the browser
     // renders the natural control from the SERVER's rule -- bounds and options included -- so
     // what the control permits and what the write path accepts cannot drift apart.
@@ -352,6 +353,10 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       intercept_segment: { control: "text" },
       channel_netflow: { control: "toggle", on_value: "upstream", off_value: "off" },
       pushover_enabled: { control: "toggle" },
+      data_retention_days: { control: "auto_number", min: 7, max: 365, step: 1, unit: "days",
+                             auto_value: "auto", auto_label: "Auto — derive from free disk" },
+      data_retention_ratio: { control: "number", min: 10, max: 70, step: 1,
+                              unit: "% of free disk" },
     },
     titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
     groups: {
@@ -400,6 +405,29 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
         { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
           source: "setting",
           applies: "applies with Apply — restarts the detection worker", help: "Hostname of the ClickHouse service. Default clickhouse." },
+        // The derived retention window. Editable, bounded 7..365, and destructive to lower.
+        // The payload carries the ARITHMETIC, not just the number: free space, observed rate,
+        // budget, and the sentence the row prints under the disabled day count.
+        { key: "data_retention_days", label: "data retention (auto or days)", value: "auto",
+          secret: false, source: "setting",
+          applies: "applies with Apply — derives again from free disk on every start and "
+            + "apply; lowering it expires older rows on the next merge",
+          help: "How many days the detection and ripple tables keep their rows. Auto derives "
+            + "it from free disk and the measured ingest; lowering it expires data.",
+          retention: {
+            mode: "auto", available: true, days: 45, ratio_percent: 40,
+            free_bytes: 214000000000, total_bytes: 400000000000, bytes_per_day: 1900000000,
+            budget_bytes: 85600000000, budget_days: 45, raw_days: 45.05,
+            floored: false, capped: false, disk_name: "default",
+            sentence: "Auto — 45 days from 214 GB free at 1.9 GB/day (40% budget). "
+              + "Merge headroom kept.",
+          } },
+        { key: "data_retention_ratio", label: "retention disk budget (%)", value: "40",
+          secret: false, source: "setting",
+          applies: "applies with Apply — re-derives the window from free disk on every start "
+            + "and apply; no restart",
+          help: "The share of free ClickHouse disk the retained tables may occupy. Default "
+            + "40%; the rest is merge headroom, so 70% is the ceiling." },
         { key: "clickhouse_password", label: "ClickHouse password",
           value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true, source: "setting",
           applies: "applies with Apply — restarts the detection worker",
@@ -443,8 +471,19 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     const proposals = [];
     for (const key of Object.keys(changes || {})) {
       const meta = PLAN_FOR[key] || { restarts: [], blast: "", warning: "" };
+      let warning = meta.warning;
+      // THE SERVER DECIDES THIS, and the stub must too: lowering a value below the running
+      // one is destructive; raising it is not.
+      const destructive = key === "data_retention_days"
+        && Number(changes[key]) < Number((SETTINGS_PAYLOAD.groups.runtime
+          .find((r) => r.key === "data_retention_days") || {}).retention?.days || 0);
+      if (destructive) {
+        warning = "LOWERING RETENTION IS DESTRUCTIVE: ClickHouse expires every row older than "
+          + changes[key] + " days on its next merge, and that cannot be undone.";
+      }
       proposals.push({ key, current: "", proposed: String(changes[key]),
-                       restarts: meta.restarts, blast: meta.blast, warning: meta.warning });
+                       restarts: meta.restarts, blast: meta.blast, warning,
+                       destructive });
     }
     const targets = [];
     for (const p of proposals) {
@@ -880,7 +919,30 @@ const IDENTITY_PAYLOAD = {
                           ],
                           summary: "1 passed, 1 skipped",
                           items: Object.entries(sent.changes || {}).map(([k, v]) => ({
-                            key: k, value: String(v), ok: true, error: "" })) }
+                            key: k, value: String(v), ok: true, error: "" })),
+                          // SHAPED LIKE THE SERVER: the effective TTL the cluster reports, and
+                          // one table whose ALTER/read-back disagreed so the receipt's
+                          // "NOT CHANGED" path is exercised rather than assumed.
+                          ...(("data_retention_days" in (sent.changes || {})) ? {
+                            ok: false,
+                            retention: {
+                              ok: false, requested_days: 7,
+                              changed: ["flows_window"],
+                              failed: [], missing: [], mismatched: ["zeek_http"],
+                              tables: [
+                                { table: "flows_window", column: "window_start",
+                                  requested_days: 7, effective_days: 7,
+                                  expression: "window_start + INTERVAL 7 DAY",
+                                  changed: true, ok: true, error: "" },
+                                { table: "zeek_http", column: "ts", requested_days: 7,
+                                  effective_days: 35, expression: "ts + INTERVAL 35 DAY",
+                                  changed: false, ok: false,
+                                  error: "the cluster reports 35 days, not 7" },
+                              ],
+                              summary: "1 of 2 table(s) set to 7 days; read-back disagrees "
+                                + "for zeek_http",
+                            } } : {}),
+                        }
                   : u.includes("/api/settings/sonar")
                     // REQUEST-AWARE like the real route: a survey FOR a named weirling
                     // comes back stamped with that sensor, and reports the interface that
@@ -3013,6 +3075,90 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a second edit stages again", Object.keys(H.STAGE.changes).length === 1);
   H.discardStage();
   check("discard clears the staged set", Object.keys(H.STAGE.changes).length === 0);
+
+  // ── RETENTION: derived from disk, and destructive to lower ───────────────────────────────
+  // The window is AUTO by default: the day count is an OUTCOME (read-only, from the server's
+  // measurement) and the arithmetic is printed under it. Lowering it expires data, so it must
+  // NOT ride the ordinary warned-change confirm: it opens the destructive echo (a reason,
+  // recorded). The DECLINE path is driven first -- nothing may be posted -- then the real one.
+  const ret = [...doc.querySelectorAll("#view-settings .setting-input")]
+    .find((n) => n.dataset.key === "data_retention_days");
+  const autoBox = ret ? ret.parentElement.querySelector(".setting-auto") : null;
+  check("data retention renders as an auto checkbox plus a bounded number input",
+        !!ret && ret.type === "number" && ret.getAttribute("min") === "7"
+          && ret.getAttribute("max") === "365" && !!autoBox,
+        ret ? `type=${ret.type} min=${ret.getAttribute("min")} auto=${!!autoBox}`
+            : "no data_retention_days control");
+  check("auto is CHECKED by default and the derived day count is read-only",
+        !!autoBox && autoBox.checked === true && ret.disabled === true
+          && ret.value === String(SETTINGS_PAYLOAD.groups.runtime
+            .find((r) => r.key === "data_retention_days").retention.days),
+        `checked=${autoBox && autoBox.checked} disabled=${ret && ret.disabled} value=${ret && ret.value}`);
+  const sentence = doc.querySelector("#view-settings [data-retention-sentence]");
+  check("the row shows the ARITHMETIC, not just a number",
+        !!sentence && /45 days from 214 GB free at 1\.9 GB\/day \(40% budget\)/.test(sentence.textContent)
+          && /Merge headroom kept/.test(sentence.textContent),
+        sentence ? sentence.textContent.slice(0, 160) : "no retention sentence");
+  const ratio = [...doc.querySelectorAll("#view-settings .setting-input")]
+    .find((n) => n.dataset.key === "data_retention_ratio");
+  check("the disk-budget ratio is its own bounded number control",
+        !!ratio && ratio.type === "number" && ratio.getAttribute("min") === "10"
+          && ratio.getAttribute("max") === "70",
+        ratio ? `min=${ratio.getAttribute("min")} max=${ratio.getAttribute("max")}` : "missing");
+
+  autoBox.checked = false;
+  autoBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+  check("switching auto off seeds an explicit value from the derived one and unlocks it",
+        ret.disabled === false && ret.value === "45" && H.STAGE.changes.data_retention_days === "45",
+        `disabled=${ret.disabled} value=${ret.value} staged=${H.STAGE.changes.data_retention_days}`);
+  ret.value = "7";
+  ret.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await H.planStage();
+  const retRow = [...doc.querySelectorAll("#st-stage-list .stage-row")]
+    .find((r) => /data_retention_days/.test(r.textContent));
+  check("lowering retention is marked destructive before Apply",
+        !!retRow && /DESTRUCTIVE/i.test(retRow.textContent),
+        retRow ? retRow.textContent.slice(0, 180) : "no staged retention row");
+  const retPosts = () => POSTED.filter((r) => r.url.includes("/api/settings/apply")).length;
+  const beforeRet = retPosts();
+  const declined = H.applyStage();
+  await new Promise((r) => setTimeout(r, 40));
+  const dbox = doc.querySelector("#modal-body .dest-confirm");
+  check("lowering retention opens the destructive echo, not a plain confirm",
+        !!dbox && /DELETES history/i.test(dbox.textContent),
+        dbox ? dbox.textContent.slice(0, 120) : "no destructive echo");
+  const cancelRet = [...(dbox ? dbox.querySelectorAll(".dest-acts button") : [])]
+    .find((b) => /Cancel/.test(b.textContent));
+  if (cancelRet) cancelRet.click();
+  await declined;
+  check("declining the retention echo writes nothing", retPosts() === beforeRet,
+        `${retPosts() - beforeRet} apply request(s) after a decline`);
+  check("the decline is stated rather than silently ignored",
+        /declined the retention confirmation/i.test(needEl("st-stage-note").textContent),
+        needEl("st-stage-note").textContent);
+
+  const accepted = H.applyStage();
+  await new Promise((r) => setTimeout(r, 40));
+  const echoed = await confirmEcho("the 24h baseline needs 30 days, not 7");
+  check("the destructive echo requires a reason and accepts it", echoed === true);
+  await accepted;
+  const retReq = POSTED.slice(-1).find((r) => r.url.includes("/api/settings/apply"));
+  let retBody = {};
+  try { retBody = JSON.parse((retReq || {}).body || "{}"); } catch (_e) { retBody = {}; }
+  check("the retention apply sends the value AND the recorded reason",
+        retBody.changes && retBody.changes.data_retention_days === "7"
+          && /24h baseline/.test(retBody.reason || ""),
+        JSON.stringify(retBody).slice(0, 180));
+  const receipt = needEl("st-apply-results").textContent;
+  check("the receipt reports the cluster's EFFECTIVE TTL, not the requested one",
+        /flows_window — TTL 7 days \(read back\)/.test(receipt),
+        receipt.slice(0, 200));
+  check("a table the cluster did not change is named, not hidden",
+        /zeek_http — NOT CHANGED: the cluster reports 35 days, not 7/.test(receipt),
+        receipt.slice(0, 240));
+  check("the apply note says the cluster did not fully converge",
+        /NOT APPLIED — 1 of 2 table/.test(needEl("st-stage-note").textContent),
+        needEl("st-stage-note").textContent.slice(0, 200));
 
   // HOW EVERY CONTROL APPLIES (BF-5): the badge is payload-driven from the writer's restart
   // table, and every editable row shows it.

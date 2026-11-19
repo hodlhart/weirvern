@@ -377,19 +377,26 @@ def test_every_pii_table_is_bounded():
         assert days <= 365, f"{table} retains PII for {days} days, which is effectively forever"
 
 
-def test_retention_is_ordered_by_exposure():
-    """Shortest where the exposure is greatest, which is the rule the schema documents.
+def test_retention_is_ordered_by_exposure_where_one_window_does_not_govern():
+    """Shortest where the exposure is greatest -- for the tables this control does NOT govern.
 
-    `smb_files` records WHAT was touched -- verbatim paths and filenames -- so it must expire
-    first. `dce_rpc` is RPC metadata with no username or path, so it may live longest.
+    `zeek_smb_files`, `zeek_ntlm` and `zeek_kerberos` are ripple sources now, and take ONE
+    window (DATA_RETENTION_DAYS, default "auto" — derived from free disk) because the ripple
+    layer's 24h scale needs 30 non-overlapping windows of every source before a rank means
+    anything. That deliberately flattens the ordering BETWEEN those three; it still holds for
+    the tables the control leaves alone, and the daily aggregate still outlives the raw rows
+    it summarises.
+
+    `smb_mapping` and `dce_rpc` keep their own longer windows, so `smb_files` is still the
+    first of the file tables to expire.
     """
     def days(table: str) -> int:
         d = _ttl_of(table)
         assert d is not None, f"{table} has no TTL"
         return d
 
-    assert days("zeek_smb_files") < days("zeek_smb_mapping") <= days("zeek_kerberos")
-    assert days("zeek_smb_files") < days("zeek_ntlm") <= days("zeek_kerberos")
+    assert days("zeek_smb_files") <= days("zeek_ntlm") <= days("zeek_kerberos")
+    assert days("zeek_smb_files") < days("zeek_smb_mapping") <= days("zeek_dce_rpc")
     # The aggregate must outlive the raw rows it summarises, or the identity graph is
     # summarised into a table that expires before the events.
     assert days("ntlm_identity_daily") > days("zeek_ntlm")

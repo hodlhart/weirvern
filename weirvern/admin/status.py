@@ -1327,6 +1327,11 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("clickhouse_db", "ClickHouse database"),
         ("clickhouse_user", "ClickHouse user"),
         ("clickhouse_password", "ClickHouse password"),
+        # THE RETENTION WINDOW (weirvern/retention.py). 'auto' derives it from free disk and
+        # the observed ingest; an explicit number overrides it. Lowering is destructive, and
+        # the help says so before the operator touches the control.
+        ("data_retention_days", "data retention (auto or days)"),
+        ("data_retention_ratio", "retention disk budget (%)"),
         ("model_dir", "model directory"),
         ("pushover_enabled", "Pushover"),
         ("pushover_user_key", "Pushover user key"),
@@ -1384,6 +1389,24 @@ _SETTINGS_HELP: dict[str, str] = {
         "The score (0-1) at which a single detector counts as a STRONG signal for escalation to "
         "high/critical severity. Default 0.85. A single strong detector escalates only when "
         "corroborated by a second detector or by a structural signature (like a zero-byte scan)."),
+    # -- retention
+    "data_retention_days": (
+        "How many days the detection and ripple tables keep their rows — raw and windowed "
+        "flows, the Zeek conn/DNS/HTTP/TLS/SSH/notice/weird logs, the identity channels the "
+        "ripple layer reads, and its own evidence store. 'Auto' (the default) works the number "
+        "out from the free space on ClickHouse's disk and the ingest rate it has actually "
+        "measured, and re-derives on every start and apply; the row shows that arithmetic. "
+        "An explicit 7-365 days overrides it, and is refused above what the disk can hold. "
+        "LOWERING IT IS DESTRUCTIVE: ClickHouse expires every older row on its next merge, and "
+        "that cannot be undone. The 24h ripple scale needs 30 days of history, so very small "
+        "disks cannot support it — the row says so rather than pretending."),
+    "data_retention_ratio": (
+        "The share of FREE ClickHouse disk space the retained tables may occupy. Default 40%. "
+        "The rest is MERGE HEADROOM: ClickHouse needs room to compact parts and run mutations, "
+        "and a table budgeted to the last byte stops accepting inserts exactly when it is "
+        "biggest. Above 70% the next merge can fill the disk, so the control refuses it; below "
+        "10% one busy hour moves the derived window by days. Only used while data retention is "
+        "'Auto' — an explicit day count ignores it, though it is still checked against it."),
     # -- sensor
     "sensor_mode": (
         "'loch' (default) watches traffic passively from a mirrored/SPAN port or TAP -- it "
@@ -1638,7 +1661,8 @@ def _version_from_backend(backend) -> str:
 
 
 def settings_overview(settings=None, namespace: str = "", backend=None,
-                      configmap: dict | None = None) -> dict:
+                      configmap: dict | None = None,
+                      retention_status: dict | None = None) -> dict:
     """The EFFECTIVE configuration, for the Settings tab. Read-only by design.
 
     WHY READ-ONLY. The GUI is served on a LAN port with no authentication. Anything an HTTP
@@ -1733,6 +1757,12 @@ def settings_overview(settings=None, namespace: str = "", backend=None,
                 # the row's contract, not a nice-to-have.
                 "help": _SETTINGS_HELP.get(attr, ""),
             })
+            # THE RETENTION ARITHMETIC, on both retention rows: the sentence, the free space,
+            # the observed rate, the budget and whether the floor/cap bit. The UI renders this
+            # instead of computing a number of its own.
+            if retention_status is not None and attr in (
+                    "data_retention_days", "data_retention_ratio"):
+                out[-1]["retention"] = retention_status
         rows[key] = out
     return {"available": True, "reason": "", "groups": rows,
             "titles": {key: title for key, title, _ in _SETTINGS_GROUPS}}

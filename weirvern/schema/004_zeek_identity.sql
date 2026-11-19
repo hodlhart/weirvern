@@ -43,27 +43,25 @@
 -- and their files". That is the cost of the asset-identity analytics, and it is paid on
 -- purpose.
 --
--- RETENTION POLICY, stated accurately. An earlier version of this comment claimed these
--- tables "carry SHORTER retention than the flow tables", and that claim was FALSE: the flow
--- tables are 7 days (zeek_conn/dns/ssl) while these run 30-90, because the flow tables are
--- short for a VOLUME reason -- they are enormous -- and not for a privacy one. Comparing
--- against them would have justified 7 days here, which is shorter than a lateral-movement
--- campaign and would delete the evidence before the investigation that needs it.
+-- RETENTION POLICY, stated accurately. Two earlier versions of this comment were wrong in
+-- different ways, and both are recorded because the numbers below were chosen against them.
 --
--- The rule actually applied is a bound justified by the PII surface and the analytic window,
--- per table, shortest where the exposure is greatest:
+-- The first claimed these tables "carry SHORTER retention than the flow tables". That was
+-- false: the flow tables were 7 days while these ran 30-90, because the flow tables were
+-- short for a VOLUME reason, not a privacy one.
 --
---   zeek_smb_files    30d  verbatim paths AND filenames -- the highest exposure here, and
---                          the only one of the five that records WHAT was touched
---   zeek_smb_mapping  60d  share paths, which name hosts and departments
---   zeek_ntlm         60d  username <-> host <-> domain, the identity graph itself
---   zeek_kerberos     90d  principals and SPNs; campaigns are measured in weeks, so this is
---                          the shortest window that still answers the question it exists for
---   zeek_dce_rpc      90d  RPC metadata only: no username, no path, no payload. Nothing in
---                          this table identifies a person on its own.
+-- The second applied a per-table ordering (shortest where the exposure is greatest) and gave
+-- smb_files 30, ntlm 60, kerberos 90. That ordering is still right for the tables this
+-- control does NOT govern -- smb_mapping, dce_rpc, ntlm_identity_daily -- but the three
+-- ripple sources (`zeek_smb_files`, `zeek_ntlm`, `zeek_kerberos`) now take ONE window,
+-- derived from free disk by weirvern/retention.py (DATA_RETENTION_DAYS, default "auto")
+-- because the ripple layer's 24h scale needs 30 non-overlapping windows of history before a
+-- rank means anything. A per-table ordering cannot coexist with a baseline that has to read
+-- all of them over the same span. The TTL below is the 7-day bootstrap floor, not a policy.
 --
--- Every table here is BOUNDED. An unbounded PII table is the failure mode that matters, and
--- tests/test_zeek_tier2.py asserts both the bound and the ordering above.
+-- `ntlm_identity_daily` is an aggregate and still outlives the raw rows it summarises.
+-- Every table here is BOUNDED; `tests/test_zeek_tier2.py` asserts the bound and the ordering
+-- that still applies.
 
 -- ── kerberos ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS weirvern.zeek_kerberos
@@ -97,7 +95,7 @@ ORDER BY (ts, src_addr, client)
 -- 90 days. Directory identities are the most useful correlation key we have for lateral
 -- movement, and attack campaigns are measured in weeks; but this is PII, so it is bounded
 -- well below the flow tables.
-TTL ts + INTERVAL 90 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 -- ── dce_rpc ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS weirvern.zeek_dce_rpc
@@ -166,7 +164,7 @@ CREATE TABLE IF NOT EXISTS weirvern.zeek_smb_files
 ENGINE = MergeTree
 PRIMARY KEY (ts, src_addr)
 ORDER BY (ts, src_addr, action)
-TTL ts + INTERVAL 30 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 -- ── ntlm: the identity graph ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS weirvern.zeek_ntlm
@@ -186,7 +184,7 @@ CREATE TABLE IF NOT EXISTS weirvern.zeek_ntlm
 ENGINE = MergeTree
 PRIMARY KEY (ts, src_addr)
 ORDER BY (ts, src_addr, username, hostname)
-TTL ts + INTERVAL 60 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 -- ── the aggregation that makes these usable ────────────────────────────────────
 --

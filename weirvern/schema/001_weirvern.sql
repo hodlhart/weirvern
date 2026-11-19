@@ -2,7 +2,9 @@
 -- Design notes vs legacy experiment:
 --   * all tables live in the `weirvern` database (was: default)
 --   * every object is CREATE ... IF NOT EXISTS
---   * raw flow TTL 3 days, aggregates 7 days, alert_events 30 days
+--   * every table the detection and ripple layers read is BOOTSTRAPPED at the 7-day floor;
+--     weirvern/retention.py derives the real window from free disk at startup and apply
+--     (Settings: "data retention (auto or days)", 7-365); alert_events 30 days
 --   * alert_events is new: every Pushover send is recorded (audit + tests)
 
 CREATE TABLE IF NOT EXISTS flows
@@ -35,7 +37,7 @@ CREATE TABLE IF NOT EXISTS flows
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, src_addr)
-TTL toDateTime(timestamp) + INTERVAL 3 DAY;
+TTL toDateTime(timestamp) + INTERVAL 7 DAY;
 
 -- Host-level 5-minute aggregates for ML (src_addr only — per-connection
 -- rows carry no direction in this schema, matching the legacy design).
@@ -377,7 +379,7 @@ CREATE TABLE IF NOT EXISTS zeek_notice
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts, src_addr)
-TTL ts + INTERVAL 30 DAY;
+TTL ts + INTERVAL 7 DAY;
 
 -- Packet-level corroboration for the anomaly record: per-host, per-5-minute
 -- view across the Zeek logs. A VIEW (not a materialized table) because it joins

@@ -1218,7 +1218,12 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             settings=ctx.settings, backend=ctx.backend,
             config_client=getattr(ctx, "config_client", None),
             auth=getattr(ctx, "auth", None), role=role, via=via, identity=ident,
-            accounts_on=requestauth.accounts_on(ctx)))
+            accounts_on=requestauth.accounts_on(ctx),
+            # The retention row's ARITHMETIC needs the live disk and ingest; nothing else on
+            # the page does, and a failed measurement degrades to a sentence rather than
+            # blanking the tab.
+            connect=(lambda: ctx.connect_factory(ctx.settings))
+            if getattr(ctx, "connect_factory", None) else None))
 
     @app.get("/api/weirlings")
     @gated

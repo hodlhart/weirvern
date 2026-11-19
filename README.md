@@ -64,6 +64,12 @@ intercept, or stay passive on a mirror.
 actually see the traffic. Every block names its source, destination, direction, duration and
 reason; every alerting decision — sent, suppressed or log-only — is recorded.
 
+**Retention sized to the box, not to a hardcoded default.** The tables that feed detection and
+the ripple baselines keep a window **derived from the free space on ClickHouse's disk and the
+ingest rate those tables have actually measured** — 40% of free space by default, with the rest
+kept as merge headroom, re-derived at startup and on every apply. An admin can override it for
+7–365 days; a value above the measured budget is refused rather than allowed to fill the disk.
+
 **No payload inspection.** Weirvern reads flow records and Zeek metadata. TLS still authenticates
 end to end. Nothing is decrypted, and nothing is probed.
 

@@ -371,9 +371,18 @@ def test_a_failed_restart_is_reported_as_a_failure_not_as_success():
 
 def test_the_restart_targets_are_real_workload_kinds():
     """Each key maps to a TUPLE of targets now (siphon keys restart both the sensor
-    and the worker). Every target inside every tuple must be a real workload kind."""
-    for key, (targets, _blast) in cc._RESTART_FOR.items():
-        assert isinstance(targets, tuple) and targets, f"{key} declares no restart target"
+    and the worker). Every target inside every tuple must be a real workload kind.
+
+    AN EMPTY TUPLE IS LEGAL ONLY WITH A STATED EFFECT. `DATA_RETENTION_DAYS` changes a
+    ClickHouse TTL, and the apply path runs the ALTER itself -- there is nothing to roll, and
+    restarting the worker for it would be a lie about what makes it take. The key still has to
+    say what applying it does, or the Settings badge would be empty.
+    """
+    for key, (targets, blast) in cc._RESTART_FOR.items():
+        assert isinstance(targets, tuple), f"{key}'s targets are not a tuple"
+        if not targets:
+            assert blast, f"{key} declares no restart target and no stated effect"
+            continue
         for target in targets:
             kind = target.partition("/")[0]
             assert kind in ("deploy", "ds", "statefulset"), f"{key} targets unknown kind {kind!r}"
