@@ -6483,7 +6483,21 @@ async function loadModels() {
   }
 
   if (win) win.textContent = "last " + hours + "h";
-  if (sum) sum.textContent = data.summary || "";
+  if (sum) {
+    let line = data.summary || "";
+    // The baseline's other input: normalized traffic. Said here because this is the tab that
+    // explains what the detectors consider normal (operator, 2026-11-19).
+    const nz = data.normalized || {};
+    if (nz.available) {
+      const parts = Object.entries(nz.by_source || {}).map(([k, v]) => `${v} ${k}`);
+      line += nz.total
+        ? ` The adaptive baseline also learns from ${nz.total} normalized pattern(s)` +
+          (parts.length ? ` (${parts.join(" \u00b7 ")})` : "") +
+          " \u2014 pooled into its distribution, never used to silence an alert."
+        : " Nothing has been normalized yet: the baseline learns only from observed traffic.";
+    }
+    sum.textContent = line;
+  }
 
   mRenderChips();
   renderModelCards(data);

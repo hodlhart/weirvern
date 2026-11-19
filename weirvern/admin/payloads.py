@@ -402,6 +402,7 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         # this still looks wrong. dbscan says retired and the retraining says october 14"). The
         # registry is a curation snapshot; ml_models is the engine's own log, one row per training.
         data["model_training"] = model_training(client)
+        data["normalized"] = normalized_seeds(client)
         behind = [c["model_name"] for c in data["model_cards"]
                   if str(c.get("version") or "") !=
                   str((data["model_artifacts"].get(c.get("model_name")) or {}).get("version") or "")]
@@ -712,6 +713,25 @@ def findings_failure(exc: BaseException) -> dict[str, Any]:
     logger.warning("findings unavailable: %s", exc)
     return {"available": False, "findings": [], "count": 0, "counts": {},
             "reason": "the data could not be read"}
+
+
+def normalized_seeds(client: Client) -> dict[str, Any]:
+    """What the baseline has learned from the Normalize tab, by lane.
+
+    THE ML TAB HAS TO SAY THIS (operator, 2026-11-19: "look at our newest ML engine and all the
+    work we have been doing. then update the ml tab"). Normalizing traffic changes what the
+    Adaptive Baseline considers normal, and nothing on the Models tab mentioned it -- so the tab
+    described a pipeline with a whole input missing.
+    """
+    try:
+        res = client.query(
+            "SELECT source, count() FROM weirvern.normal_traffic FINAL "
+            "WHERE status != 'removed' GROUP BY source ORDER BY source")
+    except Exception as exc:  # noqa: BLE001 - a panel, not a page
+        logger.warning("normalized pattern count unavailable: %s", exc)
+        return {"available": False, "total": 0, "by_source": {}}
+    by_source = {str(r[0]): int(r[1]) for r in (getattr(res, "result_rows", None) or [])}
+    return {"available": True, "total": sum(by_source.values()), "by_source": by_source}
 
 
 def model_training(client: Client) -> dict[str, dict[str, Any]]:

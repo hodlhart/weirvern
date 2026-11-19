@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.85 — 2026-11-19
+
+THE ML TAB NAMES ITS WHOLE INPUT.
+
+- **The Models overview says how much normalized traffic the baseline has learned from**, by lane
+  (Netflow / Zeek / DNS), and says what that means: pooled into the baseline's distribution, never
+  used to silence an alert. The tab explained four detectors and never mentioned that the operator
+  can now teach the baseline directly, which made a shipped feature invisible from the page that
+  exists to explain the engine.
+- **"Nothing has been normalized yet" is a state, not a blank.** When the count is zero the line
+  says so, so an empty input reads as empty rather than as a panel that failed.
+
 ## 0.23.84 — 2026-11-19
 
 THE MODELS TAB REPORTS THE ENGINE, NOT ITS OWN PAPERWORK.
