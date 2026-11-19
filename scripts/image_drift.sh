@@ -85,13 +85,21 @@ missing=0
 # Only meaningful on the node itself: no ctr or no cluster means there is nothing to compare.
 # Both the tool and a reachable cluster are required: a laptop with `ctr` installed has no node
 # images to compare against and would report every workload as at risk.
-if command -v ctr >/dev/null 2>&1 && kubectl version --request-timeout=3s >/dev/null 2>&1; then
+# k3s keeps its own containerd: the stock `ctr` on the node talks to a different socket and
+# answers with nothing, which reads as "every image is missing". Prefer the k3s one.
+_ctr_images() {
+  if command -v k3s >/dev/null 2>&1; then k3s ctr -n k8s.io images ls -q
+  elif command -v ctr >/dev/null 2>&1; then ctr -n k8s.io images ls -q
+  else return 1
+  fi
+}
+if _ctr_images >/dev/null 2>&1 && kubectl version --request-timeout=3s >/dev/null 2>&1; then
   images=$(kubectl -n "${NS:-weirvern}" get deploy,ds \
     -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' \
     2>/dev/null || true)
   # containerd reports fully-qualified names (docker.io/library/weirvern-zeek:0.5.0); a manifest
   # says weirvern-zeek:0.5.0. Compare the last path component, or every local image looks missing.
-  present=$(ctr -n k8s.io images ls -q 2>/dev/null | sed 's#^.*/##')
+  present=$(_ctr_images 2>/dev/null | sed 's#^.*/##')
   for image in $images; do
     case "$image" in
       *netsampler/goflow2*|busybox*|*"@sha256"*) continue ;;   # upstream, digest-pinned
