@@ -4846,6 +4846,8 @@ function showView(name) {
   // selection rather than left to a refresh timer.
   if (name === "weirlings") loadWeirlings().then(clearError).catch(showError);
   if (name === "health") loadHealthDeep().then(clearError).catch(showError);
+  // NORMALIZE reads two tables and is a reading surface; it loads on selection like Sluice.
+  if (name === "normalize") loadNormalize().then(clearError).catch(showError);
 }
 
 /* THE VIEW YOU ARE LOOKING AT IS WHAT AUTO-REFRESH REFRESHES (the comment always claimed
@@ -4858,6 +4860,7 @@ const VIEW_LOADERS = {
   logs: () => Promise.all([refreshWriteTrails(), loadAudit(), loadHealthDeep()]),
   netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
+  normalize: () => loadNormalize(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
   assets: () => loadAssets(), findings: () => loadFindings(),
   // US-3: Evidence joins the refreshable views -- it is the view most likely to be re-read

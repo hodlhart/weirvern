@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.23.77</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.23.78</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
@@ -141,6 +141,9 @@ the manifests, capabilities and checks.
 
 - **Anomalies** — the alert queue, severity tallies, model attribution and a per-row evidence
   drill.
+- **Normalize** — a feed of near-similar flows and DNS that an operator reads, filters and marks
+  as normal. Normalized traffic joins the host's adaptive baseline permanently, so the models
+  learn it; nothing is silenced, and any claim can be undone.
 - **Evidence** — the five-stage chain: observed, detected, explained, ruled, done. Block,
   acknowledge, resolve or ignore from the same page.
 - **Network** — the connection map, busiest edges and per-host conversations.

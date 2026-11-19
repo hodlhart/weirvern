@@ -1105,6 +1105,87 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         return jsonify(payloads.sluice(lambda: ctx.connect_factory(ctx.settings),
                                        hours=hours, settings=ctx.settings))
 
+    @app.get("/api/normalize")
+    @gated
+    def normalize_feed():
+        """The feed the operator reads: flows and DNS, filtered, with normalized rows marked."""
+        from weirvern import normalize_store  # noqa: PLC0415
+        from weirvern.admin import web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+            port = int(request.args.get("port") or 0)
+            min_bytes = int(request.args.get("min_bytes") or 0)
+        except ValueError as exc:
+            return _json_error(400, f"bad filter: {exc}")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                payload = normalize_store.feed(
+                    client, hours=hours, source=request.args.get("source", ""),
+                    segment=request.args.get("segment", ""), port=port,
+                    min_bytes=min_bytes, query=request.args.get("q", ""))
+        except Exception as exc:  # noqa: BLE001
+            payload = {"available": False, "reason": str(exc), "rows": [], "entries": [],
+                       "summary": {}}
+        return jsonify(payload)
+
+    @app.post("/api/normalize")
+    def normalize_add():
+        """Record the selected traffic as normal. It joins the host baseline at the next retrain."""
+        from weirvern import normalize, normalize_store  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, error = _body_or_refusal()
+        if error is not None:
+            return error
+        selections = body.get("selections") if isinstance(body, dict) else None
+        if not isinstance(selections, list) or not selections:
+            return _json_error(400, "select at least one row to normalize")
+        note = str((body or {}).get("note") or "")
+        actor = _caller_name()
+        try:
+            rows = [normalize.new_entry(note=note, actor=actor, **normalize_selection(sel))
+                    for sel in selections]
+        except (TypeError, ValueError) as exc:
+            return _json_error(400, str(exc))
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                added = normalize_store.write(client, rows)
+                entries = normalize_store.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, f"could not record the normalization: {exc}")
+        return jsonify({"ok": True, "added": added, "entries": entries,
+                        "summary": normalize.summarise(entries)})
+
+    @app.post("/api/normalize/remove")
+    def normalize_remove():
+        """Take one entry out of the normalized set. The row is superseded, never deleted."""
+        from weirvern import normalize, normalize_store  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, error = _body_or_refusal()
+        if error is not None:
+            return error
+        entry_id = str((body or {}).get("entry_id") or "")
+        if not entry_id:
+            return _json_error(400, "entry_id is required")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                current = next((e for e in normalize_store.entries(client, include_removed=True)
+                                if e["entry_id"] == entry_id), None)
+                if current is None:
+                    return _json_error(404, "no such normalization")
+                normalize_store.write(client, [normalize.removal(current, actor=_caller_name())])
+                entries = normalize_store.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, f"could not remove the normalization: {exc}")
+        return jsonify({"ok": True, "entries": entries,
+                        "summary": normalize.summarise(entries)})
+
     @app.get("/api/settings")
     @gated
     def settings_view():
@@ -1554,6 +1635,37 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return None
         code, message = refusal if refusal is not None else (403, "write access is required")
         return _json_error(code, message)
+
+    def _caller_name():
+        """Who to attribute the write to. A token has no name; an account does."""
+        try:
+            role, via = _caller_role()
+            ident = getattr(_auth_headers(), "get", lambda _k: None)("X-Weirvern-User")
+            return str(ident or via or role or "operator")
+        except Exception:  # noqa: BLE001
+            return "operator"
+
+    def normalize_selection(sel: dict) -> dict:
+        """One feed row -> the arguments `normalize.new_entry` accepts. Validation is its job."""
+        if not isinstance(sel, dict):
+            raise TypeError("each selection must be an object")
+        return {
+            "source": sel.get("source", "flow"),
+            "src_addr": sel.get("src_addr", ""),
+            "dst_prefix": sel.get("dst_prefix", ""),
+            "dst_port": int(sel.get("dst_port") or 0),
+            "proto": int(sel.get("proto") or 0),
+            "dns_name": sel.get("dns_name", ""),
+            "dns_qtype": int(sel.get("dns_qtype") or 0),
+            "flows": int(sel.get("flows") or 0),
+            "bytes_": int(sel.get("bytes") or 0),
+            "packets": int(sel.get("packets") or 0),
+            "samples": int(sel.get("samples") or 0),
+            "avg_bytes": float(sel.get("avg_bytes") or 0),
+            "var_bytes": float(sel.get("var_bytes") or 0),
+            "avg_packets": float(sel.get("avg_packets") or 0),
+            "var_packets": float(sel.get("var_packets") or 0),
+        }
 
     def _connect():
         """A fresh connection, per block: the fleet routes open several, as the console does."""

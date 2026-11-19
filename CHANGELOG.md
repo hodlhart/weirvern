@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.78 — 2026-11-19
+
+THE NORMALIZE TAB: NORMAL TRAFFIC IS LEARNED, NOT SILENCED.
+
+- **A feed, not a form.** Near-similar traffic — flows *and* DNS — in one filterable log: window,
+  source, segment, port, minimum bytes, free text. Select the rows that are normal for this
+  network and press Normalize; the row turns green and stays marked afterwards.
+- **Normalizing changes the baseline, not the alerts.** The pattern is pooled into that host's
+  adaptive baseline (combined mean/variance, percentiles only ever widen, and only once the seed
+  has 20+ samples), so the models stop finding the traffic anomalous. There is no suppression
+  list, and the alert path never reads the decision — the test suite fails if the feature grows
+  the vocabulary of silencing.
+- **DNS is a first-class lane.** A normalized domain joins the host's known-domain set in the
+  Zeek history CTE, which is what `zeek_dns_new_domain_ratio` measures against.
+- **Permanent until removed.** `normal_traffic` has no TTL. Removal supersedes the row
+  (`status='removed'`, who and when); the history stays.
+- **What it does not do:** it does not hide anything. Normalized rows remain in every view, and
+  the feed marks them so the claim is visible.
+
 ## 0.23.77 — 2026-11-19
 
 ONE JOIN FOR A NIC LIST.

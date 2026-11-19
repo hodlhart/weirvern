@@ -1712,3 +1712,15 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
    status that may contribute to the fused score; the word carries that, the colour repeats it. */
 .card-status { font-weight: 600; }
 .card-status.production { color: var(--sev-high); }
+
+/* ── Normalize (0.23.78) ──────────────────────────────────────────────────────────────────────
+   The feed is a log: dense rows, one control per row, and colour that says what the operator has
+   already claimed. Green is the claim; the severity tints stay untouched everywhere else. */
+#nz-feed td:first-child, #nz-entries td:first-child { width: 28px; }
+#nz-feed tbody tr.nz-normal td { background: rgba(46, 160, 67, 0.10); }
+#nz-feed tbody tr.nz-normal td:nth-child(3)::after {
+  content: " normalized"; color: var(--ok); font-size: var(--fs-1); letter-spacing: .04em;
+}
+#nz-feed tbody tr.nz-selected td { background: rgba(56, 139, 253, 0.14); }
+#nz-feed tbody tr:hover td { background: rgba(255, 255, 255, 0.03); }
+#nz-feed .nz-box { margin: 0; }

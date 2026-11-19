@@ -691,12 +691,24 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             GROUP BY src_addr
         ),
         hist_dns_agg AS (
+            -- A NORMALIZED DOMAIN IS A KNOWN DOMAIN (operator, 2026-11-19). This CTE is what
+            -- "known" means for zeek_dns_new_domain_ratio, so an operator's normalization joins
+            -- the host's history here and the domain stops counting as new. It is evidence the
+            -- model consumes, not a suppressed alert: the ratio moves, the alert path is
+            -- untouched. Read with FINAL because removal supersedes an entry instead of deleting.
             SELECT
                 src_addr,
-                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(query))),
+                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(d))),
                            1, 256) AS hist_domain_set
-            FROM weirvern.zeek_dns
-            WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+            FROM (
+                SELECT src_addr, query AS d
+                FROM weirvern.zeek_dns
+                WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+                UNION ALL
+                SELECT src_addr, dns_name AS d
+                FROM weirvern.normal_traffic FINAL
+                WHERE status = 'active' AND source = 'dns' AND dns_name != ''
+            )
             GROUP BY src_addr
         ),
         hist_dst_agg AS (

@@ -802,12 +802,20 @@ class AdaptiveBaselineDetector(BaseDetector):
                 "zeek_service_rarity will read 0.0 (there is nothing to compare against): %s",
                 exc,
             )
+        seeded = self._apply_normal_seeds(client)
+        if seeded["applied"]:
+            logger.info(
+                "📚 %d normalized pattern(s) pooled into %d host baseline(s): the operator's "
+                "judgement is part of what this baseline calls normal",
+                seeded["applied"], seeded["hosts"],
+            )
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
             params={"min_obs": self.cfg.baseline_min_obs},
             metrics={"baseline_count": len(self.baselines),
                      "zeek_baselined_hosts": zeek_seen_hosts,
-                     "hosts_with_fp_history": hist_hosts},
+                     "hosts_with_fp_history": hist_hosts,
+                     "seeded_entries": seeded["applied"]},
             window_start=start_dt, window_end=end_dt, sample_count=len(self.baselines),
         )
         logger.info(
@@ -825,6 +833,73 @@ class AdaptiveBaselineDetector(BaseDetector):
             )
         self.save()
         return True
+
+    def _apply_normal_seeds(self, client: Client) -> dict[str, int]:
+        """Pool the operator's normalized patterns into each host's statistics.
+
+        A normalization is a statement of fact about the host, so it is ADDED to what the host
+        has observed -- never substituted for it -- and it can only widen a band. The alternative
+        (replacing the statistics) would let one click erase a host's real history, and the
+        alternative of doing nothing would make the Normalize tab a decoration.
+
+        Never raises: a failed read leaves the baselines exactly as measured and says so, because
+        a normalization that could not be applied is a fact the operator needs, not a silent no-op.
+        """
+        from .. import normalize, normalize_store
+
+        try:
+            seeds = normalize_store.seeds(client)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Normalized traffic could not be read; baselines stay as measured: %s",
+                           exc)
+            return {"applied": 0, "hosts": 0}
+        applied = hosts = 0
+        for src, entries in seeds.items():
+            b = self.baselines.get(src)
+            if not b:
+                continue
+            touched = False
+            for e in entries:
+                n = int(e.get("samples") or 0)
+                if n <= 0:
+                    continue
+                pooled_bytes = normalize.pool(
+                    {"samples": float(b.get("sample_count", 1) or 1),
+                     "avg": b["avg_bytes"], "var": b["stddev_bytes"] ** 2},
+                    {"samples": n, "avg": float(e["avg_bytes"]), "var": float(e["var_bytes"])})
+                pooled_packets = normalize.pool(
+                    {"samples": float(b.get("sample_count", 1) or 1),
+                     "avg": b["avg_packets"], "var": b["stddev_packets"] ** 2},
+                    {"samples": n, "avg": float(e["avg_packets"]),
+                     "var": float(e["var_packets"])})
+                b["avg_bytes"], b["stddev_bytes"] = (
+                    pooled_bytes["avg"], normalize.sigma(pooled_bytes["avg"],
+                                                         pooled_bytes["var"]))
+                b["avg_packets"], b["stddev_packets"] = (
+                    pooled_packets["avg"], normalize.sigma(pooled_packets["avg"],
+                                                           pooled_packets["var"]))
+                # Percentiles move only when the seed is big enough to mean something, and only
+                # upward: the seed's normal-approximation tail is what a wider band looks like.
+                sb = normalize.sigma(pooled_bytes["avg"], pooled_bytes["var"])
+                sp = normalize.sigma(pooled_packets["avg"], pooled_packets["var"])
+                b["p95_bytes"] = normalize.widen(b["p95_bytes"],
+                                                 pooled_bytes["avg"] + 1.645 * sb, n)
+                b["p99_bytes"] = normalize.widen(b["p99_bytes"],
+                                                 pooled_bytes["avg"] + 2.326 * sb, n)
+                b["p999_bytes"] = normalize.widen(b["p999_bytes"],
+                                                  pooled_bytes["avg"] + 3.090 * sb, n)
+                b["p95_packets"] = normalize.widen(b["p95_packets"],
+                                                   pooled_packets["avg"] + 1.645 * sp, n)
+                b["p99_packets"] = normalize.widen(b["p99_packets"],
+                                                   pooled_packets["avg"] + 2.326 * sp, n)
+                b["p999_packets"] = normalize.widen(b["p999_packets"],
+                                                    pooled_packets["avg"] + 3.090 * sp, n)
+                b["seeded_entries"] = int(b.get("seeded_entries", 0)) + 1
+                applied += 1
+                touched = True
+            if touched:
+                hosts += 1
+        return {"applied": applied, "hosts": hosts}
 
     def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
         src = flow.get("src_addr") or ""

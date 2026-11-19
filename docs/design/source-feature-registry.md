@@ -58,6 +58,7 @@ ml_ripple | output
 ml_temporal_scores | output
 model_actions | excluded
 near_misses | output
+normal_traffic | feature-now
 netflow_anomalies | output
 network_scopes | join-only
 ntlm_identity_daily | excluded
@@ -143,6 +144,20 @@ Read it with `-Merge` combinators and the window predicate in the same select;
 | `window_start`, `src_addr` | join-only | host-window key |
 | `activity_regularity`, `burstiness` | feature-now | DBSCAN/IF/GB |
 | `minute_activity`, `inter_flow_avg`, `inter_flow_stddev` | feature-planned | periodicity, burst shape, beacon work |
+
+### `normal_traffic`
+
+Operator judgement, not observed traffic. A row says "this pattern is normal for this host"; the
+adaptive baseline pools its distribution into the host's statistics at the next retrain, which is
+how the models learn it. It is deliberately NOT a suppression list: no alert path reads this table.
+
+| fields | status | use |
+|---|---|---|
+| `entry_id`, `created_at`, `created_by`, `status`, `removed_at`, `removed_by` | audit | who claimed what, and what was undone |
+| `src_addr`, `dst_prefix`, `dst_port`, `proto` | baseline-seed | the flow pattern the host's baseline absorbs |
+| `dns_name`, `dns_qtype` | baseline-seed | joins the host's known-domain set (`zeek_dns_new_domain_ratio`) |
+| `flows`, `bytes`, `packets`, `samples` | baseline-seed | how much evidence the claim rests on |
+| `avg_bytes`, `var_bytes`, `avg_packets`, `var_packets` | baseline-seed | the distribution that is pooled in |
 
 ## 2. DNS
 

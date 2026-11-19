@@ -101,6 +101,8 @@ STATIC_FILES = {
     # grow every time a view is added. Loaded after app.js (see index.html) because it calls
     # the shared helpers -- chartFrame, svgEl, el, fmtBytes -- that app.js defines.
     "/soc.js": ("soc.js", "application/javascript; charset=utf-8"),
+    # The Normalize tab: a feed of traffic the operator marks normal (0.23.78).
+    "/normalize.js": ("normalize.js", "application/javascript; charset=utf-8"),
     # The Assets inventory and the Network connection graph. Its own file for the same reason
     # as soc.js, and because the force-free graph layout is code a reader should be able to
     # find on its own.
