@@ -75,5 +75,32 @@ if [ "$drift" -ne 0 ]; then
   echo "DRIFT: at least one workload is not running $PIN. Roll it before trusting the release."
   exit 1
 fi
+# ── EVERY IMAGE A WORKLOAD NAMES MUST EXIST LOCALLY ──────────────────────────────────────────
+# 0.23.82: a workload's image can vanish while the pod keeps running. k3s prunes images it thinks
+# are unused; the zeek DaemonSet had run 34 days on `weirvern-zeek:0.5.0` (a LOCAL-ONLY tag -- there
+# is no registry to pull it from), so nothing noticed the image was gone until a tap-image change
+# recreated the pod and it sat in ImagePullBackOff for ten minutes with capture down.
 echo
-echo "every workload runs $PIN"
+missing=0
+while read -r image; do
+  [ -n "${image:-}" ] || continue
+  case "$image" in
+    *"netsampler/goflow2"*|busybox*) continue ;;   # upstream, digest-pinned, always pullable
+  esac
+  if ! ctr -n k8s.io images ls -q 2>/dev/null | grep -qx "$image"; then
+    printf 'MISSING %s -- named by a workload, absent from containerd; this pod cannot restart\n' \
+      "$image"
+    missing=1
+  fi
+done <<EOF
+$(kubectl -n "${NS:-weirvern}" get deploy,ds -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | sort -u)
+EOF
+if [ "$missing" -ne 0 ]; then
+  echo
+  echo "AT RISK: a workload names an image that is not on this node. It runs now; it will not"
+  echo "restart. Rebuild and re-import it before the next roll."
+  exit 1
+fi
+
+echo
+echo "every workload runs $PIN and every image it names is present"

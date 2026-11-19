@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.82 — 2026-11-19
+
+AN IMAGE THAT IS GONE IS A POD THAT CANNOT COME BACK.
+
+- **The drift check now verifies the images exist, not only that the workloads point at them.**
+  `weirvern-zeek:0.5.0` is a local-only tag — there is no registry to pull it from — and k3s pruned
+  it while the DaemonSet had been running 34 days. Nothing noticed until a tap-image change
+  recreated the pod: it sat in ImagePullBackOff and capture was down for ten minutes. The image was
+  rebuilt and imported, the pod returned 2/2, and `image_drift.sh` now names every image a workload
+  references that is absent from containerd and fails the run, because the next restart is exactly
+  when it matters.
+
 ## 0.23.81 — 2026-11-19
 
 SETTINGS IS ALWAYS OPEN.
