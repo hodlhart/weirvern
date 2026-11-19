@@ -23,12 +23,20 @@ explicitly. Admin-only, applied through the normal stage → plan → apply flow
 In `auto`, the window is measured, not chosen:
 
     budget_bytes  = free_bytes × DATA_RETENTION_RATIO / 100     # ratio default 40%
-    bytes_per_day = bytes_on_disk / observed_days               # the managed tables, measured
+    bytes_per_day = Σ(table_bytes / that table's observed span)  # the managed tables, measured
     days          = floor(budget_bytes / bytes_per_day)
 
 `free_bytes` comes from `system.disks` (the disk that holds this database's parts) and
-`bytes_per_day` from `system.parts` over the managed tables — retained bytes over the span
-those bytes cover. Nothing is configured by hand and no rate is guessed.
+`bytes_per_day` from `system.parts` over the managed tables. Each table is divided by ITS
+OWN span, because a table keeping 7 days and one keeping 30 did not write their bytes over
+the same interval. Parts whose `min_time` is the `toDateTime(0)` sentinel (an empty part or
+an unpartitioned table) do not define a span; their bytes still count, against the union
+span. Nothing is configured by hand and no rate is guessed.
+
+If a table's current TTL cannot be read or parsed, it is left exactly as it is and the
+receipt says `NOT CHANGED: TTL unreadable`; there is no fallback day count. A generated
+interval is also refused if it exceeds the derived window, so a read failure can never
+lengthen a table's retention.
 
 `DATA_RETENTION_RATIO` — the row **retention disk budget (%)** — is the share of FREE space
 the tables may occupy. **Default 40%, bounds 10-70.** The rest is merge headroom: ClickHouse

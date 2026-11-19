@@ -2385,7 +2385,8 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
                 days, derivation = retention_mod.resolve(ch, landing_window, landing_ratio)
                 retention_report = (
                     retention_mod.not_derived_report(derivation) if days is None
-                    else retention_mod.converge(ch, days, derivation=derivation))
+                    else retention_mod.converge(ch, days, derivation=derivation,
+                                                bound_days=days))
         except Exception as exc:  # noqa: BLE001 - an ALTER failure is a report, not a 500
             logger.warning("settings: retention could not be applied: %s", exc)
             retention_report = {

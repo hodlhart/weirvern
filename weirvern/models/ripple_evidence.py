@@ -306,14 +306,22 @@ SPECS: tuple[ChannelSpec, ...] = (
 SET_KINDS = frozenset({"novelty", "change"})
 
 
-def effective_lookback_days(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS) -> int:
+def effective_lookback_days(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS,
+                            retention_days: int | None = None) -> int:
     """How far back this source can actually be read: the lookback, capped by its retention.
 
     `flows` keeps 3 days while the Zeek tables keep 7. Measuring a 7-day baseline against a
     3-day table would count coverage against windows that do not exist; capping here is what
     makes `coverage` mean "share of the possible history", not "share of a wish".
+
+    `retention_days` is the window the BOX derived. When supplied it caps the per-spec
+    constant as well: a spec that was written for 90 days cannot claim 90 on a deployment
+    whose TTL is 30.
     """
-    return max(0, min(int(lookback_days), int(spec.retention_days)))
+    cap = int(spec.retention_days)
+    if retention_days is not None:
+        cap = min(cap, max(0, int(retention_days)))
+    return max(0, min(int(lookback_days), cap))
 
 
 def baseline_windows(scale: str, lookback_days: int = LOOKBACK_DAYS) -> int:
@@ -355,14 +363,15 @@ def scale_report(scale: str, lookback_days: int = LOOKBACK_DAYS) -> dict[str, An
     }
 
 
-def supported_scales(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS) -> list[str]:
+def supported_scales(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS,
+                     retention_days: int | None = None) -> list[str]:
     """The scales this channel can actually be measured at, given its retention and the floor.
 
     A scale with fewer than `min_baseline_samples(scale)` windows is NOT listed. That is what
     makes the inventory honest: 7d is absent everywhere in this deployment, and a channel is
     never scored against a baseline it does not have.
     """
-    effective = effective_lookback_days(spec, lookback_days)
+    effective = effective_lookback_days(spec, lookback_days, retention_days)
     return [scale for scale in spec.scales
             if baseline_windows(scale, effective) >= min_baseline_samples(scale)]
 
@@ -382,7 +391,8 @@ def statistic(spec: ChannelSpec) -> str:
     return f"fraction where {spec.predicate}"
 
 
-def inventory(lookback_days: int = LOOKBACK_DAYS) -> list[dict[str, Any]]:
+def inventory(lookback_days: int = LOOKBACK_DAYS,
+              retention_days: int | None = None) -> list[dict[str, Any]]:
     """What this deployment can hear, as data rather than prose.
 
     `scales` is what the channel can be measured at TODAY; `scale_detail` says why each declared
@@ -390,18 +400,26 @@ def inventory(lookback_days: int = LOOKBACK_DAYS) -> list[dict[str, Any]]:
     `scales` is missing for a reason, and the reason is visible in `baseline_windows` and
     `p_floor` rather than hidden in a comment. `required_columns` is what `availability()`
     checks against the live schema, so the inventory states the contract as well as the result.
+
+    `retention_days` is the live derived window. The per-spec constants (7/30/60/90) describe
+    what each source was DESIGNED to keep; on a box that derived 30 days, advertising 90 days
+    of Kerberos history would be a claim the tables cannot support. Every reported value and
+    every effective lookback is capped to the derived window when it is supplied.
     """
     out: list[dict[str, Any]] = []
     for spec in SPECS:
-        effective = effective_lookback_days(spec, lookback_days)
+        claimed = int(spec.retention_days)
+        if retention_days is not None:
+            claimed = min(claimed, max(0, int(retention_days)))
+        effective = effective_lookback_days(spec, lookback_days, claimed)
         out.append({
             "channel": spec.channel,
             "family": spec.family,
             "source": spec.table,
             "statistic": statistic(spec),
-            "scales": supported_scales(spec, lookback_days),
+            "scales": supported_scales(spec, lookback_days, claimed),
             "scale_detail": {scale: scale_report(scale, effective) for scale in spec.scales},
-            "retention_days": spec.retention_days,
+            "retention_days": claimed,
             "required_columns": list(spec.required_columns),
         })
     return out

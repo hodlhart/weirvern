@@ -28,6 +28,12 @@ actually supports ("disk supports 4 days; holding the 7-day floor"). Above 365 i
 An explicit override (7-365) is still allowed, but a value ABOVE the measured budget is
 refused with the budget named: accepting it would fill the disk.
 
+NEVER ON FAILURE. If a table's current TTL cannot be read or parsed, that table is left
+exactly as it is and the receipt says `NOT CHANGED: TTL unreadable`. There is no fallback
+window: choosing 365 days because the DDL was not understood would turn a read failure into a
+disk-filling setting. `alter_sql` also refuses any interval longer than the derived window, so
+a bad parse cannot produce a longer TTL than the arithmetic allows.
+
 TWO PLACES ENFORCE THE RESULT, AND THEY MUST AGREE:
 
   * the schema files create every managed table with the 7-day FLOOR as a bootstrap (a fresh
@@ -82,6 +88,13 @@ MIN_OBSERVATION_DAYS = 1.0
 #: The shortest span the rate is divided by, so a nearly-empty `system.parts` cannot produce
 #: an infinite bytes/day.
 MIN_RATE_SPAN_DAYS = 1.0 / 24.0
+
+#: A history span longer than twice the cap cannot describe these tables: their own TTL is at
+#: most 365 days. It is the sentinel `toDateTime(0)` from a part with no minmax index (an
+#: unpartitioned table, or an empty part), which used to make the observed span 56 years and
+#: the derived window collapse to the cap. Such a measurement is REFUSED, not converted into
+#: a longer window.
+MAX_PLAUSIBLE_SPAN_DAYS = float(MAX_RETENTION_DAYS * 2)
 
 RETENTION_DAYS_KEY = "DATA_RETENTION_DAYS"
 RETENTION_RATIO_KEY = "DATA_RETENTION_RATIO"
@@ -265,13 +278,28 @@ def normalise_ratio(value: Any) -> int:
     return ratio
 
 
-def alter_sql(table: RetentionTable, days: int) -> str:
-    """The statement that sets one table's TTL.
+def alter_sql(table: RetentionTable, days: int, *, max_days: int | None = None) -> str:
+    """The statement that sets one table's TTL, never longer than `max_days`.
 
     `MODIFY TTL`, never `DROP PARTITION`: the ALTER only changes when ClickHouse's own merge
     expires rows. Nothing here deletes a partition, and nothing here truncates a table.
+
+    THE BOUND IS A HARD GUARD, NOT A CONVENTION. `max_days` is the derivation's answer for
+    this deployment; an interval above it is refused with ValueError BEFORE any SQL exists.
+    That is what makes a fallback (or a TTL parsed from the wrong clause) unable to produce a
+    window the arithmetic did not allow. The 365-day cap applies even when the caller omits
+    the bound, because `normalise_days` refuses anything above it.
     """
     want = normalise_days(days)
+    if max_days is not None:
+        bound = int(max_days)
+        if bound < 0:
+            raise ValueError(f"the retention bound must not be negative; got {bound}")
+        bound = min(bound, MAX_RETENTION_DAYS)
+        if want > bound:
+            raise ValueError(
+                f"refusing to set {table.name} to {want} days: the derived window is "
+                f"{bound} day(s), and an interval may never exceed it")
     return (
         f"ALTER TABLE {_checked(table.name)} "
         f"MODIFY TTL {_checked_expression(table.ttl_expression())} + INTERVAL {want} DAY"
@@ -283,13 +311,21 @@ def alter_sql(table: RetentionTable, days: int) -> str:
 
 @dataclass(frozen=True)
 class Measurement:
-    """What the deployment's own tables and disks say, right now."""
+    """What the deployment's own tables and disks say, right now.
+
+    `span_days` is the union of the parts' timestamps and is what the UI shows as the history
+    the deployment holds. `rate_bytes_per_day` is the MEASURED ingest: the sum of each table's
+    own bytes divided by its OWN span, because a table keeping 7 days and a table keeping 30
+    did not write their bytes over the same interval. `None` keeps the simple
+    bytes/span division for callers that have one table or a synthetic measurement.
+    """
 
     disk_name: str
     total_bytes: int
     free_bytes: int
     bytes_on_disk: int
     span_days: float
+    rate_bytes_per_day: float | None = None
 
     @property
     def observed_days(self) -> float:
@@ -298,6 +334,8 @@ class Measurement:
 
     @property
     def bytes_per_day(self) -> float:
+        if self.rate_bytes_per_day is not None:
+            return max(0.0, float(self.rate_bytes_per_day))
         if self.bytes_on_disk <= 0:
             return 0.0
         return float(self.bytes_on_disk) / self.observed_days
@@ -342,17 +380,46 @@ def measure(client: Any) -> Measurement:
     chosen = max(on_disk or candidates, key=lambda d: (d[1], d[2]))
 
     listed = ", ".join("'" + _checked(name) + "'" for name in table_names())
-    row = client.query(
-        "SELECT sum(bytes_on_disk), "
-        "dateDiff('second', min(min_time), max(max_time)) "
+    # THE EPOCH IS NOT HISTORY. `system.parts.min_time` is the sentinel `toDateTime(0)` for a
+    # part with no minmax index (an empty part, or a table with no partition key). Taking
+    # min() over every part therefore reported a 56-year span on the live box, crushed the
+    # measured rate, and derived the 365-day cap on a 90%-full disk. Only parts that actually
+    # hold rows AND carry a real timestamp define a span; their bytes still count toward the
+    # rate.
+    #
+    # EACH TABLE IS DIVIDED BY ITS OWN SPAN. A table keeping 7 days and one keeping 30 did not
+    # write their bytes over the same interval, so summing all bytes and dividing by the union
+    # span (34 days on the live box) understated the ingest by ~5x -- and an understated rate
+    # derives a window that fills the disk before the TTL expires it. Bytes with no usable span
+    # (an unpartitioned table) are divided by the union span: the conservative choice.
+    rows = client.query(
+        "SELECT table, sum(bytes_on_disk), "
+        "dateDiff('second', "
+        "minIf(min_time, rows > 0 AND min_time > toDateTime(0)), "
+        "maxIf(max_time, rows > 0 AND max_time > toDateTime(0))) "
         "FROM system.parts "
-        f"WHERE database = currentDatabase() AND active AND table IN ({listed})"
+        f"WHERE database = currentDatabase() AND active AND table IN ({listed}) "
+        "GROUP BY table"
     ).result_rows
-    bytes_on_disk = int((row[0][0] if row else 0) or 0)
-    span_s = int((row[0][1] if row else 0) or 0)
+    bytes_on_disk = 0
+    per_table: list[tuple[int, int]] = []
+    for _name, table_bytes, table_span_s in rows:
+        held = int(table_bytes or 0)
+        bytes_on_disk += held
+        per_table.append((held, int(table_span_s or 0)))
+    span_s = max((span for _held, span in per_table), default=0)
+    min_span_s = MIN_RATE_SPAN_DAYS * 86400.0
+    rate = 0.0
+    for held, table_span_s in per_table:
+        if held <= 0:
+            continue
+        use_s = table_span_s if table_span_s >= min_span_s else span_s
+        if use_s > 0:
+            rate += held / (use_s / 86400.0)
     return Measurement(
         disk_name=chosen[0], total_bytes=chosen[1], free_bytes=chosen[2],
-        bytes_on_disk=bytes_on_disk, span_days=max(0.0, span_s / 86400.0))
+        bytes_on_disk=bytes_on_disk, span_days=max(0.0, span_s / 86400.0),
+        rate_bytes_per_day=rate)
 
 
 def _gb(value: float) -> str:
@@ -377,14 +444,20 @@ def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT)
     rate = measurement.bytes_per_day
     budget_days: int | None = None
     raw_days: float | None = None
-    if rate > 0:
+    span_days = float(measurement.span_days)
+    implausible = span_days > MAX_PLAUSIBLE_SPAN_DAYS
+    if rate > 0 and not implausible:
         raw_days = budget_bytes / rate
         budget_days = int(math.floor(raw_days))
 
-    enough_history = measurement.span_days >= MIN_OBSERVATION_DAYS
+    enough_history = MIN_OBSERVATION_DAYS <= span_days <= MAX_PLAUSIBLE_SPAN_DAYS
     available = rate > 0 and enough_history
     if rate <= 0:
         reason = "no bytes have been written to the managed tables yet"
+    elif implausible:
+        reason = (f"the observed history spans {span_days:,.0f} days, which is longer than "
+                  f"any window this control can set ({MAX_PLAUSIBLE_SPAN_DAYS:,.0f} days); "
+                  f"refusing to derive from an implausible span")
     elif not enough_history:
         reason = (f"only {measurement.span_days:.2f} day(s) of history has been observed; "
                   f"a full day is needed before deriving a daily rate")
@@ -530,7 +603,14 @@ class EffectiveTTL:
 # `TTL` keyword in it (column-level TTLs come earlier, inside the column list).
 _TTL_WORD = re.compile(r"\bTTL\b", re.IGNORECASE)
 _INTERVAL = re.compile(
-    r"INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR)", re.IGNORECASE)
+    r"\bINTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR)\b", re.IGNORECASE)
+# ClickHouse NORMALISES `INTERVAL 365 DAY` to `toIntervalDay(365)` in `create_table_query`.
+# Reading only the first form made every table this control had ever written "unreadable",
+# which is how a read failure became a re-ALTER on every worker start. Both forms are the same
+# TTL and both must parse.
+_INTERVAL_FN = re.compile(
+    r"\btoInterval(Second|Minute|Hour|Day|Week|Month|Quarter|Year)\(\s*(\d+)\s*\)",
+    re.IGNORECASE)
 _UNIT_DAYS = {"DAY": 1, "WEEK": 7, "MONTH": 30, "QUARTER": 90, "YEAR": 365}
 
 
@@ -538,7 +618,9 @@ def parse_ttl(create_table_query: str) -> tuple[int | None, str]:
     """(days, expression) from a table's stored DDL. Days is None when it cannot be read.
 
     A None is reported as a mismatch, never as "fine": a TTL this function cannot understand
-    is a TTL nobody has verified.
+    is a TTL nobody has verified. Both the SQL spelling (`INTERVAL 7 DAY`) and the form
+    ClickHouse stores back (`toIntervalDay(7)`) are understood; a table is not "unreadable"
+    merely because the server normalised its own DDL.
     """
     body = (create_table_query or "").strip().rstrip(";").strip()
     found = list(_TTL_WORD.finditer(body))
@@ -547,10 +629,15 @@ def parse_ttl(create_table_query: str) -> tuple[int | None, str]:
     clause = body[found[-1].start():].split(";", 1)[0].strip()
     expression = clause[3:].strip() if clause[:3].upper() == "TTL" else clause
     match = _INTERVAL.search(expression)
-    if not match:
-        return None, expression
-    count = int(match.group(1))
-    unit = match.group(2).upper()
+    if match:
+        count = int(match.group(1))
+        unit = match.group(2).upper()
+    else:
+        match = _INTERVAL_FN.search(expression)
+        if not match:
+            return None, expression
+        unit = match.group(1).upper()
+        count = int(match.group(2))
     if unit in ("SECOND", "MINUTE", "HOUR"):
         # A sub-day TTL is legal but not what this control writes. Reporting 0 would read as
         # "immediately expired"; report it unreadable instead.
@@ -586,12 +673,14 @@ def not_derived_report(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True, "applied": False, "requested_days": None, "derivation": report,
         "tables": [], "changed": [], "failed": [], "failed_reasons": {},
+        "unreadable": [], "unreadable_reasons": {}, "bound_days": None,
         "missing": [], "mismatched": [],
         "summary": report.get("sentence") or "retention was not derived",
     }
 
 
-def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None) -> dict[str, Any]:
+def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None,
+             bound_days: int | None = None) -> dict[str, Any]:
     """Set every managed table's TTL to `days`, then read back what the cluster has.
 
     IDEMPOTENT: a table already at the wanted TTL is left alone, so the startup path does not
@@ -599,26 +688,56 @@ def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None
 
     A FAILED ALTER IS NAMED, NOT SWALLOWED, and the table keeps its previous TTL: the loop
     records the failure and continues, because one unwritable table must not leave the other
-    fifteen on an old window. The read-back afterwards is what makes the report true.
+    fifteen on an old window.
+
+    AN UNREADABLE TTL IS NOT A REASON TO CHOOSE ONE. A table whose current TTL cannot be read
+    or parsed gets NO ALTER at all: it keeps exactly the TTL it has, and the receipt records
+    `NOT CHANGED: TTL unreadable` with the DDL fragment that could not be understood. Inventing
+    a fallback here (365 days was the old behaviour) turns a read failure into a disk-filling
+    setting, so there is deliberately no fallback value in this function or in `alter_sql`.
+
+    Every ALTER is bounded by `bound_days` (the derived window when the caller has one). The
+    read-back afterwards is what makes the report true.
     """
     want = normalise_days(days)
+    bound = MAX_RETENTION_DAYS if bound_days is None else min(int(bound_days), MAX_RETENTION_DAYS)
+    if derivation:
+        # THE DERIVATION ALWAYS WINS over a caller-supplied bound. If the receipt says 40 days,
+        # no argument can make converge emit 365.
+        derived = derivation.get("days")
+        if isinstance(derived, int) and derived >= MIN_RETENTION_DAYS:
+            bound = min(bound, derived, MAX_RETENTION_DAYS)
+    if want > bound:
+        raise ValueError(
+            f"refusing to converge on {want} days: the derived window is {bound} day(s), "
+            f"and an interval may never exceed it")
+
     before = effective_ttls(client)
     changed: list[str] = []
     failed: dict[str, str] = {}
+    unreadable: dict[str, str] = {}
     for table in RETENTION_TABLES:
         current = before.get(table.name)
-        if current is not None and current.days == want:
+        if current is None:
+            # No row in system.tables: there is nothing to ALTER. Recorded, not guessed at.
+            continue
+        if current.days is None:
+            # NEVER CHOOSE A VALUE ON FAILURE. Leave the TTL exactly as it is.
+            unreadable[table.name] = (current.expression
+                                      or "no table-level TTL clause in create_table_query")
+            logger.warning("retention: %s TTL unreadable (%s); leaving it unchanged",
+                           table.name, unreadable[table.name])
+            continue
+        if current.days == want:
             continue
         try:
-            client.command(alter_sql(table, want))
+            client.command(alter_sql(table, want, max_days=bound))
         except Exception as exc:  # noqa: BLE001 - one table must not stop the rest
             failed[table.name] = f"{type(exc).__name__}: {str(exc)[:160]}"
             logger.warning("retention: could not set %s to %s days: %s", table.name, want, exc)
             continue
         changed.append(table.name)
-        was = "unknown" if current is None else (
-            "unreadable" if current.days is None else f"{current.days}d")
-        logger.info("retention: %s TTL %s -> %sd", table.name, was, want)
+        logger.info("retention: %s TTL %sd -> %sd", table.name, current.days, want)
 
     after = effective_ttls(client)
     rows: list[dict[str, Any]] = []
@@ -629,8 +748,15 @@ def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None
         error = failed.get(table.name, "")
         if effective is None:
             missing.append(table.name)
-            error = error or "table is absent from the deployment database"
+            error = error or "NOT CHANGED: table absent from the deployment database"
             ok = False
+        elif table.name in unreadable:
+            # The table was not touched, so the read-back is expected to still be unreadable.
+            got = ("unreadable" if effective.days is None else f"{effective.days} days")
+            error = f"NOT CHANGED: TTL unreadable ({unreadable[table.name]}); cluster reports {got}"
+            ok = False
+            if table.name not in rows_mismatched:
+                rows_mismatched.append(table.name)
         else:
             ok = effective.days == want
             if not ok and not error:
@@ -650,7 +776,7 @@ def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None
         })
 
     result = {
-        "ok": not (failed or missing or rows_mismatched),
+        "ok": not (failed or missing or unreadable or rows_mismatched),
         "applied": bool(changed),
         "requested_days": want,
         "derivation": derivation or {},
@@ -658,8 +784,11 @@ def converge(client: Any, days: Any, *, derivation: dict[str, Any] | None = None
         "changed": changed,
         "failed": sorted(failed),
         "failed_reasons": failed,
+        "unreadable": sorted(unreadable),
+        "unreadable_reasons": unreadable,
         "missing": missing,
         "mismatched": rows_mismatched,
+        "bound_days": bound,
     }
     result["summary"] = _summary(result)
     return result
@@ -674,9 +803,12 @@ def _summary(report: dict[str, Any]) -> str:
     parts = [f"{len(report['changed'])} of {total} table(s) set to {want} days"]
     if report["failed"]:
         parts.append("ALTER failed for " + ", ".join(report["failed"]))
+    if report.get("unreadable"):
+        parts.append("NOT CHANGED (TTL unreadable): " + ", ".join(report["unreadable"]))
     if report["missing"]:
         parts.append("absent: " + ", ".join(report["missing"]))
-    unexplained = [t for t in report["mismatched"] if t not in report["failed"]]
+    unexplained = [t for t in report["mismatched"]
+                   if t not in report["failed"] and t not in report.get("unreadable", [])]
     if unexplained:
         parts.append("read-back disagrees for " + ", ".join(unexplained))
     return "; ".join(parts)
@@ -702,7 +834,7 @@ def ensure(client: Any, setting: Any = None, ratio_percent: Any = None) -> dict[
         logger.info("retention: %s", report["summary"])
         return report
     try:
-        result = converge(client, days, derivation=derivation)
+        result = converge(client, days, derivation=derivation, bound_days=days)
     except Exception as exc:  # noqa: BLE001 - see the docstring
         logger.warning("retention: the migration could not run: %s", exc)
         return not_derived_report(unavailable(str(exc))) | {"ok": False, "error": str(exc)}

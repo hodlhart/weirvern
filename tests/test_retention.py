@@ -62,7 +62,7 @@ class FakeCH:
     real failure shapes and the report must distinguish them.
     """
 
-    def __init__(self, days: dict[str, int] | None = None, *,
+    def __init__(self, days: dict[str, Any] | None = None, *,
                  free_bytes: int = 200 * GB, total_bytes: int = 400 * GB,
                  bytes_on_disk: int = 200 * GB, span_days: float = 100.0,
                  fail: set[str] | None = None, ignore: set[str] | None = None,
@@ -85,7 +85,14 @@ class FakeCH:
         elif "DISTINCT disk_name" in sql:
             rows = [(self.disk_name,)]
         elif "dateDiff" in sql:
-            rows = [(self.bytes_on_disk, int(self.span_days * 86400))]
+            names = [t.name for t in retention.RETENTION_TABLES if t.name in self.days]
+            span_s = int(self.span_days * 86400)
+            if not names:
+                rows = []
+            else:
+                share = self.bytes_on_disk // len(names)
+                rows = [(name, share, span_s) for name in names]
+                rows[0] = (names[0], self.bytes_on_disk - share * (len(names) - 1), span_s)
         elif "system.tables" in sql:
             rows = [(t.name, _ddl(t.name, t.column, self.days.get(t.name)))
                     for t in retention.RETENTION_TABLES if t.name in self.days]
@@ -195,6 +202,52 @@ def test_a_rate_over_a_short_span_is_floored_so_it_cannot_explode():
     assert m.bytes_per_day == pytest.approx(24 * GB)
 
 
+def test_the_measurement_ignores_the_epoch_sentinel_when_it_reads_the_span():
+    """`min_time = toDateTime(0)` on a part with no minmax index is not 56 years of history."""
+
+    class RecordingCH(FakeCH):
+        def __init__(self) -> None:
+            super().__init__()
+            self.queries: list[str] = []
+
+        def query(self, sql: str, parameters=None):  # noqa: ANN001 - duck-typed client
+            self.queries.append(sql)
+            return super().query(sql, parameters)
+
+    ch = RecordingCH()
+    measurement = retention.measure(ch)
+    span_sql = next(sql for sql in ch.queries if "dateDiff" in sql)
+    assert "minIf(min_time, rows > 0 AND min_time > toDateTime(0))" in span_sql
+    assert "maxIf(max_time, rows > 0 AND max_time > toDateTime(0))" in span_sql
+    assert measurement.span_days == pytest.approx(100.0)
+
+
+def test_the_rate_divides_each_table_by_its_own_span():
+    """A 7-day table and a 30-day table did not write their bytes over the same interval.
+
+    The live box held 7-day aggregates beside 30-day Zeek logs. Dividing the whole 750 MB by
+    the 34-day union span understated ingest ~5x; that understatement is what turns a derived
+    window into a disk that fills before its TTL expires it.
+    """
+
+    class _Result:
+        def __init__(self, rows) -> None:  # noqa: ANN001
+            self.result_rows = rows
+
+    class PerTableCH(FakeCH):
+        def query(self, sql: str, parameters=None):  # type: ignore[override]  # noqa: ANN001
+            if "dateDiff" in sql:
+                return _Result([("short", 700_000_000, 7 * 86400),
+                                ("long", 300_000_000, 30 * 86400)])
+            return super().query(sql, parameters)
+
+    measurement = retention.measure(PerTableCH())
+    assert measurement.bytes_on_disk == 1_000_000_000
+    assert measurement.span_days == pytest.approx(30.0)
+    # 100 MB/day from the short table plus 10 MB/day from the long one.
+    assert measurement.bytes_per_day == pytest.approx(110_000_000)
+
+
 def test_auto_does_not_derive_from_less_than_a_day_of_history():
     """A ten-minute-old database is not evidence of a daily rate; the tables keep their TTL."""
     m = retention.Measurement(disk_name="default", total_bytes=400 * GB, free_bytes=200 * GB,
@@ -203,6 +256,25 @@ def test_auto_does_not_derive_from_less_than_a_day_of_history():
     assert report["available"] is False
     assert report["days"] is None
     assert "a full day is needed" in report["reason"]
+    assert "not derived yet" in report["sentence"]
+
+
+def test_an_implausible_history_span_never_derives_a_window():
+    """THE LIVE FAILURE, pinned: an epoch `min_time` made the span 56 years and derived 365.
+
+    Free space and bytes are the measured live numbers (2026-11-19). The span is what
+    `system.parts` reported before the epoch sentinel was filtered. A 365-day fallback from a
+    56-year span is exactly the disk-filling setting this control exists to prevent, so the
+    report must refuse to derive at all.
+    """
+    m = retention.Measurement(disk_name="default", total_bytes=105_089_261_568,
+                              free_bytes=10_855_522_304, bytes_on_disk=749_477_326,
+                              span_days=20_777.0)
+    report = retention.derive(m, 40)
+    assert report["available"] is False
+    assert report["days"] is None
+    assert report["budget_days"] is None
+    assert "implausible" in report["reason"]
     assert "not derived yet" in report["sentence"]
 
 
@@ -422,6 +494,40 @@ def test_the_alter_statement_is_built_per_table_with_the_right_expression():
             f"ALTER TABLE {table.name} MODIFY TTL {table.ttl_expression()} + INTERVAL 40 DAY")
 
 
+def test_no_interval_can_exceed_the_derived_window_or_the_cap():
+    """THE HARD GUARD: a fallback or a bad parse cannot build a longer interval.
+
+    Asserted at the function that builds the ALTER, not only at its callers, so a future
+    code path cannot bypass it by calling `alter_sql` directly.
+    """
+    table = retention.RETENTION_TABLES[0]
+    assert "INTERVAL 39 DAY" in retention.alter_sql(table, 39, max_days=39)
+    with pytest.raises(ValueError, match="derived window"):
+        retention.alter_sql(table, 40, max_days=39)
+    with pytest.raises(ValueError, match="derived window"):
+        retention.alter_sql(table, 365, max_days=197)
+    # The 365-day cap holds even when no derivation bound is supplied.
+    with pytest.raises(ValueError):
+        retention.alter_sql(table, 366)
+
+    # And converge refuses before issuing a single ALTER.
+    ch = FakeCH({t.name: 7 for t in retention.RETENTION_TABLES})
+    with pytest.raises(ValueError, match="derived window"):
+        retention.converge(ch, 40, bound_days=39)
+    assert ch.commands == []
+
+
+def test_a_derivation_bounds_the_interval_even_when_the_request_is_longer():
+    """The derivation is the bound: 40 days cannot become a 365-day ALTER."""
+    m = retention.Measurement("default", 400 * GB, 200 * GB, 200 * GB, 100.0)
+    derivation = retention.derive(m, 40)
+    assert derivation["days"] == 40
+    ch = FakeCH({t.name: 7 for t in retention.RETENTION_TABLES})
+    with pytest.raises(ValueError, match="derived window is 40"):
+        retention.converge(ch, 365, derivation=derivation, bound_days=365)
+    assert ch.commands == []
+
+
 def test_the_module_only_ever_emits_MODIFY_TTL_statements():
     """LOWERING EXPIRES ROWS; it must never delete a partition out from under the operator.
 
@@ -479,12 +585,64 @@ def test_a_failed_alter_names_the_table_and_leaves_the_previous_value_in_place()
     assert other["effective_days"] == 7 and other["ok"] is True
 
 
+def test_an_unreadable_ttl_emits_no_alter_and_records_the_read_failure():
+    """NEVER CHOOSE A VALUE ON FAILURE. An unreadable TTL gets no ALTER at all."""
+    days: dict[str, int | None] = {t.name: 40 for t in retention.RETENTION_TABLES}
+    days["zeek_ssl"] = None                       # no table-level TTL clause to read
+    ch = FakeCH(days)
+    report = retention.converge(ch, 7)
+
+    assert not any("zeek_ssl" in sql for sql in ch.commands), \
+        "an unreadable TTL was ALTERed to a value nobody derived"
+    assert report["ok"] is False
+    assert report["unreadable"] == ["zeek_ssl"]
+    assert "zeek_ssl" in report["unreadable_reasons"]
+    row = next(r for r in report["tables"] if r["table"] == "zeek_ssl")
+    assert row["changed"] is False
+    assert row["ok"] is False
+    assert row["effective_days"] is None, "the receipt must not invent a TTL it could not read"
+    assert row["error"].startswith("NOT CHANGED: TTL unreadable")
+    assert "NOT CHANGED (TTL unreadable): zeek_ssl" in report["summary"]
+
+
+def test_a_parse_failure_on_one_table_does_not_stop_the_other_tables():
+    """One unreadable table is left alone; the other fifteen are still corrected."""
+    days: dict[str, int | None] = {t.name: 40 for t in retention.RETENTION_TABLES}
+    days["zeek_notice"] = None
+    ch = FakeCH(days)
+    report = retention.converge(ch, 9)
+
+    assert len(ch.commands) == len(retention.RETENTION_TABLES) - 1
+    assert all("zeek_notice" not in sql for sql in ch.commands)
+    assert {row["effective_days"] for row in report["tables"]
+            if row["table"] != "zeek_notice"} == {9}
+    untouched = next(r for r in report["tables"] if r["table"] == "zeek_notice")
+    assert untouched["changed"] is False and untouched["effective_days"] is None
+    assert "zeek_ssl" in report["changed"] and "zeek_ssh" in report["changed"]
+
+
 def test_parse_ttl_reads_day_week_and_month_units():
     assert retention.parse_ttl("... TTL ts + INTERVAL 35 DAY")[0] == 35
     assert retention.parse_ttl("... TTL ts + INTERVAL 5 WEEK")[0] == 35
     assert retention.parse_ttl("... TTL ts + INTERVAL 1 MONTH")[0] == 30
     assert retention.parse_ttl("... ENGINE = MergeTree()")[0] is None
     assert retention.parse_ttl("... TTL ts + INTERVAL 6 HOUR")[0] is None
+
+
+def test_parse_ttl_reads_the_normalised_form_clickhouse_stores():
+    """ClickHouse rewrites `INTERVAL 365 DAY` as `toIntervalDay(365)` in `create_table_query`.
+
+    Reading only the SQL spelling made every table this control had ever touched unreadable,
+    which is how a read failure turned into a re-ALTER (and then the 365-day cap) on every
+    worker start. Both spellings are the same TTL.
+    """
+    days, expression = retention.parse_ttl("... TTL ts + toIntervalDay(365)")
+    assert days == 365
+    assert expression == "ts + toIntervalDay(365)"
+    assert retention.parse_ttl("... TTL toDateTime(timestamp) + toIntervalDay(7)")[0] == 7
+    assert retention.parse_ttl("... TTL ts + toIntervalWeek(5)")[0] == 35
+    assert retention.parse_ttl("... TTL ts + toIntervalMonth(1)")[0] == 30
+    assert retention.parse_ttl("... TTL ts + toIntervalHour(6)")[0] is None
 
 
 # ── 6. destructive marking and the apply path ────────────────────────────────────────────────
@@ -821,6 +979,34 @@ def test_the_unmanaged_list_states_why_each_table_is_not_here():
 def test_every_managed_table_says_why_it_is_on_the_list():
     thin = [t.name for t in retention.RETENTION_TABLES if len(t.why.strip()) < 20]
     assert not thin, f"managed tables with no stated reason: {thin}"
+
+
+def test_the_ripple_inventory_never_claims_more_history_than_the_derived_window():
+    """The per-spec 7/30/60/90 constants describe the DESIGN, not this box's TTL.
+
+    `inventory(retention_days=...)` must cap every claim to what the tables actually keep,
+    or the Models card advertises 90 days of identity history on a deployment holding 30.
+    """
+    from weirvern.models import ripple_evidence
+
+    unscaled = {row["channel"]: row["retention_days"]
+                for row in ripple_evidence.inventory()}
+    assert unscaled["kerberos_volume"] == 90, "the design constant is still available"
+
+    rows = ripple_evidence.inventory(retention_days=30)
+    assert rows
+    assert max(row["retention_days"] for row in rows) <= 30
+    claims = {row["channel"]: row["retention_days"] for row in rows}
+    assert claims["kerberos_volume"] == 30
+    assert claims["ntlm_volume"] == 30
+    assert claims["smb_file_volume"] == 30
+    assert claims["dns_volume"] == 7
+
+    tight = ripple_evidence.inventory(retention_days=3)
+    assert all(row["retention_days"] <= 3 for row in tight)
+    spec = next(item for item in ripple_evidence.SPECS
+                if item.channel == "kerberos_volume")
+    assert ripple_evidence.effective_lookback_days(spec, 7, 3) == 3
 
 
 def test_the_documents_agree_with_the_control():
