@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.81 — 2026-11-19
+
+SETTINGS IS ALWAYS OPEN.
+
+- **Expand all and Collapse all are gone** (operator, 2026-11-19: "just remove the the expand and
+  collapse options and have it always be expanded"). The card headings are not controls any more:
+  clicking one used to hide the values, and a settings page that can be collapsed into looking
+  empty is a page that lies about itself.
+- **The counts stay**: each heading still says how much it holds ("Access and security · 6
+  settings"), so a card's size is readable at a glance without a control to open it.
+- The search box still narrows the stack and the jump-to-pending button still works; neither
+  depends on a collapsed state.
+
 ## 0.23.80 — 2026-11-19
 
 THE THIRD LANE: ZEEK, AND THE SOURCE FILTER SAYS WHAT IT MEANS.

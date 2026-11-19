@@ -1902,8 +1902,9 @@
           <input id="st-filter" type="search" placeholder="name or explanation"
                  autocomplete="off" spellcheck="false" aria-label="find a setting">
         </label>
-        <button id="st-expand" class="quiet" type="button">Expand all</button>
-        <button id="st-collapse" class="quiet" type="button">Collapse all</button>
+        <!-- NO EXPAND/COLLAPSE (operator, 2026-11-19: "just remove the the expand and collapse
+             options and have it always be expanded"). A control that can hide every value on the
+             page is a way to make a settings page look empty. -->
         <button id="st-stage-jump" class="quiet" type="button" hidden>
           Review pending <span id="st-stage-jump-count"></span>
         </button>

@@ -4430,10 +4430,9 @@ function settingsAccordion() {
     // NOT COLLAPSED BY DEFAULT (operator, 2026-11-18: "it looks empty till you expand all").
     // Ten collapsed cards with no values visible read as a settings page with no settings.
     h2.classList.add("acc");
-    h2.addEventListener("click", (e) => {
-      if (e.target.closest("button, a, input, select")) return;
-      card.classList.toggle("collapsed");
-    });
+    // ALWAYS EXPANDED (operator, 2026-11-19). The heading keeps its styling and its count badge;
+    // it is not a control, because a collapsed card hides the values the page exists to show.
+    card.classList.remove("collapsed");
   }
   // At boot the rows are not rendered yet; this paints the placeholders and loadSettings()
   // refreshes the counts once the values exist.
@@ -4462,15 +4461,6 @@ function settingsSummaries() {
 }
 
 /** Expand or collapse every settings card from the view header, one action. */
-function settingsSetAll(open) {
-  const view = document.getElementById("view-settings");
-  if (!view) return;
-  for (const card of view.querySelectorAll(":scope > .card")) {
-    if (card.id === "st-stage-card") continue;
-    card.classList.toggle("collapsed", !open);
-  }
-}
-
 /** Find a setting by its visible name or its help text, then open the card that holds it. */
 function settingsFilter(query) {
   const view = document.getElementById("view-settings");
@@ -5071,8 +5061,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }],
     ["st-stage-apply", () => applyStage().catch(showError)],
     ["st-stage-discard", async () => discardStage()],
-    ["st-expand", async () => settingsSetAll(true)],
-    ["st-collapse", async () => settingsSetAll(false)],
     ["st-stage-jump", async () => settingsJumpToStage()],
     // THE SHEET'S APPLY IS THE SAME APPLY (WSM-2): same STAGE, same plan, same write route,
     // same receipt. Nothing here is a second settings mechanism.
@@ -5427,10 +5415,7 @@ function installViewHeaders() {
       for (const h3 of view.querySelectorAll(":scope > .card > h3.acc")) {
         if (h3.dataset.accWired) continue;
         h3.dataset.accWired = "1";
-        h3.addEventListener("click", (e) => {
-          if (e.target.closest("button, a, input, select")) return;
-          h3.closest(".card")?.classList.toggle("collapsed");
-        });
+        h3.closest(".card")?.classList.remove("collapsed");   // always open, never a control
       }
     }
     // The header title was the ONE h2 we kept; demote any h2 in sheets/modals outside views too.

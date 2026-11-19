@@ -2819,8 +2819,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         ["st-section-access", "st-section-detection", "st-section-operations", "st-section-changes"]
           .every((id) => !!doc.getElementById(id)),
         "a settings section label is missing");
-  check("Settings offers expand and collapse for the card stack",
-        !!doc.getElementById("st-expand") && !!doc.getElementById("st-collapse"));
+  check("Settings has no expand/collapse control — every card is always open",
+        !doc.getElementById("st-expand") && !doc.getElementById("st-collapse")
+          && ![...doc.querySelectorAll("#view-settings .card")].some((c) => c.classList.contains("collapsed")));
   check("Settings has a jump to the one pending set",
         !!doc.getElementById("st-stage-jump"));
   const inputs = [...doc.querySelectorAll("#view-settings .setting-input")];
