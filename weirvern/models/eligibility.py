@@ -209,19 +209,19 @@ class Decision:
         """
         if self.state == STATE_ELIGIBLE:
             if self.calibrating:
-                return f"{STATE_ELIGIBLE} ({self.calibrating_text()})"
+                return f"{STATE_ELIGIBLE} ({self.reason or self.calibrating_text()})"
             return STATE_ELIGIBLE
         if self.state == STATE_EXCLUDED:
             return "calibrated, excluded from fusion (ML_FUSION_EXCLUDE)"
         if self.state == STATE_HELD:
             if self.calibrating:
-                return f"{self.calibrating_text()}; held for budget"
+                return f"{self.reason or self.calibrating_text()}; held for budget"
             if self.rate_with is None or self.rate_without is None:
                 return f"calibrated, held for budget ({self.reason})"
             return (f"calibrated, held for budget (fused {self.rate_with:.1%} with it vs "
                     f"{self.rate_without:.1%} without; budget {(self.budget or 0.0):.1%})")
         if self.state == STATE_CALIBRATING:
-            return self.calibrating_text()
+            return self.reason or self.calibrating_text()
         return f"not contributing: {self.reason}"
 
 
