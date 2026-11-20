@@ -258,6 +258,7 @@
         <thead><tr><th>what</th><th>detail</th><th>how long</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+      <div id="audit-table-pager" class="pager"></div>
       <p class="muted" id="audit-note"></p>
     </div>
   </section>
@@ -328,7 +329,7 @@
         </div>
       </div>
       <div class="info-text hidden" id="nw-info">
-  <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
+  <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The graph carries exactly two signal layers: <strong>fill = status</strong> (orange = alerted in this range, red = blocked, green = tracked, grey = observed network) and a <strong>solid ring = ripples</strong> in this window, coloured by band (slate low, cyan medium, violet high). No ring means no ripples measured for that host. A host's network scope is a word in the host table and the host sheet, not an outline on this map. Faint solid rings are hop distance from the reported IP TTL; no ring means the TTL was not measured, never that a host sits outside the network.</p>
   <p><strong>What writes it.</strong> Netflow edges from every weirling in the window; Zeek enriches them where it runs.</p>
   <p><strong>Last changed.</strong> Redraws with each refresh; the window pill above names the range.</p>
   <p><strong>Where to see it.</strong> Click a dot for that host's conversations, a line for its exact source → destination, and use the tables below when the answer needs to go into a ticket.</p>
@@ -363,6 +364,7 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div id="nw-detail-table-pager" class="pager"></div>
     </div>
 
     <div class="grid">
@@ -399,6 +401,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="nw-hosts-table-pager" class="pager"></div>
     </div>
 
     <div class="card">
@@ -416,6 +419,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="nw-table-pager" class="pager"></div>
     </div>
   </section>
 
@@ -553,6 +557,7 @@
         <tbody><tr><td colspan="6" class="muted">Choose a bar above — Talkers, Protocol mix or
           Top ports — to see the host pairs behind it.</td></tr></tbody>
       </table>
+      <div id="nf-detail-table-pager" class="pager"></div>
     </div>
   </section>
 
@@ -642,6 +647,7 @@
         <thead><tr><th>Host</th><th>Events</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+      <div id="zk-hosts-table-pager" class="pager"></div>
     </div>
   </section>
 
@@ -659,6 +665,9 @@
       <div class="view-head">
         <h2>Alerts <span class="muted">ripples first, model detections as corroboration — read-only</span> <button class="info-btn" data-info="rp-info" aria-label="what a ripple is and how its score is built" aria-expanded="false">i</button></h2>
         <div class="rp-head-right">
+          <!-- THE SAME COUNTERS THE MODEL LIST USES (operator, 2026-11-20), rendered by
+               renderBandCounters so geometry and band order cannot drift. A tile is a filter. -->
+          <div id="rp-sev" class="sev-tiles" aria-label="ripple criticality counters and filters"></div>
           <span id="rp-count" class="muted"></span>
           <!-- THE ML SIGNPOST (operator, 2026-11-20): the model detections are below the
                ripples and were invisible on a phone; this line is drawn from the SAME
@@ -750,6 +759,7 @@
         <thead><tr><th>Detected</th><th>Windows</th><th>count</th><th>Host</th><th>Hostname</th><th>Score</th><th>Severity</th><th>Models</th><th>Location</th><th>Matched rule</th><th>Why</th><th>Actions</th></tr></thead>
         <tbody></tbody>
       </table>
+      <div id="anomalies-table-pager" class="pager"></div>
 
       <!-- THE PHONE FORM OF THE MODEL LIST (2026-11-20). The 12-column table cannot fit a
            phone; below the breakpoint this renders one stacked card per detection using the
@@ -842,11 +852,22 @@
       <label>min bytes <input id="nz-minbytes" type="number" min="0" step="1000" placeholder="0"></label>
       <label>find <input id="nz-find" type="search" placeholder="host, segment or domain" autocomplete="off"></label>
     </div>
+    <!-- THE SHARED COUNTERS (operator, 2026-11-20): one component with the Alerts lists, fed by
+         the server-side alert join. A band tile narrows the feed; the chips add the second axis
+         (alert kind). "None" is the measured no-alert rows, never a criticality band. -->
+    <div class="controls nz-feed-filters">
+      <div id="nz-sev" class="sev-tiles" aria-label="feed criticality counters and filters"></div>
+      <div id="nz-kind" class="chips" role="group" aria-label="filter the feed by alert kind"></div>
+    </div>
     <table id="nz-feed">
-      <thead><tr><th></th><th>Last seen</th><th>Source</th><th>Host</th><th>Segment</th>
+      <thead><tr><th></th><th>Last seen</th><th>Source</th><th>Alert</th><th>Host</th><th>Segment</th>
         <th>Port / proto</th><th>DNS / service</th><th>Bytes</th><th>Flows</th></tr></thead>
       <tbody></tbody>
     </table>
+    <!-- THE PHONE FORM. The 10-column feed cannot fit 390px; below the breakpoint the table is
+         hidden and this card list carries the same fields, including the Alert control. -->
+    <div id="nz-cards" class="nz-cards"></div>
+    <div id="nz-feed-pager" class="pager"></div>
     <div id="nz-pager" class="pager"></div>
   </div>
   <div class="card">
@@ -1689,6 +1710,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="sl2-rules-pager" class="pager"></div>
       <p id="sl2-empty" class="empty"></p>
       <!-- RULES THAT CAN NEVER MATCH ARE RECORDS, NOT RULES. They stay findable in one
            disclosure with an explanation, so the real rules are not buried among database rows. -->

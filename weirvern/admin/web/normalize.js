@@ -11,6 +11,16 @@
 
   const SELECTED = new Map();   // key -> the row object it came from
   let ROWS = [];
+  // The alert join's own availability, from the payload. `false` means the column must say the
+  // join could not be read -- never "no alert", which would be a claim about the network.
+  let ALERT_AVAILABLE = true;
+  let ALERT_REASON = "";
+  // THE TWO FILTER AXES (operator, 2026-11-20). `BAND` is the criticality of the MATCHED ALERT
+  // (never a row with no alert); `KIND` is Ripple / Anomaly / None. They compose.
+  let BAND = "";
+  let KIND = "";
+  const BANDS = ["high", "medium", "low", "unclassified"];
+  const KINDS = ["", "Ripple", "Anomaly", "None"];
   let ENTRIES = [];
   let SIGS = [];                // ripple-pattern signatures: one exact value per host/channel
   let WINDOW = { offset: 0, hours: 24, older: false };   // where the feed is looking             // the active entries, so a row can find its own claim
@@ -100,9 +110,80 @@
     const btn = document.getElementById("nz-apply");
     if (!btn) return;
     const n = SELECTED.size;
-    btn.textContent = n ? `Normalize selected (${n})` : "Normalize selected";
+    // SELECTION ACROSS PAGES IS REAL, and it is STATED. A row selected on page 1 stays selected;
+    // the label says how many of the total are on the page that shows them, so nothing accumulates
+    // invisibly.
+    const shown = new Set(visibleRows().map(keyOf));
+    const onPage = [...SELECTED.keys()].filter((k) => shown.has(k)).length;
+    btn.textContent = n
+      ? `Normalize selected (${n}${onPage !== n ? `, ${onPage} on this page` : ""})`
+      : "Normalize selected";
     btn.disabled = n === 0;
     btn.setAttribute("aria-disabled", n === 0 ? "true" : "false");
+  }
+
+  /** The criticality of a row's MATCHED alert; "" for the measured no-alert row. */
+  function alertBand(r) {
+    if (String(r.alert_kind || "—") === "—") return "";
+    const band = String(r.alert_band || "").toLowerCase();
+    return BANDS.includes(band) ? band : "unclassified";
+  }
+
+  function visibleRows() {
+    return ROWS.filter((r) => {
+      if (BAND && alertBand(r) !== BAND) return false;
+      if (!KIND) return true;
+      if (KIND === "None") return String(r.alert_kind || "—") === "—";
+      return String(r.alert_kind || "").includes(KIND);
+    });
+  }
+
+  function resetFeedPage() {
+    if (typeof TABLE_PAGERS !== "undefined" && TABLE_PAGERS["nz-feed"]) {
+      TABLE_PAGERS["nz-feed"].page = 1;
+    }
+  }
+
+  function renderFeedFilterControls() {
+    const totals = {};
+    for (const r of ROWS) {
+      const band = alertBand(r);
+      if (band) totals[band] = (totals[band] || 0) + 1;
+    }
+    if (typeof renderBandCounters === "function") {
+      renderBandCounters("nz-sev", totals, BAND, (band) => {
+        BAND = BAND === band ? "" : band;
+        resetFeedPage();
+        renderFeed(ROWS);
+        if (typeof scheduleURLSync === "function") scheduleURLSync();
+      }, { empty: "No matched alert on this page to split by criticality." });
+    }
+    const box = document.getElementById("nz-kind");
+    if (box) {
+      box.replaceChildren(el("span", { class: "muted", text: "alert" }));
+      for (const kind of KINDS) {
+        const label = kind || "All";
+        const btn = el("button", {
+          class: "chip act", text: label,
+          attrs: { type: "button", "aria-pressed": KIND === kind ? "true" : "false",
+                   "aria-label": kind ? `show only ${kind === "None" ? "rows with no alert" : kind} rows` : "show every row" },
+        });
+        btn.addEventListener("click", () => {
+          KIND = kind;
+          resetFeedPage();
+          renderFeed(ROWS);
+          if (typeof scheduleURLSync === "function") scheduleURLSync();
+        });
+        box.appendChild(btn);
+      }
+    }
+    const count = document.getElementById("nz-count");
+    if (count) {
+      const shown = visibleRows().length;
+      const active = [BAND, KIND].filter(Boolean);
+      count.textContent = `${shown} of ${ROWS.length} rows` +
+        (active.length ? ` \u00b7 ${active.join(", ").toLowerCase()}` : "");
+    }
   }
 
   // BUCKETS: a way of reading the feed, never a filter. Every row stays in ROWS; grouping only
@@ -128,21 +209,71 @@
     }
   }
 
+  /** The Alert column's control: Ripple / Anomaly / both, or a measured em dash. */
+  function alertControl(r) {
+    if (!ALERT_AVAILABLE) {
+      return el("span", { class: "muted", text: "unavailable", attrs: {
+        "aria-label": `The alert join could not be read (${ALERT_REASON || "no reason reported"}). ` +
+               "That is not the same as no alert." } });
+    }
+    const kind = String(r.alert_kind || "—");
+    if (kind === "—") {
+      // AN EM DASH IS A MEASUREMENT: both sources were read and neither matched this row.
+      return el("span", { class: "muted", text: "—", attrs: {
+        "aria-label": "no alert matched this row in this window (measured, not unknown)" } });
+    }
+    const btn = el("button", {
+      class: "chip nz-alert-btn" + (r.alert_band ? " sev-" + r.alert_band : ""),
+      text: kind,
+      attrs: { type: "button", "aria-label": `open the ${kind} on ${r.src_addr} in Alerts` },
+    });
+    btn.addEventListener("click", (ev) => { ev.stopPropagation(); openAlertRef(r.alert_ref || {}); });
+    return btn;
+  }
+
+  /** Load the underlying alert and open its house sheet (ripple), or land on its Alerts list. */
+  function openAlertRef(ref) {
+    const kinds = ref.kinds || [];
+    if (kinds.includes("Ripple")) {
+      getJSON(`/api/ripples?hours=${encodeURIComponent(hours())}`).then((d) => {
+        const want = String(ref.ripple_window || "").slice(0, 13);
+        const row = ((d && d.ripples) || []).find((x) =>
+          String(x.host || "") === String(ref.host || "") &&
+          (!want || String(x.window_start || "").replace("T", " ").slice(0, 13) === want));
+        if (row && typeof openRippleSheet === "function") {
+          openRippleSheet(row, document.getElementById("nz-feed"));
+          return;
+        }
+        AN_FILTERS.host = ref.host || "";
+        showView("anomalies");
+      }).catch(() => { AN_FILTERS.host = ref.host || ""; showView("anomalies"); });
+      return;
+    }
+    // A model detection has no sheet of its own: its Alerts list row is the record.
+    AN_FILTERS.host = ref.host || "";
+    showView("anomalies");
+    if (typeof loadAnomalies === "function") loadAnomalies();
+  }
+
   function renderFeed(rows) {
     ROWS = rows || [];
     const body = document.querySelector("#nz-feed tbody");
     if (!body) return;
     body.replaceChildren();
+    const shown = visibleRows();
+    renderFeedFilterControls();
     if (!ROWS.length) {
       body.appendChild(el("tr", {}, [el("td", {
-        class: "muted", attrs: { colspan: 9 },
+        class: "muted", attrs: { colspan: 10 },
         text: "No traffic matches these filters. Widen the window or clear a filter.",
       })]));
+      const cards0 = document.getElementById("nz-cards");
+      if (cards0) cards0.replaceChildren();
       updateApply();
       return;
     }
     if (GROUP) { renderBuckets(body); updateApply(); return; }
-    for (const r of ROWS) {
+    for (const r of shown) {
       const k = keyOf(r);
       const box = el("input", {
         class: "nz-box", attrs: { type: "checkbox", "aria-label": `select ${k}` },
@@ -158,6 +289,7 @@
         el("td", {}, [box]),
         el("td", { class: "mono", text: (r.last_seen || "").replace("T", " ").slice(0, 19) }),
         el("td", { text: SOURCE_LABEL[r.source] || r.source }),
+        el("td", {}, [alertControl(r)]),
         el("td", { class: "mono", text: r.src_addr }),
         el("td", { class: "mono", text: r.dst_prefix || "—" }),
         el("td", { class: "mono", text: r.source === "dns" ? "—" : `${r.dst_port}/${r.proto}` }),
@@ -181,7 +313,48 @@
       });
       body.appendChild(tr);
     }
+    // THE SHARED PAGER: same control, same 25-row page size, same "rows 1-25 of N" line.
+    if (typeof paginateTable === "function") paginateTable("nz-feed");
+    renderFeedCards(shown);
     updateApply();
+  }
+
+  /** The phone form: the same fields as the table, with the Alert control and a 44px target. */
+  function renderFeedCards(rows) {
+    const host = document.getElementById("nz-cards");
+    if (!host) return;
+    host.replaceChildren();
+    if (!rows.length) {
+      host.appendChild(el("p", { class: "muted", text: "No traffic matches these filters." }));
+      return;
+    }
+    for (const r of rows) {
+      const card = el("div", { class: "nz-card" + (r.normalized ? " nz-normal" : "") }, [
+        el("div", { class: "nz-card-row" }, [
+          el("span", { class: "mono", text: r.src_addr }),
+          el("span", { class: "mono muted", text: (r.last_seen || "").replace("T", " ").slice(0, 16) }),
+        ]),
+        el("div", { class: "nz-card-row" }, [
+          el("span", { class: "muted", text: "alert" }),
+          el("span", {}, [alertControl(r)]),
+        ]),
+        el("div", { class: "nz-card-row" }, [
+          el("span", { class: "mono", text: r.source === "dns" ? (r.dns_name || "—")
+            : `${r.dst_prefix || "anywhere"} ${r.dst_port}/${r.proto}` }),
+          el("span", { class: "mono muted", text: `${fmtBytes(r.bytes)} · ${num(r.flows)} flows` }),
+        ]),
+      ]);
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.addEventListener("click", (ev) => {
+        if (ev.target.closest("button")) return;
+        openNormalizeSheet(r, card);
+      });
+      card.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openNormalizeSheet(r, card); }
+      });
+      host.appendChild(card);
+    }
   }
 
   function renderEntries(entries) {
@@ -332,15 +505,18 @@
         renderFeed([]); renderEntries([]); renderSignatures([], {});
         return;
       }
+      ALERT_AVAILABLE = data.alert_available !== false;
+      ALERT_REASON = data.alert_reason || "";
       renderFeed(data.rows || []);
       renderEntries(data.entries || []);
       renderSignatures(data.signatures || [], data.signature_summary || {});
       renderTimePager(data.window || { offset: page, hours: Number(hours()) });
+      // The count line is renderFeedFilterControls' (it carries the filter state); only the
+      // normalized total is appended here.
       const c = document.getElementById("nz-count");
       if (c) {
         const s = data.summary || {};
-        c.textContent = `${ROWS.length} row${ROWS.length === 1 ? "" : "s"} · ` +
-          `${s.active || 0} normalized`;
+        c.textContent += ` \u00b7 ${s.active || 0} normalized`;
       }
       setNote("Select the rows that are normal for this network, then press Normalize. " +
               "Normalizing adds them to the host's baseline — nothing is silenced.");
@@ -620,6 +796,21 @@ window.openNormalizeSheet = openNormalizeSheet;
   }
 
   window.loadNormalize = function () { wire(); return loadNormalize(); };
+  // URL STATE FOR THE FEED'S TWO FILTER AXES (operator, 2026-11-20). app.js owns sync/apply;
+  // these accessors are the one place the module's private state is read or written, so the URL
+  // cannot invent a band the feed does not know.
+  window.NZ_FEED = {
+    band: () => BAND,
+    kind: () => KIND,
+    apply: (band, kind) => {
+      const b = String(band || "").toLowerCase();
+      BAND = BANDS.includes(b) ? b : "";
+      const k = String(kind || "");
+      KIND = ["Ripple", "Anomaly", "None"].includes(k) ? k : "";
+      resetFeedPage();
+      renderFeed(ROWS);
+    },
+  };
   // The view is a reading surface: like Sluice, it loads when the tab is opened, not on the
   // 15-second refresh the status views ride.
   document.addEventListener("DOMContentLoaded", wire);

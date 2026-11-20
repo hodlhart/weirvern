@@ -172,6 +172,7 @@ async function main() {
 window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    BLOCKED_STATE, blOpenRuleById,
                    loadNetwork, drawGraph, computeLayout, settleGraph, nodeTitle, edgeTitle,
+                   anRenderSeverity, renderRipplePage,
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost, zkSetFilters,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange, renderStageMirror,
@@ -1879,8 +1880,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   window.openHost = realOpenHost;
 
   // ── the asset inventory pager ──────────────────────────────────────────────────────────
-  // The bug this guards: 245 hosts rendered as one scroll. Pages of 15 give a stable viewport,
-  // and the range must be stated -- "page 2 of 17" alone hides the total.
+  // The bug this guards: 245 hosts rendered as one scroll. ONE page size for the console
+  // (PAGER_PAGE_SIZE = 25), and the range must be stated -- "page 2 of 2" alone hides the total.
   const manyHosts = [];
   for (let i = 1; i <= 47; i++) {
     manyHosts.push({ addr: "192.0.2." + i, name: "", bytes: i * 1000, flows: i,
@@ -1895,13 +1896,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderAssets();
 
   check("the inventory shows only one page of rows at a time",
-        doc.querySelectorAll("#as-table tbody tr").length === 15,
+        doc.querySelectorAll("#as-table tbody tr").length === 25,
         `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
   check("the pager states the range AND the total",
-        needEl("as-pager").textContent.includes("1\u201315 of 47"),
+        needEl("as-pager").textContent.includes("rows 1\u201325 of 47"),
         needEl("as-pager").textContent);
   check("the pager states which page of how many",
-        needEl("as-pager").textContent.includes("page 1 of 4"),
+        needEl("as-pager").textContent.includes("page 1 of 2"),
         needEl("as-pager").textContent);
   check("'previous' is disabled on the first page",
         doc.querySelector("#as-pager .pager-btn").disabled === true);
@@ -1912,13 +1913,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a next arrow exists", !!nextBtn);
   nextBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   check("clicking next advances to page 2",
-        needEl("as-pager").textContent.includes("page 2 of 4"),
+        needEl("as-pager").textContent.includes("page 2 of 2"),
         needEl("as-pager").textContent);
   check("page 2 shows the NEXT range of hosts",
-        needEl("as-pager").textContent.includes("16\u201330 of 47"),
+        needEl("as-pager").textContent.includes("rows 26\u201347 of 47"),
         needEl("as-pager").textContent);
-  check("page 2 still shows exactly 15 rows",
-        doc.querySelectorAll("#as-table tbody tr").length === 15);
+  check("page 2 holds exactly the remaining rows",
+        doc.querySelectorAll("#as-table tbody tr").length === 22,
+        `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
   // Assert the rows CHANGED, not a specific address: the default sort is by anomalies then
   // bytes, so page 1 holds the highest-byte hosts and pinning a literal would encode an
   // assumption about the sort rather than about pagination (which is what is under test here).
@@ -1926,14 +1928,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the rows on page 2 differ from page 1",
         pageTwoFirst !== "192.0.2.47", `page2 first row = ${pageTwoFirst}`);
 
-  // The last page holds the remainder, not a full slice.
-  H.ASSETS_STATE.page = 4;
-  H.renderAssets();
-  check("the final page holds only the remaining rows",
-        doc.querySelectorAll("#as-table tbody tr").length === 2,
-        `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
+  // The last page holds the remainder, not a full slice -- and the range stops at the total.
   check("the final page's range stops at the total",
-        needEl("as-pager").textContent.includes("46\u201347 of 47"),
+        needEl("as-pager").textContent.includes("26\u201347 of 47"),
         needEl("as-pager").textContent);
   check("'next' is disabled on the last page",
         Array.from(doc.querySelectorAll("#as-pager .pager-btn"))
@@ -2156,6 +2153,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           ripple_count: 0, ripple_worst: "", ripple_families: [],
           anomaly_count: 0, model_worst: "" },
         { id: "198.51.100.9", name: "quiet", degree: 1, bytes: 100,
+          network_scope: "unclassified",
           ripple_count: 0, ripple_worst: "", ripple_families: [],
           anomaly_count: 0, model_worst: "" },
       ],
@@ -2222,12 +2220,52 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && !!doc.querySelector("#nw-graph .node-ripple-ring.rp-sev-high")
           && !!doc.querySelector("#nw-graph .node-ripple-ring.rp-sev-low"),
           `${rippleNodes.length} ripple nodes`);
+    // TWO SIGNAL LAYERS, AND NO DASH ANYWHERE (operator, 2026-11-20: "you have three icons
+    // that are basically orange ... unclassified, alerted and ripple"). Scope is a word in the
+    // host table/sheet, never an outline on this map.
+    const graphMarks = [...doc.querySelectorAll("#nw-graph *")];
+    const dashes = graphMarks.filter((el2) => {
+      const style = el2.getAttribute("style") || "";
+      const css = window.getComputedStyle(el2).strokeDasharray || "none";
+      return /dasharray/.test(style) || (css !== "none" && css !== "");
+    });
+    check("no graphic in the Network map uses a dash — the graph carries two signal layers only",
+          dashes.length === 0,
+          dashes.map((d) => d.tagName + ":" + (d.getAttribute("style") || "")).join(" | ").slice(0, 200));
+    const quietNode = [...doc.querySelectorAll("#nw-graph g.node")]
+      .find((n) => (n.getAttribute("aria-label") || "").includes("198.51.100.9")
+        || n.textContent.includes("198.51.100.9"));
+    check("a host with zero ripples draws NO ring at all (no invented signal)",
+          !!quietNode && !quietNode.querySelector(".node-ripple-ring"),
+          quietNode ? `${quietNode.querySelectorAll("circle").length} circles` : "quiet node not drawn");
+    check("an unclassified host renders as an ORDINARY node — scope is a word, not a mark",
+          !!quietNode
+          && !/unclassified/i.test(quietNode.getAttribute("class") || "")
+          && !/dasharray/i.test(quietNode.querySelector("circle").getAttribute("style") || ""),
+          quietNode ? quietNode.getAttribute("class") : "quiet node not drawn");
+    const cssText = [...doc.querySelectorAll("style")].map((s) => s.textContent).join("\n");
+    const ringRules = ["high", "medium", "low"].map((band) => {
+      const m = cssText.match(new RegExp(
+        `\\.node-ripple-ring\\.rp-sev-${band}\\s*\\{\\s*stroke:\\s*([^;]+);`));
+      return m ? m[1].trim() : "";
+    });
+    check("the three ripple bands use three distinct COOL tokens, never the alerted orange",
+          new Set(ringRules).size === 3 && ringRules.every((v) => v.startsWith("var(--series-")),
+          ringRules.join(" | "));
+    const legendText = needEl("nw-legend").textContent.replace(/\s+/g, " ");
+    check("the legend lists the two signal layers and no scope outline",
+          /alerted: anomaly in this range/.test(legendText)
+          && /solid ring = ripples in this window/.test(legendText)
+          && !/unclassified/i.test(legendText)
+          && !/dashed/i.test(legendText),
+          legendText.slice(0, 320));
     check("the node's accessible name names the ripple score and families",
           rippleNodes.some((n) => (n.getAttribute("aria-label") || "").includes("ripple: score 7.11")
             && (n.getAttribute("aria-label") || "").includes("conn / dns / tls")),
           rippleNodes.map((n) => n.getAttribute("aria-label")).join(" | ").slice(0, 220));
-    check("the graph legend explains the ripple ring",
-          /ripple ring on this host/.test(needEl("nw-legend").textContent),
+    check("the graph legend names the solid ripple ring and no scope outline",
+          /solid ring = ripples in this window/.test(needEl("nw-legend").textContent)
+          && !/unclassified/i.test(needEl("nw-legend").textContent),
           needEl("nw-legend").textContent.slice(0, 240));
 
     // A CHIP IS A DOOR TO THE HOST SHEET, and it must not trigger the row's own click.
@@ -2514,6 +2552,123 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     fetchOverride = null;
     H.clearGetCache();
     H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
+  }
+
+  // ── THE UNIVERSAL PAGER, AND THE TWO COUNTER ROWS (2026-11-20) ───────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const peerCount = 40;
+    const PAGER_GRAPH = {
+      available: true, hours: 24, total_edges: 400, truncated: true, status_available: true,
+      ripple_available: true, severity_bands: {}, coverage: { available: true,
+        from: "2026-11-17T05:30:00", to: "2026-11-20T09:00:00" },
+      nodes: [{ id: "203.0.113.42", name: "hub", degree: peerCount, bytes: 90000 }].concat(
+        Array.from({ length: peerCount }, (_, i) => ({
+          id: `192.0.2.${i + 1}`, name: `peer${i}`, degree: 1, bytes: 1000 - i,
+        }))),
+      edges: Array.from({ length: peerCount }, (_, i) => ({
+        source: "203.0.113.42", target: `192.0.2.${i + 1}`,
+        bytes: 1000 - i, flows: 2, ports: [443],
+      })),
+    };
+    H.ASSETS_STATE.graph = PAGER_GRAPH;
+    H.ASSETS_STATE.tracked = [];
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.rippleFilter = "all";
+    H.renderNetwork();
+    await sleep(30);
+    const visibleRows = (sel) => [...doc.querySelectorAll(sel)].filter((r) => !r.hidden);
+    check("the edges table pages at 25 rows, not one endless scroll",
+          visibleRows("#nw-table tbody tr").length === 25
+          && doc.querySelectorAll("#nw-table tbody tr").length === peerCount,
+          `${visibleRows("#nw-table tbody tr").length} visible of ${doc.querySelectorAll("#nw-table tbody tr").length}`);
+    check("the edges pager states rows and the server cap honestly",
+          /first 25 of 400 \(server cap\)/.test(needEl("nw-table-pager").textContent)
+          && /page 1 of 2/.test(needEl("nw-table-pager").textContent),
+          needEl("nw-table-pager").textContent);
+    const nwNext = [...doc.querySelectorAll("#nw-table-pager .pager-btn")]
+      .find((b) => /Next/.test(b.textContent));
+    check("the edges pager has a Next control", !!nwNext);
+    if (nwNext) { nwNext.click(); await sleep(20); }
+    check("Next advances the edges table and the count line follows",
+          /page 2 of 2/.test(needEl("nw-table-pager").textContent)
+          && /first 40 of 400 \(server cap\)/.test(needEl("nw-table-pager").textContent)
+          && visibleRows("#nw-table tbody tr").length === 15
+          && visibleRows("#nw-table tbody tr")[0].textContent.includes("192.0.2.26"),
+          needEl("nw-table-pager").textContent);
+
+    H.showNodeDetail(PAGER_GRAPH.nodes[0]);
+    await sleep(30);
+    const detailTotal = doc.querySelectorAll("#nw-detail-table tbody tr").length;
+    check("the connection-detail table pages the same way",
+          detailTotal >= peerCount
+          && visibleRows("#nw-detail-table tbody tr").length === 25
+          && /rows 1\u201325 of \d+/.test(needEl("nw-detail-table-pager").textContent),
+          `${visibleRows("#nw-detail-table tbody tr").length} visible; ${needEl("nw-detail-table-pager").textContent}`);
+    const detailNext = [...doc.querySelectorAll("#nw-detail-table-pager .pager-btn")]
+      .find((b) => /Next/.test(b.textContent));
+    if (detailNext) { detailNext.click(); await sleep(20); }
+    check("...and its Next pages forward, with Previous enabled at page 2",
+          /page 2 of 2/.test(needEl("nw-detail-table-pager").textContent)
+          && visibleRows("#nw-detail-table tbody tr").length === detailTotal - 25
+          && [...doc.querySelectorAll("#nw-detail-table-pager .pager-btn")]
+               .find((b) => /Previous/.test(b.textContent)).disabled === false,
+          needEl("nw-detail-table-pager").textContent);
+
+    // ── THE COUNTERS: one helper, two lists, clickable bands ──────────────────────────────
+    const RIPPLE_PAGE = {
+      available: true, window_hours: 24, severity_bands: { low: {}, medium: {}, high: {} },
+      ripples: [
+        { host: "203.0.113.42", window_start: "2026-11-20T08:00:00", score: 7.1,
+          severity: "high", families: ["conn"], explanation: "high one", evidence: [] },
+        { host: "203.0.113.1", window_start: "2026-11-20T07:00:00", score: 4.2,
+          severity: "medium", families: ["dns"], explanation: "medium one", evidence: [] },
+        { host: "192.0.2.40", window_start: "2026-11-20T06:00:00", score: 3.1,
+          severity: "low", families: ["flow"], explanation: "low one", evidence: [] },
+      ],
+    };
+    H.renderRipplePage(RIPPLE_PAGE);
+    H.anRenderSeverity({ available: true, counts: [
+      { band: "high", count: 2 }, { band: "medium", count: 1 }, { band: "unclassified", count: 1 },
+    ] });
+    const anTiles = [...doc.querySelectorAll("#an-sev .tile")];
+    const rpTiles = [...doc.querySelectorAll("#rp-sev .tile")];
+    check("both criticality counter rows render from the same markup and classes",
+          anTiles.length === 3 && rpTiles.length === 3
+          && anTiles[0].className === rpTiles[0].className
+          && anTiles[0].querySelector(".v").className === rpTiles[0].querySelector(".v").className
+          && anTiles[0].parentElement.classList.contains("sev-tiles")
+          && rpTiles[0].parentElement.classList.contains("sev-tiles"),
+          `tiles ${anTiles.length}/${rpTiles.length}; classes ${anTiles[0] ? anTiles[0].className : "?"}/${rpTiles[0] ? rpTiles[0].className : "?"}; parents ${doc.getElementById("an-sev").className}/${doc.getElementById("rp-sev").className}`);
+
+    const highTile = rpTiles.find((t) => t.textContent.includes("high"));
+    check("a ripple band tile is a pressed-capable button",
+          !!highTile && highTile.tagName === "BUTTON"
+          && highTile.getAttribute("aria-pressed") === "false",
+          highTile ? highTile.outerHTML.slice(0, 120) : "no high tile");
+    if (highTile) { highTile.click(); }
+    await sleep(20);
+    check("clicking a ripple band narrows the list and the count sentence says so",
+          doc.querySelectorAll("#ripples-table tbody tr").length === 1
+          && /1 of 3 alerts/.test(needEl("rp-count").textContent)
+          && /high/.test(needEl("rp-count").textContent)
+          && doc.querySelector('#rp-sev .tile.active').getAttribute("aria-pressed") === "true",
+          needEl("rp-count").textContent);
+    H.syncURL();
+    check("...and the ripple band rides the URL",
+          /al\.band=high/.test(window.location.hash), window.location.hash.slice(0, 120));
+    const highActive = doc.querySelector('#rp-sev .tile.active');
+    if (highActive) { highActive.click(); }
+    await sleep(20);
+    check("clicking the active band again clears the filter",
+          doc.querySelectorAll("#ripples-table tbody tr").length === 3
+          && /3 alerts/.test(needEl("rp-count").textContent)
+          && !doc.querySelector("#rp-sev .tile.active"),
+          needEl("rp-count").textContent);
+    H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.tracked = [];
+    H.renderNetwork();
   }
 
   // ── blocked / alerted graph readings ─────────────────────────────────────────────────────

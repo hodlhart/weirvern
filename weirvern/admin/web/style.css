@@ -515,6 +515,7 @@ td.rp-sevcell { white-space: nowrap; }
 .rp-legend-note { flex: 1 1 220px; min-width: 0; }
 /* THE ML SIGNPOST beside the ripple count: a quiet chip, not a second heading. */
 .rp-head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.rp-head-right .sev-tiles { justify-content: flex-start; }
 .rp-ml { height: auto; min-height: 24px; padding: 3px 9px; border: 1px solid var(--border-solid);
   background: var(--surface-2); color: var(--muted); font-size: var(--fs-1); font-weight: 400; }
 .rp-ml:hover { color: var(--fg); border-color: var(--accent); }
@@ -741,6 +742,7 @@ tr.sl-picked { background: var(--panel2); }
 .occ .review-acts { margin-top: 0; }
 tr.an-exp td { background: var(--panel2); }
 .sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 92px;
+  min-height: 44px;
   padding: 10px 14px; background: var(--surface-2); border: 0;
   border-radius: 8px; box-shadow: var(--ring); cursor: pointer; text-align: left; color: var(--fg);
   /* SAME DEFECT AS THE FLEET TILES (operator, 2026-10-19: "anomalies has the same issue as
@@ -984,8 +986,8 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 .legend-item { display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--fs-2); color: var(--muted); font-family: var(--mono); }
 .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-/* The hop-ring legend swatch is a ring, not a fill. */
-.legend-swatch.ring { background: none; border: 1px dashed var(--border); border-radius: 50%; }
+/* The hop-ring legend swatch is a ring, not a fill — SOLID, because dash means unclassified. */
+.legend-swatch.ring { background: none; border: 1px solid var(--border); border-radius: 50%; }
 
 .bar-row { display: grid; grid-template-columns: 160px 1fr 64px;
   align-items: center; gap: 10px; margin: 5px 0; }
@@ -1107,13 +1109,18 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .graph .node text { font-family: var(--mono); font-size: var(--fs-1); fill: var(--muted); }
 .graph .node.selected circle { stroke: var(--accent); stroke-width: 3; }
 .graph .node.selected text { fill: var(--fg); }
-/* THE RIPPLE HALO (2026-11-20). A second circle under the node, in the same severity tokens
-   the Ripples tab uses; the title/aria-label carries the score and families, so the ring is
-   never the only encoding. */
-.graph .node .node-ripple-ring { stroke-width: 2; stroke-dasharray: 3 2; opacity: .95; }
-.graph .node .node-ripple-ring.rp-sev-high { stroke: var(--sev-high); }
-.graph .node .node-ripple-ring.rp-sev-medium { stroke: var(--sev-medium); }
-.graph .node .node-ripple-ring.rp-sev-low { stroke: var(--muted); }
+/* THE RIPPLE HALO (2026-11-20; palette corrected the same day). A second circle under the
+   node. SOLID, and COOL: the graph's FILLS own the status hues (blocked red, alerted orange,
+   tracked green, observed grey), so a ring that shares orange/yellow reads as an alerted node
+   (operator: "you have three icons that are basically orange ... unclassified, alerted and
+   ripple"). Slate -> cyan -> violet keeps the band ORDER without borrowing a fill's hue.
+   The band word is in the aria-label and title, so colour is never the only encoding. */
+.graph .node .node-ripple-ring { stroke-width: 2; stroke-dasharray: none; opacity: .95; }
+.graph .node .node-ripple-ring.rp-sev-high { stroke: var(--series-4); }
+.graph .node .node-ripple-ring.rp-sev-medium { stroke: var(--series-7); }
+.graph .node .node-ripple-ring.rp-sev-low { stroke: var(--series-6); }
+/* An explicitly defined fallback for a band the mapper does not know: a solid muted ring. */
+.graph .node .node-ripple-ring.rp-sev-unknown { stroke: var(--muted); }
 /* The Network table's Ripple column. A cell with no ripple is EMPTY, never a zero chip. */
 .nw-ripple-cell { white-space: nowrap; width: 92px; }
 .nw-ripple-chip.clickable { cursor: pointer; }
@@ -1124,10 +1131,9 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * drag from scrolling the page instead. */
 .graph .node { cursor: grab; touch-action: none; }
 .graph .node:active { cursor: grabbing; }
-/* Hop-distance rings (drawn only when TTL gave more than one class). The label carries a
- * panel-coloured halo and rides on top of the nodes: drawn bare underneath, a node sat on
- * top of "0 hops" on the settled demo map and it read as "hops". */
-.graph .ring { stroke: var(--border); stroke-dasharray: 4 6; opacity: 0.7; }
+/* Hop-distance rings (drawn only when TTL gave more than one class). They are SOLID and faint:
+ * dash is reserved for the unclassified scope, so a hop ring cannot be mistaken for one. */
+.graph .ring { stroke: var(--border); opacity: 0.55; }
 .graph .ring-label { fill: var(--muted); font-family: var(--mono); font-size: var(--fs-1);
   paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
 
@@ -1148,7 +1154,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .lg-trail-wrap { max-height: 60vh; overflow: auto; margin-top: 6px; }
 .lg-trail-wrap thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .pager-btn { font-family: var(--mono); background: var(--panel2); color: var(--fg);
-  border: 1px solid var(--border); }
+  border: 1px solid var(--border); min-height: 44px; min-width: 44px; padding: 0 12px; }
 .pager-btn:hover:not(:disabled) { border-color: var(--accent); }
 .pager-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
 .pager-info { font-family: var(--mono); font-size: var(--fs-2); color: var(--muted); }
@@ -1859,8 +1865,9 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   .net-peer-meta { grid-column: 2 / -1; white-space: normal; }
 }
 
-.legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }
-.legend-swatch.normalized { background: transparent; border: 1.5px dashed var(--muted); border-radius: 50%; }
+.legend-swatch.solidring { background: transparent; border: 2px solid var(--series-4); border-radius: 50%; }
+.legend-swatch.noring { background: transparent; border: 0; color: var(--muted); font-size: var(--fs-1); }
+.legend-swatch.normalized { background: transparent; border: 1.5px solid var(--series-9); border-radius: 50%; }
 
 /* ── the Network investigation surfaces ─────────────────────────────────────────────────── */
 .nw-filters { display: flex; flex-direction: column; gap: 2px; }
@@ -1869,8 +1876,19 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .nw-sig-cell { white-space: nowrap; }
 .chip.nw-sig { font-size: var(--fs-1); padding: 2px 8px; }
 .nw-worst-cell { white-space: nowrap; }
+/* THE NORMALIZE FEED'S ALERT COLUMN AND PHONE FORM (operator, 2026-11-20). */
+.nz-alert-btn { min-height: 44px; }
+.nz-feed-filters { align-items: flex-start; }
+.nz-cards { display: none; }
+.nz-card { border-top: 1px solid var(--border); padding: 10px 0; }
+.nz-card-row { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; min-height: 32px; }
+@media (max-width: 720px) {
+  #nz-feed { display: none; }
+  .nz-cards { display: block; }
+}
 .graph .node .node-normalized-ring {
-  stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: 0.85;
+  stroke: var(--series-9); stroke-width: 1.5; opacity: 0.85;
 }
 
 /* The host sheet: one section per question, with the window stated once at the top. */
