@@ -132,6 +132,6 @@ images:
   # image that is now running -- otherwise two people roll the same cluster and the pin names
   # whichever build finished last.
   - name: weirvern-worker
-    newTag: "sha-db0f5ba"
+    newTag: "sha-ca1d696"
   - name: weirvern-scanner
     newTag: "0.14.14"
