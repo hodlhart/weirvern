@@ -146,7 +146,7 @@
      sub-menus -- nothing collapses, every tab stays one click away). -->
 <nav id="tabs">
   <div class="tab-group" data-group="operations">
-    <button class="tab" data-view="anomalies">Anomalies</button>
+    <button class="tab" data-view="anomalies">Ripples</button>
     <button class="tab" data-view="normalize">Normalize</button>
   </div>
   <div class="tab-group" data-group="network">
@@ -553,19 +553,51 @@
     </div>
   </section>
 
-  <!-- ── Anomalies ────────────────────────────────────────────────────── -->
-  <!-- ── Identity: what each host IS, from traffic already seen ─────────── -->
-
+  <!-- ── Ripples (the anomaly page) ──────────────────────────────────────── -->
+  <!-- THE OPERATOR'S DIRECTION (2026-11-19): "the anomaly page is actually the ripples". A
+       ripple is the thing an operator reads: independent families that moved together, on one
+       host, in one hour, against that host's own history. The model's fused score is
+       CORROBORATION below, never the verdict and never the primary list. -->
 
   <section id="view-anomalies" class="view">
     <div class="card">
-      <!-- The criticality tiles ride the TITLE ROW, top right (the operator, 2026-10-16: "move ...
-           to the top right of the chart, not under the min score"). They are the page's summary,
-           so they sit with the page's heading, not inside the filter controls. -->
       <div class="view-head">
-        <h2>All anomalies <button class="info-btn" data-info="an-info" aria-label="how a row is scored and what the chips do" aria-expanded="false" title="how a row is scored and what the chips do">i</button></h2>
+        <h2>Ripple evidence <button class="info-btn" data-info="rp-info" aria-label="what a ripple is and how its score is built" aria-expanded="false">i</button></h2>
+        <span id="rp-count" class="muted"></span>
+      </div>
+      <p class="muted" id="rp-note">Reading the ripple evidence…</p>
+      <!-- THE EMPTY STATE IS THE COMMON CASE TODAY, so it is a real block: which scales the
+           engine can measure, how many baseline windows exist, and what the next scale needs.
+           It is filled from the payload's `baseline` report, never from a hardcoded scale list. -->
+      <div id="rp-empty" class="rp-empty hidden"></div>
+      <table id="ripples-table">
+        <colgroup>
+          <col style="width: 132px"><col style="width: 150px"><col style="width: 66px">
+          <col><col style="width: 132px">
+        </colgroup>
+        <thead><tr><th>Host</th><th>Window</th><th>Score</th><th>What moved</th><th>Families</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="rp-pager" class="pager"></div>
+      <div class="info-text hidden" id="rp-info">
+  <p><strong>What it is.</strong> A ripple is one host and one hour in which several independent measurements moved together, each against that host's own trailing history. The sentence on the row names the channel, the value, the baseline median it was ranked against, the scale, and the p-value over the number of baseline windows behind it.</p>
+  <p><strong>What the score is.</strong> The joint surprise of the supporting families: the sum of -log10(p), one p-value per family. Two families at 0.01 score 4.0; one family at 0.001 scores 3.0. It is a ranking bar, not a probability, and this page never pages on it.</p>
+  <p><strong>What writes it.</strong> The ripple evidence pass, every hour. The grouping is deterministic: a ripple is not stored, it is read from the evidence rows it is made of.</p>
+  <p><strong>Where to see it.</strong> Click any row for one line per channel with its scale, family, value, baseline and p-value — then the host's model anomalies in the same window, labelled as corroboration.</p>
+</div>
+    </div>
+
+    <!-- MODEL ANOMALIES: still here, still reachable, and now explicitly secondary. This is the
+         pre-existing queue (filters, review, evidence drill, episodes, detectors) unchanged;
+         only its place on the page and its framing moved. -->
+    <div class="card">
+      <div class="view-head">
+        <h2>Model anomalies <span class="muted">corroboration, not the finding</span>
+          <button class="info-btn" data-info="an-info" aria-label="how a model anomaly is scored and what the chips do" aria-expanded="false">i</button>
+        </h2>
         <div id="an-sev" class="sev-tiles"></div>
       </div>
+      <p class="muted" id="an-queue-note">The model's fused-score detections across this window. A model alone is usually noise; these corroborate a ripple, and they are never the ripple itself.</p>
       <div class="controls">
         <!-- THE DEFAULT IS THE FULL OBSERVATION LIST, which is what the Network graph's
              "alerted" badge counts. Incidents and Leads are opt-in views over the same data;
@@ -582,9 +614,9 @@
         <span id="an-filters"></span>
         <span id="an-count-line" class="muted"></span>
       </div>
-      <p class="muted" id="an-queue-note"></p>
       <div class="info-text hidden" id="an-info">
   <p><strong>What it is.</strong> Host-windows the ensemble flagged: the score that crossed the line, and which detectors agreed on it — one model alone is usually noise, so agreement is the signal worth reading first.</p>
+  <p><strong>Why it is here.</strong> These are corroboration for the ripples above. A model anomaly can support a ripple; it cannot create one, outrank one, or replace its measured evidence.</p>
   <p><strong>What writes it.</strong> The detector ensemble, every scan window.</p>
   <p><strong>Last changed.</strong> New rows land as windows complete; a reviewed row keeps its verdict.</p>
   <p><strong>Reading a row.</strong> The count is just the number of distinct windows with the same verdict. Click the count to list every occurrence.</p>
@@ -630,8 +662,27 @@
           <tbody></tbody>
         </table>
         <p class="muted" id="an-detectors-note"></p>
-      </div></div>
+      </div>
+    </div>
   </section>
+
+<!-- THE RIPPLE SHEET. The house sheet (sheets.js), not a new surface: one scrim, one Escape,
+     focus returns to the row that opened it. It shows the evidence the ripple was grouped from
+     first, then the model anomalies in the same window, explicitly labelled corroboration. -->
+<div class="card sheet hidden" id="rp-detail-card" tabindex="-1" role="dialog" aria-modal="true"
+     aria-labelledby="rp-detail-title" aria-hidden="true">
+  <h2><span id="rp-detail-title">Ripple evidence</span>
+    <span id="rp-detail-id" class="muted"></span>
+    <button id="rp-detail-close" class="sheet-close" type="button"
+            aria-label="close this panel (Escape also closes)">Close</button></h2>
+  <p class="muted" id="rp-detail-note">One host and one hour. The evidence is the finding; the model anomalies below it are corroboration.</p>
+  <div id="rp-detail-body"></div>
+  <div class="controls sheet-actions">
+    <button id="rp-detail-host" class="quiet" type="button">Open host</button>
+    <button id="rp-detail-cancel" class="quiet" type="button">Close</button>
+  </div>
+</div>
+
 <!-- THE NORMALIZE TAB (operator, 2026-11-19): a feed of traffic the operator reads like a log,
      selects rows from, and marks as normal. Normal traffic joins the host's adaptive baseline
      permanently, so the models learn it; nothing here silences an alert. -->

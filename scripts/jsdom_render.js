@@ -182,6 +182,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      wlNicFacts, wlNicRows, wlPlans, wlShowNicSettings, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
+                     loadRipplePage, openRippleSheet, RIPPLES_STATE, rippleWindowOverlap,
                      loadHost, loadHostPage, loadEvidence, loadAudit, loadDetectors,
                      registryHighlight, sluiceHighlightRule,
                    NF_FILTERS, nfSetFilter, nfRemoveChip,
@@ -1500,17 +1501,26 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // PHASE 1: the Ripples card reads its own route. The fixture is a real two-channel ripple
     // with the sentence the server builds, so the check below proves the card renders the
     // explanation and the channel list rather than an empty table.
-    ["/api/ripples", () => ({
+    [ "/api/ripples", () => ({
       available: true, reason: "", window_hours: 24, count: 1,
       model_version: "ripple-evidence-1",
+      monitored_networks: ["198.51.100.0/24"],
       ripples: [{
         host: "198.51.100.5", window_start: "2026-01-01T00:00:00",
         window_end: "2026-01-01T01:00:00", score: 2.41, combined_p: 0.0039,
         channels: ["conn_volume", "dns_volume"],
+        families: ["conn", "dns"], single_family: false,
         explanation: "ripple on 198.51.100.5 at 2026-01-01 00:00 UTC: " +
           "conn_volume 41 vs median 5 (p=0.012, rose at 1h); " +
           "dns_volume 60 vs median 6 (p=0.006, rose at 1h).",
-        evidence: [],
+        evidence: [
+          { channel: "conn_volume", family: "conn", scale: "1h", value: 41,
+            baseline_median: 5, p_value: 0.012, p_floor: 0.001996, at_floor: false,
+            baseline_short: false, sample_count: 500, direction: "rose" },
+          { channel: "dns_volume", family: "dns", scale: "1h", value: 60,
+            baseline_median: 6, p_value: 0.006, p_floor: 0.001996, at_floor: false,
+            baseline_short: false, sample_count: 500, direction: "rose" },
+        ],
       }],
     })],
     ["/api/models/shadow", () => ({ available: true, rows: [
@@ -2411,6 +2421,170 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           text.slice(0, 200));
     check("...and the channel list beside it",
           /conn_volume, dns_volume/.test(text), text.slice(0, 200));
+  }
+
+
+  // ── THE RIPPLES PAGE (phase 2): ripples first, model anomalies as corroboration ──────────────
+  //
+  // The operator's direction: "the anomaly page is actually the ripples". These checks drive the
+  // shipping renderer against a real payload shape. They are deliberately end-to-end: the same
+  // /api/ripples response that the Models card reads must draw this page, and the anomaly queue
+  // must still be on the same view, below it, labelled corroboration.
+  {
+    H.showView("anomalies");
+    H.clearGetCache();
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 160));
+
+    const tab = [...doc.querySelectorAll("#tabs .tab")]
+      .find((t) => t.dataset.view === "anomalies");
+    check("the tab is labelled Ripples and keeps the stable view id",
+          !!tab && tab.textContent.trim() === "Ripples" && !!doc.getElementById("view-anomalies"),
+          tab ? tab.textContent.trim() : "no tab");
+    const heading = doc.querySelector("#view-anomalies .view-title");
+    check("the view heading says Ripples", !!heading && /Ripples/.test(heading.textContent),
+          heading ? heading.textContent : "no heading");
+
+    const rows = [...doc.querySelectorAll("#ripples-table tbody tr")];
+    const text = rows.map((r) => r.textContent).join(" ");
+    check("the page renders the ripple as an explanation sentence, not a bare score",
+          rows.length === 1 && /198\.51\.100\.5/.test(text)
+          && /conn_volume 41 vs median 5/.test(text) && /dns_volume 60 vs median 6/.test(text),
+          `rows=${rows.length} text=${text.slice(0, 180)}`);
+    check("...with the contributing families on the row", /conn \/ dns/.test(text),
+          text.slice(0, 180));
+
+    const anRows = doc.querySelectorAll("#anomalies-table tbody tr");
+    check("the old model-anomaly table is still reachable on the same page", anRows.length === 3,
+          `${anRows.length} rows`);
+    check("...and its section is labelled corroboration, not the finding",
+          /corroboration, not the finding/.test(needEl("view-anomalies").textContent),
+          needEl("view-anomalies").textContent.replace(/\s+/g, " ").slice(0, 220));
+  }
+
+  // THE EMPTY STATE IS THE COMMON CASE TODAY. It must name the scales and the baseline counts,
+  // not print "no results"; and it must describe the window the payload returned (6h), which
+  // proves the view is not carrying its own hardcoded 24.
+  {
+    fetchOverride = (u) => {
+      if (!String(u).includes("/api/ripples")) return null;
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({
+        available: true, reason: "", window_hours: 6, count: 0,
+        model_version: "ripple-evidence-1",
+        ripples: [], monitored_networks: ["198.51.100.0/24"],
+        evidence: { rows: 12, monitored_rows: 12, subjects: 3, baseline_short_rows: 0 },
+        baseline: {
+          "1h": { baseline_windows: 167, minimum_windows: 30, scale_seconds: 3600,
+                  lookback_days: 7, required_lookback_days: 2, p_floor: 0.005952,
+                  usable: true, reason: "" },
+          "6h": { baseline_windows: 27, minimum_windows: 30, scale_seconds: 21600,
+                  lookback_days: 7, required_lookback_days: 8, p_floor: 0.035714,
+                  usable: false,
+                  reason: "baseline too short at this scale: 27 window(s), 30 required" },
+          "24h": { baseline_windows: 6, minimum_windows: 30, scale_seconds: 86400,
+                   lookback_days: 7, required_lookback_days: 31, p_floor: 0.142857,
+                   usable: false,
+                   reason: "baseline too short at this scale: 6 window(s), 30 required" },
+          "7d": { baseline_windows: 0, minimum_windows: 30, scale_seconds: 604800,
+                  lookback_days: 7, required_lookback_days: 217, p_floor: 1.0,
+                  usable: false,
+                  reason: "baseline too short at this scale: 0 window(s), 30 required" },
+        },
+      }) };
+    };
+    H.clearGetCache();
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 140));
+    const empty = needEl("rp-empty");
+    const emptyText = empty.textContent.replace(/\s+/g, " ");
+    check("an empty window renders a named empty state, never 'no results'",
+          !empty.classList.contains("hidden") && !/no results/i.test(emptyText),
+          emptyText.slice(0, 200));
+    check("...naming every scale the engine measures",
+          ["1h", "6h", "24h", "7d"].every((s) => emptyText.includes(s + " scale")),
+          emptyText.slice(0, 240));
+    check("...with the baseline window counts, not a bare zero",
+          /1h scale is usable: 167 baseline windows/.test(emptyText)
+          && /6h scale needs 30 baseline windows: 27 of 30/.test(emptyText),
+          emptyText.slice(0, 320));
+    check("...and what the next scale needs to become available",
+          /The next scale to become available is 6h/.test(emptyText)
+          && /lookback of at least 8 days/.test(emptyText), emptyText.slice(0, 400));
+    check("...describing the payload's 6h window, not a hardcoded 24h",
+          /last 6h/.test(emptyText) && !/last 24h/.test(emptyText), emptyText.slice(0, 200));
+    fetchOverride = null;
+    H.clearGetCache();
+  }
+
+  // THE ROW OPENS THE HOUSE SHEET: evidence lines first, corroboration after them. The anomaly
+  // fixture's 203.0.113.42 row is 09:10-09:15, inside this ripple's 09:00-10:00 hour.
+  {
+    const seen = [];
+    fetchOverride = (u) => {
+      seen.push(String(u));
+      if (!String(u).includes("/api/ripples")) return null;
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({
+        available: true, reason: "", window_hours: 12, count: 1,
+        ripples: [{
+          host: "203.0.113.42", window_start: "2026-01-02T09:00:00",
+          window_end: "2026-01-02T10:00:00", score: 3.42, combined_p: 0.0021,
+          channels: ["conn_volume", "dns_volume"], families: ["conn", "dns"],
+          single_family: false,
+          explanation: "ripple on 203.0.113.42 at 2026-01-02 09:00 UTC — 2 independent " +
+            "families: conn, dns: conn family: conn_volume 41 vs median 5 (rose at 1h; " +
+            "p=0.004 over 500 baseline windows); dns family: dns_volume 60 vs median 6 " +
+            "(rose at 1h; p=0.006 over 500 baseline windows).",
+          evidence: [
+            { channel: "conn_volume", family: "conn", scale: "1h", value: 41,
+              baseline_median: 5, p_value: 0.004, p_floor: 0.001996, at_floor: false,
+              baseline_short: false, sample_count: 500, direction: "rose" },
+            { channel: "dns_volume", family: "dns", scale: "1h", value: 60,
+              baseline_median: 6, p_value: 0.006, p_floor: 0.001996, at_floor: false,
+              baseline_short: false, sample_count: 500, direction: "rose" },
+          ],
+        }],
+      }) };
+    };
+    H.clearGetCache();
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 140));
+    const row = doc.querySelector("#ripples-table tbody tr");
+    check("a ripple row is a focusable door", !!row && row.getAttribute("tabindex") === "0",
+          row ? String(row.getAttribute("tabindex")) : "no row");
+    if (row) row.click();
+    await new Promise((r) => setTimeout(r, 220));
+    const sheet = needEl("rp-detail-card");
+    const sheetText = sheet.textContent.replace(/\s+/g, " ");
+    check("the ripple row opens the house sheet", !sheet.classList.contains("hidden"),
+          sheet.className);
+    check("the sheet carries one evidence line per channel with scale, p-value, baseline and family",
+          /conn_volume/.test(sheetText) && /dns_volume/.test(sheetText)
+          && /1h/.test(sheetText) && /0\.00400/.test(sheetText)
+          && /500 windows/.test(sheetText) && /conn/.test(sheetText) && /dns/.test(sheetText),
+          sheetText.slice(0, 320));
+    check("the sheet labels the model anomalies as corroboration, not the finding",
+          /corroboration, not the finding/.test(sheetText), sheetText.slice(0, 260));
+    const corrText = needEl("rp-corroboration").textContent.replace(/\s+/g, " ");
+    check("a model anomaly in the same window is shown as secondary corroboration",
+          /0\.910/.test(corrText) && /Isolation Forest, DBSCAN/.test(corrText),
+          corrText.slice(0, 260));
+    check("...and it sits after the evidence, never above it",
+          sheetText.indexOf("Evidence") >= 0 && sheetText.indexOf("Evidence")
+            < sheetText.indexOf("Model anomalies in this window"));
+    const anReqs = seen.filter((u) => u.includes("/api/anomalies"));
+    check("the page and the payload agree on the window (12h, never 24h)",
+          anReqs.length > 0
+          && anReqs.every((u) => /[?&]hours=12(?:&|$)/.test(u))
+          && !anReqs.some((u) => /[?&]hours=24(?:&|$)/.test(u)),
+          anReqs.join(" | ") || "no anomaly request");
+    check("...and the corroboration read is bounded to the ripple's host",
+          anReqs.some((u) => /[?&]host=203\.0\.113\.42(?:&|$)/.test(u)),
+          anReqs.join(" | ") || "no anomaly request");
+    needEl("rp-detail-close").click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("closing the sheet hides it again", needEl("rp-detail-card").classList.contains("hidden"));
+    fetchOverride = null;
+    H.clearGetCache();
   }
 
 
@@ -7826,7 +8000,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       check("...and Evidence has ONE labeled back control, not a crumb plus a button",
             needEl("view-evidence").classList.contains("active")
             && !!evBackFirst && !evBackFirst.hidden
-            && /back to alerts/i.test(evBackFirst.textContent)
+            && /back to ripples/i.test(evBackFirst.textContent)
             && crumbs.classList.contains("hidden"),
             evBackFirst ? `back=${evBackFirst.textContent} crumbs=${crumbs.textContent}` : "no #ev-back");
       H.syncURL();
@@ -8327,7 +8501,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
             needEl("view-evidence").classList.contains("active"));
       const evBack = needEl("ev-back");
       check("...and the evidence page carries a visible way back",
-            !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
+            !!evBack && !evBack.hidden && /back to ripples/i.test(evBack.textContent),
             evBack ? `hidden=${evBack.hidden} text=${evBack.textContent}` : "no #ev-back");
       if (evBack) {
         evBack.click();
@@ -8558,7 +8732,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(320);
     const evBack = needEl("ev-back");
     check("RETURN: Evidence's exit is the labeled back button",
-          !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
+          !!evBack && !evBack.hidden && /back to ripples/i.test(evBack.textContent),
           evBack ? evBack.textContent : "no #ev-back");
     scrollTo = [];
     if (evBack) { evBack.click(); }
@@ -8580,7 +8754,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const hBack = needEl("hp-back");
     check("HOST RETURN: the jump lands with the labeled back button",
           needEl("view-host").classList.contains("active")
-          && !!hBack && /back to alerts/i.test(hBack.textContent),
+          && !!hBack && /back to ripples/i.test(hBack.textContent),
           hBack ? hBack.textContent : "no #hp-back");
     check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
           HOST_REQS.some((u) => /hours=6/.test(u)), HOST_REQS.join(" ").slice(0, 120));

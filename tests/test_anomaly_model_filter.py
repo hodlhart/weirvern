@@ -106,4 +106,5 @@ def test_the_alert_queue_honours_the_global_time_window():
     assert "web.window_arg(request.args, 24" in seg
     assert "hours=hours" in seg
     app = (root / "weirvern/admin/web/app.js").read_text()
-    assert "&hours=${trHours()}" in app
+    assert "&hours=${encodeURIComponent(hours === undefined ? trHours() : hours)}" in app
+    assert "API.anomalies(min, limit, unreviewedOnly, hours)" in app

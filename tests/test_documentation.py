@@ -229,7 +229,7 @@ def test_the_readme_documents_the_gui_views():
         "netflow": "Netflow",
         "models": "Models",
         "health": "Health",
-        "anomalies": "Anomalies",
+        "anomalies": "Ripples",
         "evidence": "Evidence",
         "settings": "Settings",   # added; Overview was removed
     }

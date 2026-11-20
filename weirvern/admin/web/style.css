@@ -441,6 +441,22 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .hp-label.clickable:hover { fill: var(--fg); }
 
 #as-table th.sortable { cursor: pointer; user-select: none; }
+/* RIPPLES ARE THE PAGE'S PRIMARY LIST. A fixed layout keeps the reading columns stable; the
+   explanation is the widest column because it is the sentence an operator reads. */
+#ripples-table { table-layout: fixed; }
+#ripples-table td { vertical-align: top; }
+#ripples-table td.rp-why { overflow-wrap: anywhere; }
+#rp-empty { margin: 4px 0 10px; padding: 10px 12px; border-left: 3px solid var(--accent);
+            background: var(--surface-2); }
+#rp-empty p { margin: 0 0 6px; }
+#rp-empty p:last-child { margin-bottom: 0; }
+#rp-empty ul.rp-scales { margin: 4px 0 8px; padding-left: 20px; }
+#rp-empty ul.rp-scales li { margin: 2px 0; font-size: var(--fs-2); }
+.rp-evidence { margin-top: 6px; }
+.rp-evidence td, .rp-evidence th { white-space: nowrap; }
+.rp-evidence td:nth-child(1), .rp-evidence td:nth-child(2) { overflow-wrap: anywhere; }
+.rp-corroboration { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.rp-corroboration-table { margin-top: 4px; }
 #anomalies-table { table-layout: fixed; }
 #anomalies-table td { vertical-align: top; }
 /* The Host cell carries a name AND an address; an ellipsis here hid the address with no

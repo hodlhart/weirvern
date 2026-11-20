@@ -1,7 +1,7 @@
 {
  "$comment": "THE LEDGER: who owns what. Two surfaces may show a fact; only one may OWN the job. canon_lint.py pins views/ids/labels; concepts are advisory until their DUP- card lands.",
  "version": 1,
- "updated": "2026-10-18",
+ "updated": "2026-11-19",
  "views": [
   {
    "id": "health",
@@ -12,10 +12,10 @@
   },
   {
    "id": "anomalies",
-   "label": "Anomalies",
-   "job": "what did the models flag",
+   "label": "Ripples",
+   "job": "what moved together, against each host's own history",
    "tab": true,
-   "module": "soc.js"
+   "module": "app.js"
   },
   {
    "id": "normalize",

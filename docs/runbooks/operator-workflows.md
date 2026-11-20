@@ -5,9 +5,11 @@ Five tasks, each with one click path from a cold load, its evidence, and the sta
 
 ## 1. What happened?
 
-**Path:** open the console → **Anomalies** → read the window and severity tiles → click a row.
+**Path:** open the console → **Ripples** → read the window and the family list → click a row.
 
-**Answers:** host, window, score, severity, models, why-sentence, rule, location.
+**Answers:** host, window, score, families, why-sentence and the evidence line per channel. The
+model anomalies in the same window are on the same page below the list, and in the ripple's
+sheet as corroboration.
 
 **Stop state:** the queue says `no anomalies recorded yet` or `no rows` with a reason. That is an
 empty read, not a quiet network. Follow the freshness card and the SLO report before believing
@@ -15,8 +17,9 @@ silence.
 
 ## 2. Is it real?
 
-**Path:** Anomalies row → **Evidence** → the chain (observed → sources → detected → explained →
-ruled → done) → raw flows/Zeek/TLS/DNS tables.
+**Path:** a ripple row → the evidence table → the **Model anomalies** section (corroboration) →
+**Evidence** → the chain (observed → sources → detected → explained → ruled → done) → raw
+flows/Zeek/TLS/DNS tables.
 
 **Answers:** the records the model scored, the models and families, the source freshness, the
 threshold and the review state.
@@ -27,7 +30,7 @@ read again.
 
 ## 3. What do I do?
 
-**Path:** Evidence → **Block** / **Acknowledge** / **Ignore**; or Anomalies row → the disclosure
+**Path:** Evidence → **Block** / **Acknowledge** / **Ignore**; or a Model anomalies row → the disclosure
 verbs. Blocking opens the Sluice rule sheet with the address prefilled and requires the
 destructive confirmation and a reason.
 

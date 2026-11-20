@@ -139,8 +139,10 @@ the manifests, capabilities and checks.
 
 ## Product tour
 
-- **Anomalies** — the alert queue, severity tallies, model attribution and a per-row evidence
-  drill.
+- **Ripples** — the operator's reading surface. One row is one host and one hour in which
+  independent families moved together, each against that host's own trailing history; open it for
+  the evidence line per channel. The model's fused-score anomalies sit below the list as
+  corroboration, never as the verdict.
 - **Normalize** — a feed of near-similar flows and DNS that an operator reads, filters and marks
   as normal. Normalized traffic joins the host's adaptive baseline permanently, so the models
   learn it; nothing is silenced, and any claim can be undone.

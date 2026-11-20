@@ -16,8 +16,10 @@
 
 const API = {
   overview: "/api/overview",
-  anomalies: (min, limit, unreviewed) =>
-    `/api/anomalies?min_score=${min}&limit=${limit}&hours=${trHours()}` +
+  anomalies: (min, limit, unreviewed, hours, host) =>
+    `/api/anomalies?min_score=${min}&limit=${limit}` +
+    `&hours=${encodeURIComponent(hours === undefined ? trHours() : hours)}` +
+    (host ? `&host=${encodeURIComponent(host)}` : "") +
     (unreviewed ? "&unreviewed=1" : ""),
   episodes: "/api/episodes",
   review: "/api/review",
@@ -2484,15 +2486,431 @@ function anClearAllFilters() {
   loadAnomalies().then(clearError).catch(showError);
 }
 
+/* ── RIPPLES: the page's primary reading ─────────────────────────────────────────────────────
+ *
+ * THE OPERATOR'S DIRECTION (2026-11-19): "the anomaly page is actually the ripples". A ripple is
+ * one host and one hour in which independent families moved together, each against that host's
+ * own trailing history. It is the thing an operator reads. The model's fused score is still on
+ * the page, under the ripple, labelled corroboration -- it can support a ripple and it cannot
+ * create one, outrank one, or replace the measured evidence.
+ *
+ * READ-ONLY BY CONTRACT. This adds no alert, no acknowledgement, no threshold and no write of
+ * any kind. The list is paginated with the house pager because the window can hold a day of
+ * ripples, and every empty answer names the measurement that produced it.
+ */
+const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25 };
+let RIPPLE_SHEET = null;
+
+/** A server timestamp in milliseconds. Naive ISO strings are UTC, like the server's clock. */
+function rippleTs(value) {
+  const text = String(value || "").trim();
+  if (!text) return NaN;
+  const zoned = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(text);
+  return Date.parse(zoned ? text : text + "Z");
+}
+
+/** The first span of a grouped anomaly row that overlaps the ripple's hour, in millis. */
+function rippleMatch(anomaly, ripple) {
+  const start = rippleTs(ripple.window_start);
+  const end = rippleTs(ripple.window_end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const spans = [];
+  if (anomaly.window_start || anomaly.detected_at) {
+    spans.push([anomaly.window_start || anomaly.detected_at,
+                anomaly.window_end || anomaly.detected_at]);
+  }
+  for (const w of anomaly.windows || []) spans.push([w.window, w.window_end || w.window]);
+  for (const [from, to] of spans) {
+    const a = rippleTs(from);
+    const b = Number.isFinite(rippleTs(to)) ? rippleTs(to) : a;
+    if (Number.isFinite(a) && a < end && b >= start) return [a, b];
+  }
+  return null;
+}
+
+/** Whether any window of this grouped anomaly row overlaps the ripple's hour. */
+function rippleWindowOverlap(anomaly, ripple) {
+  return rippleMatch(anomaly, ripple) !== null;
+}
+
+function rippleNum(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n * 10000) / 10000);
+}
+
+function rippleP(value, atFloor) {
+  const p = Number(value);
+  if (!Number.isFinite(p)) return "not measured";
+  return atFloor ? `<= ${p.toPrecision(3)} (floor)` : p.toPrecision(3);
+}
+
+/** One scale's baseline, in the engine's own terms: windows it has, minimum it needs. */
+function rippleScaleSentence(scale, report) {
+  const b = report || {};
+  const minimum = Number(b.minimum_windows || 0);
+  const windows = Number(b.baseline_windows || 0);
+  const floor = Number(b.p_floor);
+  const days = Number(b.required_lookback_days || 0);
+  if (b.usable) {
+    return `${scale} scale is usable: ${windows} baseline windows (minimum ${minimum})` +
+      (Number.isFinite(floor) ? `, p floor ${floor.toPrecision(3)}.` : ".");
+  }
+  let line = `${scale} scale needs ${minimum} baseline windows: ${windows} of ${minimum}`;
+  if (windows < minimum) {
+    const missing = minimum - windows;
+    line += `; it becomes usable after ${missing} more ${scale} window${missing === 1 ? "" : "s"}`;
+    line += days
+      ? `, which needs a lookback of at least ${days} day${days === 1 ? "" : "s"}.`
+      : ", which needs more history than this deployment keeps.";
+  } else {
+    line += b.reason ? ` (${b.reason}).` : ".";
+  }
+  return line;
+}
+
+/** The empty state: why there is no ripple, which scales exist, and what the next one needs. */
+function renderRippleEmpty(data) {
+  const box = document.getElementById("rp-empty");
+  if (!box) return;
+  box.replaceChildren();
+  const hours = Number((data && data.window_hours) || 0);
+  const ev = (data && data.evidence) || {};
+  const base = (data && data.baseline) || {};
+  const scales = Object.keys(base);
+  const rows = Number(ev.rows || 0);
+  const subjects = Number(ev.subjects || 0);
+  const nets = (data && data.monitored_networks) || [];
+  box.appendChild(el("p", {}, [
+    el("strong", { text: `No ripple formed in the last ${hours}h.` }),
+    el("span", { text: " That is a measurement, not a blank: no monitored host had two " +
+      "independent families — or one family at the extreme bar — move together in the same hour." }),
+  ]));
+  if (!nets.length) {
+    box.appendChild(el("p", { text: "No monitored network is declared, so no address can be " +
+      "attributed as a subject. Until the networks this deployment watches are declared, every " +
+      "candidate is a peer and no ripple can form." }));
+  } else if (!subjects) {
+    box.appendChild(el("p", { text: `The ${nets.length} declared monitored network` +
+      `${nets.length === 1 ? "" : "s"} produced no measured subject in this window ` +
+      `(${rows} evidence row${rows === 1 ? "" : "s"} read). A host with no evidence is not a ` +
+      "quiet host; it is an unmeasured one." }));
+  } else {
+    box.appendChild(el("p", { text: `${rows} evidence row${rows === 1 ? "" : "s"} read across ` +
+      `${subjects} monitored subject${subjects === 1 ? "" : "s"}; none crossed the family rule ` +
+      "inside one hour." }));
+  }
+  if (!scales.length) {
+    box.appendChild(el("p", { class: "muted", text: "This payload carries no baseline report, " +
+      "so the page cannot name the scales behind the empty window." }));
+    return;
+  }
+  const usable = scales.filter((s) => base[s] && base[s].usable);
+  const short = scales.filter((s) => !(base[s] && base[s].usable));
+  box.appendChild(el("p", { class: "muted", text: `Scales the engine measures: usable now — ` +
+    `${usable.length ? usable.join(", ") : "none"}; not usable — ` +
+    `${short.length ? short.join(", ") : "none"}.` }));
+  const list = el("ul", { class: "rp-scales" });
+  for (const scale of scales) list.appendChild(el("li", { text: rippleScaleSentence(scale, base[scale]) }));
+  box.appendChild(list);
+  // THE NEXT SCALE, NAMED. The smallest shortfall is the scale closest to usability, and the
+  // lookback it needs is the payload's number, not a duration guessed here.
+  const pending = short.map((scale) => ({ scale, b: base[scale] || {} }))
+    .filter((x) => Number(x.b.baseline_windows || 0) < Number(x.b.minimum_windows || 0))
+    .sort((a, b) => (Number(a.b.minimum_windows || 0) - Number(a.b.baseline_windows || 0))
+                  - (Number(b.b.minimum_windows || 0) - Number(b.b.baseline_windows || 0)));
+  if (pending.length) {
+    const next = pending[0];
+    const need = Number(next.b.required_lookback_days || 0);
+    const have = Number(next.b.lookback_days || 0);
+    box.appendChild(el("p", { text: `The next scale to become available is ${next.scale}: it ` +
+      `needs ${next.b.minimum_windows} baseline windows and has ${next.b.baseline_windows} ` +
+      `(${Number(next.b.minimum_windows || 0) - Number(next.b.baseline_windows || 0)} more ` +
+      `${next.scale} windows)` +
+      (need ? `, so it needs a lookback of at least ${need} day${need === 1 ? "" : "s"}` +
+        (have ? ` (today's is ${have} days).` : ".") : ".") }));
+  }
+}
+
+function renderRippleRows(rows) {
+  const body = document.querySelector("#ripples-table tbody");
+  if (!body) return;
+  body.replaceChildren();
+  const size = RIPPLES_STATE.pageSize;
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+  if (RIPPLES_STATE.page > pages) RIPPLES_STATE.page = pages;
+  if (RIPPLES_STATE.page < 1) RIPPLES_STATE.page = 1;
+  const from = (RIPPLES_STATE.page - 1) * size;
+  for (const r of rows.slice(from, from + size)) {
+    const tr = el("tr", { class: "clickable",
+      attrs: { "aria-label": `open the evidence for the ripple on ${r.host || "this host"}` } }, [
+      el("td", { class: "mono", text: r.host || "—" }),
+      el("td", { class: "mono", text: fmtCompactTime(r.window_start) }),
+      el("td", { class: "num", text: Number(r.score || 0).toFixed(2) }),
+      el("td", { class: "rp-why", text: r.explanation || "—" }),
+      el("td", { class: "muted", text: (r.families || []).join(" / ") || "—" }),
+    ]);
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+    tr.addEventListener("click", () => openRippleSheet(r, tr));
+    tr.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openRippleSheet(r, tr); }
+    });
+    body.appendChild(tr);
+  }
+  renderPager("rp-pager", rows.length, RIPPLES_STATE.page, pages, (next) => {
+    RIPPLES_STATE.page = next;
+    renderRippleRows(rows);
+  }, size);
+}
+
+function renderRipplePage(data) {
+  RIPPLES_STATE.data = data || null;
+  const nextHours = Number((data && data.window_hours) || 0) || null;
+  // THE PAGE IS KEPT ACROSS REFRESHES, and reset only when the window changed: a 15-second
+  // refresh must not throw an operator off page 3 of the same window.
+  if (nextHours !== RIPPLES_STATE.hours) RIPPLES_STATE.page = 1;
+  RIPPLES_STATE.hours = nextHours;
+  const note = document.getElementById("rp-note");
+  const count = document.getElementById("rp-count");
+  const body = document.querySelector("#ripples-table tbody");
+  const empty = document.getElementById("rp-empty");
+  const pager = document.getElementById("rp-pager");
+  if (pager) pager.replaceChildren();
+  if (!body) return;
+  body.replaceChildren();
+  if (empty) { empty.replaceChildren(); empty.classList.add("hidden"); }
+  if (!data) {
+    if (note) note.textContent = "Ripple evidence unavailable: no payload was returned. That is not the same as a quiet network.";
+    if (count) count.textContent = "unavailable";
+    return;
+  }
+  const hours = Number(data.window_hours || 0);
+  if (data.available === false) {
+    if (note) note.textContent = "Ripple evidence unavailable: " + (data.reason || "the read failed") +
+      " — that is not the same as a quiet network. The model anomalies below are stored detections, not a substitute for this read.";
+    if (count) count.textContent = "unavailable";
+    body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 5 },
+      text: "The ripple store could not be read. Read the named reason above, not this empty table." })]));
+    if (empty) {
+      empty.appendChild(el("p", {}, [
+        el("strong", { text: "The ripple read failed." }),
+        el("span", { text: " That is an outage, not a quiet network: " + (data.reason || "no reason was reported") + "." }),
+      ]));
+      empty.classList.remove("hidden");
+    }
+    if (typeof syncViewHeaderCounts === "function") syncViewHeaderCounts();
+    return;
+  }
+  const rows = data.ripples || [];
+  if (count) count.textContent = `${rows.length} ripple${rows.length === 1 ? "" : "s"} · ${hours}h`;
+  if (note) {
+    note.textContent = rows.length
+      ? `${rows.length} ripple${rows.length === 1 ? "" : "s"} in the last ${hours}h, newest first. Each row is one host and one hour; open it for the evidence behind it. Read-only: this page does not alert.`
+      : `No ripple formed in the last ${hours}h. The scales and baseline counts below say what the engine could measure. Read-only: this page does not alert.`;
+  }
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 5 },
+      text: `No ripple formed in the last ${hours}h — the scale and baseline detail is above.` })]));
+    renderRippleEmpty(data);
+    if (empty) empty.classList.remove("hidden");
+  } else {
+    renderRippleRows(rows);
+  }
+  if (typeof syncViewHeaderCounts === "function") syncViewHeaderCounts();
+}
+
+async function loadRipplePage() {
+  const hours = String(trHours());
+  let data;
+  try {
+    data = await getJSON("/api/ripples?hours=" + encodeURIComponent(hours));
+  } catch (e) {
+    data = { available: false, reason: String(e && e.message || e), ripples: [],
+             count: 0, window_hours: Number(hours) || 0 };
+  }
+  renderRipplePage(data);
+  return data;
+}
+
+/* ── THE RIPPLE SHEET: evidence first, model anomalies as corroboration ───────────────────── */
+
+function rippleEvidenceTable(ripple) {
+  const table = el("table", { class: "rp-evidence", attrs: { id: "rp-evidence" } });
+  table.appendChild(el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Channel" }), el("th", { text: "Family" }), el("th", { text: "Scale" }),
+    el("th", { text: "Value" }), el("th", { text: "Baseline median" }),
+    el("th", { text: "p-value" }), el("th", { text: "Baseline" }), el("th", { text: "Direction" }),
+  ])]));
+  const tbody = el("tbody");
+  const rows = ripple.evidence || [];
+  if (!rows.length) {
+    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 8 },
+      text: "This ripple carries no evidence rows. That is a payload defect, not a quiet reading." })]));
+  }
+  for (const e of rows) {
+    const baseline = `${Number(e.sample_count || 0)} windows` +
+      (e.baseline_short ? " (below the minimum)" : "");
+    tbody.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: e.channel || "—" }),
+      el("td", { text: e.family || "—" }),
+      el("td", { class: "mono", text: e.scale || "—" }),
+      el("td", { class: "num", text: rippleNum(e.value) }),
+      el("td", { class: "num", text: rippleNum(e.baseline_median) }),
+      el("td", { class: "num", text: rippleP(e.p_value, e.at_floor) }),
+      el("td", { text: baseline }),
+      el("td", { class: "muted", text: e.direction || "—" }),
+    ]));
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function rippleCorroborationTable(hits) {
+  const table = el("table", { class: "rp-corroboration-table", attrs: { id: "rp-corroboration-table" } });
+  table.appendChild(el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Detected" }), el("th", { text: "Fused score" }),
+    el("th", { text: "Detectors that contributed" }), el("th", { text: "Severity" }),
+  ])]));
+  const tbody = el("tbody");
+  for (const hit of hits) {
+    const a = hit.anomaly;
+    tbody.appendChild(el("tr", {}, [
+      // THE MATCHING OCCURRENCE, not the group's newest one: a grouped row can headline a
+      // window outside this ripple, and printing that date beside "same window" would lie.
+      el("td", { class: "mono", text: fmtCompactTime(hit.at ? hit.at[0] : (a.detected_at || a.window_start)) }),
+      el("td", { class: "num", text: Number(a.anomaly_score || 0).toFixed(3) }),
+      el("td", { class: "mono", text: a.detected_by_models || "—" }),
+      el("td", { text: a.severity || "—" }),
+    ]));
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+async function loadRippleCorroboration(ripple, note, slot) {
+  if (!note || !slot) return;
+  const hours = RIPPLES_STATE.hours || trHours();
+  let data;
+  try {
+    data = await getJSON(API.anomalies(0, 200, false, hours, ripple.host));
+  } catch (e) {
+    note.textContent = "The host's model anomalies could not be read: " +
+      String(e && e.message || e) + ". The evidence above stands on its own.";
+    return;
+  }
+  if (!data || data.available === false) {
+    note.textContent = "The host's model anomalies could not be read: " +
+      ((data && data.reason) || "the read failed") + ". The evidence above stands on its own.";
+    return;
+  }
+  const hits = (data.rows || [])
+    .map((anomaly) => ({ anomaly, at: rippleMatch(anomaly, ripple) }))
+    .filter((hit) => hit.at)
+    .sort((a, b) => (b.at ? b.at[0] : 0) - (a.at ? a.at[0] : 0));
+  if (!hits.length) {
+    note.textContent = "No model anomaly was recorded on this host in this window. " +
+      "The ripple stands on its measured evidence alone.";
+    return;
+  }
+  note.textContent = `${hits.length} model anomal${hits.length === 1 ? "y" : "ies"} on this ` +
+    `host overlap${hits.length === 1 ? "s" : ""} this window. They are corroboration: they can ` +
+    "support the ripple, and they cannot define it.";
+  slot.replaceChildren(rippleCorroborationTable(hits));
+}
+
+function wireRippleSheet() {
+  const card = document.getElementById("rp-detail-card");
+  if (!card || card.dataset.rpWired === "1") return;
+  card.dataset.rpWired = "1";
+  if (typeof wireSheet === "function") wireSheet(card, { scrimId: "rp-detail-scrim" });
+  const close = document.getElementById("rp-detail-close");
+  const cancel = document.getElementById("rp-detail-cancel");
+  for (const button of [close, cancel]) {
+    if (button) button.addEventListener("click", () => {
+      if (typeof closeSheet === "function") closeSheet(card); else card.classList.add("hidden");
+    });
+  }
+  const host = document.getElementById("rp-detail-host");
+  if (host) host.addEventListener("click", () => {
+    const ripple = RIPPLE_SHEET;
+    if (typeof closeSheet === "function") closeSheet(card);
+    if (ripple && ripple.host) openHost(ripple.host);
+  });
+}
+
+function openRippleSheet(ripple, opener) {
+  const card = document.getElementById("rp-detail-card");
+  if (!card || !ripple) return;
+  RIPPLE_SHEET = ripple;
+  const title = document.getElementById("rp-detail-title");
+  const stamp = document.getElementById("rp-detail-id");
+  const note = document.getElementById("rp-detail-note");
+  const body = document.getElementById("rp-detail-body");
+  if (title) title.textContent = `Ripple on ${ripple.host || "an unknown host"}`;
+  if (stamp) stamp.textContent = ripple.window_start ? fmtCompactTime(ripple.window_start) : "";
+  if (note) note.textContent = "One host and one hour. The evidence table is the finding; " +
+    "the model anomalies at the bottom are corroboration.";
+  if (!body) return;
+  body.replaceChildren();
+  body.appendChild(el("p", {}, [
+    el("strong", { text: `Score ${Number(ripple.score || 0).toFixed(2)}` }),
+    el("span", { class: "muted", text: ` · ${(ripple.families || []).join(" / ") || "no family named"}` +
+      `${ripple.combined_p !== undefined ? ` · combined p ${Number(ripple.combined_p).toPrecision(3)}` : ""}` }),
+  ]));
+  body.appendChild(el("p", { text: ripple.explanation || "No explanation was carried with this ripple." }));
+  if (ripple.single_family) {
+    body.appendChild(el("p", { class: "muted", text: "Single family at the extreme bar: one " +
+      "measurement, not cross-family corroboration." }));
+  }
+  body.appendChild(el("h3", { text: "Evidence" }));
+  body.appendChild(el("p", { class: "muted", text: `${(ripple.evidence || []).length} channel ` +
+    "measurement(s) grouped into this ripple. Each was ranked against this host's own trailing " +
+    "history; the baseline column is the number of windows behind its p-value." }));
+  body.appendChild(rippleEvidenceTable(ripple));
+  const corrNote = el("p", { class: "muted", attrs: { id: "rp-corroboration-note" },
+                             text: "Reading the host's model anomalies…" });
+  const corrSlot = el("div", { attrs: { id: "rp-corroboration-table" } });
+  const corr = el("div", { class: "rp-corroboration", attrs: { id: "rp-corroboration" } }, [
+    el("h3", {}, [
+      el("span", { text: "Model anomalies in this window " }),
+      el("span", { class: "muted", text: "— corroboration, not the finding" }),
+    ]),
+    el("p", { class: "muted", text: "The model's fused-score detections on this host in the " +
+      "same window. They are corroboration: they can support the ripple above, and they cannot " +
+      "create it, outrank it, or replace its measured evidence." }),
+    corrNote,
+    corrSlot,
+  ]);
+  body.appendChild(corr);
+  wireRippleSheet();
+  if (opener && typeof opener.focus === "function") opener.focus();
+  if (typeof openSheet === "function") {
+    openSheet(card, { scrimId: "rp-detail-scrim", initialFocus: "rp-detail-close" });
+  } else {
+    card.classList.remove("hidden");
+    card.setAttribute("aria-hidden", "false");
+  }
+  loadRippleCorroboration(ripple, corrNote, corrSlot).catch(() => {});
+}
+
 async function loadAnomalies() {
-    scheduleURLSync();
+  scheduleURLSync();
+  // THE RIPPLE LIST IS THE PAGE, and its read goes first because it carries the window every
+  // other read here uses. A failed ripple read is a named state inside the list; it does not
+  // stop the corroboration section from rendering.
+  const ripplePromise = loadRipplePage().catch(() => null);
   // THE DEFAULT IS THE OBSERVATION LIST, matching the Network graph's alerted badge. Incidents
   // and Leads are explicit queue views over the same evidence; they are opt-in so the map and
   // the list cannot appear to describe different networks. The raw table has its own filters,
   // so the episode branch must not pretend those filters apply to episodes.
   const queueMode = (document.getElementById("f-queue-mode") || {}).value || "raw";
+  const rippleData = await ripplePromise;
+  // THE WINDOW IS THE PAYLOAD'S, not a constant in this file: `/api/ripples` answers with the
+  // hours it actually read, and every other read on the page uses that same window.
+  const hours = String((rippleData && rippleData.window_hours) || trHours());
   if (queueMode !== "raw") {
-    await loadEpisodeQueue(queueMode);
+    await loadEpisodeQueue(queueMode, hours);
     return;
   }
   const episodesTable = document.getElementById("episodes-table");
@@ -2502,7 +2920,8 @@ async function loadAnomalies() {
   const sevBox = document.getElementById("an-sev");
   if (sevBox) sevBox.classList.remove("hidden");
   const note = document.getElementById("an-queue-note");
-  if (note) note.textContent = "";
+  if (note) note.textContent = "The model's fused-score detections across this window. They " +
+    "corroborate the ripples above; they are not the finding.";
   // The gate's state rides along with the list, so every row's block control can say whether it
   // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
   // shape is worse than one that appears a beat late.
@@ -2514,7 +2933,7 @@ async function loadAnomalies() {
   const wchk = document.getElementById("f-watched");
   const watchedOnly = !!(wchk && wchk.checked);
   anRenderChips();
-  const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery()
+  const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly, hours) + anQuery()
     + (watchedOnly ? "&watched=1" : ""));
   anRenderSeverity(payload.severity_counts);
   anRenderDiscipline(payload.discipline);
@@ -2652,15 +3071,16 @@ async function loadAnomalies() {
   }
 }
 
-/* THE INCIDENT QUEUE. One row per episode; the raw window list stays under All anomalies.
+/* THE INCIDENT QUEUE. One row per episode; the raw window list stays under Model anomalies.
  *
  * The server decides what is an incident: high/critical, pageable, and backed by either a named
  * primary deviation or at least one independent strong family. A model-only episode is a lead,
  * not work that can page a human. The table deliberately carries the measured signal so the
  * operator does not have to open every row to learn whether there is anything to read.
  */
-async function loadEpisodeQueue(mode) {
-  const payload = await getJSON(`${API.episodes}?hours=${encodeURIComponent(trHours())}&limit=200`);
+async function loadEpisodeQueue(mode, hours) {
+  const windowHours = hours === undefined ? trHours() : hours;
+  const payload = await getJSON(`${API.episodes}?hours=${encodeURIComponent(windowHours)}&limit=200`);
   const table = document.getElementById("episodes-table");
   const anomalies = document.getElementById("anomalies-table");
   const sevBox = document.getElementById("an-sev");
@@ -2683,7 +3103,7 @@ async function loadEpisodeQueue(mode) {
   const rows = Array.isArray(payload[mode]) ? payload[mode] : [];
   if (note) {
     note.textContent = mode === "incidents"
-      ? "Incidents: high/critical, pageable episodes with measured evidence. Leads stay one selection away; All anomalies keeps every scored window."
+      ? "Incidents: high/critical, pageable episodes with measured evidence. Leads stay one selection away; Model anomalies keeps every scored window."
       : "Leads: low/medium observations and high/critical episodes without a named feature or independent family. They are evidence to hunt, not a page.";
   }
   if (countLine) {
@@ -3886,7 +4306,7 @@ async function lookupFingerprint(ja4) {
  * navigation systems. The button is now the only exit, and the crumb trail is left to surfaces
  * that do not already have a labeled button. */
 function evidenceBackLabel(view) {
-  const named = { anomalies: "Back to alerts", assets: "Back to assets", host: "Back to host",
+  const named = { anomalies: "Back to Ripples", assets: "Back to assets", host: "Back to host",
                    evidence: "Back to evidence" };
   if (named[view]) return named[view];
   const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === view);
@@ -5587,7 +6007,7 @@ document.addEventListener("DOMContentLoaded", () => {
 const VH_COUNTS = Object.create(null);
 const VIEW_HEADER_META = {
   health: { heading: "Health", count: "hp-summary" },
-  anomalies: { heading: "All anomalies", count: "an-count-line" },
+  anomalies: { heading: "Ripples", count: "rp-count" },
   network: { heading: "Network", count: "nw-caption" },
   netflow: { heading: "Netflow", count: "nf-summary" },
   discover: { heading: "Flows", count: "dc-summary" },

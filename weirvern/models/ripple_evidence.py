@@ -343,6 +343,7 @@ def scale_report(scale: str, lookback_days: int = LOOKBACK_DAYS) -> dict[str, An
     windows = baseline_windows(scale, lookback_days)
     minimum = min_baseline_samples(scale)
     floor = pvalue_floor(windows)
+    seconds = int(EVIDENCE_SCALE_SECONDS.get(scale) or 0)
     if windows < minimum:
         reason = (f"baseline too short at this scale: {windows} window(s), "
                   f"{minimum} required")
@@ -354,9 +355,19 @@ def scale_report(scale: str, lookback_days: int = LOOKBACK_DAYS) -> dict[str, An
     else:
         reason = ""
         usable = True
+    # THE NUMBERS THE EMPTY STATE NEEDS. `baseline_windows` is what this lookback can hold,
+    # `minimum_windows` is what the test needs, and `required_lookback_days` is the lookback at
+    # which those two meet: (minimum + 1) non-overlapping windows of this length. Without them a
+    # reader can only say "not enough history"; with them the console can say WHICH scale is
+    # next and what it would take to make it usable, without hardcoding a scale's duration in
+    # the JavaScript.
+    required_days = math.ceil((minimum + 1) * seconds / 86400) if seconds else 0
     return {
         "baseline_windows": windows,
         "minimum_windows": minimum,
+        "scale_seconds": seconds,
+        "lookback_days": int(lookback_days),
+        "required_lookback_days": required_days,
         "p_floor": round(floor, 6),
         "usable": usable,
         "reason": reason,

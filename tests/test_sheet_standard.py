@@ -32,15 +32,16 @@ def test_the_sheet_is_a_class_not_one_special_id():
 def test_every_sheet_is_a_labelled_dialog_with_one_close():
     html = (WEB / "index.html").read_text()
     for card_id, title_id in (("wl-detail-card", "wl-detail-title"),
-                              ("sl-rule-sheet", "sl-rule-title")):
+                              ("sl-rule-sheet", "sl-rule-title"),
+                              ("rp-detail-card", "rp-detail-title")):
         tag = _opening_tag(html, card_id)
         assert "card sheet" in tag, f"{card_id} is not a sheet"
         assert 'role="dialog"' in tag and 'aria-modal="true"' in tag, f"{card_id} is not a dialog"
         assert f'aria-labelledby="{title_id}"' in tag, f"{card_id} has no label"
         assert 'aria-hidden="true"' in tag, f"{card_id} hides with a class but not from AT"
         assert f'<span id="{title_id}"' in html, f"{title_id} missing"
-    # 3 since the Normalize sheet (operator, 2026-11-19): weirlings, identity detail, normalize.
-    assert html.count('class="sheet-close"') == 3, "not exactly one close per sheet"
+    # 4 since the Ripple sheet (2026-11-19): weirlings, identity detail, normalize, ripples.
+    assert html.count('class="sheet-close"') == 4, "not exactly one close per sheet"
 
 
 def test_the_sheets_share_one_opener_and_build_no_private_machinery():

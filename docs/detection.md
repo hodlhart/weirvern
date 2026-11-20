@@ -227,7 +227,7 @@ could have an account.
 | View | What it answers |
 |---|---|
 | Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status), the health probes, ingestion trend, table sizes, and the **alert audit** — every alerting decision, including what was suppressed and why, paged 15 at a time like the inventory and stating when the list is capped. Sits between Models and Settings; still the landing view |
-| Anomalies | Every anomaly with score, agreement and the "why" line — plus its **review state**: acknowledge, resolve, or mark false-positive, with an unreviewed-only filter. Click through to **evidence** |
+| Ripples | The operator's primary reading: one host and one hour per ripple, with the explanation sentence naming each channel, its value, its baseline median, its scale and its p-value. Click through to the evidence, then to the model anomalies in the same window, which are corroboration rather than the verdict. The full model-anomaly queue — score, agreement, review state and the evidence drill — stays on the same page below the ripples |
 | Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
 | Network | Every host-to-host connection as a graph — a **force map that settles deterministically** (no randomness, fixed cost: same window, same map), draggable with a Re-settle control, and hosts sit in **IP TTL hop-distance rings** from the sensor wherever the flow records carry the field; **select any number of hosts to track only their connections** |
 | Netflow | Volume, protocol mix, top ports, destination spread; **click a protocol or port bar to see the host-to-host pairs behind it** |
