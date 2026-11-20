@@ -13,6 +13,10 @@
 #
 #     ssh root@weirvern.home 'sh -s -- --pin sha-2c3bee529' < scripts/image_drift.sh
 #
+# WHAT IT COVERS: Deployments (every container), the zeek DaemonSet's containers AND init
+# containers, and CronJobs. The three are rolled separately, so a green table has to name all three
+# or it is reporting on a subset while implying the whole.
+#
 # EXIT STATUS: 0 when every workload matches the pin, 1 when any workload drifts, 2 on bad usage.
 set -eu
 
@@ -66,6 +70,26 @@ SIPHON_IMAGE=$(kubectl -n "$NS" get ds zeek \
 [ -n "$TRUNK_IMAGE" ] && echo "zeek-init.trunk $TRUNK_IMAGE" >> "$TMP"
 [ -n "$SIPHON_IMAGE" ] && echo "zeek-init.siphon $SIPHON_IMAGE" >> "$TMP"
 
+# CronJobs are a workload too, and they are the easiest one to forget: `kubectl set image` on the
+# deployments does not touch them, they run on a schedule rather than continuously, and a job that
+# cannot pull its image just retries into ImagePullBackOff without ever making a pod look unready.
+# `cronjob/weirvern-prune` sat on a pruned tag for days that way while this check reported green.
+# The image lives one level deeper than a Deployment's: .spec.jobTemplate.spec.template.spec.
+# Labels stay short because the table's first column is 24 characters (cronjob.weirvern-prune is
+# 22). A CronJob with several containers gets a numeric suffix from the second one onward.
+kubectl -n "$NS" get cronjobs \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .spec.jobTemplate.spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' \
+  2>/dev/null \
+| awk 'NF > 1 {
+    name = $1
+    n = 0
+    for (i = 2; i <= NF; i++) {
+      n++
+      label = (n == 1) ? "cronjob." name : "cronjob." name "." n
+      print label, $i
+    }
+  }' >> "$TMP" || true
+
 printf '%-24s %-46s %s\n' WORKLOAD IMAGE VERDICT
 printf '%-24s %-46s %s\n' "------------------------" "----------------------------------------------" "-------"
 
@@ -107,8 +131,8 @@ _ctr_images() {
   fi
 }
 if _ctr_images >/dev/null 2>&1 && kubectl version --request-timeout=3s >/dev/null 2>&1; then
-  images=$(kubectl -n "${NS:-weirvern}" get deploy,ds \
-    -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{end}' \
+  images=$(kubectl -n "${NS:-weirvern}" get deploy,ds,cronjob \
+    -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.jobTemplate.spec.template.spec.containers[*]}{.image}{"\n"}{end}{range .spec.jobTemplate.spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{end}' \
     2>/dev/null || true)
   # containerd reports fully-qualified names (docker.io/library/weirvern-zeek:0.5.0); a manifest
   # says weirvern-zeek:0.5.0. Compare the last path component, or every local image looks missing.

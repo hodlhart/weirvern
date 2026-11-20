@@ -8,7 +8,7 @@ double-counts.
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -207,3 +207,72 @@ def test_episodes_are_counted_per_host():
     rows = [("198.51.100.5", _hour(3), 0.001), ("198.51.100.5", _hour(4), 0.001),
             ("198.51.100.6", _hour(3), 0.001), ("198.51.100.6", _hour(4), 0.001)]
     assert host_hour.count_episodes(rows, 0.01) == 2
+
+
+# ── one clock: naive and aware timestamps must be comparable ─────────────────────────────────
+#
+# MEASURED: the worker logged `ML host-hour shadow failed: can't subtract offset-naive and
+# offset-aware datetimes` on every tick. ClickHouse returns a DateTime column AWARE (the
+# deployment's tz) while the tick's own clock is naive UTC, so `end - fresh_at` raised and the
+# whole shadow stayed dark. Normalize's `_hour_key` had the same class of bug.
+
+def test_hour_key_is_one_offset_free_key_for_every_input():
+    # 18:00 at -06:00 is midnight UTC the next day -- the SAME instant as the naive form.
+    aware = datetime(2026, 11, 20, 18, 0, tzinfo=timezone(timedelta(hours=-6)))
+    assert host_hour.hour_key(aware) == datetime(2026, 11, 21, 0, 0)
+    assert host_hour.hour_key(datetime(2026, 11, 21, 0, 0)) == datetime(2026, 11, 21, 0, 0)
+    assert host_hour.hour_key("2026-11-21T00:00:00-06:00") == datetime(2026, 11, 21, 6, 0)
+    assert host_hour.hour_key("2026-11-21T00:00:00Z") == datetime(2026, 11, 21, 0, 0)
+    assert host_hour.hour_key(None) is None
+    assert host_hour.hour_key("not a timestamp") is None
+
+
+class _FakeClient:
+    """Just enough of clickhouse_connect for the tick's freshness check.
+
+    The live failure WAS the subtraction inside run(), so this exercises the real path rather
+    than a helper extracted beside it. Every other query returns nothing, which is a legitimate
+    empty tick.
+    """
+
+    def __init__(self, fresh_at):
+        self.fresh_at = fresh_at
+        self.inserts = []
+
+    def query(self, sql, parameters=None):
+        class _Result:
+            def __init__(self, rows):
+                self.result_rows = rows
+
+        if "max(computed_at)" in sql:
+            return _Result([(self.fresh_at,)])
+        if "uniqExact(src_addr)" in sql:
+            return _Result([(0,)])
+        return _Result([])
+
+    def insert(self, table, rows, column_names=None):
+        self.inserts.append((table, rows))
+
+
+def test_the_tick_survives_an_aware_reference_timestamp():
+    client = _FakeClient(datetime(2026, 11, 20, 12, 0, tzinfo=UTC))
+    out = host_hour.run(client, now=datetime(2026, 11, 20, 12, 0))
+    assert out["hours_scored"] == 0
+    assert out["episodes"] == 0
+
+
+def test_the_tick_handles_a_naive_reference_timestamp_too():
+    client = _FakeClient(datetime(2026, 11, 20, 12, 0))
+    assert host_hour.run(client, now=datetime(2026, 11, 20, 12, 0))["hours_scored"] == 0
+
+
+def test_the_tick_handles_an_aware_now():
+    client = _FakeClient(datetime(2026, 11, 20, 12, 0, tzinfo=UTC))
+    assert host_hour.run(client, now=datetime(2026, 11, 20, 18, 0,
+                                               tzinfo=timezone(timedelta(hours=-6))))["hours_scored"] == 0
+
+
+def test_episodes_compare_naive_and_aware_hours_without_raising():
+    rows = [("198.51.100.5", _hour(3), 0.001),
+            ("198.51.100.5", datetime(2026, 11, 16, 4, 0, tzinfo=UTC), 0.001)]
+    assert host_hour.count_episodes(rows, 0.01) == 1

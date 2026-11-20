@@ -95,6 +95,39 @@ MIN_CHANNEL_SAMPLES = MIN_PHASE_SAMPLES
 STATES = ("scored", "no-reference", "no-data", "error")
 
 
+# ── ONE CLOCK FOR BOTH SIDES OF A SUBTRACTION ─────────────────────────────────────────────────
+#
+# ClickHouse returns an AWARE datetime for a `DateTime` column -- the deployment's tz, e.g.
+# `...16:00:00-06:00` -- while every `now` in this module is a NAIVE UTC datetime. So
+# `end - fresh_at` in the tick raised "can't subtract offset-naive and offset-aware datetimes",
+# and the worker logged `ML host-hour shadow failed: ...` on every run while the tables stayed
+# empty. This is the same class already fixed in Normalize's `_hour_key`, where one branch kept
+# the offset and the other dropped it and the join matched nothing.
+#
+# An aware value is an absolute instant: converting it to UTC and dropping the offset is
+# lossless. A naive value is already the UTC wall clock this module writes, so it is left alone
+# rather than guessed at. Strings are accepted because a driver or a test shim may hand back text.
+
+def hour_key(value: Any) -> datetime | None:
+    """The offset-free UTC datetime for a stored timestamp (None when unreadable).
+
+    Use this on BOTH sides of every comparison or subtraction in this module. Sorting mixed
+    values raises the same TypeError that subtracting them does.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
 # ── pure: features ────────────────────────────────────────────────────────────────────────────
 
 def feature_vector(*, flow_count: int, total_bytes: int, total_packets: int,
@@ -476,7 +509,11 @@ def count_episodes(rows: Iterable[tuple[str, datetime, float]], alpha: float) ->
     """
     by_host: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
     for host, hour, p in rows:
-        by_host[str(host)].append((hour, float(p)))
+        # ONE KEY ON BOTH SIDES. `sorted()` raises the same mix-of-offsets TypeError that the
+        # subtraction below does, so the normalisation has to happen before either.
+        key = hour_key(hour)
+        if key is not None:
+            by_host[str(host)].append((key, float(p)))
     episodes = 0
     for hours in by_host.values():
         streak = 0
@@ -510,8 +547,8 @@ def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = Non
     before the thirty days a per-host baseline needs, so the hour has to be accumulated while
     the flow log still has it.
     """
-    end = (now or datetime.now(UTC).replace(tzinfo=None)).replace(minute=0, second=0,
-                                                                  microsecond=0)
+    end = hour_key(now) or datetime.now(UTC).replace(tzinfo=None)
+    end = end.replace(minute=0, second=0, microsecond=0)
     last_complete = end - timedelta(hours=1)
     # The window ENDS at the last completed hour and reaches back `lookback_hours`. An earlier
     # version wrote max(back, last_complete), which is the LATER of the two -- so the tick
@@ -520,8 +557,10 @@ def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = Non
 
     built = build_features(client, start, end)
 
-    fresh_at = client.query(
-        "SELECT max(computed_at) FROM weirvern.host_reference_stats").result_rows[0][0]
+    # BOTH SIDES THROUGH `hour_key`. The stored max(computed_at) comes back AWARE from ClickHouse
+    # while `end` is naive; subtracting them raised every tick and this whole shadow stayed dark.
+    fresh_at = hour_key(client.query(
+        "SELECT max(computed_at) FROM weirvern.host_reference_stats").result_rows[0][0])
     if fresh_at is None or (end - fresh_at) > timedelta(hours=24):
         rebuild_references(client, days=30, now=end)
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.23.116 — 2026-11-20
+
+THREE STANDING DEFECTS, each one a check that could not see what it claimed to look at. No
+detection, capture or enforcement semantics changed.
+
+- **`image_drift.sh` now checks CronJobs.** `cronjob/weirvern-prune` sat on a pruned tag in
+  `ImagePullBackOff` for days while drift reported every workload green, because the check read
+  Deployments and the zeek DaemonSet only — and `kubectl set image` on a Deployment never touches
+  a CronJob. The script now reads
+  `.spec.jobTemplate.spec.template.spec.containers[*].image`, lists each as `cronjob.<name>` in the
+  same table, applies `--pin` to the verdicts, and includes CronJob images in the local-containerd
+  presence check. `tests/test_image_drift.py` pins a stale CronJob failing the run and naming
+  `prune`, a current one passing in the table, and an image-less CronJob not becoming a phantom
+  drift row.
+- **`sanitize_identifiers --write` no longer rewrites test assertions.** A `--write` run replaced
+  `10.0.0.0/8` with `198.51.100.0/8` inside a test, which changed what the test asserted while
+  leaving the suite green. `--write` now refuses anything under `tests/`/`test/`, any `test_*.py`,
+  `*_test.py` or `conftest.py`, and `scripts/jsdom_render.js`; inside other files it leaves quoted
+  literals on an assertion line and raw/regex literals alone; every skip is reported by path and
+  every rewrite prints a unified diff. A second run is a no-op. `--check` still reports identifiers
+  in tests — a leak there is still a leak, but a human replaces it.
+- **The ML host-hour shadow's datetime subtraction is fixed.** The worker logged `ML host-hour
+  shadow failed: can't subtract offset-naive and offset-aware datetimes` on every tick: ClickHouse
+  returns `DateTime` values aware (the deployment's tz) while the tick's clock is naive UTC. A new
+  `hour_key()` normalises both sides to one offset-free UTC value, and `count_episodes` sorts on
+  the same key so mixed inputs cannot raise either. Regression tests run the real tick against an
+  aware reference, a naive reference and an aware `now`, plus a mixed naive/aware episode window.
+
 ## 0.23.115 — 2026-11-20
 
 TWO READING DEFECTS the audit caught on a 390px sheet. No detection, capture or enforcement

@@ -256,3 +256,103 @@ def test_the_capture_rule_catches_real_captures_and_spares_source():
     for path in ("tests/test_capture_loss.py", "weirvern/schema/007_sensor_capture.sql",
                  _doc, "weirvern/admin/sensorwatch.py", _src):
         assert not is_capture_path(path), f"{path} contains no packets but the rule flags it"
+
+
+# ── --write must not rewrite what a test asserts ─────────────────────────────────────────────
+#
+# MEASURED DEFECT: `--write` replaced 10.0.0.0/8 with 198.51.100.0/8 inside a test file. The suite
+# stayed green, so the scrub silently changed the range the test was written to assert. These
+# tests pin both halves: a test file is refused outright, and prose in a non-test file is still
+# scrubbed.
+
+def _git_repo(tmp_path: Path) -> Path:
+    def run(*args: str) -> None:
+        subprocess.run(args, cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "test@example.com")
+    run("git", "config", "user.name", "test")
+    return tmp_path
+
+
+def test_write_leaves_a_test_file_byte_identical_and_reports_the_skip(tmp_path, monkeypatch, capsys):
+    repo = _git_repo(tmp_path)
+    fixture = repo / "tests" / "test_sample.py"
+    fixture.parent.mkdir()
+    fixture.write_text('RANGE = "10.0.0.0/8"\n')
+    prose = repo / "weirvern" / "sample.py"
+    prose.parent.mkdir()
+    prose.write_text('RANGE = "10.0.0.0/8"\n')
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+    assert san.main(["--write"]) == 0
+    first = capsys.readouterr().out
+
+    assert fixture.read_text() == 'RANGE = "10.0.0.0/8"\n', (
+        "a test fixture was rewritten -- that changes what the test asserts")
+    assert prose.read_text() == 'RANGE = "198.51.100.0/8"\n', (
+        "prose in a non-test file must still be scrubbed")
+    assert "skipped tests" + "/test_sample.py" in first, "the skip must be REPORTED, not silent"
+    assert "1 test fixture(s) skipped" in first
+    assert "-RANGE" in first and "+RANGE" in first, "the change must be shown as a diff"
+
+
+def test_write_is_idempotent(tmp_path, monkeypatch, capsys):
+    repo = _git_repo(tmp_path)
+    prose = repo / "weirvern" / "sample.py"
+    prose.parent.mkdir()
+    prose.write_text('RANGE = "10.0.0.0/8"\n')
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+    assert san.main(["--write"]) == 0
+    capsys.readouterr()
+    assert prose.read_text() == 'RANGE = "198.51.100.0/8"\n'
+
+    assert san.main(["--write"]) == 0
+    second = capsys.readouterr().out
+    assert prose.read_text() == 'RANGE = "198.51.100.0/8"\n', "a second run changed the file again"
+    assert "0 file(s) rewritten" in second
+    assert "---" not in second, "a no-op run still printed a diff"
+
+
+def test_a_quoted_assertion_is_never_rewritten():
+    text = 'assert route == "10.0.0.5"\n'
+    out, n, protected = san.scrub_text_guarded(text)
+    assert out == text
+    assert n == 0
+    assert protected and protected[0][0] == 1
+
+
+def test_a_regex_literal_is_never_rewritten():
+    for text in ('PATTERN = re.compile(r"10.0.0.5")\n',
+                 'PATTERN = r"10.0.0.5"\n'):
+        out, n, protected = san.scrub_text_guarded(text)
+        assert out == text, f"a regex source was rewritten: {out!r}"
+        assert n == 0
+        assert protected
+
+
+def test_prose_beside_an_assertion_is_still_rewritten():
+    text = 'NOTE = "10.0.0.5"\nassert route == "10.0.0.5"\n'
+    out, n, protected = san.scrub_text_guarded(text)
+    lines = out.splitlines()
+    assert lines[0] == 'NOTE = "198.51.100.5"', "prose was skipped along with the assertion"
+    assert lines[1] == 'assert route == "10.0.0.5"', "the assertion was rewritten"
+    assert n == 1
+    assert len(protected) == 1
+
+
+def test_is_test_path_covers_tests_and_the_jsdom_fixture_bundle():
+    # Assembled from parts: tests/test_references.py reads a quoted path-ish literal as a claim
+    # that the file exists, and these are deliberately fabricated examples.
+    sep = "/"
+    for path in ("tests" + sep + "test_x.py", sep.join(("tests", "fixtures", "data.json")),
+                 "test_x.py", sep.join(("pkg", "test_x.py")), "conftest.py",
+                 sep.join(("scripts", "jsdom_render.js"))):
+        assert san.is_test_path(path), f"{path} is a test path but --write would rewrite it"
+    for path in (sep.join(("weirvern", "models", "host_hour.py")),
+                 sep.join(("scripts", "image_drift.sh")),
+                 sep.join(("docs", "deployment.md"))):
+        assert not san.is_test_path(path), f"{path} is not a test path"

@@ -26,13 +26,23 @@ ATT&CK rules reading column names no query produces).
 USAGE
 
     python -m weirvern.tools.sanitize_identifiers --check     # report; exit 1 if anything found
-    python -m weirvern.tools.sanitize_identifiers --write     # rewrite files in place
+    python -m weirvern.tools.sanitize_identifiers --write     # rewrite PROSE only; see below
     python -m weirvern.tools.sanitize_identifiers --history   # also report git commit messages
+
+--WRITE REFUSES TEST FILES. In a test, an address is the FIXTURE -- the value the assertion
+compares against -- so rewriting it changes what the test asserts while leaving it green. Measured:
+--write turned `10.0.0.0/8` into `198.51.100.0/8` inside a test, and the suite kept passing while
+proving a different statement. --write therefore skips anything under `tests/`, any `test_*.py` /
+`*_test.py` / `conftest.py`, and the jsdom harness's fixture bundle; it also leaves quoted literals
+on an assertion line and raw/regex literals alone in every other file, and reports every skip.
+--check still reads all of them: an identifier in a test is still a leak, and a human decides how
+to replace it.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import subprocess
 import sys
@@ -244,6 +254,127 @@ SKIP_FILES = {
 }
 
 
+# ── What --WRITE must never rewrite ──────────────────────────────────────────────────────────
+#
+# A REWRITE IS ONLY SAFE WHERE THE VALUE IS PROSE. In a test, an address is the FIXTURE -- the
+# value the assertion is written against. Replacing it changes what the test asserts while leaving
+# the suite green, which is worse than leaving the identifier in place: the run still passes and
+# now proves a different statement. Measured: --write replaced `10.0.0.0/8` with
+# `198.51.100.0/8` inside a test and nothing went red.
+#
+# The same reasoning applies, line by line, inside every other file: a quoted literal on an
+# assertion line, and a raw/regex literal, are CODE that states a value, not prose that mentions
+# one. So --write refuses test files outright and leaves those spans alone everywhere, reporting
+# what it skipped. --check still reads all of them -- an identifier in a test is still a leak, and
+# a human decides how to replace it.
+TEST_DIR_PARTS = {"tests", "test"}
+TEST_FILE = re.compile(r"^(?:test_.*\.py|.*_test\.py|conftest\.py)$")
+# The jsdom harness's fixture bundle: every string in it is a DOM fixture or an assertion about
+# one, and it is generated into a single 600 KB file where a global substitution is unreviewable.
+PROTECTED_FIXTURES = {"scripts/jsdom_render.js"}
+
+_ASSERTION_LINE = re.compile(
+    r"^\s*(?:assert\b|self\.assert\w+|self\.fail\b|pytest\.(?:raises|warns|approx)\b|"
+    r"raise\s+AssertionError\b)"
+)
+_REGEX_CALL = re.compile(
+    r"\bre\.(?:compile|match|search|fullmatch|sub|subn|finditer|findall|split)\s*\("
+)
+_STRING_PREFIXES = {"r", "rb", "br", "rf", "fr", "b", "f", "u"}
+
+
+def is_test_path(rel: str) -> bool:
+    """True when --write must leave this path byte-identical.
+
+    Deliberately broad: a test is anything under a `tests/`/`test/` path component, anything named
+    `test_*.py`, `*_test.py` or `conftest.py`, and the jsdom fixture bundle. Missing a test costs
+    an assertion; skipping a non-test only means a human reads the report and fixes it.
+    """
+    p = PurePosixPath(rel)
+    if rel in PROTECTED_FIXTURES or p.name in {PurePosixPath(f).name for f in PROTECTED_FIXTURES}:
+        return True
+    if any(part in TEST_DIR_PARTS for part in p.parts[:-1]):
+        return True
+    return bool(TEST_FILE.match(p.name))
+
+
+def _opens_literal(line: str, i: int) -> bool:
+    """Whether the quote at `i` opens a string literal rather than sitting inside a word.
+
+    `don't` in a comment must not start a span that swallows the rest of the line and hides a real
+    address from the scrubber. A preceding identifier character is allowed only when it is a
+    string prefix (`f"`, `r"`, `rb"`), and the prefix itself must not continue an identifier.
+    """
+    if i == 0:
+        return True
+    prev = line[i - 1]
+    if not (prev.isalnum() or prev == "_"):
+        return True
+    k = i
+    while k > 0 and (i - k) < 2 and line[k - 1].isalpha():
+        k -= 1
+    if line[k:i].lower() not in _STRING_PREFIXES:
+        return False
+    return k == 0 or not (line[k - 1].isalnum() or line[k - 1] == "_")
+
+
+def _quoted_spans(line: str) -> list[tuple[int, int, bool]]:
+    """(start, end, is_raw) for every string literal on the line.
+
+    A scanner rather than a regex because escapes and triple quotes both appear in this tree and a
+    regex that gets either wrong either eats code or protects the wrong span.
+    """
+    spans: list[tuple[int, int, bool]] = []
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if ch not in "\"'" or not _opens_literal(line, i):
+            i += 1
+            continue
+        raw = _literal_prefix(line, i).lower() in {"r", "rb", "br", "rf", "fr"}
+        if line.startswith(ch * 3, i):
+            end = line.find(ch * 3, i + 3)
+            stop = n if end == -1 else end + 3
+            spans.append((i, stop, raw))
+            i = stop
+            continue
+        j = i + 1
+        while j < n:
+            if line[j] == "\\":
+                j += 2
+                continue
+            if line[j] == ch:
+                j += 1
+                break
+            j += 1
+        spans.append((i, min(j, n), raw))
+        i = max(j, i + 1)
+    return spans
+
+
+def _literal_prefix(line: str, start: int) -> str:
+    k = start
+    while k > 0 and (start - k) < 2 and line[k - 1].isalpha():
+        k -= 1
+    return line[k:start]
+
+
+def _protected_spans(line: str) -> list[tuple[int, int, str]]:
+    """Spans --write must not touch: quoted assertions, and raw/regex literals."""
+    quoted = _quoted_spans(line)
+    if not quoted:
+        return []
+    assertion = bool(_ASSERTION_LINE.match(line))
+    regex = bool(_REGEX_CALL.search(line))
+    out: list[tuple[int, int, str]] = []
+    for start, end, raw in quoted:
+        if assertion:
+            out.append((start, end, "quoted assertion"))
+        elif raw or regex:
+            out.append((start, end, "regex literal"))
+    return out
+
+
 # ── THE CAPTURE RULE, IN THE PRODUCT MODULE SO THE GUARD AND ITS TEST SHARE ONE DEFINITION ──────
 #
 # A capture is a complete record of a real network, more revealing than any single address in it, and
@@ -314,13 +445,71 @@ def tracked_files(root: Path) -> list[Path]:
     return files
 
 
-def scrub_text(text: str) -> tuple[str, int]:
-    """Apply MAPPING. Returns the new text and the number of substitutions."""
+def _apply_mapping(text: str) -> tuple[str, int]:
     total = 0
     for pattern, repl in MAPPING:
         text, n = re.subn(pattern, repl, text, flags=re.IGNORECASE)
         total += n
     return text, total
+
+
+def scrub_text(text: str, *, protect_values: bool = False) -> tuple[str, int]:
+    """Apply MAPPING. Returns the new text and the number of substitutions.
+
+    With `protect_values`, quoted literals on an assertion line and raw/regex literals are left
+    alone. That is what --write uses; --filter (commit messages) does not, because a message is
+    prose throughout.
+    """
+    if not protect_values:
+        return _apply_mapping(text)
+    scrubbed, n, _ = scrub_text_guarded(text)
+    return scrubbed, n
+
+
+def scrub_text_guarded(text: str) -> tuple[str, int, list[tuple[int, str]]]:
+    """Scrub prose, but never a quoted assertion or a regex literal.
+
+    Returns (new_text, substitutions, protected) where each protected entry is (line number, the
+    literal as written). A protected span is reported only when a rule WOULD have changed it --
+    otherwise every raw string in the tree would print, and a report nobody reads is not a report.
+    """
+    out: list[str] = []
+    total = 0
+    protected: list[tuple[int, str]] = []
+    for lineno, line in enumerate(text.splitlines(keepends=True), 1):
+        spans = _protected_spans(line)
+        if not spans:
+            new, n = _apply_mapping(line)
+            out.append(new)
+            total += n
+            continue
+        pieces: list[str] = []
+        pos = 0
+        for start, end, _why in spans:
+            piece, n = _apply_mapping(line[pos:start])
+            pieces.append(piece)
+            total += n
+            literal = line[start:end]
+            if _apply_mapping(literal)[1]:
+                protected.append((lineno, literal))
+            pieces.append(literal)
+            pos = end
+        piece, n = _apply_mapping(line[pos:])
+        pieces.append(piece)
+        total += n
+        out.append("".join(pieces))
+    return "".join(out), total, protected
+
+
+def _print_diff(rel: str, before: str, after: str, *, limit: int = 20) -> None:
+    """Show what a --write changed, so the rewrite can be reviewed rather than trusted."""
+    diff = list(difflib.unified_diff(
+        before.splitlines(keepends=True), after.splitlines(keepends=True),
+        fromfile=f"a/{rel}", tofile=f"b/{rel}", n=1))
+    for line in diff[:limit]:
+        sys.stdout.write(line if line.endswith("\n") else line + "\n")
+    if len(diff) > limit:
+        print(f"  ... ({len(diff) - limit} more diff line(s))")
 
 
 def find_identifiers(text: str, rel: str) -> list[tuple[int, str, str]]:
@@ -421,17 +610,33 @@ def main(argv: list[str] | None = None) -> int:
 
     changed = 0
     problems = 0
+    skipped: list[str] = []
+    protected_count = 0
 
     for path in tracked_files(root):
         rel = str(path.relative_to(root))
         original = path.read_text(encoding="utf-8", errors="replace")
 
         if args.write:
-            scrubbed, n = scrub_text(original)
+            # A TEST IS NOT PROSE. Its addresses are the fixtures the assertions are written
+            # against; rewriting one changes what the test proves without failing it. Skip the
+            # whole file, say so, and leave any identifier there for a human (--check reports it).
+            if is_test_path(rel):
+                skipped.append(rel)
+                print(f"  skipped {rel} (test fixture -- assertions and regexes are never rewritten)")
+                for lineno, kind, value in find_identifiers(original, rel)[:3]:
+                    print(f"      note: line {lineno}: {kind}: {value} needs a human decision")
+                continue
+            scrubbed, n, protected = scrub_text_guarded(original)
             if n:
                 path.write_text(scrubbed, encoding="utf-8")
                 changed += 1
                 print(f"  scrubbed {rel} ({n} substitution(s))")
+                _print_diff(rel, original, scrubbed)
+            for lineno, literal in protected:
+                protected_count += 1
+                print(f"  protected {rel}:{lineno}: {literal} "
+                      f"(quoted assertion/regex -- left alone)")
             remaining = find_identifiers(scrubbed, rel)
         else:
             remaining = find_identifiers(original, rel)
@@ -451,6 +656,10 @@ def main(argv: list[str] | None = None) -> int:
     print()
     if args.write:
         print(f"{changed} file(s) rewritten")
+        if skipped:
+            print(f"{len(skipped)} test fixture(s) skipped -- assertions are not rewritten")
+        if protected_count:
+            print(f"{protected_count} protected value(s) left in place (quoted assertion/regex)")
     print(f"{problems} identifier(s) with no mapping rule")
     return 1 if problems else 0
 
