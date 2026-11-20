@@ -29,11 +29,12 @@ HISTORY SHOULD NOT SILENTLY CONTRACT BECAUSE THE DISK GOT FULLER.
 - **Fresh installs are unchanged.** No ratchet file means the old arithmetic exactly; the first
   pass seeds the floor from what the tables already keep, so adopting the ratchet cannot shorten
   the window on the pass that introduces it. `derive` never writes — `ensure` owns persistence.
-- **Measured.** 138 retention/health tests (17 new) cover a free-space dip holding the floor, the
+- **Measured.** 139 retention/health tests (18 new) cover a free-space dip holding the floor, the
   floor rising on a larger derivation, a lower value refused with both numbers named, a reset
-  applying with actor+reason, the 85% guard holding the max affordable window, the guard sentence
-  in the Settings payload, and the fresh-install path. jsdom `1047 passed, 0 failed` adds the
-  reset flag on a destructive apply and its absence on ordinary applies.
+  applying with actor+reason, the 85% guard holding the max affordable window AND warning in the
+  worker log without rewriting the stored floor, the guard sentence in the Settings payload, and
+  the fresh-install path. jsdom `1047 passed, 0 failed` adds the reset flag on a destructive apply
+  and its absence on ordinary applies.
 
 ## 0.23.106 — 2026-11-20
 

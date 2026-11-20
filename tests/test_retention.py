@@ -1374,3 +1374,29 @@ def test_the_LIVE_settings_payload_carries_the_guard_and_the_floor(tmp_path):
     assert row["retention"]["ratchet_floor_days"] == 12
     assert "needs 87% of the volume" in row["retention"]["sentence"]
     assert "holding 10d" in row["retention"]["sentence"]
+
+
+def test_the_guard_WARNS_in_the_worker_log_and_does_not_rewrite_the_floor(
+        tmp_path, caplog):
+    """The three surfaces must agree: what the row says is what the log and Health say."""
+    import logging
+
+    ch = FakeCH({t.name: 12 for t in retention.RETENTION_TABLES},
+                free_bytes=20 * GB, total_bytes=100 * GB,
+                bytes_on_disk=5 * GB, span_days=5.0)
+    retention.save_ratchet(tmp_path, retention.Ratchet(
+        12, "2026-11-20T00:00:00+00:00", "operator", "the window that was in force"))
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.retention"):
+        report = retention.ensure(ch, "auto", 40, model_dir=tmp_path)
+
+    assert report["requested_days"] == 10
+    assert report["derivation"]["ratchet_guard_blocked"] is True
+    assert any(
+        "retention floor 12d needs 87% of the volume; holding 10d, the most the disk supports"
+        in rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING), (
+            [rec.getMessage() for rec in caplog.records])
+    # THE STORED FLOOR IS UNCHANGED: capacity held a smaller window for now, it did not decide
+    # that the operator's promise was 10 days.
+    assert _floor_on_disk(tmp_path)["floor_days"] == 12
+    assert report["ratchet"]["floor_days"] == 12
