@@ -883,12 +883,13 @@
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
   <p><strong>What it is.</strong> Five detectors watch the same traffic with different methods —
-  Isolation Forest, its Gradient Boosting student, a kNN-distance detector, a local outlier factor
-  (LOF) and an adaptive per-host baseline — and the ensemble asks how many independent families
-  agree before a score is believed. Isolation Forest and Gradient Boosting are one family; kNN,
-  LOF and the baseline are three more. Whether a detector contributes is derived in the Detectors
-  table below — a training row, an artifact on disk, a measured false-alarm rate against its
-  target, and the model card's veto. No stored status word is repeated as a fact here.</p>
+  Isolation Forest, its Gradient Boosting student, a k-nearest neighbours (KNN distance) detector,
+  a local outlier factor (LOF) detector and an adaptive per-host baseline — and the ensemble asks
+  how many independent families agree before a score is believed. Isolation Forest and Gradient
+  Boosting are one family; KNN distance, LOF and the baseline are three more. Whether a detector
+  contributes is derived in the Detectors table below — a training row, an artifact on disk, a
+  measured false-alarm rate against its target, and the model card's veto. No stored status word
+  is repeated as a fact here.</p>
   <p><strong>What is new.</strong> Calibration and the shadow channels below are read-only experiments: they measure budgets, candidates and regime changes, but no shadow row can create or change an alert.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
@@ -957,8 +958,9 @@
 <div class="info-text hidden" id="m-history-info">
   <p><strong>What it is.</strong> Each line is one detector over time. The sampled detectors
   draw from a 72h training window every 6h and the line shows how many rows they sampled, capped at
-  80k (Isolation Forest), 40k (Gradient Boosting) and 5k (KNN distance and LOF, each on its own
-  19-column reference) &mdash; a flat line means the window is already full.</p>
+  80k (Isolation Forest), 40k (Gradient Boosting) and 5k for k-nearest neighbours (KNN distance)
+  and local outlier factor (LOF), each on its own 19-column reference &mdash; a flat line means the
+  window is already full.</p>
   <p><strong>The Adaptive Baseline is a different quantity.</strong> It rebuilds per-host baselines
   from the last 24h on every detection cycle, so its line is the number of HOSTS it just baselined
   (tens, not thousands) and it has far more points than the others. It is on this chart because its
@@ -991,7 +993,7 @@
         <div id="m-agreement" class="chart"></div>
       </div>
     </div>
-    <h3 class="view-section">Verification and review</h3>
+    <h3 class="view-section">Evaluation</h3>
     <div class="card">
       <h2>Source coverage <span class="muted">before training, scoring and promotion</span></h2>
       <p class="muted" id="m-cov-note">loading…</p>
@@ -1013,22 +1015,14 @@
         </table>
       </div>
     </div>
-    <div class="card">
-      <h2>Verification coverage <span class="muted">machine-generated evidence, not human labels</span></h2>
-      <p class="muted" id="m-verify">loading…</p>
-    </div>
-    <div class="card">
-      <h2>Evaluation history <span class="muted">last fixed-budget report</span></h2>
-      <p class="muted" id="m-eval">loading…</p>
-    </div>
-    <div class="card">
-      <h2>Program review <span class="muted">monthly decision record</span></h2>
-      <p class="muted" id="m-review">loading…</p>
-    </div>
-    <div class="card">
-      <h2>Promotion policy and ledger <span class="muted">automatic inside the charter</span></h2>
-      <p class="muted" id="m-ledger">loading…</p>
-    </div>
+    <!-- FOUR PAPERWORK CARDS REMOVED (operator, 2026-11-20: "audit every card ... a card
+         survives only if it shows live data or an honest, actionable state"). Verification
+         coverage, Evaluation history, Program review and Promotion policy/ledger reported on
+         phases this deployment has never executed: verification and evaluation have no archive,
+         the review failed against blocked kanban cards, and automatic promotion has no ledger.
+         None carried a measured number. The underlying payloads and API routes remain (the
+         review/verification/evaluation models are still exercised by tests); only the
+         always-empty surfaces are gone. -->
     <h3 class="view-section">Shadow</h3>
     <div class="card">
       <h2>Shadow channels <span class="muted">one disposition each</span></h2>
@@ -1044,16 +1038,11 @@
         </table>
       </div>
     </div>
-    <div class="card">
-      <h2>Alerts <span class="muted">each host measured against its own history — read-only</span></h2>
-      <p class="muted" id="m-ripples-note">loading…</p>
-      <div class="tablewrap">
-        <table id="m-ripples">
-          <thead><tr><th>Host</th><th>When</th><th>Score</th><th>What moved</th><th>Channels</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
+    <!-- THE MODELS COPY OF THE ALERTS LIST REMOVED (operator, 2026-11-20: "a card survives
+         only if it shows live data or an honest, actionable state ... panels superseded by the
+         Alerts page"). This card read /api/ripples and repeated the Alerts page's primary table
+         (host, window, score, what moved, families) with fewer columns and no severity, detail
+         sheet or pagination. The Alerts page reads the same route and carries all of it. -->
     <div class="card">
       <h2>Ripple evidence <span class="muted">fused shadow channels — not in the alert path</span></h2>
       <p class="muted" id="m-ripple-note">loading…</p>
@@ -1105,20 +1094,13 @@
         <tbody></tbody>
       </table>
     </div>
-    <div class="card">
-      <h2>Anomalies <button class="info-btn" data-info="ev-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-<div class="info-text hidden" id="ev-info">
-  <p><strong>What it is.</strong> Every anomaly this host raised inside the window.</p>
-  <p><strong>What writes it.</strong> The anomaly store.</p>
-  <p><strong>Last changed.</strong> Follows the header window.</p>
-  <p><strong>Where to see it.</strong> Click a row to open its evidence.</p>
-</div>
-      <table id="m-points">
-        <thead><tr><th>Score</th><th>Agreement</th><th>Severity</th><th>Models</th>
-        <th>Primary feature</th><th>Magnitude</th><th>Host</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
+    <!-- THE DUPLICATE ANOMALIES TABLE REMOVED (operator, 2026-11-20: "remove the duplicate
+         anomalies section at the bottom of the tab ... it repeats information that now lives on
+         the Alerts page"). Deleted with its renderer and the /api/models points read: the Alerts
+         page's Model anomalies table carries the same rows with filtering, review state, evidence
+         drill and pagination. Score, severity, models, host, primary feature and magnitude are all
+         there; the per-row agreement number was a ranking input, and the aggregate it summarized
+         now sits in the Detectors note. -->
   </section>
 
   <!-- ── Alert evidence (the pivot) ───────────────────────────────────── -->

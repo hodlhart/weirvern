@@ -2492,67 +2492,33 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the chain carries no step numerals", doc.querySelectorAll("#ev-chain .chain-n").length === 0);
   }
 
-  // ── THE POINTS TABLE IS PAGED (US-A4) ──────────────────────────────────────────────────────
-  // The window can hold thousands of points. Rendering every one put this view at 8,650 elements
-  // against a 6,000 budget; the table now renders a page, says how many it holds back, and offers
-  // the rest. A held-back row is NAMED, never silently dropped.
+  // ── THE DUPLICATE MODELS PANELS ARE GONE (operator, 2026-11-20) ─────────────────────────────
+  // Deleted, not hidden: the markup is out of index.html and the renderers are out of app.js.
+  // A display:none node would still be a node, so this reads the DOM for absence.
   {
-    const big = [];
-    for (let i = 0; i < 250; i++) {
-      big.push({ score: 0.5 + i / 1000, agreement: 0.8, severity: "low", models: ["m1"],
-                 primary: "m1", magnitude: 1.2, src_addr: "198.51.100." + (i % 200) });
-    }
-    const origFetch = window.fetch;
-    window.fetch = (u, o) => {
-      if (/\/api\/models\?/.test(String(u)))
-        return Promise.resolve({ ok: true, json: async () => ({
-          available: true, summary: "250 points", points: big, staleness: [],
-          training_history: {}, scores: {}, model_counts: {}, feature_deviations: [],
-          baselines: {}, retrain_interval_h: 24 }) });
-      return origFetch(u, o);
-    };
-    H.showView("models");
-    await H.loadModels();
-    await new Promise((r) => setTimeout(r, 120));
-    window.fetch = origFetch;
-
-    const rows = [...doc.querySelectorAll("#m-points tbody tr")];
-    const footer = doc.querySelector("#m-points tbody tr.show-more");
-    check("a huge window renders one page of rows, not every row",
-          rows.length === 101 && !!footer, `rows=${rows.length}`);
-    check("...and the page says how many it is holding back",
-          !!footer && /250/.test(footer.textContent) && /150 more/.test(footer.textContent),
-          footer ? footer.textContent : "no footer");
-    if (footer) {
-      footer.querySelector("button").click();
-      await new Promise((r) => setTimeout(r, 120));
-      check("...and one click reveals the rest",
-            doc.querySelectorAll("#m-points tbody tr").length === 250
-            && !doc.querySelector("#m-points tbody tr.show-more"));
-    }
+    check("the duplicate Models anomalies and Alerts panels are absent from the DOM",
+          ["m-points", "m-ripples", "m-ripples-note", "m-review", "m-verify", "m-eval", "m-ledger"]
+            .every((id) => doc.getElementById(id) === null));
   }
 
-
-  // ── THE RIPPLES CARD (phase 1) ──────────────────────────────────────────────────────────────
-  //
-  // It is read-only by contract and it is the seed of the future anomaly page, so the check is
-  // that the operator can read a ripple WITHOUT opening anything: host, when, score, the
-  // sentence, and the channels. A card that renders an empty table is the failure this catches.
+  // ── KNN AND LOF ARE NAMED IN FULL ON THEIR FIRST ROW ───────────────────────────────────────
+  // The operator's wording rule: spell each out once at first use, then keep the acronym so
+  // the table stays readable. The second KNN row in this fixture proves "once", not "every row".
   {
-    H.clearGetCache();
-    H.showView("models");
-    await H.loadModels();
-    await new Promise((r) => setTimeout(r, 120));
-    const rows = [...doc.querySelectorAll("#m-ripples tbody tr")];
-    const text = rows.map((r) => r.textContent).join(" ");
-    check("the Ripples card lists a host with its window and score",
-          rows.length === 1 && /198\.51\.100\.5/.test(text) && /2\.41/.test(text),
-          `rows=${rows.length} text=${text.slice(0, 120)}`);
-    check("...and shows the sentence naming both channels",
-          /conn_volume 41 vs median 5/.test(text) && /dns_volume 60 vs median 6/.test(text),
-          text.slice(0, 200));
-    check("...and the channel list beside it",
-          /conn_volume, dns_volume/.test(text), text.slice(0, 200));
+    const detector = (name) => ({
+      name, trained: true, samples: 5000, artifact_version: "v5",
+      observed_far: 0, target_far: 0.01, coverage_note: "18 of 19 inputs (1 imputed)",
+      status: "eligible",
+    });
+    H.renderDetectors([detector("KNN distance"), detector("KNN distance"), detector("LOF")],
+                      "3 detectors: 3 eligible.", { budget: 0.3, bar: 0.35, windows: 25 });
+    const names = [...doc.querySelectorAll("#md-table tbody tr td:first-child")]
+      .map((td) => td.textContent);
+    check("the first KNN row is spelled out and the next one uses the acronym",
+          names[0] === "k-nearest neighbours (KNN distance)" && names[1] === "KNN distance",
+          names.join(" | "));
+    check("the LOF row is spelled out at its first use",
+          names[2] === "local outlier factor (LOF)", names.join(" | "));
   }
 
 

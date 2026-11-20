@@ -6893,13 +6893,29 @@ function renderDetectors(detectors, summary, budget) {
           // it reads as a warning to act on later, not as a failure to debug now.
           : String(status || "").startsWith("calibrated, held for budget") ? "sev-medium"
             : "sev-medium");
+  // NAME EACH LOCAL DETECTOR IN FULL ONCE (operator, 2026-11-20). The acronym is what the chart
+  // legends and the remaining rows use; the FIRST row in this table carries the expansion, so a
+  // reader meeting KNN or LOF for the first time does not have to guess, and the table stays
+  // readable rather than repeating the long name on every row.
+  const spelled = new Set();
+  const detectorName = (name) => {
+    if (name === "KNN distance" && !spelled.has(name)) {
+      spelled.add(name);
+      return "k-nearest neighbours (KNN distance)";
+    }
+    if (name === "LOF" && !spelled.has(name)) {
+      spelled.add(name);
+      return "local outlier factor (LOF)";
+    }
+    return name;
+  };
   for (const d of detectors) {
     const target = (d.target_far === null || d.target_far === undefined)
       ? null : Number(d.target_far);
     const observed = (d.observed_far === null || d.observed_far === undefined)
       ? null : Number(d.observed_far);
     body.appendChild(el("tr", {}, [
-      el("td", { text: d.name }),
+      el("td", { text: detectorName(d.name) }),
       el("td", { class: "mono muted", text: d.trained_at ? fmtTime(d.trained_at) : "\u2014" }),
       el("td", { class: "num", text: d.samples === null || d.samples === undefined
         ? "\u2014" : Number(d.samples).toLocaleString() }),
@@ -7276,12 +7292,6 @@ function mSetFilter(field, value) {
   loadModels().catch(showError);
 }
 
-function mKeepPoint(pt) {
-  if (M_FILTERS.host && String(pt.src_addr || "") !== M_FILTERS.host) return false;
-  if (M_FILTERS.feature && String(pt.primary || "") !== M_FILTERS.feature) return false;
-  return true;
-}
-
 function renderCalibration(data) {
   const note = document.getElementById("m-cal-note");
   const body = document.querySelector("#m-cal tbody");
@@ -7402,61 +7412,11 @@ function renderDispositions(r) {
     ". No channel is promoted without a generated-ground-truth fixed-budget win.";
 }
 
-/* PR-2/PR-3: the policy and the append-only ledger. */
-function renderPromotionLedger(policy, ledger) {
-  const note = document.getElementById("m-ledger");
-  if (!note) return;
-  const rows = ledger.rows || [];
-  note.textContent = `Policy ${policy.policy_version || "not measured"} · max in flight ` +
-    `${policy.max_in_flight ?? "not measured"} · shadow ${policy.shadow_min_days ?? "not measured"} d. ` +
-    (rows.length ? `Last decision: ${rows[rows.length - 1].action || "—"} at ${rows[rows.length - 1].recorded_at || "—"}.`
-                 : "No decision ledger archive; no automatic promotion has been recorded.");
-}
-
-/* CE-3: last fixed-budget report; an absent report is not a pass. */
-function renderEvalReport(r) {
-  const note = document.getElementById("m-eval");
-  if (!note) return;
-  if (!r || r.available === false) {
-    note.textContent = "No archived evaluation: " + ((r && r.reason) || "not run") +
-      ". Live precision is not measured without a canary or oracle.";
-    return;
-  }
-  const c = r.candidate || {};
-  note.textContent = `Status: ${r.status || "unknown"} · report ${r.report_id || "—"} · ` +
-    `precision ${c.precision ?? "not measured"} · detection ${c.detection_rate ?? "not measured"} · ` +
-    `live precision: ${r.live_precision || "not measured"} · generator ${r.generator_version || "not recorded"}.`;
-}
-
-/* OP-3: the archive is the decision record. A failed review names every blocked phase card. */
-function renderReview(r) {
-  const note = document.getElementById("m-review");
-  if (!note) return;
-  if (!r || r.available === false) {
-    note.textContent = "No archived review: " + ((r && r.reason) || "not run") +
-      ". A missing review is not a passing review.";
-    return;
-  }
-  const failures = (r.blocked_cards || []).map((c) => `${c.id} ${c.title} (${c.status})`);
-  note.textContent = `Status: ${r.status || "unknown"} · next: ${r.next_review || "not scheduled"} · ` +
-    `decision: ${r.decision || "not recorded"}.` +
-    (failures.length ? ` Blocked: ${failures.join("; ")}` : "");
-}
-
-/* CE-4: verified evidence is synthetic/canary/background; weak and unknown are named. */
-function renderVerification(v) {
-  const note = document.getElementById("m-verify");
-  if (!note) return;
-  if (!v || v.available === false) {
-    note.textContent = "Not measured: " + ((v && v.reason) || "no verification report") +
-      ". Weak labels are not counted as verified; live precision is not measured without an oracle.";
-    return;
-  }
-  const fmt = (x) => (x === null || x === undefined ? "not measured" : String(x));
-  note.textContent = `Verified attacks: ${fmt(v.verified_attack_windows)} · verified negative hours: ` +
-    `${fmt(v.verified_negative_hours)} · coverage: ${fmt(v.verification_coverage)} · ` +
-    `live precision: ${v.live_precision || "not measured"}`;
-}
+/* THE FOUR PAPERWORK RENDERERS ARE GONE (operator, 2026-11-20). Verification coverage,
+ * evaluation history, program review and the promotion ledger reported on phases this
+ * deployment has never executed, so their cards were always the same "not available"
+ * sentence. The payload fields and API routes are untouched: only the empty surfaces and
+ * the functions that wrote them were removed. */
 
 /* OP-1: one row per metric, one column per window. A metric absent from a window says
  * "not measured" in that cell; it never becomes a zero. */
@@ -7584,55 +7544,9 @@ function renderRipple(data) {
   }
 }
 
-function renderRipples(data) {
-  // PHASE 1: the seed of the future anomaly page. Read-only by contract -- no buttons, no
-  // acknowledgement, no alerting. It answers one question: which hosts moved, together, against
-  // their OWN history, and in which channels. An empty list is a measurement, not a blank.
-  const note = document.getElementById("m-ripples-note");
-  const body = document.querySelector("#m-ripples tbody");
-  if (!note || !body) return;
-  body.replaceChildren();
-  const hours = (data && data.window_hours) || 0;
-  if (!data || data.available === false) {
-    note.textContent = "Ripple evidence unavailable: " +
-      ((data && data.reason) || "the read failed") +
-      " — that is not the same as a quiet network.";
-    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
-      text: "No ripple evidence was read." })]));
-    return;
-  }
-  const rows = data.ripples || [];
-  // THE FLOOR IS PART OF THE ANSWER. A scale that cannot express the ripple bar is named,
-  // with its window count, instead of letting a floor p-value read as if it meant something.
-  const unavailable = Object.keys(data.baseline || {}).filter(
-    (scale) => data.baseline[scale] && data.baseline[scale].usable === false);
-  const baselineNote = unavailable.length
-    ? " Baseline too short at: " + unavailable.map((scale) => {
-      const b = data.baseline[scale];
-      return scale + " (" + (b.baseline_windows || 0) + " of " +
-        (b.minimum_windows || 0) + " windows)";
-    }).join("; ") + "."
-    : "";
-  note.textContent = (rows.length
-    ? rows.length + " ripple(s) in the last " + hours + "h, grouped from measured evidence. " +
-      "Read-only: this card does not alert."
-    : "No ripple formed in the last " + hours + "h: every measured channel stayed inside its " +
-      "host's own trailing history.") + baselineNote;
-  if (!rows.length) {
-    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
-      text: "Nothing moved far enough, together, to be a ripple." })]));
-    return;
-  }
-  for (const r of rows) {
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: r.host || "—" }),
-      el("td", { text: r.window_start ? fmtTime(r.window_start) : "—" }),
-      el("td", { class: "num", text: Number(r.score || 0).toFixed(2) }),
-      el("td", { text: r.explanation || "—" }),
-      el("td", { class: "muted", text: (r.channels || []).join(", ") || "—" }),
-    ]));
-  }
-}
+/* THE MODELS COPY OF THE ALERTS LIST IS GONE (operator, 2026-11-20): the Alerts page reads
+ * /api/ripples and renders the same rows with severity, a detail sheet and pagination, so
+ * the Models ripple-list renderer and its separate read were removed with the card. */
 
 async function loadModels() {
   scheduleURLSync();
@@ -7650,10 +7564,6 @@ async function loadModels() {
   // channel inventory, and a dead channel must not hide the fused answer.
   const ripplePromise = getJSON("/api/ml/ripple")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
-  // PHASE 1's evidence list is its own read for the same reason: a broken evidence table must
-  // not hide the fused answer, and a dead fusion must not hide the measurements under it.
-  const ripplesPromise = getJSON("/api/ripples?hours=" + encodeURIComponent(hours))
-    .catch((e) => ({ available: false, reason: String(e && e.message || e), ripples: [] }));
   // The asset-posture scorer is its own read: it scores the CHANGE ledger, not the flow model,
   // so a failure here must not take the production model view down.
   const posturePromise = getJSON("/api/asset-posture")
@@ -7669,7 +7579,6 @@ async function loadModels() {
   renderCalibration(await calPromise);
   renderShadow(await shadowPromise);
   renderRipple(await ripplePromise);
-  renderRipples(await ripplesPromise);
   renderAssetPosture(await posturePromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");
@@ -7681,8 +7590,6 @@ async function loadModels() {
       const n = document.getElementById(id);
       if (n) { n.innerHTML = ""; n.appendChild(chartEmpty("Unavailable.")); }
     }
-    const body = document.querySelector("#m-points tbody");
-    if (body) body.innerHTML = "";
     // The detectors table must not keep the previous load's rows while the rest of the view says
     // the payload is unavailable: a stale "contributing" beside an outage is the worst reading.
     const detBody = document.querySelector("#md-table tbody");
@@ -7716,10 +7623,6 @@ async function loadModels() {
 
   mRenderChips();
   renderDispositions(data.dispositions || {});
-  renderPromotionLedger(data.promotion_policy || {}, data.ledger || {});
-  renderEvalReport(data.eval_report || {});
-  renderReview(data.review || {});
-  renderVerification(data.verification || {});
   renderDetectors(data.detectors || [], data.detector_summary || "",
                   data.detector_budget || {});
   renderStaleness(data.staleness || [], data.retrain_interval_h);
@@ -7729,59 +7632,19 @@ async function loadModels() {
   renderFeatureDeviations(data.feature_deviations || [], data.feature_coverage || {});
   renderNearMisses(data);
 
-  const body = document.querySelector("#m-points tbody");
-  body.innerHTML = "";
-  const allPts = data.points || [];
-  const pts = allPts.filter(mKeepPoint);
-  if (!pts.length) {
-    // A FILTER THAT MATCHES NOTHING AND A WINDOW THAT HELD NOTHING ARE DIFFERENT FACTS.
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "muted", attrs: { colspan: 7 },
-                 text: allPts.length
-                   ? "No row matches the filter. Remove a chip to see the window again."
-                   : "No anomalies in this window." }),
-    ]));
-    return;
-  }
-  // THE TABLE IS A WORKLIST, NOT AN EXPORT (US-A4). The window can hold thousands of points;
-  // rendering every one put this view at 8,650 elements against a 6,000 budget, and the operator
-  // reads the top of the list first anyway. Render a page of rows, say how many are held back,
-  // and offer the rest in one click -- never a silent truncation.
-  const PAGE = 100;
-  const renderPoint = (pt) => {
-    const tr = el("tr", { class: "clickable" }, [
-      el("td", { class: "num", text: Number(pt.score || 0).toFixed(3) }),
-      el("td", { class: "num", text: Number(pt.agreement || 0).toFixed(2) }),
-      el("td", {}, [el("span", { class: "sev-" + (pt.severity || "low"),
-                              text: pt.severity ? sevText(pt.severity) : "\u2014" })]),
-      el("td", { text: (pt.models || []).join(", ") || "—" }),
-      el("td", { text: pt.primary || "—" }),
-      el("td", { class: "num", text: Number(pt.magnitude || 0).toFixed(2) }),
-      el("td", { class: "dcell", attrs: { title: "filter this view to this host" },
-                 on: { click: (e) => { e.stopPropagation(); mSetFilter("host", pt.src_addr); } } },
-         [hostCell(pt.src_addr, pt.hostname)]),
-    ]);
-    if (pt.src_addr) {
-      tr.addEventListener("click", () => { openHost(pt.src_addr); });
+  // THE DUPLICATE ANOMALIES TABLE IS GONE (operator, 2026-11-20): its rows live on the
+  // Alerts page, which reads /api/anomalies and renders score, severity, models, host,
+  // primary feature and magnitude with filters, review state and an evidence drill. The one
+  // number that was a ranking input here -- detector agreement -- survives as the aggregate
+  // stated beside the budget it was judged with, rather than as a second copy of the list.
+  const pts = data.points || [];
+  if (pts.length) {
+    const mean = pts.reduce((s, p) => s + Number(p.agreement || 0), 0) / pts.length;
+    const note = document.getElementById("md-note");
+    if (note) {
+      note.textContent += (note.textContent ? " · " : "") +
+        `mean detector agreement ${mean.toFixed(2)} across ${pts.length} scored anomalies`;
     }
-    return tr;
-  };
-  for (const pt of pts.slice(0, PAGE)) body.appendChild(renderPoint(pt));
-  if (pts.length > PAGE) {
-    const held = pts.length - PAGE;
-    const more = el("button", { class: "quiet",
-      text: `Show all ${pts.length} rows (${held} more)`, attrs: { type: "button" } });
-    more.addEventListener("click", () => {
-      for (const pt of pts.slice(PAGE)) body.appendChild(renderPoint(pt));
-      footer.remove();
-    });
-    const footer = el("tr", { class: "show-more" }, [
-      el("td", { attrs: { colspan: 7 }, class: "muted" }, [
-        el("span", { text: `Showing the first ${PAGE} of ${pts.length} rows. ` }),
-        more,
-      ]),
-    ]);
-    body.appendChild(footer);
   }
 }
 

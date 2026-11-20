@@ -19,10 +19,12 @@ def test_verified_counts_are_separate_from_weak_and_unknown():
         assert field in source, field
 
 
-def test_the_report_and_view_show_not_measured_for_absent_verification():
+def test_the_report_still_measures_verification_but_the_empty_card_is_gone():
     api = (ROOT / "weirvern" / "admin" / "web_api.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
     assert '"verification"' in api and "live_precision" in api
-    assert "renderVerification" in js and "m-verify" in js
-    assert "Verification coverage" in html and "m-verify" in html
+    # THE REPORT REMAINS; THE CARD THAT COULD ONLY SAY "NOT MEASURED" DOES NOT (operator,
+    # 2026-11-20). Verification never had an attached report on this deployment.
+    assert "renderVerification" not in js and "m-verify" not in js
+    assert "Verification coverage" not in html and "m-verify" not in html

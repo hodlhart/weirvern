@@ -1,6 +1,7 @@
 """OP-3: a monthly review that passes while a phase card is blocked is not a review."""
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -71,11 +72,16 @@ def test_missing_or_weak_verification_fails_the_review():
     assert any("generator version" in failure for failure in out["failures"])
 
 
-def test_the_archive_and_review_surface_are_exposed():
+def test_the_review_api_remains_but_its_empty_models_card_is_gone():
     api = (ROOT / "weirvern" / "admin" / "web_api.py").read_text()
     js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
+    markup = re.sub(r"<!--.*?-->", "", html, flags=re.S)
+    # THE MEASUREMENT STAYS; THE ALWAYS-EMPTY SURFACE DOES NOT (operator, 2026-11-20). The
+    # review report is still built and served for anything that reads it, but the Models tab
+    # no longer carries a card that could only say "no archived review" or list blocked phases
+    # this deployment never runs.
     assert routed("/api/ml/review"), "the review route is not registered"
     assert "latest_report" in api
-    assert "renderReview" in js and "m-review" in js
-    assert "Program review" in html and "m-review" in html
+    assert "renderReview" not in js and "m-review" not in js
+    assert "Program review" not in markup and "m-review" not in markup
