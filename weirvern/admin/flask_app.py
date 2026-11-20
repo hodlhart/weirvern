@@ -731,7 +731,8 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         from weirvern.admin import payloads, web  # noqa: PLC0415
 
         ip = str(web._first(request.args, "ip", "") or "").strip()
-        return _soft_route(payloads.scan_jobs, payloads.scan_jobs_failure, ip=ip)
+        job = str(web._first(request.args, "job", "") or "").strip()
+        return _soft_route(payloads.scan_jobs, payloads.scan_jobs_failure, ip=ip, job=job)
 
     @app.get("/api/identity")
     @gated

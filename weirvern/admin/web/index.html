@@ -800,6 +800,46 @@
     </div>
   </section>
 
+<!-- THE BLOCKED HIT SHEET (audit 2026-11-20). This was a centre modal opened by openModal(),
+     which made one object's detail a different surface from every other object's detail. It is
+     the right-side sheet now: same primitive, same scrim, same Escape, same focus return. The
+     only centre modal left is a destructive confirmation with its target, blast radius and
+     reason. -->
+<div class="card sheet hidden" id="bl-detail-card" tabindex="-1" role="dialog" aria-modal="true"
+     aria-labelledby="bl-detail-title" aria-hidden="true">
+  <h2><span id="bl-detail-title">Blocked hit</span>
+    <span class="mono muted" id="bl-detail-id"></span>
+    <button id="bl-detail-close" class="sheet-close" type="button"
+            aria-label="close this panel (Escape also closes)">Close</button></h2>
+  <div id="bl-detail-body"></div>
+  <p id="bl-detail-note" class="muted"></p>
+  <div class="controls sheet-actions">
+    <button id="bl-detail-rule" class="quiet" type="button">Open rule</button>
+    <button id="bl-detail-cancel" class="quiet" type="button">Close</button>
+  </div>
+</div>
+
+<!-- THE SCAN SHEET (operator, 2026-11-20: "a pop-out when the scan button is pressed, so the
+     user can watch the scan"). One manual scan is one object, so it is the house right-side
+     sheet -- not a modal, not a toast. It polls the queue row while it is open, states the
+     scanner's own recorded evidence, and stops when the job reaches done/error. The queue has
+     no phase and no percentage, and the sheet says so rather than drawing a bar. -->
+<div class="card sheet hidden" id="scan-sheet" tabindex="-1" role="dialog" aria-modal="true"
+     aria-labelledby="scan-title" aria-hidden="true">
+  <h2><span id="scan-title">Manual scan</span>
+    <span id="scan-subject" class="muted mono"></span>
+    <button id="scan-close" class="sheet-close" type="button"
+            aria-label="close this panel (Escape also closes)">Close</button></h2>
+  <p id="scan-state-line" class="scan-state-line" role="status" aria-live="polite">Reading the queue…</p>
+  <div id="scan-body"></div>
+  <div class="controls sheet-actions">
+    <button id="scan-retry" class="quiet hidden" type="button">Retry this scan</button>
+    <button id="scan-check" class="quiet" type="button">Check now</button>
+    <button id="scan-findings" class="quiet hidden" type="button">Open findings</button>
+    <button id="scan-cancel" class="quiet" type="button">Close</button>
+  </div>
+</div>
+
 <!-- THE RIPPLE SHEET. The house sheet (sheets.js), not a new surface: one scrim, one Escape,
      focus returns to the row that opened it. It shows the evidence the ripple was grouped from
      first, then the model anomalies in the same window, explicitly labelled corroboration. -->
@@ -1720,7 +1760,7 @@
         </table>
       </div>
       <div id="sl2-rules-pager" class="pager"></div>
-      <p id="sl2-empty" class="empty"></p>
+      <div id="sl2-empty" class="empty-host"></div>
       <!-- RULES THAT CAN NEVER MATCH ARE RECORDS, NOT RULES. They stay findable in one
            disclosure with an explanation, so the real rules are not buried among database rows. -->
       <div id="sl2-orphans" class="sl2-orphans-host"></div>
@@ -1859,18 +1899,6 @@
 
     <!-- ONE BLOCK, IN FULL. A row click opens this instead of only offering the rule chip:
          the operator asked for the same row -> detail pattern the anomaly queue uses. -->
-    <div id="bl-detail-card" class="card hidden" tabindex="-1"
-         role="dialog" aria-modal="true" aria-labelledby="bl-detail-title">
-      <h2><span id="bl-detail-title">Block detail</span>
-        <span class="mono muted" id="bl-detail-id"></span>
-        <button id="bl-detail-close" class="quiet" type="button">Close</button>
-      </h2>
-      <div id="bl-detail-body"></div>
-      <div class="controls">
-        <button id="bl-detail-rule" class="quiet" type="button">Open rule</button>
-        <span id="bl-detail-note" class="muted"></span>
-      </div>
-    </div>
 
     <div class="card">
       <h2>Recorded blocks <span class="muted">a watched name was asked for</span></h2>
@@ -1916,6 +1944,10 @@
       <p id="scanner-note" class="muted">loading…</p>
       <div id="scanner-list" class="scanner-list"></div>
       <div class="controls"><button id="scanner-check" class="quiet" type="button">Check again</button></div>
+      <!-- THE MANUAL-SCAN QUEUE, one line per job. A running scan is discoverable here after
+           its sheet is closed, and clicking a row opens that job's sheet again. -->
+      <h3 class="scan-queue-title">Recent manual scans <span id="scan-queue-note" class="muted"></span></h3>
+      <div id="scan-queue" class="scan-queue"></div>
     </div>
 
     <div class="card">
@@ -1964,7 +1996,6 @@
       <table id="wl-table">
         <tbody></tbody>
       </table>
-      <p id="wl-empty" class="empty"></p>
     </div>
 
     <!-- DRILL-DOWN. The finding text is the whole point of this panel: a state word alone does
@@ -2462,6 +2493,7 @@
 
 <script src="/app.js"></script>
 <script src="/sheets.js"></script>
+<script src="/scan.js"></script>
 <script src="/normalize.js"></script>
 <script src="/soc.js"></script>
 <script src="/assets.js"></script>

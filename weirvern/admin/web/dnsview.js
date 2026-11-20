@@ -243,7 +243,7 @@ function dnRenderRows(d) {
     const tr = el("tr", {});
     const cell = el("td", { class: "muted", attrs: { colspan: "7" },
                             text: "No DNS records matched. Widen the window or clear a filter." });
-    const fix = el("button", { class: "empty-act", text: "Clear filters", attrs: { type: "button" } });
+    const fix = el("button", { class: "empty-state-act", text: "Clear filters", attrs: { type: "button" } });
     fix.addEventListener("click", () => {
       for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
         const e = document.getElementById(id);

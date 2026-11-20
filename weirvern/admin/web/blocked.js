@@ -57,16 +57,9 @@ function blFilterTo(field, value) {
   loadBlocked().then(clearError).catch(showError);
 }
 
-function blEmptyRow(body, span, text, action) {
-  const tr = el("tr", {});
-  const cell = el("td", { class: "muted", attrs: { colspan: String(span) }, text });
-  if (action && action.label && typeof action.fn === "function") {
-    const fix = el("button", { class: "empty-act", text: action.label, attrs: { type: "button" } });
-    fix.addEventListener("click", action.fn);
-    cell.appendChild(fix);
-  }
-  tr.appendChild(cell);
-  body.appendChild(tr);
+function blEmptyRow(body, span, text, action, opts = {}) {
+  body.appendChild(el("tr", {}, [emptyStateCell(span,
+    Object.assign({ state: "none" }, opts, { message: text, action }))]));
 }
 
 function blRenderSummary(d) {
@@ -93,7 +86,8 @@ function blRenderHits(d) {
   if (!body) return;
   body.replaceChildren();
   if (d.available === false) {
-    blEmptyRow(body, 5, `Cannot list these: ${d.reason || "the query did not run"}.`);
+    blEmptyRow(body, 5, `Cannot list these: ${d.reason || "the query did not run"}.`, null,
+      { state: "failed" });
     return;
   }
   const hits = d.hits || [];
@@ -138,6 +132,7 @@ function blDetailEls() {
     rule: document.getElementById("bl-detail-rule"),
     note: document.getElementById("bl-detail-note"),
     close: document.getElementById("bl-detail-close"),
+    cancel: document.getElementById("bl-detail-cancel"),
   };
 }
 
@@ -177,12 +172,11 @@ function blOpenHit(h) {
   }
   els.rule.disabled = !h.rule_id;
   els.note.textContent = rule ? "" : "The rule behind this hit is not in the live set; the record remains readable.";
-  if (els.close) els.close.onclick = () => closeModal(els.card);
   if (els.rule) els.rule.onclick = () => {
-    closeModal(els.card);
+    closeSheet(els.card);
     blOpenRuleById(h.rule_id, h);
   };
-  openModal(els.card);
+  openSheet(els.card);
 }
 
 /** A rule hit's chip, or a fix from another view, opens the SAME Sluice rule sheet. The
@@ -238,6 +232,12 @@ async function loadBlocked() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  // THE HIT DETAIL IS A SHEET (audit 2026-11-20): one close control, one Escape handler and one
+  // scrim, all from sheets.js. This module owns no private overlay machinery.
+  const detail = document.getElementById("bl-detail-card");
+  if (detail) wireSheet(detail);
+  const detailCancel = document.getElementById("bl-detail-cancel");
+  if (detailCancel && detail) detailCancel.addEventListener("click", () => closeSheet(detail));
   const go = document.getElementById("bl-go");
   if (go) go.addEventListener("click", () => {
     BLOCKED_STATE.offset = 0;

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.23.114 — 2026-11-20
+
+TWO JOBS: the scan sheet the operator asked to watch, and the three console unifications the audit
+measured. No detection, capture or enforcement semantics changed.
+
+- **A manual scan now has a pop-out you can watch.** Pressing "Scan now" (Assets row or host page)
+  opens the right-side sheet on the job the POST created. It reads the queue row every 2.5s while
+  it is open: target, state (Queued / Running / Done / Failed, with the raw queue word beside it),
+  queued/started/finished times, a live-ticking elapsed clock, and the scanner's own recorded
+  result or error. Findings recorded for the host since the job was queued appear as they land,
+  with a count and one control into the findings drill; Retry re-queues the same host after a
+  failure or a timeout. The sheet stops polling on a terminal state and says so.
+  **No percentage**: `weirvern.scan_jobs` carries state, not phase or progress, and the sheet
+  states that rather than drawing a bar. A URL may address a job (`#…&scan=<job id>`) and the
+  sheet restores from it; closing drops the key. `GET /api/scan-jobs?job=<id>` reads one row so a
+  bookmarked job survives falling out of the 20-row recent list, and "Recent manual scans" on the
+  Scanner readiness card is where a still-running job is found again.
+- **One empty state, three facts.** Seven classes (`.empty`, `.chart-empty`,
+  `.net-peers-empty`, `.palette-empty`, `.review-none`, `.wl-spark-empty`, `.empty-act`) gave
+  "nothing exists", "nothing matches the active filters" and "the read failed" one muted look.
+  They are one `emptyState()` component with `data-state=none|filtered|failed`, the state word in
+  the DOM, the **named filters** for a filtered empty, and a failure that says it is a failure.
+  Every occurrence migrated; `.review-none` was a review disposition and is now
+  `.review-unreviewed`, and the sparkline's measured value is `.spark-value`, not an empty state.
+  The `#nw-table` "No edges" case now reads as a failed read when the graph read failed.
+- **Sheets are the only detail surface.** The Blocked hit detail was the last object detail
+  opened through `openModal()`; it is the house right-side sheet now (one scrim, one Escape, focus
+  returns to the row). Centre modals remain only for destructive confirmations with target, blast
+  radius and reason: the shared `confirmDestructive()` and the gate-change form.
+- **One card anatomy.** `.card`, `.ext-card`, `.gate-card`, `.net-card`, `.nz-card` and
+  `.rp-card` now share one box (surface, radius 8, shadow) and one spacing scale
+  (`--card-pad` 20 / `--card-pad-tight` 10 / `--card-gap` 16 / `--card-tight` 8), with
+  header/body/footer/action-row classes. Only layout and status edges vary; no variant declares
+  its own padding or radius. `docs/design/cards.md` and `docs/design/empty-states.md` state the
+  rules, and `tests/test_console_unification.py` pins them.
+
 ## 0.23.113 — 2026-11-20
 
 THE OPERATOR PASS: the console answers the reports against 0.23.112. No detection, capture or

@@ -180,17 +180,74 @@ function bandChip(value) {
   return el("span", { class: `bubble state sev-${band}`, text: sevText(band) });
 }
 
-function emptyRow(tbody, cols, message, action) {
-  const cell = el("td", { class: "empty", text: message, attrs: { colspan: String(cols) } });
-  // AN EMPTY STATE OFFERS THE BUTTON (BF-8): the cause in words, and -- when a control
-  // exists that genuinely fixes this emptiness -- the control itself, right here. An empty
-  // state that only describes the void makes the reader go find the fix.
-  if (action && action.label && typeof action.fn === "function") {
-    const fix = el("button", { class: "empty-act", text: action.label, attrs: { type: "button" } });
-    fix.addEventListener("click", action.fn);
-    cell.appendChild(fix);
+/* ── ONE EMPTY STATE, THREE FACTS (audit, 2026-11-20) ─────────────────────────────────────────
+ *
+ * The console had seven classes for empty space (.empty, .chart-empty, .net-peers-empty,
+ * .palette-empty, .review-none, .wl-spark-empty, .empty-act) and they collapsed three different
+ * facts into one look. A short list, a filtered list and a failed read are not the same answer,
+ * and the #nw-table "No edges" defect is the cautionary case: a graph read that failed could be
+ * read as a quiet network because both said "no edges" in the same muted type.
+ *
+ * The component states its state IN WORDS as well as in `data-state`:
+ *   none      nothing exists yet / nothing recorded in this window (a measured zero)
+ *   filtered  something may exist; the named filters select none of it
+ *   failed    the read failed -- this is NOT an absence, and says so
+ *
+ * A per-view sentence stays the caller's job: the component carries the state and the filters,
+ * the view carries the measurement.
+ */
+const EMPTY_STATE_WORDS = {
+  none: "Nothing here yet",
+  filtered: "Nothing matches",
+  failed: "Could not read",
+};
+
+/** The active filter labels for a view, from the one filter bar (a mirror, never a second state).
+ *  An empty state must not depend on the bar having rendered, so a missing bar means no names. */
+function activeFilterLabels(view) {
+  try {
+    const v = window.FILTER_BAR && window.FILTER_BAR.VIEWS && window.FILTER_BAR.VIEWS[view];
+    if (v && typeof v.list === "function") {
+      return v.list().map((p) => p && p.label).filter(Boolean);
+    }
+  } catch (_e) { /* fall through: the sentence is still true without the names */ }
+  return [];
+}
+
+function emptyState(opts = {}) {
+  const wanted = String(opts.state || "none");
+  const state = Object.prototype.hasOwnProperty.call(EMPTY_STATE_WORDS, wanted) ? wanted : "none";
+  const box = el("div", { class: "empty-state", attrs: { "data-state": state } });
+  box.appendChild(el("span", { class: "empty-state-word", text: opts.word || EMPTY_STATE_WORDS[state] }));
+  if (opts.message) {
+    box.appendChild(el("span", { class: "empty-state-text", text: String(opts.message) }));
   }
-  tbody.replaceChildren(el("tr", {}, [cell]));
+  const filters = (opts.filters || []).map((f) => String(f || "").trim()).filter(Boolean);
+  if (state === "filtered" && filters.length) {
+    box.appendChild(el("span", {
+      class: "empty-state-filters",
+      text: `Active filter${filters.length === 1 ? "" : "s"}: ${filters.join(" · ")}`,
+    }));
+  }
+  // AN EMPTY STATE OFFERS THE BUTTON (BF-8): the cause in words, and -- when a control exists
+  // that genuinely fixes this emptiness -- the control itself, right here.
+  if (opts.action && opts.action.label && typeof opts.action.fn === "function") {
+    const fix = el("button", { class: "empty-state-act", text: opts.action.label,
+      attrs: { type: "button" } });
+    fix.addEventListener("click", opts.action.fn);
+    box.appendChild(fix);
+  }
+  return box;
+}
+
+/** The table form: one cell spanning the table, carrying the component. */
+function emptyStateCell(cols, opts) {
+  return el("td", { class: "empty-cell", attrs: { colspan: String(cols) } }, [emptyState(opts)]);
+}
+
+function emptyRow(tbody, cols, message, action, opts = {}) {
+  const merged = Object.assign({ state: "none" }, opts, { message, action });
+  tbody.replaceChildren(el("tr", {}, [emptyStateCell(cols, merged)]));
 }
 
 /* The ONE JSON fetch helper, shared by every script. scripts/jsdom_render.js evaluates all
@@ -1592,7 +1649,7 @@ async function loadSettings() {
     if (sum) sum.textContent = "Unavailable: " + ((data && data.reason) || "no data");
     for (const id of ["st-detect", "st-sensor", "st-dns", "st-runtime"]) {
       const n = document.getElementById(id);
-      if (n) { n.replaceChildren(); n.appendChild(chartEmpty("Unavailable.")); }
+      if (n) { n.replaceChildren(); n.appendChild(chartEmpty("Unavailable.", "failed")); }
     }
     return;
   }
@@ -2056,7 +2113,7 @@ function reviewClass(state) {
   if (state === "unavailable") return "review-unavailable";
   if (state === "ack") return "review-ack";
   if (state === "resolved") return "review-resolved";
-  return "review-none";
+  return "review-unreviewed";
 }
 
 /**
@@ -3009,8 +3066,10 @@ function renderRipplePage(data) {
     if (note) note.textContent = "Ripple evidence unavailable: " + (data.reason || "the read failed") +
       " — that is not the same as a quiet network. The model anomalies below are stored detections, not a substitute for this read.";
     if (count) count.textContent = "unavailable";
-    if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
-      text: "The ripple store could not be read. Read the named reason above, not this empty table." })]));
+    if (body) body.appendChild(el("tr", {}, [emptyStateCell(6, {
+      state: "failed",
+      message: "The ripple store could not be read. Read the named reason above, not this empty table.",
+    })]));
     if (empty) {
       empty.appendChild(el("p", {}, [
         el("strong", { text: "The ripple read failed." }),
@@ -3055,8 +3114,11 @@ function renderRipplePage(data) {
     const message = RIPPLES_STATE.band
       ? `No ${RIPPLES_STATE.band} alert in the last ${hours}h \u2014 the ${RIPPLES_STATE.band} counter is the active filter. Clear it to see all ${allRows.length}.`
       : `No alert in the last ${hours}h \u2014 the scale and baseline detail is above.`;
-    if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
-      text: message })]));
+    if (body) body.appendChild(el("tr", {}, [emptyStateCell(6, {
+      state: RIPPLES_STATE.band ? "filtered" : "none",
+      message,
+      filters: RIPPLES_STATE.band ? [`ripple band = ${RIPPLES_STATE.band}`] : [],
+    })]));
     if (!RIPPLES_STATE.band) renderRippleEmpty(data);
     if (empty) {
       // The filtered-empty case names the filter; the unfiltered case keeps the scale/baseline
@@ -3096,8 +3158,10 @@ function rippleEvidenceTable(ripple) {
   const tbody = el("tbody");
   const rows = ripple.evidence || [];
   if (!rows.length) {
-    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 8 },
-      text: "This ripple carries no evidence rows. That is a payload defect, not a quiet reading." })]));
+    tbody.appendChild(el("tr", {}, [emptyStateCell(8, {
+      state: "failed",
+      message: "This ripple carries no evidence rows. That is a payload defect, not a quiet reading.",
+    })]));
   }
   for (const e of rows) {
     const baseline = `${Number(e.sample_count || 0)} windows` +
@@ -3742,7 +3806,8 @@ async function loadAnomalies() {
           : "No anomalies recorded yet — rows land as scan windows complete.");
     emptyRow(tbody, 12, note, filtered
       ? { label: "Clear filters", fn: () => anClearAllFilters() }
-      : null);
+      : null,
+      { state: filtered ? "filtered" : "none", filters: activeFilterLabels("anomalies") });
     return;
   }
   for (const a of rows) {
@@ -3884,7 +3949,8 @@ async function loadEpisodeQueue(mode, hours) {
   const countLine = document.getElementById("an-count-line");
   if (payload.available !== true) {
     const why = payload.reason || "the episode view is unavailable";
-    emptyRow(tbody, 11, `The queue cannot be read: ${why}. Raw anomalies remain available.`);
+    emptyRow(tbody, 11, `The queue cannot be read: ${why}. Raw anomalies remain available.`,
+      null, { state: "failed" });
     if (note) note.textContent = "";
     if (countLine) countLine.textContent = "";
     return;
@@ -3904,7 +3970,7 @@ async function loadEpisodeQueue(mode, hours) {
   if (!rows.length) {
     emptyRow(tbody, 11, mode === "incidents"
       ? "No incident episodes in this window. Leads and raw anomalies are still available."
-      : "No leads in this window.");
+      : "No leads in this window.", null, { state: "none" });
     return;
   }
   for (const e of rows) {
@@ -4108,8 +4174,9 @@ async function loadHost(addr, hours) {
   showDataError(d.errors ? Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join(" | ") : null);
   const t = d.totals;
   if (!t) {
-    stats.appendChild(el("p", { class: "empty",
-      text: d.errors
+    stats.appendChild(emptyState({
+      state: d.errors ? "failed" : "none",
+      message: d.errors
         ? "Host totals could not be read — see the message above."
         : `No flows from ${d.src_addr} in the last ${d.hours}h.` }));
   } else {
@@ -4145,7 +4212,7 @@ async function loadHost(addr, hours) {
     }));
   }
   if (!d.timeline.length) {
-    spark.appendChild(el("p", { class: "empty", text: "No timeline data." }));
+    spark.appendChild(emptyState({ state: "none", message: "No timeline data." }));
   }
 
   const dests = document.querySelector("#h-dests tbody");
@@ -7110,9 +7177,13 @@ const MODEL_COLORS = {
   "Ensemble": "var(--series-5)",
 };
 
-/** A placeholder that says what is missing rather than rendering an empty box. */
-function chartEmpty(text) {
-  return el("p", { class: "muted chart-empty", text });
+/** A placeholder that says what is missing rather than rendering an empty box. `state` is the
+ *  same three-state contract as emptyState(): a chart that could not be read says "Could not
+ *  read", never a quiet-looking blank. */
+function chartEmpty(text, state = "none", filters = []) {
+  const node = emptyState({ state, message: text, filters });
+  node.classList.add("chart-empty-box");
+  return node;
 }
 
 /** An SVG canvas with a padded drawing area. Returns {svg, plot, x, y} helpers. */
@@ -8004,7 +8075,7 @@ async function loadModels() {
     if (sum) sum.textContent = "Unavailable: " + ((data && data.reason) || "no data");
     for (const id of ["m-history", "m-scores", "m-agreement", "m-features"]) {
       const n = document.getElementById(id);
-      if (n) { n.innerHTML = ""; n.appendChild(chartEmpty("Unavailable.")); }
+      if (n) { n.innerHTML = ""; n.appendChild(chartEmpty("Unavailable.", "failed")); }
     }
     // The detectors table must not keep the previous load's rows while the rest of the view says
     // the payload is unavailable: a stale "contributing" beside an outage is the worst reading.
@@ -8160,8 +8231,9 @@ async function loadIdentity() {
   const covBox = document.getElementById("id-coverage");
   covBox.replaceChildren();
   if (!cov.available) {
-    covBox.appendChild(el("p", { class: "empty",
-      text: `Coverage unknown — ${cov.reason || "the coverage query did not run"}.` }));
+    covBox.appendChild(emptyState({
+      state: "failed",
+      message: `Coverage unknown — ${cov.reason || "the coverage query did not run"}.` }));
   } else {
     const pct = cov.coverage_pct == null ? "—" : `${cov.coverage_pct}%`;
     const items = [
@@ -8447,6 +8519,9 @@ function syncURL() {
   if (WTL_STATE.scope) p.set("au.scope", WTL_STATE.scope);
   if (WTL_STATE.action) p.set("au.action", WTL_STATE.action);
   if (WTL_STATE.target) p.set("au.target", WTL_STATE.target);
+  // THE SCAN SHEET'S SUBJECT IS URL-ADDRESSABLE: a reload restores the job, and closing the
+  // sheet removes the key (syncURL is what writes it, so there is one writer).
+  if (typeof SCAN_STATE !== "undefined" && SCAN_STATE.jobId) p.set("scan", SCAN_STATE.jobId);
   // US-7: the LAST views without URL state. Assets' search and service facet, the graph's
   // filters, and Discover's feed/selects/chips -- the URL now carries the screen, and a
   // reload returns to it.
@@ -8568,6 +8643,17 @@ function applyURLState() {
   const raw = (location.hash || "").replace(/^#/, "");
   if (!raw) return false;
   const p = new URLSearchParams(raw);
+  // THE SCAN SHEET IS ADDRESSED BY JOB ID, NOT BY VIEW. Restored before the per-view branches
+  // below, because a shared link to a scan must open its sheet whichever tab is also named.
+  // The DOM owns "which job is open" (`data-job-id`), so this needs no cross-file constant.
+  const scanParam = String(p.get("scan") || "").trim();
+  const scanCard = document.getElementById("scan-sheet");
+  const scanOpenId = scanCard && scanCard.dataset ? String(scanCard.dataset.jobId || "") : "";
+  if (scanParam && typeof openScanSheet === "function" && scanOpenId !== scanParam) {
+    openScanSheet(scanParam);
+  } else if (!scanParam && scanOpenId && typeof closeScanSheet === "function") {
+    closeScanSheet();
+  }
   // LET, not const: the identity/host aliases below retarget an old link to Assets.
   let v = p.get("v") || "";
   const tr = p.get("tr") || "";

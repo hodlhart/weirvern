@@ -29,12 +29,12 @@ S = {name: (WEB / name).read_text() for name in
 
 
 def test_the_empty_state_row_can_offer_a_button():
-    assert "function emptyRow(tbody, cols, message, action)" in S["app.js"], (
+    assert "function emptyRow(tbody, cols, message, action, opts = {})" in S["app.js"], (
         "emptyRow lost its action parameter -- an empty state that cannot offer the button "
         "makes the reader go find the fix"
     )
-    assert ".empty-act" in S["style.css"], "the empty-state button has no style"
-    assert "function blEmptyRow(body, span, text, action)" in S["blocked.js"], (
+    assert ".empty-state-act" in S["style.css"], "the empty-state button has no style"
+    assert "function blEmptyRow(body, span, text, action, opts = {})" in S["blocked.js"], (
         "the Blocked tab's own empty helper does not accept an action"
     )
 

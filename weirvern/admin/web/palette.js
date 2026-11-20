@@ -324,7 +324,11 @@ function paletteRender() {
   if (PALETTE.active >= PALETTE.rows.length) PALETTE.active = 0;
   box.replaceChildren();
   if (!PALETTE.rows.length) {
-    box.appendChild(el("div", { class: "palette-empty muted", text: "nothing matches" }));
+    box.appendChild(emptyState({
+      state: "filtered",
+      message: "nothing matches",
+      filters: [`search = ${String(input && input.value || "").trim() || "(empty)"}`],
+    }));
     return;
   }
   PALETTE.rows.forEach((c, i) => {

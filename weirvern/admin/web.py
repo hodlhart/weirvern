@@ -113,6 +113,10 @@ STATIC_FILES = {
     # The sheet standard: one opener/closer for every right-edge editing surface (scrim,
     # Escape, focus). Loaded after app.js and before the views that open a sheet.
     "/sheets.js": ("sheets.js", "application/javascript; charset=utf-8"),
+    # The scan sheet: watching one manual scan from queued to its recorded findings. Its own
+    # file because it owns a bounded poll and a subject that is URL-addressable, neither of
+    # which belongs in the inventory renderer that opens it.
+    "/scan.js": ("scan.js", "application/javascript; charset=utf-8"),
     "/sluice.js": ("sluice.js", "application/javascript; charset=utf-8"),
     # The Weirlings fleet tab. Its own file for the same reason as the others, and because
     # "which sensors are expected, and which of them are silent" is a distinct concern from both

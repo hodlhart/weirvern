@@ -100,11 +100,12 @@ async function loadWeirlings() {
   if (!d.available) {
     // THE DEFECT THIS PREVENTS: a registry outage rendering as a calm, empty, healthy fleet.
     showDataError(d.reason || "the weirling registry is unavailable");
-    summaryBox.appendChild(el("p", { class: "empty",
-      text: `Fleet unknown — ${d.reason || "the registry did not answer"}.` }));
+    summaryBox.appendChild(emptyState({
+      state: "failed",
+      message: `Fleet unknown — ${d.reason || "the registry did not answer"}.` }));
     document.getElementById("wl-count").textContent = "";
     emptyRow(document.querySelector("#wl-table tbody"), 7,
-      "The fleet cannot be shown while the registry is unreadable.");
+      "The fleet cannot be shown while the registry is unreadable.", null, { state: "failed" });
     return;
   }
   showDataError(null);
@@ -487,7 +488,7 @@ function wlSparkline(r) {
     // computed, so it cannot drift from the netflow chip beside it.
     const why = ev.why || (!ev.known ? "no address reported yet"
       : (ev.flows ? "no flows in the last hour" : "no flows observed in 24h"));
-    return el("span", { class: "muted mono wl-spark-empty",
+    return el("span", { class: "muted mono spark-value",
                         text: ev.known ? `${Number(ev.flows || 0).toLocaleString()} flows` : "—",
                         attrs: { title: why } });
   }
@@ -729,9 +730,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
     if (!present.has(id)) WL_SELECTED.delete(id);
   }
   const tbody = document.querySelector("#wl-table tbody");
-  const empty = document.getElementById("wl-empty");
   tbody.replaceChildren();
-  empty.textContent = "";
 
   const showRevoked = document.getElementById("wl-revoked").checked;
   const stateFilter = WL_FILTERS.state;
@@ -753,7 +752,11 @@ function renderWeirlings(rows, revoked, revokedReason) {
               if (typeof scheduleURLSync === "function") scheduleURLSync();
               loadWeirlings().then(clearError).catch(showError);
             } }
-        : { label: "How adding works", fn: () => openHelpPanel("wl-info") });
+        : { label: "How adding works", fn: () => openHelpPanel("wl-info") },
+      { state: stateFilter || problemsOnly ? "filtered" : "none",
+        filters: [stateFilter ? `state = ${stateFilter}` : "",
+                  problemsOnly ? "problems only" : ""].filter(Boolean),
+        word: stateFilter || problemsOnly ? "Nothing matches" : "" });
   }
 
   for (const r of visible) {
@@ -1060,18 +1063,20 @@ async function openWeirling(sensorId, opts = {}) {
   try {
     d = await getJSON(`/api/weirlings/detail?sensor=${encodeURIComponent(sensorId)}`);
   } catch (err) {
-    body.replaceChildren(el("p", { class: "empty",
-      text: `Could not read this sensor: ${err && err.message ? err.message : err}` }));
+    body.replaceChildren(emptyState({
+      state: "failed",
+      message: `Could not read this sensor: ${err && err.message ? err.message : err}` }));
     return;
   }
 
   if (!d.available) {
-    body.replaceChildren(el("p", { class: "empty",
-      text: `Sensor unknown — ${d.reason || "the read did not run"}.` }));
+    body.replaceChildren(emptyState({
+      state: "failed",
+      message: `Sensor unknown — ${d.reason || "the read did not run"}.` }));
     return;
   }
   if (!d.sensor) {
-    body.replaceChildren(el("p", { class: "empty", text: d.note || "no such sensor" }));
+    body.replaceChildren(emptyState({ state: "none", message: d.note || "no such sensor" }));
     return;
   }
 
@@ -2578,8 +2583,8 @@ async function loadNetworkCoverage(coverage) {
       });
       peers.appendChild(list);
     } else {
-      peers.appendChild(el("div", { class: "net-peers-empty muted",
-        text: "No external peers in this window." }));
+      peers.appendChild(emptyState({
+        state: "none", message: "No external peers in this window." }));
     }
   }
 }
@@ -2634,6 +2639,7 @@ async function loadScannerStatus() {
     ? "Every reporting node has Nmap. Identity scans use the deeper profile automatically."
     : "Basic identity is active everywhere. Install Nmap on a node from its own package manager; Weirvern detects it on the next pass and never installs it for you.";
   list.replaceChildren();
+  loadScanQueue().catch(() => {});
   if (!sensors.length) {
     list.appendChild(el("p", { class: "muted", text: "No scanner has reported yet." }));
     return;

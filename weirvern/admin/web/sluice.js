@@ -577,15 +577,17 @@ function renderSluiceFleet(gates, d) {
   host.replaceChildren();
   if (!available) {
     if (note) note.textContent = "";
-    host.appendChild(el("p", { class: "empty",
-      text: `The fleet's gate state could not be read${d && d.gates_reason ? `: ${d.gates_reason}` : ""}. `
+    host.appendChild(emptyState({
+      state: "failed",
+      message: `The fleet's gate state could not be read${d && d.gates_reason ? `: ${d.gates_reason}` : ""}. `
         + "This is not a claim that no sensor is enforcing." }));
     return;
   }
   if (!gates.length) {
     if (note) note.textContent = "";
-    host.appendChild(el("p", { class: "empty",
-      text: "No sensor has reported a packet gate yet. A gate row is written on every enforcement "
+    host.appendChild(emptyState({
+      state: "none",
+      message: "No sensor has reported a packet gate yet. A gate row is written on every enforcement "
         + "pass; until one arrives, no segment is known to be filtered." }));
     return;
   }
@@ -870,24 +872,32 @@ function renderSluiceRules(d) {
   const real = shown.filter(sl2HasPredicate);
   const empties = shown.filter((r) => !sl2HasPredicate(r));
   if (!real.length) {
+    let state = "none";
+    let message;
+    let filters = [];
     if (!d.available) {
-      empty.textContent = d.reason || "The rule store could not be read.";
+      state = "failed";
+      message = d.reason || "The rule store could not be read.";
     } else if (!rules.length) {
-      empty.textContent = "No rule has been filed. The gates have nothing to enforce; "
+      message = "No rule has been filed. The gates have nothing to enforce; "
         + "New rule files the first one.";
     } else if (SL2_STATE.filter !== "all") {
       const other = rules.filter((r) => (SL2_STATE.filter === "domain" ? !r.domain : r.domain)).length;
-      empty.textContent = `No ${SL2_STATE.filter} rule exists yet. `
+      state = "filtered";
+      filters = [`gate = ${SL2_STATE.filter}`];
+      message = `No ${SL2_STATE.filter} rule exists yet. `
         + `${sl2Count(other, "rule")} in the other gate ${other === 1 ? "is" : "are"} still listed.`;
     } else if (empties.length) {
-      empty.textContent = "No rule with a predicate matches this view. The rules that can never "
+      state = "filtered";
+      message = "No rule with a predicate matches this view. The rules that can never "
         + "match are listed below.";
     } else {
-      empty.textContent = "No rule matches this view.";
+      message = "No rule matches this view.";
     }
     if (hiddenRevoked && d.available) {
-      empty.textContent += ` ${sl2Count(hiddenRevoked, "revoked rule")} hidden; tick "show revoked" to read them.`;
+      message += ` ${sl2Count(hiddenRevoked, "revoked rule")} hidden; tick "show revoked" to read them.`;
     }
+    empty.replaceChildren(emptyState({ state, message, filters }));
     empty.classList.remove("hidden");
     renderSluiceOrphans(empties);
     return;

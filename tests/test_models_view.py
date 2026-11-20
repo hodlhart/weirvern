@@ -128,8 +128,14 @@ def test_every_function_the_models_code_calls_is_defined():
     cleaned = re.sub(r'"[^"\n]*"', '""', cleaned)
     cleaned = re.sub(r"'[^'\n]*'", "''", cleaned)
     called = set(re.findall(r"(?<![.\w{,])[\s,;(]?([a-z][A-Za-z0-9_]*)\(", cleaned))
-    defined = set(re.findall(r"function\s+([A-Za-z0-9_]+)", APP_JS))
-    defined |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=", APP_JS))
+    # THE WHOLE PAGE, NOT JUST app.js. The models code calls the scan sheet's public API
+    # (openScanSheet/closeScanSheet), which is defined in scan.js -- a sibling the page loads.
+    # Widening the DEFINITION scan is the same fix the orphan scan got when soc.js landed;
+    # narrowing the call scan or exempting the names would turn the check off.
+    web = Path(__file__).resolve().parents[1] / "weirvern" / "admin" / "web"
+    page_js = "\n".join(p.read_text() for p in sorted(web.glob("*.js")))
+    defined = set(re.findall(r"function\s+([A-Za-z0-9_]+)", page_js))
+    defined |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=", page_js))
     keywords = {"if", "for", "while", "switch", "catch", "function", "return", "typeof",
                 "new", "of", "in", "do", "else", "try", "await", "async", "yield"}
     # Names that are genuinely global in a browser and never defined by us.

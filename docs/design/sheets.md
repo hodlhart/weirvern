@@ -25,6 +25,14 @@ right edge, over the view; the list underneath does not reflow while you read.
 **Never**: an editable form at rest on a tab; a second composer for the same object; a modal used
 to edit an object; a sheet with its own private scrim or key handler.
 
+### The sheet is the only detail surface (locked 2026-11-20)
+
+Reading **one object** — a weirling, a rule, a blocked hit, a scan — is a sheet, always. A centre
+modal is allowed **only** for a destructive or irreversible confirmation, and it must carry the
+target, the blast radius and the reason it records. A detail that opened in the centre modal
+(a `-detail-` node under `openModal`) is the defect this rule names; the Blocked hit detail was
+the last one and is a sheet now. Pinned by `tests/test_console_unification.py`.
+
 ## 2. Anatomy
 
 ```

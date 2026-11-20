@@ -28,6 +28,12 @@
   --border: rgba(249,250,250,.07);   /* hairline divider */
   --border-solid: #42474d;      /* form-control borders (the only solid borders) */
   --line: var(--border);        /* line-work alias, so var(--line, ...) never falls back */
+  /* THE CARD SCALE (docs/design/cards.md): one anatomy, one spacing ladder. */
+  --card-pad: 20px;        /* a page card's inside edge */
+  --card-pad-tight: 10px;  /* a card-row's inside edge: the same ladder, one density down */
+  --card-gap: 16px;        /* header -> body -> footer */
+  --card-tight: 8px;       /* between items inside a header, footer or action row */
+  --card-radius: 8px;      /* the canon's largest legal radius */
   --fg: #f9fafa;                /* headings and values */
   --fg-2: #dee0e3;              /* body text */
   --muted: #b7bcc2;             /* labels, secondary text */
@@ -224,12 +230,33 @@ main { padding: 24px; max-width: 1500px; margin: 0 auto; }
    * the card may not grow to fit them. */
   grid-auto-columns: minmax(0, 1fr); }
 .grid > * { min-width: 0; }
-.card {
-  background: var(--surface); border: 0; border-radius: 8px;
-  padding: 22px; margin-bottom: 18px; box-shadow: var(--shadow-low);
+/* ── ONE CARD ANATOMY (audit, 2026-11-20) ──────────────────────────────────────────────────
+ *
+ * Six classes used to be six card systems: .card, .ext-card, .gate-card, .net-card, .nz-card
+ * and .rp-card each chose their own padding, radius, background and heading rhythm. None of
+ * those differences followed from what the surface does, so they read as drift.
+ *
+ * ONE ANATOMY: header / body / footer / action row, on one spacing scale taken from the canon's
+ * 4px ladder. A variant below may change LAYOUT (a fixed-width gate, a grid tile, a phone row)
+ * and may carry a status edge; it may not invent its own padding or radius.
+ */
+.card, .ext-card, .gate-card, .net-card, .nz-card, .rp-card {
+  background: var(--surface); color: inherit; border: 0;
+  border-radius: var(--card-radius); box-shadow: var(--shadow-low); min-width: 0;
 }
-.card h2, .card h3 { font-size: var(--fs-3); margin: 0 0 18px; text-transform: none;
+.card, .gate-card { padding: var(--card-pad); }
+.ext-card, .net-card, .nz-card, .rp-card { padding: var(--card-pad-tight); }
+.card { margin-bottom: var(--card-gap); }
+.card h2, .card h3, .gate-card > h2, .gate-card > h3,
+.ext-card > h2, .ext-card > h3 {
+  font-size: var(--fs-3); margin: 0 0 var(--card-gap); text-transform: none;
   letter-spacing: 0; color: var(--fg); font-weight: 600; }
+/* The four parts have one rhythm. A renderer that builds a header row uses .card-head; a footer
+   or an action row uses .card-foot / .card-actions. No card builds its own spacing. */
+.card-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--card-tight); margin: 0 0 var(--card-gap); flex-wrap: wrap; }
+.card-foot, .card-actions { display: flex; align-items: center; justify-content: space-between;
+  gap: var(--card-tight); margin-top: var(--card-gap); flex-wrap: wrap; }
 /* The evidence title carries a HOSTNAME, so it must not inherit the uppercase
  * transform above: showing "host-a.example" instead of "host-a.example" misrepresents how
  * the name is actually spelled, and a name is an identifier an operator may need to
@@ -292,7 +319,7 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
   font-size: var(--fs-1); border: 1px solid var(--border); color: var(--muted);
   white-space: nowrap;
 }
-.review-none { color: var(--muted); }
+.review-unreviewed { color: var(--muted); }
 .review-ack { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
   color: color-mix(in srgb, var(--warn) 82%, var(--fg)); }
 .review-resolved { background: var(--wash-ok); border-color: transparent;
@@ -376,10 +403,11 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
   display: flex; align-items: center; justify-content: center;
   background: var(--bg); padding: 20px; overflow: auto;
 }
+/* LAYOUT VARIANT ONLY: the sign-in gate is one fixed-width column on a full-screen cover, and
+   it is the one card raised above the page (shadow-high), because nothing sits behind it. */
 .gate-card {
-  width: 100%; max-width: 360px; background: var(--panel);
-  border: 0; box-shadow: var(--shadow-high); border-radius: 14px; padding: 24px;
-  display: flex; flex-direction: column; gap: 10px;
+  width: 100%; max-width: 360px; box-shadow: var(--shadow-high);
+  display: flex; flex-direction: column; gap: var(--card-tight);
 }
 .gate-card h2 { margin: 0; font-size: var(--fs-4); }
 /* The lockup on the sign-in gate. The art carries its own dark-navy background and its own
@@ -454,7 +482,7 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
  * the affordance, so nothing in these cells takes a pointer. */
 .wl-spark-wrap { display: inline-flex; }
 .wl-spark { width: 88px; height: 22px; color: var(--accent); display: block; }
-.wl-spark-empty { font-size: var(--fs-2); }
+.spark-value { font-size: var(--fs-2); }
 .tap { display: inline-block; font-size: var(--fs-1); line-height: 1; padding: 3px 7px;
        border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .tap.on { color: var(--accent); border-color: var(--accent);
@@ -517,10 +545,10 @@ td.rp-sevcell { white-space: nowrap; }
 .rp-cards { display: none; }
 .rp-card {
   display: flex; flex-direction: column; gap: 6px;
-  min-height: 44px; min-width: 0; padding: 12px;
-  margin: 0 0 10px;
+  min-height: 44px;
+  margin: 0 0 var(--card-tight);
   background: var(--surface-2); border: 1px solid var(--border);
-  border-left: 3px solid var(--border-solid); border-radius: var(--r-md);
+  border-left: 3px solid var(--border-solid);
   overflow-wrap: anywhere;
 }
 .rp-card.clickable { cursor: pointer; }
@@ -903,13 +931,26 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
 }
 .spark .bar.zero { background: var(--border); }
 
-.empty { color: var(--muted); padding: 10px 0; font-style: italic; }
+/* ── ONE EMPTY STATE, THREE FACTS ───────────────────────────────────────────────────────────
+ * The state word is always present, so colour is never the only carrier: "Nothing here yet"
+ * (a measured zero), "Nothing matches" (the named filters selected none), "Could not read"
+ * (a failure, not an absence). See emptyState() in app.js and docs/design/empty-states.md.
+ */
+.empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  color: var(--muted); padding: 10px 0; }
+.empty-state-word { font-weight: 600; color: var(--fg-2); }
+.empty-state[data-state="filtered"] .empty-state-word { color: var(--warn); }
+.empty-state[data-state="failed"] .empty-state-word { color: var(--crit); }
+.empty-state-text { font-style: italic; }
+.empty-state-filters { font-size: var(--fs-1); }
+.empty-state-act { margin-top: 6px; }
+.empty-cell { padding: 10px; }
+.empty-host { display: block; }
 /* A HEADING NEVER RUNS INTO ITS SUBTITLE. The vision pass found titles reading as one
  * sentence ("Ingestion over time rows per bucket"); the separator belongs to the pattern,
  * not to one repaired string, so every non-empty muted subtitle in a heading gets it.
  * :not(:empty) -- a count span that has not loaded yet must not carry a floating dot. */
 h2 > .muted:not(:empty)::before { content: "· "; }
-.empty-act { margin-left: 8px; font-style: normal; }
 /* THE ONE SETTING THAT CAN STOP TRAFFIC ALONE WEARS THE ALARM COLOUR WHEN IT IS ARMED
  * (BF-3; research: loud state for autonomous actions). */
 #sl-bc-auto-state.auto-on { color: var(--crit); font-weight: 600; }
@@ -959,6 +1000,33 @@ svg.spark rect.cur { fill: var(--accent); }
 .sheet-close { float: right; background: none;
   border: 1px solid var(--border-solid); color: var(--muted); }
 .sheet-close:hover { color: var(--fg); }
+/* ── THE SCAN SHEET: facts before findings, and no invented progress ──────────────────────── */
+.scan-state-line { margin: 0 0 10px; font-weight: 600; color: var(--fg-2); }
+.scan-state-line.bad { color: var(--crit); }
+.scan-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px; margin: 12px 0 14px; font-size: var(--fs-2); }
+.scan-facts dt { color: var(--muted); }
+.scan-facts dd { margin: 0; overflow-wrap: anywhere; }
+.scan-honest { font-size: var(--fs-2); margin: 10px 0 0; padding-left: 10px;
+  border-left: 2px solid var(--border); }
+.scan-findings-title { margin: 20px 0 8px; font-size: var(--fs-3); }
+.scan-findings-list { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 6px; }
+.scan-finding { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); }
+.scan-finding-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.scan-queue-title { margin: 20px 0 8px; font-size: var(--fs-3); }
+.scan-queue { display: flex; flex-direction: column; gap: 4px; }
+/* The row is a button, so it opts out of the global inline-flex/nowrap button shape: it is a
+   three-part reading (state, address, the scanner's own line), not a verb. */
+.scan-queue-row { display: grid; grid-template-columns: max-content minmax(7rem, max-content)
+    minmax(0, 1fr); gap: 2px 10px; align-items: baseline; width: 100%; height: auto;
+  white-space: normal; text-align: left; padding: 7px 9px; }
+.scan-queue-row:hover { border-color: var(--accent); }
+.scan-queue-row.bad { border-left: 2px solid var(--crit); }
+.scan-queue-evidence { grid-column: 2 / -1; overflow-wrap: anywhere; }
+.scan-state-queued, .scan-state-claimed { border-style: dashed; }
+.scan-state-done { color: var(--ok); }
+.scan-state-error { color: var(--crit); border-color: var(--crit); }
 /* TH-3: the grouped nav -- one row, clusters spaced apart, nothing hidden or collapsing. */
 #tabs { display: flex; align-items: center; flex-wrap: nowrap; }
 .tab-group { display: flex; align-items: center; gap: 2px; flex: none; }
@@ -988,7 +1056,6 @@ svg.spark rect.cur { fill: var(--accent); }
 .palette-row { padding: 8px 14px; cursor: pointer; }
 .palette-row.active { background: var(--surface); border-left: 2px solid var(--accent); }
 .palette-path { font-size: var(--fs-2); margin-top: 2px; }
-.palette-empty { padding: 12px 14px; }
 /* `f`: the main table fills the screen, the way a wallboard is read. */
 .card.table-max { position: fixed; inset: 16px; z-index: 70; overflow: auto;
                   background: var(--surface); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
@@ -1017,11 +1084,11 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
  */
 
 .chart { margin-top: 8px; }
-.chart-empty {
+.chart-empty-box {
   padding: 18px 12px;
   border: 1px dashed var(--border);
   border-radius: 6px;
-  text-align: center;
+  align-items: center;
 }
 
 /* CLIPPED ON PURPOSE (issue #6, 2026-10-16): a chart that overruns its box paints over the card
@@ -1819,12 +1886,10 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   white-space: normal;
   line-height: 1.25;
   text-align: left;
+  /* The border is the scope's STATUS edge (monitored / observed / unclassified below); the
+     box itself is the shared card anatomy. */
   border: 1px solid var(--line);
   border-left: 4px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  color: inherit;
-  padding: 10px 12px;
 }
 .net-card.clickable { cursor: pointer; }
 .net-card:hover { border-color: var(--accent); }
@@ -1851,8 +1916,9 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .ext-title { font-size: var(--fs-2); font-weight: 600; }
 .ext-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
   margin-top: 8px; }
-.ext-card { min-width: 0; padding: 10px 12px; border: 1px solid var(--line);
-  border-radius: var(--r-lg); background: color-mix(in srgb, var(--surface-2) 35%, transparent); }
+/* A card-row nested in a card: tone only, so the page keeps one box. Padding and radius come
+   from the anatomy. */
+.ext-card { background: color-mix(in srgb, var(--surface-2) 35%, transparent); }
 .ext-k { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .06em; opacity: .75; }
 .ext-v { font-size: var(--fs-3); margin: 3px 0; overflow-wrap: anywhere; }
 .ext-m { font-size: var(--fs-1); overflow-wrap: anywhere; }
@@ -1890,7 +1956,6 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .net-peer-bytes { flex: 0 0 auto; min-width: 58px; text-align: right;
   font-variant-numeric: tabular-nums; color: var(--fg); }
 .net-peer-meta { white-space: nowrap; }
-.net-peers-empty { padding-top: 8px; }
 
 @media (max-width: 720px) {
   .net-peer-row { grid-template-columns: 20px minmax(0, 1fr) auto; gap: 4px 8px; }
@@ -1912,7 +1977,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .nz-alert-btn { min-height: 44px; }
 .nz-feed-filters { align-items: flex-start; }
 .nz-cards { display: none; }
-.nz-card { border-top: 1px solid var(--border); padding: 10px 0; }
+.nz-card { border-top: 1px solid var(--border); }
 .nz-card-row { display: flex; align-items: center; justify-content: space-between;
   gap: 12px; min-height: 32px; }
 @media (max-width: 720px) {

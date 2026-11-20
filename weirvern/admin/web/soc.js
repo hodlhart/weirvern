@@ -58,7 +58,7 @@ function socPanel(hostId, res, emptyText) {
   host.replaceChildren();
   if (!res || res.available === false) {
     const why = (res && res.reason) ? res.reason : "the query did not run";
-    host.appendChild(chartEmpty(`Cannot draw this: ${why}.`));
+    host.appendChild(chartEmpty(`Cannot draw this: ${why}.`, "failed"));
     return null;
   }
   if (!(res.points || []).length) {
@@ -128,7 +128,7 @@ function renderTimeline(hostId, res, opts = {}) {
   host.replaceChildren();
 
   if (!res || res.available === false) {
-    host.appendChild(chartEmpty(`Cannot draw this: ${(res && res.reason) || "the query did not run"}.`));
+    host.appendChild(chartEmpty(`Cannot draw this: ${(res && res.reason) || "the query did not run"}.`, "failed"));
     return;
   }
   const series = Object.entries((res && res.series) || {}).filter(([, p]) => p && p.length);
@@ -355,10 +355,11 @@ async function loadNetflow() {
   if (ifaceBox) {
     ifaceBox.replaceChildren();
     if (ic.available === false) {
-      ifaceBox.appendChild(el("p", { class: "empty",
-        text: `Interfaces unavailable \u2014 ${ic.reason || "the read failed"}.` }));
+      ifaceBox.appendChild(emptyState({
+        state: "failed",
+        message: `Interfaces unavailable \u2014 ${ic.reason || "the read failed"}.` }));
     } else if (!(ic.points || []).length) {
-      ifaceBox.appendChild(el("p", { class: "empty", text: "No flows in this window." }));
+      ifaceBox.appendChild(emptyState({ state: "none", message: "No flows in this window." }));
     } else {
       const totalIf = (ic.points || []).reduce((a, p) => a + (p.flows || 0), 0) || 1;
       const table = el("table", {}, [

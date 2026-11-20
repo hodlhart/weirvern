@@ -67,16 +67,20 @@ const ASSETS_STATE = {
 
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 
-/** Queue a manual Nmap scan. The scanner owns execution; this only files the request. */
+/** Queue a manual Nmap scan. The scanner owns execution; this only files the request.
+ *
+ *  THE SHEET IS THE FEEDBACK (operator, 2026-11-20). A queued job used to leave the button on
+ *  "Queued" and nothing else: no state, no elapsed time, no findings. The POST's answer is the
+ *  job id, so the sheet opens on that id and polls the queue row the server just wrote. */
 function requestScan(ip, btn) {
   if (!btn || btn.disabled) return;
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Queueing…";
-  btn.title = "sending the scan request";
+  btn.setAttribute("aria-label", `queueing a manual scan of ${ip}`);
   fetch("/api/scan-jobs", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: requestHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ip }),
   })
     .then(async (response) => {
@@ -87,13 +91,17 @@ function requestScan(ip, btn) {
       return data;
     })
     .then((data) => {
-      btn.textContent = "Queued";
-      btn.title = `scan job ${data.job_id} — ${data.state}`;
+      btn.disabled = false;
+      btn.textContent = original;
+      btn.setAttribute("aria-label", `open the running scan of ${ip}`);
+      if (typeof openScanSheet === "function" && data.job_id) {
+        openScanSheet(data.job_id, { ip });
+      }
     })
     .catch((err) => {
       btn.disabled = false;
       btn.textContent = original;
-      btn.title = `scan request failed: ${err.message}`;
+      btn.setAttribute("aria-label", `scan request failed: ${err.message}`);
       btn.classList.add("bad");
     });
 }
@@ -322,13 +330,12 @@ function renderAssets() {
 
   tbody.replaceChildren();
   if (!rows.length) {
-    tbody.replaceChildren(el("tr", {}, [
-      el("td", {
-        class: "empty", attrs: { colspan: "13" },
-        text: q ? `No host matches “${ASSETS_STATE.search}”.`
+    tbody.replaceChildren(el("tr", {}, [emptyStateCell(13, {
+      state: q ? "filtered" : "none",
+      message: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
-      }),
-    ]));
+      filters: q ? [`search = ${ASSETS_STATE.search}`] : [],
+    })]));
     return;
   }
 
@@ -1004,7 +1011,8 @@ function renderNetworkHosts(nodes, d) {
   }
   if (!ordered.length) {
     emptyRow(table, 7, `No host matches the active filters in this ${hours}h window. ` +
-      "Clear a filter to widen the map.");
+      "Clear a filter to widen the map.", null,
+      { state: "filtered", filters: activeFilterLabels("network") });
     return;
   }
   for (const n of ordered) {
@@ -1041,10 +1049,10 @@ function renderNetwork() {
     // "No edges to show." as a genuinely quiet window, which is precisely how the Alerts
     // tab could list hosts while this table looked calm.
     caption.textContent = `The connection graph could not be read: ${d.reason || "no reason was reported"}.`;
-    host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`));
+    host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`, "failed"));
     renderNetworkRippleLine([], d);
     renderNetworkHosts([], d);
-    emptyRow(table, 7, "The graph read failed — no edges were read.");
+    emptyRow(table, 7, "The graph read failed — no edges were read.", null, { state: "failed" });
     return;
   }
 
@@ -1085,10 +1093,11 @@ function renderNetwork() {
   if (status !== "all") {
     if (d.status_available === false) {
       caption.textContent = `Host status is unavailable: ${d.status_reason || "the source could not be read"}.`;
-      host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed."));
+      host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed.", "failed"));
       renderNetworkRippleLine(nodes, d);
       renderNetworkHosts([], d);
-      emptyRow(table, 7, "Host status is unavailable; no edges are listed under this filter.");
+      emptyRow(table, 7, "Host status is unavailable; no edges are listed under this filter.", null,
+      { state: "failed" });
       return;
     }
     statusMatches = nodes.filter((n) => n.status === status);
@@ -1099,7 +1108,8 @@ function renderNetwork() {
         (status === "alerted" ? " or an anomaly window" : "") + ` in this range. Use All to see the map.`));
       renderNetworkRippleLine(statusMatches, d);
       renderNetworkHosts([], d);
-      emptyRow(table, 7, `No ${label} hosts to draw.`);
+      emptyRow(table, 7, `No ${label} hosts to draw.`, null,
+      { state: "filtered", filters: [`status = ${label}`] });
       return;
     }
     const matchIds = new Set(statusMatches.map((n) => n.id));
@@ -1169,7 +1179,8 @@ function renderNetwork() {
       + `Choose All to restore the full map.`));
     renderNetworkRippleLine([], d, rippleBase);
     renderNetworkHosts([], d);
-    emptyRow(table, 7, `No connections under the "${label}" ripple filter. Choose All to clear it.`);
+    emptyRow(table, 7, `No connections under the "${label}" ripple filter. Choose All to clear it.`, null,
+      { state: "filtered", filters: [`ripple = ${label}`] });
     return;
   }
   if (rippleMode !== "all" && rippleMatched.size && !edges.length) {
@@ -1182,7 +1193,8 @@ function renderNetwork() {
       + `filter. Lower it or choose All.`));
     renderNetworkRippleLine(nodes, d, rippleBase);
     renderNetworkHosts(rippleBase.filter((n) => rippleMatched.has(String(n.id))), d);
-    emptyRow(table, 7, `No connections among the hosts matched by the "${label}" filter.`);
+    emptyRow(table, 7, `No connections among the hosts matched by the "${label}" filter.`, null,
+      { state: "filtered", filters: [`ripple = ${label}`, `flows ≥ ${ASSETS_STATE.minEdges}`] });
     return;
   }
   // THE COMPOSABLE FILTERS EMPTY STATE NAMES THEM AND THE WAY OUT. A family that no host
@@ -1196,7 +1208,8 @@ function renderNetwork() {
     host.appendChild(chartEmpty(`No host matches ${names.join(" + ")} in this window. `
       + `Clear the filter to see ${rippleBase.length} host${rippleBase.length === 1 ? "" : "s"}.`));
     renderNetworkRippleLine([], d, rippleBase);
-    emptyRow(table, 7, `No connections under ${names.join(" + ")}.`);
+    emptyRow(table, 7, `No connections under ${names.join(" + ")}.`, null,
+      { state: "filtered", filters: names });
     renderNetworkHosts([], d);
     return;
   }
@@ -1210,7 +1223,8 @@ function renderNetwork() {
       `connection above the flows filter. Lower the filter or use All.`));
     renderNetworkRippleLine(nodes, d);
     renderNetworkHosts(statusMatches, d);
-    emptyRow(table, 7, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
+    emptyRow(table, 7, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`, null,
+      { state: "filtered", filters: [`status = ${label}`, `flows ≥ ${ASSETS_STATE.minEdges}`] });
     return;
   }
   // A filter that hides everything must say so -- the tracked-only chip with nothing tracked is
@@ -1222,7 +1236,8 @@ function renderNetwork() {
     host.appendChild(chartEmpty("The tracked-only filter is on and no host is tracked."));
     renderNetworkRippleLine(nodes, d);
     renderNetworkHosts([], d);
-    emptyRow(table, 7, "No tracked hosts to draw.");
+    emptyRow(table, 7, "No tracked hosts to draw.", null,
+      { state: "filtered", filters: ["tracked only"] });
     return;
   }
   if (!nodes.length || !edges.length) {
@@ -1233,7 +1248,8 @@ function renderNetwork() {
         + "window. Track more hosts, widen the window, or turn the filter off."));
       renderNetworkRippleLine(nodes, d);
       renderNetworkHosts(nodes, d);
-      emptyRow(table, 7, "No connections among the tracked hosts.");
+      emptyRow(table, 7, "No connections among the tracked hosts.", null,
+      { state: "filtered", filters: ["tracked only"] });
       return;
     }
     // THREE states, not two (review round 2026-10-15). This branch used to collapse "the
@@ -1253,7 +1269,10 @@ function renderNetwork() {
         : ASSETS_STATE.tracked.length
           ? "These hosts did not talk to each other in this window. Widen the window or clear the selection."
           : "No host-to-host traffic was recorded. Broadcast and self-directed traffic is excluded."));
-    emptyRow(table, 7, hidden ? "No edges above the flows filter." : "No edges to show.");
+    emptyRow(table, 7,
+      hidden ? "No edges above the flows filter." : "No edges to show.", null,
+      { state: hidden ? "filtered" : "none",
+        filters: hidden ? [`flows ≥ ${ASSETS_STATE.minEdges}`] : [] });
     renderNetworkRippleLine(nodes, d);
     renderNetworkHosts(nodes.length ? matchedNodes : [], d);
     return;
@@ -2189,10 +2208,10 @@ function showNodeDetail(node) {
   host.appendChild(el("div", { class: "chips" }, [why, btn, open]));
 
   if (!touching.length) {
-    table.appendChild(el("tr", {}, [
-      el("td", { class: "empty", attrs: { colspan: "7" },
-                 text: "This host has no drawn connections in the current selection." }),
-    ]));
+    table.appendChild(el("tr", {}, [emptyStateCell(7, {
+      state: "none",
+      message: "This host has no drawn connections in the current selection.",
+    })]));
     return;
   }
 
@@ -2667,8 +2686,8 @@ function loadFlowDetail(params) {
   return getJSON(url)
     .then((d) => {
       if (d.available === false) {
-        host.appendChild(chartEmpty(`Cannot read the flows: ${d.reason}.`));
-        emptyRow(table, 6, "Nothing to show.");
+        host.appendChild(chartEmpty(`Cannot read the flows: ${d.reason}.`, "failed"));
+        emptyRow(table, 6, "Nothing to show — the flows read failed.", null, { state: "failed" });
         return;
       }
       const rows = d.points || [];
@@ -2713,8 +2732,8 @@ function loadFlowDetail(params) {
       }));
     })
     .catch((err) => {
-      host.appendChild(chartEmpty(`Cannot read the flows: ${err.message}.`));
-      emptyRow(table, 6, "Nothing to show.");
+      host.appendChild(chartEmpty(`Cannot read the flows: ${err.message}.`, "failed"));
+      emptyRow(table, 6, "Nothing to show — the flows read failed.", null, { state: "failed" });
     });
 }
 
@@ -2739,8 +2758,8 @@ function loadZeekLog(log) {
   return getJSON(ASSET_API.zeeklog(log, zeekWindow(), filters))
     .then((d) => {
       if (d.available === false) {
-        host.appendChild(chartEmpty(`Cannot read ${log}.log: ${d.reason}.`));
-        emptyRow(table, 3, "Nothing to show.");
+        host.appendChild(chartEmpty(`Cannot read ${log}.log: ${d.reason}.`, "failed"));
+        emptyRow(table, 3, "Nothing to show — the log read failed.", null, { state: "failed" });
         return;
       }
       const rows = d.points || [];
@@ -2772,8 +2791,8 @@ function loadZeekLog(log) {
       }));
     })
     .catch((err) => {
-      host.appendChild(chartEmpty(`Cannot read ${log}.log: ${err.message}.`));
-      emptyRow(table, 3, "Nothing to show.");
+      host.appendChild(chartEmpty(`Cannot read ${log}.log: ${err.message}.`, "failed"));
+      emptyRow(table, 3, "Nothing to show — the log read failed.", null, { state: "failed" });
     });
 }
 

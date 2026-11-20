@@ -151,7 +151,7 @@ async function main() {
   const order = [];
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
-        JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/normalize.js",
+        JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/scan.js", "/normalize.js",
                                                  "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
                                                  "/dnsview.js", "/blocked.js",
@@ -193,6 +193,9 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadDns, dnClear, dnApply, loadBlocked,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderDetectors, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
                   openModal, closeModal, markFilterCells,
+                   emptyState, emptyStateCell, activeFilterLabels,
+                   openScanSheet, closeScanSheet, loadScanQueue, scanPollOnce, SCAN_STATE,
+                   openSheet, closeSheet, sheetIsOpen, requestScan,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    showSessionNote, refreshAccountCard,
                    wrapTables, wireInfoButtons,
@@ -1072,6 +1075,9 @@ const IDENTITY_PAYLOAD = {
                         }
                         return { ok: true, sensor_id: sent.sensor_id || "" };
                       })()
+                  : u.includes("/api/scan-jobs")
+                    ? { ok: true, job_id: "job-scan-1", ip: sent.ip || "",
+                        state: "queued", already: false }
                   : u.includes("/api/weirlings/revoke")
                     ? { ok: true, sensor_id: sent.sensor_id || "",
                         note: "revoked; the record stays for the audit trail" }
@@ -5317,12 +5323,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     minBox.value = "99";
     minBox.dispatchEvent(new window.Event("change", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 300));
-    const anEmpty = doc.querySelector("#anomalies-table .empty");
+    const anEmpty = doc.querySelector("#anomalies-table .empty-state");
     check("an empty queue says why and offers the way back",
           !!anEmpty && /at or above score 99/.test(anEmpty.textContent) &&
             /Clear filters/.test(anEmpty.textContent),
           anEmpty ? anEmpty.textContent.slice(0, 90) : "no empty row at all");
-    const clearBtn = anEmpty ? anEmpty.querySelector("button.empty-act") : null;
+    const clearBtn = anEmpty ? anEmpty.querySelector("button.empty-state-act") : null;
     if (clearBtn) {
       clearBtn.click();
       await new Promise((r) => setTimeout(r, 300));
@@ -5334,12 +5340,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     try { window.sessionStorage.removeItem("wv-firstrun"); } catch (_e) {}
     await H.loadWeirlings();
     await new Promise((r) => setTimeout(r, 150));
-    const wlEmpty = doc.querySelector("#wl-table .empty");
+    const wlEmpty = doc.querySelector("#wl-table .empty-state");
     check("an empty fleet teaches and offers the button",
           !!wlEmpty && /Point a sensor's exporter/.test(wlEmpty.textContent) &&
             /How adding works/.test(wlEmpty.textContent),
           wlEmpty ? wlEmpty.textContent.slice(0, 90) : "no empty fleet row");
-    const wlBtn = wlEmpty ? wlEmpty.querySelector("button.empty-act") : null;
+    const wlBtn = wlEmpty ? wlEmpty.querySelector("button.empty-state-act") : null;
     if (wlBtn) {
       wlBtn.click();
       await new Promise((r) => setTimeout(r, 40));
@@ -6592,7 +6598,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const stopped = row("edge-stopped");
     const stoppedCap = capOf(stopped);
     check("...no series is an explicit absence, never a flat zero line",
-          !!stoppedCap && !!stoppedCap.querySelector(".wl-spark-empty")
+          !!stoppedCap && !!stoppedCap.querySelector(".spark-value")
           && !stoppedCap.querySelector("svg.wl-spark"),
           stoppedCap ? stoppedCap.textContent.slice(0, 80) : "no row");
     const cidrCell = promisedCap && promisedCap.querySelector("td:nth-child(4)");
@@ -10406,12 +10412,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (first) first.click();
     await new Promise((r) => setTimeout(r, 120));
     const detail = needEl("bl-detail-card");
-    check("a block row opens its detail card",
+    check("a block row opens its detail sheet",
           !!detail && !detail.classList.contains("hidden")
           && /ads\.example\.com/.test(needEl("bl-detail-body").textContent)
           && /DNS answered|recorded|blocklist/.test(needEl("bl-detail-body").textContent),
           detail ? needEl("bl-detail-body").textContent.slice(0, 120) : "no detail");
-    if (detail) H.closeModal(detail);
+    if (detail) H.closeSheet(detail);
   }
 
   // ── OPENING A RULE ON A FRESH CONSOLE (#15) ─────────────────────────────────────────────
@@ -10658,6 +10664,110 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await new Promise((r) => setTimeout(r, 120));
     check("...which talks to the signature remove route, never the alert path",
           seen.some((u) => u.includes("/api/ripple-signatures/remove")), seen.join(" | "));
+    fetchOverride = null;
+    H.clearGetCache();
+  }
+  // ── THE SCAN SHEET (operator, 2026-11-20: watch a manual scan) ──────────────────────────────
+  {
+    H.clearGetCache();
+    // LIVE timestamps: a fixed date would read as a 30-minute timeout on a machine running
+    // later in the day, and the sheet would (correctly) say so.
+    const SCAN_T0 = Date.now() - 5000;
+    const at = (ms) => new Date(ms).toISOString();
+    let SCAN_JOB = {
+      job_id: "job-scan-1", asset_key: "a-1", ip: "192.0.2.10", requested_by: "operator",
+      requested_at: at(SCAN_T0), state: "queued", lease_owner: "",
+      lease_until: null, started_at: null, finished_at: null, result: "", error: "",
+    };
+    let SCAN_FINDINGS = [];
+    const scanFindingsOverride = (u) => {
+      if (!String(u).includes("/api/findings")) return null;
+      return { available: true, reason: "", findings: SCAN_FINDINGS,
+               count: SCAN_FINDINGS.length, counts: { total: SCAN_FINDINGS.length } };
+    };
+    fetchOverride = (u, o) => {
+      // THE POST STAYS ON THE DEFAULT STUB (it answers with a job id); only the reads are
+      // stateful, so the check watches the queue change the way the real sheet does.
+      if (String((o || {}).method || "").toUpperCase() === "POST") return null;
+      const reply = String(u).includes("/api/scan-jobs")
+        ? { available: true, reason: "", jobs: [SCAN_JOB], count: 1 }
+        : scanFindingsOverride(u);
+      if (!reply) return null;
+      // fetchOverride answers a RESPONSE, not a payload: the dispatcher returns whatever is
+      // truthy straight to the caller, and scanGet reads res.ok/res.json like the real fetch.
+      return { ok: true, status: 200, statusText: "OK", json: async () => reply };
+    };
+    const scanSheet = needEl("scan-sheet");
+    const scanBtn = doc.createElement("button");
+    scanBtn.textContent = "Scan now";
+    doc.body.appendChild(scanBtn);
+    H.requestScan("192.0.2.10", scanBtn);
+    await new Promise((r) => setTimeout(r, 300));
+    check("pressing Scan opens the sheet for the job the POST created",
+          !!scanSheet && !scanSheet.classList.contains("hidden")
+          && H.SCAN_STATE.jobId === "job-scan-1",
+          `open=${scanSheet && !scanSheet.classList.contains("hidden")} id=${H.SCAN_STATE.jobId}`);
+    check("...and the sheet's subject rides the URL",
+          /(^|[&#])scan=job-scan-1/.test(String(window.location.hash || "")),
+          String(window.location.hash || ""));
+    check("...and a queued job reads as queued, not as a percentage",
+          /Queued/.test(needEl("scan-state-line").textContent)
+          && !/\d\s*%/.test(needEl("scan-body").textContent)
+          && !doc.querySelector("#scan-body progress"),
+          needEl("scan-body").textContent.slice(0, 90));
+
+    // RUNNING: the scanner claimed it; the state word changes and elapsed starts at started_at.
+    SCAN_JOB = Object.assign({}, SCAN_JOB, {
+      state: "claimed", lease_owner: "scanner-1", started_at: at(SCAN_T0 + 2000) });
+    SCAN_FINDINGS = [{
+      ip: "192.0.2.10", hostname: "workstation.lan", severity: "high",
+      name: "SMB signing not required", template_id: "smb-signing", cve: "",
+      last_seen: at(SCAN_T0 + 20000), remediation: "require signing",
+    }];
+    await H.scanPollOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    check("the sheet reflects queued -> running from the queue row",
+          /Running/.test(needEl("scan-state-line").textContent)
+          && /scanner-1/.test(needEl("scan-body").textContent)
+          && /SMB signing not required/.test(needEl("scan-body").textContent),
+          needEl("scan-state-line").textContent);
+
+    // DONE: terminal, with the count and the link into the findings drill.
+    SCAN_JOB = Object.assign({}, SCAN_JOB, {
+      state: "done", finished_at: at(SCAN_T0 + 60000), result: "scan completed",
+      lease_until: null });
+    await H.scanPollOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    check("the sheet reflects running -> done and names the recorded evidence",
+          /Done/.test(needEl("scan-state-line").textContent)
+          && /scan completed/.test(needEl("scan-body").textContent),
+          needEl("scan-body").textContent.slice(0, 120));
+    check("...the findings drill is one control away", !!needEl("scan-findings")
+          && !needEl("scan-findings").classList.contains("hidden"));
+    check("...and polling stops at the terminal state",
+          H.SCAN_STATE.pollTimer === null, String(H.SCAN_STATE.pollTimer));
+
+    // FAILED: the recorded error is the sentence, and Retry is offered.
+    SCAN_JOB = Object.assign({}, SCAN_JOB, {
+      state: "error", result: "", error: "nmap: the target refused every probe" });
+    await H.scanPollOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    check("a failed job names the scanner's recorded error",
+          /Failed/.test(needEl("scan-state-line").textContent)
+          && /the target refused every probe/.test(needEl("scan-body").textContent),
+          needEl("scan-body").textContent.slice(0, 140));
+    check("...and offers a retry rather than a dead end",
+          !needEl("scan-retry").classList.contains("hidden"));
+    check("no percentage is rendered anywhere in the sheet",
+          !/\d\s*%/.test(needEl("scan-sheet").textContent)
+          && !doc.querySelector("#scan-sheet progress, #scan-sheet [role=\"progressbar\"]"));
+
+    H.closeScanSheet();
+    await new Promise((r) => setTimeout(r, 260));
+    check("closing the sheet drops its URL subject",
+          !/(^|[&#])scan=/.test(String(window.location.hash || "")),
+          String(window.location.hash || ""));
+    scanBtn.remove();
     fetchOverride = null;
     H.clearGetCache();
   }

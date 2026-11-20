@@ -201,7 +201,8 @@ step "frontend syntax (node --check)"
 # SKIP now reads as SKIP, and a skip is reported in the summary line so it cannot be overlooked.
 JS_STATE=PASS
 for js in weirvern/admin/web/app.js weirvern/admin/web/soc.js weirvern/admin/web/assets.js \
-          weirvern/admin/web/sluice.js weirvern/admin/web/weirlings.js scripts/jsdom_render.js; do
+          weirvern/admin/web/sluice.js weirvern/admin/web/weirlings.js \
+          weirvern/admin/web/scan.js scripts/jsdom_render.js; do
     if ! command -v node >/dev/null 2>&1; then
         JS_STATE=SKIP
         echo "  SKIP  node is not installed, so the frontend was NOT syntax-checked."

@@ -304,19 +304,25 @@ def asset_changes_failure(exc: BaseException) -> dict[str, Any]:
             "data_error": str(exc)}
 
 
-def scan_jobs(client: Client, *, ip: str) -> dict[str, Any]:
-    """The manual-scan queue: recent requests, optionally for one address.
+def scan_jobs(client: Client, *, ip: str, job: str = "") -> dict[str, Any]:
+    """The manual-scan queue: recent requests, optionally for one address or one job.
 
     The row timestamps are serialised here, through the console's own `_iso`, so a job's
-    `requested_at` is the same string on both surfaces.
+    `requested_at` is the same string on both surfaces. `job` is the sheet's subject: a URL
+    that names one job reads that job even after it has left the 20-row recent list. An
+    unknown id is an empty list, never a fabricated row.
     """
     from weirvern import scan_jobs as scan_jobs_mod  # noqa: PLC0415
     from weirvern.admin.web import _iso  # noqa: PLC0415
 
-    rows = scan_jobs_mod.list_jobs(client, ip=ip, limit=20)
+    if job:
+        one = scan_jobs_mod.get_job(client, job)
+        rows = [one] if one is not None else []
+    else:
+        rows = scan_jobs_mod.list_jobs(client, ip=ip, limit=20)
     out = []
-    for job in rows:
-        item = dict(job)
+    for row in rows:
+        item = dict(row)
         for key in ("requested_at", "lease_until", "started_at", "finished_at"):
             item[key] = _iso(item.get(key))
         out.append(item)

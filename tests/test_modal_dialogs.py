@@ -32,9 +32,16 @@ def test_escape_and_backdrop_close():
     assert 'modal-backdrop' in js
 
 
-def test_the_rule_card_opens_in_the_modal_but_the_composer_is_a_sheet():
+def test_the_hit_detail_and_the_composer_are_both_sheets():
+    """2026-11-20: a detail object is a sheet, always; a centre modal is only a confirmation.
+
+    The Blocked hit detail used to open through openModal(), making one object's detail a
+    different surface from every other object's. It is the house sheet now, and this pin moved
+    with the rule rather than being deleted.
+    """
     blocked = (WEB / "blocked.js").read_text()
-    assert "openModal(els.card)" in blocked and "closeModal(els.card)" in blocked
+    assert "openSheet(els.card)" in blocked and "closeSheet(els.card)" in blocked
+    assert "openModal(els.card)" not in blocked and "closeModal(els.card)" not in blocked
     sluice = (WEB / "sluice.js").read_text()
     assert "openRuleSheet(" in sluice
     html = (WEB / "index.html").read_text()

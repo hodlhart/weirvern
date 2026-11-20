@@ -356,6 +356,10 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     server enforces the scope; the span states it, so there is deliberately no
               #     client writer and the id is a test anchor, not an empty placeholder.
               "as-scope-note",
+              #   scan-title: the scan sheet's aria-labelledby target. Its text ("Manual scan")
+              #     is static markup and the sheet updates #scan-subject/#scan-state-line, so the
+              #     title is a label, not an empty placeholder.
+              "scan-title",
               #   wl-sheet-close / sl-rule-close: the sheets' close controls; sheets.js finds
               #     them by CLASS (.sheet-close), and they carry static text -- never populated
               #   wl-detail-title: the weirling sheet's aria-labelledby target; static text

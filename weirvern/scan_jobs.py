@@ -118,6 +118,23 @@ def finish_job(client: Any, job: dict[str, Any], *, ok: bool, result: str = "",
     _insert(client, job)
 
 
+def get_job(client: Any, job_id: str) -> dict[str, Any] | None:
+    """One job by id, for a URL that addresses a single scan.
+
+    The queue read answers with the most recent 20 jobs, so a bookmarked job id would fall out
+    of the list while the job still existed. This lookup keeps the sheet's subject addressable
+    for as long as the row exists, and returns None rather than inventing a state when it does
+    not.
+    """
+    rows = client.query(
+        "SELECT job_id, asset_key, ip, requested_by, requested_at, state, lease_owner, "
+        "       lease_until, started_at, finished_at, result, error "
+        "FROM weirvern.scan_jobs FINAL WHERE job_id = %(job_id)s LIMIT 1",
+        parameters={"job_id": job_id},
+    ).result_rows
+    return dict(zip(JOB_COLUMNS, rows[0], strict=False)) if rows else None
+
+
 def list_jobs(client: Any, ip: str = "", limit: int = 20) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": max(1, min(int(limit), 100))}
     where = ""
