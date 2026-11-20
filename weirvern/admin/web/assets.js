@@ -45,6 +45,7 @@ const ASSETS_STATE = {
   svc: "",          // US-7: the service facet filter (click a chip; filters in place)
   trackedOnly: false,  // US-7: the graph filter -- only the hosts the operator tracks
   status: "all",      // All / Blocked / Alerted -- a real filter over the graph payload
+  rippleFilter: "all",  // All / Any ripple / High+ -- narrows the graph and both tables together
   minEdges: 1,
   showNames: false,
   // Pagination for the inventory. 15 per page by default (the user's number): a segment with
@@ -158,23 +159,22 @@ function renderAssetFacets(all) {
   }
 }
 
-/** The inventory's four first questions: how many, how many are active now, how many carry an
- *  anomaly, and how many are outside the monitored networks. Counts are over the SCOPED set so
- *  the tiles and the table cannot disagree. */
+/** The inventory's first questions: how many monitored hosts, how many are active now, how many
+ *  carry an anomaly, and how many have findings. The set is the inventory's monitored set --
+ *  external peers are not assets and are never counted here. */
 function renderAssetStats(all, payload = {}) {
   const box = document.getElementById("as-stats");
   if (!box) return;
   const now = Date.now();
   const active = all.filter((h) => h.last_seen && (now - Date.parse(h.last_seen)) < 3600e3).length;
   const anomalies = all.filter((h) => Number(h.anomalies) > 0).length;
-  const external = all.filter((h) => netScope(h.addr) === "external").length;
   // A finding is an exposure observation, not a vulnerability proof. Count only the bands
   // that an operator would triage; "clear" and "not scanned" are not findings.
   const exposed = all.filter((h) => h.scan &&
     ["critical", "high", "medium", "low"].includes(String(h.scan.exposure || ""))).length;
   const scanKnown = payload.scan_available !== false && all.some((h) => h.scan);
-  const cells = [["hosts", String(all.length)], ["active (1h)", String(active)],
-                 ["with anomalies", String(anomalies)], ["external", String(external)],
+  const cells = [["monitored hosts", String(all.length)], ["active (1h)", String(active)],
+                 ["with anomalies", String(anomalies)],
                  ["with findings", scanKnown ? String(exposed) : "—"]];
   box.replaceChildren(...cells.map(([k, v]) => el("div", { class: "stat" }, [
     el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
@@ -218,12 +218,11 @@ function renderAssets() {
   }
 
   const everyHost = d.hosts || [];
-  // THE SCOPE IS A VIEW FILTER, NOT A SECOND QUERY (operator, 2026-10-19). Applying it before
-  // search keeps the two controls composable; the summary's denominator is the scoped set, so
-  // "3 of 3 hosts" never means "3 of the 40 hosts you filtered out".
-  const scope = window.NET_SCOPE || "all";
-  const all = scope === "all" ? everyHost
-    : everyHost.filter((h) => netScope(h.addr) === scope);
+  // THE INVENTORY IS MONITORED-ONLY, BY THE SERVER'S OWN RULE. There is no external set to
+  // switch to: a peer outside the monitored networks is not an asset we are responsible for.
+  // The old client-side scope select was filtering a payload the server had already filtered,
+  // and its "external" option could only ever show an empty list.
+  const all = everyHost;
   // Search matches the address, the reverse-DNS name, or a service -- an analyst looking for
   // "everything that spoke smb" has a service name, not an address.
   const q = ASSETS_STATE.search.trim().toLowerCase();
@@ -275,12 +274,11 @@ function renderAssets() {
   // US-7: "showing X of Y" for EVERY filter combination -- the count and the reasons travel
   // together, so a short list always says what made it short.
   const why = [];
-  if (scope !== "all") why.push(`on ${scope === "monitored" ? "monitored networks" : "the external network"}`);
   if (q) why.push(`matching “${ASSETS_STATE.search}”`);
   if (ASSETS_STATE.svc) why.push(`with service ${ASSETS_STATE.svc}`);
   summary.textContent = (why.length
-    ? `${rows.length} of ${all.length} hosts ${why.join(" and ")}`
-    : `${all.length} hosts in the last ${d.hours}h`) + range;
+    ? `${rows.length} of ${all.length} monitored hosts ${why.join(" and ")}`
+    : `${all.length} monitored hosts in the last ${d.hours}h`) + range;
   renderAssetStats(all, d);
 
   // The facet itself: what services this inventory actually saw, most common first.
@@ -351,7 +349,7 @@ function renderAssets() {
         }
         return cell;
       })(),
-      el("td", { class: "muted", text: (h.role || "unknown") + (h.scope ? " · " + h.scope : ""),
+      el("td", { class: "muted", text: (h.role || "unknown"),
                  attrs: { title: h.role_source ? `role source: ${h.role_source}` : "no role proposal recorded" } }),
       el("td", { class: "mono", text: fmtBytes(h.bytes) }),
       el("td", {
@@ -578,6 +576,69 @@ function networkRipple(host) {
   return networkRipples().find((r) => String(r.host || "") === addr) || null;
 }
 
+/* ── THE RIPPLE FILTER (operator, 2026-11-20: "for network i need to be able to filter by
+ * ripples"). The chips already annotate; this narrows. One state value drives the graph, the
+ * connection-detail table and the edge table, so the three surfaces cannot disagree. */
+const NW_RIPPLE_MODES = ["all", "any", "high"];
+
+function nwRippleMode() {
+  const mode = String(ASSETS_STATE.rippleFilter || "all").toLowerCase();
+  return NW_RIPPLE_MODES.includes(mode) ? mode : "all";
+}
+
+function nwRippleModeLabel(mode) {
+  const m = mode || nwRippleMode();
+  return m === "high" ? "high and above" : (m === "any" ? "hosts with ripples" : "all hosts");
+}
+
+/** Does this host carry a ripple that survives the active filter? */
+function nwRippleMatches(host) {
+  const mode = nwRippleMode();
+  if (mode === "all") return true;
+  const row = networkRipple(host);
+  if (!row) return false;
+  if (mode === "high") {
+    const bands = (ASSETS_STATE.graph || {}).severity_bands;
+    return rippleBand(row, bands) === "high";
+  }
+  return true;
+}
+
+/** An edge survives when at least one endpoint is a matched host -- the filter's own wording:
+ *  "any edge whose endpoint survives". */
+function nwEdgeMatches(edge, matchedIds) {
+  if (nwRippleMode() === "all") return true;
+  const ids = matchedIds || nwRippleMatchedIds();
+  return ids.has(String(edge && edge.source)) || ids.has(String(edge && edge.target));
+}
+
+function nwRippleMatchedIds(nodes) {
+  const pool = nodes || ((ASSETS_STATE.graph || {}).nodes || []);
+  return new Set(pool.filter((n) => nwRippleMatches(n.id)).map((n) => String(n.id)));
+}
+
+function nwSetRippleFilter(mode) {
+  ASSETS_STATE.rippleFilter = NW_RIPPLE_MODES.includes(mode) ? mode : "all";
+  for (const btn of document.querySelectorAll("#nw-ripple [data-nw-ripple]")) {
+    btn.setAttribute("aria-pressed", btn.dataset.nwRipple === ASSETS_STATE.rippleFilter
+      ? "true" : "false");
+  }
+  nwClearDetail();
+  renderNetwork();
+}
+
+/** The detail panel belongs to the previous filter's selection once the filter changes. */
+function nwClearDetail() {
+  const host = document.getElementById("nw-detail");
+  const table = document.querySelector("#nw-detail-table tbody");
+  const title = document.getElementById("nw-detail-title");
+  const note = document.getElementById("nw-detail-note");
+  if (host) host.replaceChildren();
+  if (table) table.replaceChildren();
+  if (title) title.textContent = "click a line or a dot";
+  if (note) note.textContent = "";
+}
+
 /** The ripple behind an edge: the HIGHER band when both endpoints have one. */
 function networkEdgeRipple(edge) {
   const a = networkRipple(edge && edge.source);
@@ -616,7 +677,7 @@ function networkRippleCell(row) {
   return cell;
 }
 
-function renderNetworkRippleLine(nodes, d) {
+function renderNetworkRippleLine(nodes, d, baseNodes) {
   const line = document.getElementById("nw-ripple-line");
   if (!line) return;
   line.replaceChildren();
@@ -633,17 +694,30 @@ function renderNetworkRippleLine(nodes, d) {
   }
   const hours = d.ripple_window_hours || d.hours || ASSETS_STATE.hours;
   const rows = d.ripples || [];
-  const inView = (nodes || []).filter((n) => networkRipple(n.id));
+  const pool = baseNodes || nodes || [];
+  const inView = pool.filter((n) => networkRipple(n.id));
+  const mode = nwRippleMode();
   const btn = el("button", {
     class: "rp-link", text: "open Alerts",
     attrs: { type: "button" },
   });
   btn.setAttribute("title", "open the Alerts tab on this same window");
   btn.addEventListener("click", () => showView("anomalies"));
-  const text = rows.length
-    ? `${inView.length} of ${nodes.length} host${nodes.length === 1 ? "" : "s"} in view have ` +
-      `${rows.length} ripple${rows.length === 1 ? "" : "s"} in this ${hours}h window.`
-    : `0 hosts in view have a ripple in this ${hours}h window — no host met the ripple bar.`;
+  // THE SENTENCE RESTATES THE ACTIVE FILTER. "3 of 19 hosts have ripples — showing 3" is the
+  // count of what is on screen, not a count of the payload the reader cannot see.
+  let text;
+  if (!rows.length) {
+    text = `0 hosts in view have a ripple in this ${hours}h window — no host met the ripple bar.`;
+  } else if (mode !== "all") {
+    const highOnly = mode === "high";
+    const matched = nwRippleMatchedIds(pool);
+    text = `${matched.size} of ${pool.length} host${pool.length === 1 ? "" : "s"} have `
+      + `${highOnly ? "high-band " : ""}ripples in this ${hours}h window — showing `
+      + `${matched.size}.`;
+  } else {
+    text = `${inView.length} of ${pool.length} host${pool.length === 1 ? "" : "s"} in view have `
+      + `${rows.length} ripple${rows.length === 1 ? "" : "s"} in this ${hours}h window.`;
+  }
   line.append(el("span", { text }), el("span", { text: " " }), btn);
 }
 
@@ -732,7 +806,51 @@ function renderNetwork() {
     nodes = nodes.filter((n) => visible.has(n.id));
     edgesPool = edgesPool.filter((e) => matchIds.has(e.source) || matchIds.has(e.target));
   }
+  // ── THE RIPPLE FILTER NARROWS ALL THREE SURFACES ──────────────────────────────────────────
+  // Applied after the status/tracked filters so the controls compose, and before `edges` is
+  // computed so the graph, the detail panel (its own reader of graph.edges) and #nw-table all
+  // see the same surviving set. Peers of a matched host stay on the map as context, exactly as
+  // the status filter keeps peers; the count line names the matched hosts, not the peers.
+  const rippleMode = nwRippleMode();
+  const rippleBase = [...nodes];
+  const rippleMatched = nwRippleMatchedIds(rippleBase);
+  if (rippleMode !== "all") {
+    const context = new Set(rippleMatched);
+    for (const e of edgesPool) {
+      if (rippleMatched.has(String(e.source)) || rippleMatched.has(String(e.target))) {
+        context.add(String(e.source));
+        context.add(String(e.target));
+      }
+    }
+    nodes = nodes.filter((n) => context.has(String(n.id)));
+    edgesPool = edgesPool.filter((e) => nwEdgeMatches(e, rippleMatched));
+  }
   const edges = edgesPool.filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  // A FILTER THAT MATCHES NOTHING NAMES ITSELF AND THE WAY OUT. This is not "No edges to show":
+  // the network may be busy; the active filter is what emptied the view.
+  if (rippleMode !== "all" && !rippleMatched.size) {
+    const label = nwRippleModeLabel(rippleMode);
+    caption.textContent = `No host has ${rippleMode === "high" ? "a high-band ripple" : "a ripple"} `
+      + `in this ${d.hours || ASSETS_STATE.hours}h window \u2014 the "${label}" filter is on. `
+      + `Clear it (All) to see ${rippleBase.length} host${rippleBase.length === 1 ? "" : "s"}.`;
+    host.appendChild(chartEmpty(`The "${label}" ripple filter matches no host in this window. `
+      + `Choose All to restore the full map.`));
+    renderNetworkRippleLine([], d, rippleBase);
+    emptyRow(table, 6, `No connections under the "${label}" ripple filter. Choose All to clear it.`);
+    return;
+  }
+  if (rippleMode !== "all" && rippleMatched.size && !edges.length) {
+    const label = nwRippleModeLabel(rippleMode);
+    caption.textContent = `showing ${rippleMatched.size} of ${rippleBase.length} hosts with `
+      + `${rippleMode === "high" ? "high-band " : ""}ripples \u00b7 no connections above `
+      + `${ASSETS_STATE.minEdges} flow${ASSETS_STATE.minEdges === 1 ? "" : "s"} under this filter.`;
+    host.appendChild(chartEmpty(`The "${label}" filter matched ${rippleMatched.size} host`
+      + `${rippleMatched.size === 1 ? "" : "s"}, but none has a drawn connection above the flows `
+      + `filter. Lower it or choose All.`));
+    renderNetworkRippleLine(nodes, d, rippleBase);
+    emptyRow(table, 6, `No connections among the hosts matched by the "${label}" filter.`);
+    return;
+  }
   // A status host with no drawn connection is still a finding: show the filter's own count
   // rather than the generic "no traffic" sentence.
   if (status !== "all" && nodes.length && !edges.length) {
@@ -802,6 +920,12 @@ function renderNetwork() {
       ? `showing ${nodes.length} of ${nodes0.length} hosts`
       : `${nodes.length} hosts`);
   }
+  if (rippleMode !== "all") {
+    const peers = Math.max(0, nodes.length - rippleMatched.size);
+    bits.push(`showing ${rippleMatched.size} of ${rippleBase.length} hosts with `
+      + `${rippleMode === "high" ? "high-band " : ""}ripples`
+      + (peers ? ` and ${peers} peer${peers === 1 ? "" : "s"}` : ""));
+  }
   bits.push(`${edges.length} connections`);
   if (ASSETS_STATE.tracked.length) bits.push(`filtered to ${ASSETS_STATE.tracked.length} tracked`);
   if (d.truncated) bits.push(`of ${d.total_edges} total connections (capped)`);
@@ -810,7 +934,7 @@ function renderNetwork() {
   }
   caption.textContent = bits.join(" · ");
 
-  renderNetworkRippleLine(nodes, d);
+  renderNetworkRippleLine(nodes, d, rippleBase);
   drawGraph(host, nodes, edges, d.truncated);
 
   // The busiest edges, clickable to track either endpoint.
@@ -1354,6 +1478,20 @@ function drawGraph(host, nodes, edges, truncated) {
       : observed ? "var(--dim)" : "var(--accent)";
     const circleStyle = `fill:${fill}` +
       (unclassified ? ";stroke:var(--warn);stroke-width:1.5;stroke-dasharray:2 2" : "");
+    // ON A PHONE THE VISIBLE DOT IS NOT THE TAP TARGET. A host's circle is 5-14px radius; the
+    // 44px floor applies to what a finger must hit, so a transparent r=22 circle carries the
+    // pointer while the drawn circle keeps its data-scaled size.
+    const touch = typeof window.matchMedia === "function"
+      && window.matchMedia("(max-width: 720px)").matches;
+    if (touch) {
+      // The graph is drawn in a 1000-unit viewBox and scaled into the card (0.27-0.35x on a
+      // phone), so a 22-UNIT circle is only 12-15 CSS px. 84 units renders at 46 CSS px on the
+      // narrowest supported width (320px -> 274px card -> 0.274 scale) and 58px at 390px, so
+      // the transparent target clears the 44px floor at both widths instead of only the wider one.
+      g.appendChild(svgEl("circle", {
+        r: "84", class: "node-hit", fill: "transparent", "pointer-events": "all",
+      }));
+    }
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
       style: circleStyle,
@@ -1585,7 +1723,11 @@ function showNodeDetail(node) {
   host.replaceChildren();
   table.replaceChildren();
 
-  const all = (ASSETS_STATE.graph && ASSETS_STATE.graph.edges) || [];
+  // THE DETAIL TABLE OBEYS THE SAME RIPPLE FILTER as the graph and the edge table. A filtered
+  // graph with an unfiltered drill-down would show connections the map says are not in view.
+  const matched = nwRippleMatchedIds();
+  const all = ((ASSETS_STATE.graph && ASSETS_STATE.graph.edges) || [])
+    .filter((e) => nwEdgeMatches(e, matched));
   const touching = all.filter((e) => e.source === node.id || e.target === node.id);
   // Sorted so the heaviest conversation is first -- an analyst asking "what does this host
   // talk to" wants the answer ordered by significance, not by query order.

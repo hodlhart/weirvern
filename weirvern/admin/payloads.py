@@ -252,15 +252,32 @@ def ml_data_contract(client: Client) -> dict[str, Any]:
 
 # ── inventory reads: one fetch, one shape, and a failure the panel can draw around ──────────
 
-def assets(client: Client, *, hours: int) -> dict[str, Any]:
+def assets(client: Client, *, hours: int, scope: str = "all") -> dict[str, Any]:
     """The asset inventory: every host seen, with a per-host summary.
 
     `hours` bounds the TRAFFIC columns only. A host whose last packet was days ago is still an asset,
     so it appears with zeroed counters rather than being dropped.
+
+    `scope` is the reading the caller asked for, resolved HERE rather than by silently ignoring
+    the parameter. The inventory is monitored-only by construction (an external peer is not an
+    asset we are responsible for), so `all` and `monitored` return the same monitored set -- but
+    the counts below are COUNTED from the rows, not aliased from one number, and an unsupported
+    scope is rejected by the route instead of being answered with the full set.
     """
     from weirvern.admin import assets as assets_mod  # noqa: PLC0415
 
-    return assets_mod.asset_inventory(client, hours=hours)
+    payload = assets_mod.asset_inventory(client, hours=hours)
+    hosts = payload.get("hosts") or []
+    # COMPUTED, NOT COPIED. `all` is every row this inventory can return; `monitored` counts the
+    # rows whose own scope says monitored; `external` is counted too, and is zero because the
+    # inventory never emits one.
+    payload["scope"] = scope
+    payload["scope_counts"] = {
+        "all": len(hosts),
+        "monitored": sum(1 for h in hosts if str(h.get("scope") or "") == "monitored"),
+        "external": sum(1 for h in hosts if str(h.get("scope") or "") == "external"),
+    }
+    return payload
 
 
 def assets_failure(exc: BaseException) -> dict[str, Any]:
@@ -2923,14 +2940,21 @@ def anomalies(client: Client, *, limit: int, min_score: float, hours: int, host:
     """
     from weirvern import fleet_store  # noqa: PLC0415
     from weirvern.admin.web import _attach_anomaly_locations, _interface_network_names  # noqa: PLC0415
+    from weirvern.criticality import annotate_bands, band_counts_from_severity_counts  # noqa: PLC0415
 
     rows = status_mod.anomalies_grouped(
         client, limit=limit, min_score=min_score, host=host, severity=severity,
         model=model, feature=feature, hours=hours)
+    # ONE BAND PER ROW, SHIPPED FROM THE SERVER. The Alerts page renders the ripple list and
+    # this list from the same low/medium/high vocabulary; the browser never folds a severity
+    # itself, so the two lists cannot drift. A row with no severity is `unclassified` -- an
+    # explicit state, not a quiet low.
+    annotate_bands(rows)
     # The header tiles: counts per severity under min-score + host, NOT under the severity filter
     # itself (see status.anomaly_severity_counts for why).
     severity_counts = status_mod.anomaly_severity_counts(
         client, min_score=min_score, host=host, feature=feature, hours=hours)
+    band_counts = band_counts_from_severity_counts(severity_counts)
     # FIRED VS ACTED-ON (BF-12): the alert-budget line, self-guarding like the tiles.
     discipline = status_mod.anomaly_discipline_counts(
         client, min_score=min_score, host=host, hours=hours)
@@ -2992,7 +3016,7 @@ def anomalies(client: Client, *, limit: int, min_score: float, hours: int, host:
         "detectors": sorted(detector_names),
     }
     return web_api.anomalies_payload(
-        rows, severity_counts=severity_counts, discipline=discipline,
+        rows, severity_counts=severity_counts, band_counts=band_counts, discipline=discipline,
         watch_error=watch_err, total_unfiltered=total_unfiltered, fused=fused)
 
 

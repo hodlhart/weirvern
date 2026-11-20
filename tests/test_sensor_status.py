@@ -342,6 +342,10 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     code shows or hides, and whose contents (#st-account-note, the users
               #     table's tbody, #st-user-result) carry the data
               "st-account-card", "st-users-card", "st-user-add",
+              #   as-scope-note: static copy for the Assets inventory's monitored-only rule. The
+              #     server enforces the scope; the span states it, so there is deliberately no
+              #     client writer and the id is a test anchor, not an empty placeholder.
+              "as-scope-note",
               #   wl-sheet-close / sl-rule-close: the sheets' close controls; sheets.js finds
               #     them by CLASS (.sheet-close), and they carry static text -- never populated
               #   wl-detail-title: the weirling sheet's aria-labelledby target; static text

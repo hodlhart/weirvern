@@ -153,6 +153,33 @@ function sevCell(sev) {
   return el("span", { class: "sev-" + s, text: sevText(s) });
 }
 
+/* ── ONE CRITICALITY HELPER FOR BOTH ALERTS LISTS ─────────────────────────────────────────────
+ *
+ * The ripple list and the model-anomaly list render the same three bands plus the explicit
+ * `unclassified` state. Both call `bandCell()` in a table and `bandChip()` in the stacked phone
+ * card, so a colour, glyph or word cannot drift between them. The band itself is computed on the
+ * server (`severity_band`); the browser never restates the mapping.
+ */
+const CRITICALITY_BANDS = ["high", "medium", "low", "unclassified"];
+
+function bandValue(value) {
+  const band = String(value || "").toLowerCase();
+  // The server ships `severity_band`; this fold exists only for an older payload (or a test
+  // fixture) that predates it. It is the same rule as weirvern.criticality.corroboration_band:
+  // critical is the top of the same high band, and an absent value is not a low.
+  if (band === "critical") return "high";
+  return CRITICALITY_BANDS.includes(band) ? band : "unclassified";
+}
+
+function bandCell(value) {
+  return sevCell(bandValue(value));
+}
+
+function bandChip(value) {
+  const band = bandValue(value);
+  return el("span", { class: `rp-sev-chip sev-${band}`, text: sevText(band) });
+}
+
 function emptyRow(tbody, cols, message, action) {
   const cell = el("td", { class: "empty", text: message, attrs: { colspan: String(cols) } });
   // AN EMPTY STATE OFFERS THE BUTTON (BF-8): the cause in words, and -- when a control
@@ -2464,20 +2491,33 @@ function anRenderSeverity(sc) {
   const box = document.getElementById("an-sev");
   if (!box) return;
   box.replaceChildren();
+  // THE TILES SPEAK THE SAME BAND VOCABULARY AS THE CHIPS. `band_counts` is the server's fold
+  // of the ensemble's four severities onto high/medium/low/unclassified; it is the same helper
+  // that stamps every row's `severity_band`. Clicking a band sets the same filter the row chip
+  // names, so the tile and the list cannot disagree about what "high" means.
   const counts = (sc && sc.available) ? (sc.counts || []) : [];
   if (!counts.length) {
     box.appendChild(el("span", { class: "muted", text: sc && !sc.available
-      ? `Severity counts unavailable \u2014 ${sc.reason || "the read did not run"}.`
-      : "No anomalies in this window to split by severity." }));
+      ? `Criticality counts unavailable \u2014 ${sc.reason || "the read did not run"}.`
+      : "No anomalies in this window to split by criticality." }));
     return;
   }
+  const order = CRITICALITY_BANDS;
+  // Fold defensively too: an older payload can carry both `critical` and `high`, which are the
+  // same band. The server's `band_counts` is already merged; this makes the fallback equal.
+  const totals = {};
   for (const c of counts) {
-    const sev = String(c.severity || "unknown");
-    const active = AN_FILTERS.severity === sev;
+    const band = bandValue(c.band || c.severity);
+    totals[band] = (totals[band] || 0) + Number(c.count || 0);
+  }
+  const sorted = order.filter((b) => totals[b]).map((b) => ({ band: b, count: totals[b] }));
+  for (const c of sorted) {
+    const band = bandValue(c.band);
+    const active = AN_FILTERS.severity === band;
     const tile = el("button", { class: "tile" + (active ? " active" : ""),
-      attrs: { title: active ? "click to remove this filter" : `filter the page to ${sev}` } },
-      statCells(sev, String(c.count), { vClass: "sev-" + sev }));
-    tile.addEventListener("click", () => anSetFilter("severity", active ? "" : sev));
+      attrs: { title: active ? "click to remove this filter" : `filter the page to ${band}` } },
+      statCells(band, String(c.count), { vClass: "sev-" + band }));
+    tile.addEventListener("click", () => anSetFilter("severity", active ? "" : band));
     box.appendChild(tile);
   }
 }
@@ -2495,10 +2535,12 @@ function anRenderMlLine(payload) {
   const rows = (payload && payload.rows) || [];
   const counts = {};
   for (const row of rows) {
-    const sev = String(row.severity || "unknown").toLowerCase();
-    counts[sev] = (counts[sev] || 0) + 1;
+    // `severity_band` is the server's three-band fold; the signpost names the same words the
+    // rows and the chips use, plus `unclassified` when a row carries no severity at all.
+    const band = bandValue(row.severity_band || row.severity);
+    counts[band] = (counts[band] || 0) + 1;
   }
-  const order = ["critical", "high", "medium", "low", "unknown"];
+  const order = CRITICALITY_BANDS;
   const parts = order.filter((s) => counts[s]).map((s) => `${counts[s]} ${s}`);
   if (payload && payload.available === false) {
     btn.textContent = `model detections unavailable — ${payload.reason || "the read failed"}`;
@@ -2660,7 +2702,7 @@ function rippleCard(row, band) {
   }, [
     el("div", { class: "rp-card-head" }, [
       el("span", { class: "rp-card-host mono", text: row.host || "—" }),
-      el("span", { class: "rp-sev-chip sev-" + band, text: sevText(band) }),
+      bandChip(band),
     ]),
     el("div", { class: "rp-card-meta" }, [
       el("span", { class: "rp-card-when mono", text: fmtCompactTime(row.window_start) }),
@@ -2676,6 +2718,41 @@ function rippleCard(row, band) {
   card.addEventListener("click", () => openRippleSheet(row, card));
   card.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openRippleSheet(row, card); }
+  });
+  return card;
+}
+
+/** One model detection as the SAME stacked card the ripple list uses on a phone.
+ *
+ * Equal visual grammar, different words: the card is labelled "model corroboration" in its own
+ * foot, and its score is the model's fused score (0-1, three decimals) rather than the ripple's
+ * -log10 p sum. The chip, the left edge and every dimension come from the shared helpers.
+ */
+function anomalyCard(a, band) {
+  const label = `open the evidence for the model anomaly on ${a.src_addr || "this host"}`;
+  const score = Number(a.anomaly_score ?? 0).toFixed(3);
+  const card = el("article", {
+    class: `rp-card clickable rp-sev-${band}`,
+    attrs: { tabindex: "0", role: "button", "aria-label": label },
+  }, [
+    el("div", { class: "rp-card-head" }, [
+      el("span", { class: "rp-card-host mono", text: a.src_addr || "—" }),
+      bandChip(band),
+    ]),
+    el("div", { class: "rp-card-meta" }, [
+      el("span", { class: "rp-card-when mono", text: fmtCompactTime(a.detected_at) }),
+      el("span", { class: "rp-card-score sev-" + band, text: score }),
+      el("span", { class: "rp-card-fams mono", text: a.detected_by_models || "no detector named" }),
+    ]),
+    el("p", { class: "rp-card-why", text: a.baseline_comparison || "—" }),
+    el("div", { class: "rp-card-foot" }, [
+      el("span", { class: "muted", text: a.hostname || "model corroboration" }),
+      el("span", { class: "rp-card-cue", text: "Evidence \u203a" }),
+    ]),
+  ]);
+  card.addEventListener("click", () => openEvidence(a));
+  card.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openEvidence(a); }
   });
   return card;
 }
@@ -2853,7 +2930,7 @@ function renderRippleRows(rows) {
         el("td", { class: "num" }, [
           el("span", { class: "rp-score sev-" + band, text: Number(r.score || 0).toFixed(2) }),
         ]),
-        el("td", { class: "rp-sevcell" }, [sevCell(band)]),
+        el("td", { class: "rp-sevcell" }, [bandCell(band)]),
         el("td", { class: "rp-why", text: r.explanation || "—" }),
         el("td", { class: "muted", text: (r.families || []).join(" / ") || "—" }),
       ]);
@@ -3344,6 +3421,8 @@ async function loadAnomalies() {
   if (episodesTable) episodesTable.classList.add("hidden");
   const anomaliesTable = document.getElementById("anomalies-table");
   if (anomaliesTable) anomaliesTable.classList.remove("hidden");
+  const anomaliesCards = document.getElementById("anomalies-cards");
+  if (anomaliesCards) anomaliesCards.classList.remove("hidden");
   const sevBox = document.getElementById("an-sev");
   if (sevBox) sevBox.classList.remove("hidden");
   const note = document.getElementById("an-queue-note");
@@ -3362,7 +3441,9 @@ async function loadAnomalies() {
   anRenderChips();
   const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly, hours) + anQuery()
     + (watchedOnly ? "&watched=1" : ""));
-  anRenderSeverity(payload.severity_counts);
+  // `band_counts` is the server's fold; `severity_counts` is the older payload shape and is
+  // folded by the one client helper only when the server did not ship the band view.
+  anRenderSeverity(payload.band_counts || payload.severity_counts);
   anRenderMlLine(payload);
   anRenderFusedLine(payload);
   anRenderDiscipline(payload.discipline);
@@ -3379,7 +3460,9 @@ async function loadAnomalies() {
   const rows = payload.rows || [];
 
   const tbody = document.querySelector("#anomalies-table tbody");
+  const cards = document.getElementById("anomalies-cards");
   tbody.replaceChildren();
+  if (cards) cards.replaceChildren();
   if (!rows.length) {
     const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model
                         || AN_FILTERS.feature || Number(min) > 0 || unreviewedOnly || watchedOnly);
@@ -3396,13 +3479,18 @@ async function loadAnomalies() {
     return;
   }
   for (const a of rows) {
+    // THE SAME CRITICALITY THE RIPPLE ROW USES. The band is the server's fold of the ensemble's
+    // severity; an absent value is `unclassified`, which the helper renders as such rather than
+    // defaulting a silence to low. The tr's `rp-sev-*` class draws the same inset left edge, and
+    // the score cell uses the same `rp-score` colour treatment as the ripple score.
+    const band = bandValue(a.severity_band || a.severity);
     const contrib = a.feature_contributions || {};
     const contributing = Object.entries(contrib)
       .sort((x, y) => Math.abs(y[1].z) - Math.abs(x[1].z))
       .slice(0, 3)
       .map(([name, d]) => `${name} z=${d.z}`)
       .join(", ");
-    tbody.appendChild(el("tr", { class: "clickable",
+    tbody.appendChild(el("tr", { class: `clickable rp-sev-${band}`,
                                  attrs: { title: "Show the raw evidence for this alert" },
                                  on: { click: () => openEvidence(a) } }, [
       el("td", { class: "mono an-stamp", text: fmtCompactTime(a.detected_at) }),
@@ -3425,10 +3513,12 @@ async function loadAnomalies() {
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
                                    title: "on the watch list" }) : null]),
       el("td", { class: "mono an-hostname", text: a.hostname || "—" }),
-      el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
-      el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
-                 on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
-         [sevCell(a.severity)]),
+      el("td", { class: "num" }, [
+        el("span", { class: "rp-score sev-" + band, text: (a.anomaly_score ?? 0).toFixed(3) }),
+      ]),
+      el("td", { class: "dcell rp-sevcell", attrs: { title: "filter the queue to this criticality" },
+                 on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", band); } } },
+         [bandCell(band)]),
       // US-5: each name in the models cell is an entity -- clicking one filters the queue to
       // that detector (the quiet-a-noisy-detector job's entry, beside the registry strip's).
       el("td", { class: "mono" }, [
@@ -3483,6 +3573,7 @@ async function loadAnomalies() {
         reviewCell(a), rowMore(a, a.review_state || ""),
       ])]),
     ]));
+    if (cards) cards.appendChild(anomalyCard(a, band));
   }
 
   // US-6: "showing X of Y" -- the header says WHY the list may look short. X counts the
@@ -3512,10 +3603,12 @@ async function loadEpisodeQueue(mode, hours) {
   const payload = await getJSON(`${API.episodes}?hours=${encodeURIComponent(windowHours)}&limit=200`);
   const table = document.getElementById("episodes-table");
   const anomalies = document.getElementById("anomalies-table");
+  const anomaliesCards = document.getElementById("anomalies-cards");
   const sevBox = document.getElementById("an-sev");
   const note = document.getElementById("an-queue-note");
   if (table) table.classList.remove("hidden");
   if (anomalies) anomalies.classList.add("hidden");
+  if (anomaliesCards) anomaliesCards.classList.add("hidden");
   if (sevBox) sevBox.classList.add("hidden");
   const tbody = document.querySelector("#episodes-table tbody");
   if (!tbody) return;
@@ -6232,15 +6325,9 @@ document.addEventListener("DOMContentLoaded", () => {
       renderAssets();
     });
   }
-  const asScope = document.getElementById("as-scope");
-  if (asScope) asScope.addEventListener("change", (e) => {
-    window.NET_SCOPE = e.target.value;
-    ASSETS_STATE.page = 1;
-    renderAssets();
-    // The identity table is filtered by the same value; re-read it so the two panels cannot
-    // disagree about which network is on screen.
-    if (typeof loadIdentity === "function") loadIdentity().catch(showError);
-  });
+  // THE ASSETS SCOPE SELECT IS GONE (2026-11-20). The inventory is monitored-only by the
+  // server's rule; a dropdown whose every option returned the same set was masking a parameter
+  // the API ignored. The remaining scope is stated in the controls, not chosen.
   // ── Network graph controls ─────────────────────────────────────────────────
   const nwClear = document.getElementById("nw-clear");
   if (nwClear) nwClear.addEventListener("click", () => {
@@ -6275,6 +6362,15 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       ASSETS_STATE.status = status;
       renderNetwork();
+      scheduleURLSync();
+    });
+  }
+  // THE RIPPLE FILTER: a reading of the cached graph, composed with status/tracked, and in
+  // the URL with the other Network controls. `nwSetRippleFilter` updates the pressed state and
+  // re-renders; the handler is the only writer of the state.
+  for (const btn of document.querySelectorAll("#nw-ripple [data-nw-ripple]")) {
+    btn.addEventListener("click", () => {
+      nwSetRippleFilter(btn.dataset.nwRipple);
       scheduleURLSync();
     });
   }
@@ -8031,6 +8127,9 @@ function syncURL() {
   if (ASSETS_STATE.showNames) p.set("nw.labels", "1");
   if (ASSETS_STATE.trackedOnly) p.set("nw.tracked", "1");
   if (ASSETS_STATE.status && ASSETS_STATE.status !== "all") p.set("nw.status", ASSETS_STATE.status);
+  if (ASSETS_STATE.rippleFilter && ASSETS_STATE.rippleFilter !== "all") {
+    p.set("nw.ripple", ASSETS_STATE.rippleFilter);
+  }
   const dcFeedSel = document.getElementById("dc-feed");
   if (dcFeedSel && dcFeedSel.value && dcFeedSel.value !== "netflow") {
     p.set("dc.feed", dcFeedSel.value);
@@ -8156,6 +8255,12 @@ function applyURLState() {
   ASSETS_STATE.status = ["all", "blocked", "alerted"].includes(nwStatus) ? nwStatus : "all";
   for (const btn of document.querySelectorAll("#nw-status [data-nw-status]")) {
     btn.setAttribute("aria-pressed", btn.dataset.nwStatus === ASSETS_STATE.status ? "true" : "false");
+  }
+  const nwRipple = String(p.get("nw.ripple") || "all").toLowerCase();
+  ASSETS_STATE.rippleFilter = ["all", "any", "high"].includes(nwRipple) ? nwRipple : "all";
+  for (const btn of document.querySelectorAll("#nw-ripple [data-nw-ripple]")) {
+    btn.setAttribute("aria-pressed",
+      btn.dataset.nwRipple === ASSETS_STATE.rippleFilter ? "true" : "false");
   }
   if (p.get("dc.feed")) {
     const feedEl = document.getElementById("dc-feed");

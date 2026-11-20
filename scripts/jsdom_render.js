@@ -594,6 +594,14 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       row.reason_code = `${parts.join("+") || "?"}:${String(row.primary_deviation_feature || "").trim() || "score"}`;
     }
   }
+  // THE SERVER SHIPS THE BAND. The fixture carries the same fold the payload layer applies, so
+  // the jsdom checks read the shipped field rather than re-deriving it in the browser.
+  {
+    const FOLD = { critical: "high", high: "high", medium: "medium", low: "low" };
+    for (const row of ANOMALIES_STATE) {
+      row.severity_band = FOLD[String(row.severity || "").toLowerCase()] || "unclassified";
+    }
+  }
   function anRecompute() {
     for (const row of ANOMALIES_STATE) {
       if (!row.windows) {
@@ -1636,7 +1644,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                              by_state: { ack: 1 } },
                severity_counts: { available: true, reason: "",
                                  counts: [{ severity: "high", count: 1 },
-                                          { severity: "medium", count: 1 }] } };
+                                          { severity: "medium", count: 1 }] },
+               band_counts: { available: true, reason: "",
+                              counts: [{ band: "high", count: 2 },
+                                       { band: "medium", count: 1 }] } };
     }],
   );
 
@@ -1796,39 +1807,40 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("unreadable sources are named, not silently dropped",
         needEl("as-note").textContent.includes("zeek_quic"));
 
-  // ONE ASSETS TAB, TWO DATASETS, ONE NETWORK SCOPE (operator, 2026-10-19).
+  // ONE ASSETS TAB, ONE REAL SCOPE (operator, 2026-11-20: "remove external it will always
+  // show 0"). The inventory is monitored-only by the server's rule; a one-item selector was a
+  // choice that could not succeed, so the scope is stated rather than selected.
   check("Identity is not a tab of its own any more",
         !doc.querySelector('.tab[data-view="identity"]')
         && !!doc.querySelector("#view-assets #id-table"),
         "the identity table is not inside Assets");
-  const scopeSel = needEl("as-scope");
-  check("the Assets view offers monitored / external / all",
-        !!scopeSel && [...scopeSel.options].map((o) => o.value).join("|")
-          === "all|monitored|external");
-  if (scopeSel) {
-    await H.loadAssets();          // settle any in-flight load before swapping the inventory
+  check("the Assets view no longer offers an External scope",
+        !doc.getElementById("as-scope")
+        && !/external network/i.test(needEl("as-scope-note")?.parentElement?.textContent || ""),
+        "the scope selector or its external option is still present");
+  check("the remaining scope is stated, not a one-item dropdown",
+        !!doc.getElementById("as-scope-note")
+        && /monitored networks/i.test(doc.getElementById("as-scope-note").textContent));
+  {
     const baseInv = H.ASSETS_STATE.inventory;
     H.ASSETS_STATE.inventory = {
       ...baseInv,
       hosts: [...baseInv.hosts,
         { addr: "fd00::50", name: "printer", bytes: 10, flows: 1, dst_count: 1,
-          first_seen: "", last_seen: "", services: ["dns"], anomalies: 0 }],
+          first_seen: "", last_seen: "", services: ["dns"], anomalies: 0, scope: "monitored" }],
     };
-    window.NET_SCOPE = "monitored";
-    H.renderAssets();
-    const mon = [...doc.querySelectorAll("#as-table tbody tr")].map((r) => r.textContent);
-    check("...monitored networks keeps the private host",
-          mon.length === 1 && /fd00::50/.test(mon[0]),
-          `rows=${mon.join(" | ")} scopeForPrinter=${typeof window.netScope === "function" ? window.netScope("fd00::50") : "no netScope"}`);
+    // A stale client-side scope value must NOT filter a payload the server already scoped.
     window.NET_SCOPE = "external";
     H.renderAssets();
-    const ext = [...doc.querySelectorAll("#as-table tbody tr")].map((r) => r.textContent);
-    check("...the external network keeps the public hosts",
-          ext.length >= 2 && !ext.some((x) => /fd00::50/.test(x)), ext.join(" | "));
+    const shown = [...doc.querySelectorAll("#as-table tbody tr")].map((r) => r.textContent);
+    check("the inventory ignores a stale client-side scope and shows every server row",
+          shown.length === 3, `rows=${shown.length}`);
+    check("the summary names the monitored set",
+          /monitored hosts/i.test(needEl("as-summary").textContent),
+          needEl("as-summary").textContent);
     window.NET_SCOPE = "all";
     H.ASSETS_STATE.inventory = baseInv;
     H.renderAssets();
-    await new Promise((r) => setTimeout(r, 80));
   }
 
   // Search filters the cached payload.
@@ -2220,7 +2232,70 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && !!doc.querySelector("#nw-detail-table tbody .nw-ripple-chip.sev-high"),
           needEl("nw-detail-table").textContent.slice(0, 200));
 
+    // ── THE RIPPLE FILTER (operator, 2026-11-20: "for network i need to be able to filter by
+    // ripples") ───────────────────────────────────────────────────────────────────────────────
+    // One state narrows the graph, the detail table and the edge table together; All restores
+    // the full set; the count line names the matched hosts; an empty result names the filter.
+    const clickRipple = (mode) => {
+      const btn = doc.querySelector(`#nw-ripple [data-nw-ripple="${mode}"]`);
+      if (btn) btn.click();
+    };
+    clickRipple("any");
+    const anyRows = [...doc.querySelectorAll("#nw-table tbody tr")];
+    const anyNodes = [...doc.querySelectorAll("#nw-graph g.node")];
+    check("the Network ripple filter narrows graph and edge table together",
+          anyRows.length === 2 && anyNodes.length === 3,
+          `rows=${anyRows.length} nodes=${anyNodes.length}`);
+    check("...and the count line restates what is shown",
+          /2 of 4 hosts have ripples in this 24h window — showing 2/.test(
+            needEl("nw-ripple-line").textContent.replace(/\s+/g, " ")),
+          needEl("nw-ripple-line").textContent.replace(/\s+/g, " ").slice(0, 200));
+    check("...and the caption says the filter is on",
+          /showing 2 of 4 hosts with ripples/.test(needEl("nw-caption").textContent),
+          needEl("nw-caption").textContent);
+
+    H.showNodeDetail(RIPPLE_GRAPH.nodes[2]);
+    check("the connection-detail table obeys the same ripple filter",
+          doc.querySelectorAll("#nw-detail-table tbody tr.clickable").length === 1,
+          `${doc.querySelectorAll("#nw-detail-table tbody tr.clickable").length} detail edge rows`);
+
+    clickRipple("high");
+    check("High and above keeps only the high-band host",
+          /1 of 4 hosts have high-band ripples in this 24h window — showing 1/.test(
+            needEl("nw-ripple-line").textContent.replace(/\s+/g, " ")),
+          needEl("nw-ripple-line").textContent.replace(/\s+/g, " ").slice(0, 200));
+
+    H.syncURL();
+    check("the ripple filter rides the URL", /nw\.ripple=high/.test(window.location.hash),
+          window.location.hash.slice(0, 110));
+    const savedFilter = H.ASSETS_STATE.rippleFilter;
+    H.ASSETS_STATE.rippleFilter = "all";
+    window.location.hash = "#v=network&nw.ripple=high";
+    H.applyURLState();
+    check("...and a filtered link restores it on load",
+          H.ASSETS_STATE.rippleFilter === "high" && savedFilter === "high"
+          && doc.querySelector('[data-nw-ripple="high"]').getAttribute("aria-pressed") === "true",
+          `state=${H.ASSETS_STATE.rippleFilter} pressed=${doc.querySelector('[data-nw-ripple="high"]').getAttribute("aria-pressed")}`);
+
+    clickRipple("any");
+    H.ASSETS_STATE.graph = { ...RIPPLE_GRAPH, ripples: [] };
+    H.renderNetwork();
+    check("an empty filtered result names the active filter, never 'No edges to show'",
+          /No host has a ripple/.test(needEl("nw-caption").textContent)
+          && /ripple filter/i.test(doc.querySelector("#nw-table tbody").textContent)
+          && !/No edges to show/.test(doc.querySelector("#nw-table tbody").textContent),
+          `${needEl("nw-caption").textContent} | ${doc.querySelector("#nw-table tbody").textContent}`);
+
+    clickRipple("all");
+    H.ASSETS_STATE.graph = { ...RIPPLE_GRAPH };
+    H.renderNetwork();
+    check("clearing the filter restores the full graph and table",
+          doc.querySelectorAll("#nw-table tbody tr").length === 3
+          && doc.querySelectorAll("#nw-graph g.node").length === 4,
+          `rows=${doc.querySelectorAll("#nw-table tbody tr").length} nodes=${doc.querySelectorAll("#nw-graph g.node").length}`);
+
     H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.rippleFilter = "all";
     H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
   }
 
@@ -2585,6 +2660,97 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && /Isolation Forest/.test(fusedText) && /LOF/.test(fusedText)
           && /corroboration, not 3 incidents/.test(fusedText),
           fusedText.slice(0, 260));
+
+    // ── THE MODEL LIST WEARS THE RIPPLE LIST'S CRITICALITY (operator, 2026-11-20) ────────────
+    // Equal grammar, different words: the same inset left edge, the same score treatment, the
+    // same severity cell helper, and the same chip in the stacked phone card.
+    const firstModel = anRows[0];
+    const firstRipple = rows[0];
+    check("a model-anomaly row carries the same severity edge class as a ripple row",
+          !!firstModel && /\brp-sev-high\b/.test(firstModel.className)
+          && /\brp-sev-low\b/.test(firstRipple.className),
+          `model=${firstModel ? firstModel.className : "none"} ripple=${firstRipple.className}`);
+    const modelSev = firstModel ? firstModel.querySelector("td.rp-sevcell") : null;
+    const rippleSev = firstRipple ? firstRipple.querySelector("td.rp-sevcell") : null;
+    check("both lists resolve the severity cell from the same helper and the same band word",
+          !!modelSev && !!rippleSev
+          && modelSev.textContent.trim() === "\u25c6 high"
+          && rippleSev.textContent.trim() === "\u25cb low"
+          && !!modelSev.querySelector(".sev-high") && !!rippleSev.querySelector(".sev-low"),
+          `model=${modelSev ? modelSev.textContent.trim() : "none"} ripple=${rippleSev ? rippleSev.textContent.trim() : "none"}`);
+    const modelScore = firstModel ? firstModel.querySelector(".rp-score.sev-high") : null;
+    const rippleScore = firstRipple ? firstRipple.querySelector(".rp-score.sev-low") : null;
+    check("both lists colour the score from the same band class",
+          !!modelScore && !!rippleScore && /0\.9/.test(modelScore.textContent)
+          && /2\.41/.test(rippleScore.textContent),
+          `model=${modelScore ? modelScore.textContent : "none"} ripple=${rippleScore ? rippleScore.textContent : "none"}`);
+
+    const modelCards = [...doc.querySelectorAll("#anomalies-cards .rp-card")];
+    const rippleCards = [...doc.querySelectorAll("#ripples-cards .rp-card")];
+    const modelChip = modelCards[0] ? modelCards[0].querySelector(".rp-sev-chip") : null;
+    const rippleChip = rippleCards[0] ? rippleCards[0].querySelector(".rp-sev-chip") : null;
+    check("the model list has a stacked card per row, with the ripple card's geometry",
+          modelCards.length === anRows.length,
+          `cards=${modelCards.length} rows=${anRows.length}`);
+    check("both stacked-card lists carry the same severity chip class and word",
+          !!modelChip && !!rippleChip
+          && modelChip.className === "rp-sev-chip sev-high"
+          && rippleChip.className === "rp-sev-chip sev-low"
+          && modelChip.textContent.trim() === "\u25c6 high",
+          `model=${modelChip ? modelChip.className + "/" + modelChip.textContent.trim() : "none"} ` +
+          `ripple=${rippleChip ? rippleChip.className + "/" + rippleChip.textContent.trim() : "none"}`);
+
+    const tiles = [...doc.querySelectorAll("#an-sev .tile .k")].map((x) => x.textContent.trim());
+    check("the criticality tiles speak the three-band vocabulary, not critical/unknown",
+          tiles.join("|") === "high|medium", tiles.join("|"));
+  }
+
+  // ── THE SHARED GEOMETRY IS MEASURED, NOT JUST WRITTEN IN SLUICE'S CSS ─────────────────────
+  //
+  // A class-name assertion cannot prove that a later Sluice rule did not re-size a card, chip
+  // or button. These read the computed cascade in each view: one card, one severity chip and
+  // one primary button per view, and every value must equal Alerts' value.
+  {
+    const views = ["view-anomalies", "view-models", "view-network", "view-discover", "view-sluice"];
+    const measure = (id) => {
+      const root = doc.getElementById(id);
+      const card = root && root.querySelector(".card");
+      const chip = doc.createElement("span");
+      chip.className = "rp-sev-chip sev-low";
+      const btn = doc.createElement("button");
+      btn.className = "primary";
+      if (root) { root.appendChild(chip); root.appendChild(btn); }
+      const c = card ? window.getComputedStyle(card) : null;
+      const ch = window.getComputedStyle(chip);
+      const b = window.getComputedStyle(btn);
+      const out = {
+        cardRadius: c ? c.borderRadius : "",
+        cardPadding: c ? c.padding : "",
+        chipRadius: ch.borderRadius,
+        chipPadding: ch.padding,
+        chipFont: ch.fontSize,
+        btnRadius: b.borderRadius,
+        btnHeight: b.height,
+      };
+      if (root) { chip.remove(); btn.remove(); }
+      return out;
+    };
+    const all = views.map((id) => [id, measure(id)]);
+    const ref = all[0][1];
+    const same = (key) => all.every(([, g]) => g[key] === ref[key]);
+    check("card radius is identical in Alerts, Models, Network, Flows and Sluice",
+          same("cardRadius") && Boolean(ref.cardRadius),
+          all.map(([id, g]) => `${id}:${g.cardRadius}`).join(" "));
+    check("card padding is identical in Alerts, Models, Network, Flows and Sluice",
+          same("cardPadding") && Boolean(ref.cardPadding),
+          all.map(([id, g]) => `${id}:${g.cardPadding}`).join(" "));
+    check("severity chip shape and type are identical wherever a chip is rendered",
+          same("chipRadius") && same("chipPadding") && same("chipFont")
+          && Boolean(ref.chipRadius),
+          all.map(([id, g]) => `${id}:${g.chipRadius}/${g.chipPadding}/${g.chipFont}`).join(" "));
+    check("primary button radius and height are identical in every view",
+          same("btnRadius") && same("btnHeight") && Boolean(ref.btnRadius),
+          all.map(([id, g]) => `${id}:${g.btnRadius}/${g.btnHeight}`).join(" "));
   }
 
   // A SILENT ENGINE MUST LOOK SILENT, NOT ABSENT: zero rows still renders the signpost.
@@ -9262,7 +9428,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           `pressed=${pressedNow ? pressedNow.textContent.trim() : "none"} svc=${H.ASSETS_STATE.svc}`);
     const sumTxt = (needEl("as-summary") || {}).textContent || "";
     check("ASSETS: the summary says showing X of Y with the reason",
-          /\d+ of \d+ hosts with service/.test(sumTxt) && sumTxt.includes(svcLabel), sumTxt);
+          /\d+ of \d+ monitored hosts with service/.test(sumTxt) && sumTxt.includes(svcLabel), sumTxt);
     H.syncURL();
     check("ASSETS: the service filter rides the URL",
           /as\.svc=/.test(window.location.hash), window.location.hash);

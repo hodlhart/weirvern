@@ -153,16 +153,26 @@ def test_the_mobile_rules_are_stacked_cards_not_a_scroll_box():
 # ── The visual layer (2026-11-20): hierarchy, fault text, state-vs-action shapes ──────────────
 
 def test_a_fault_owns_the_top_of_its_card_and_the_first_screen():
-    """Severity outranks every control: a degraded gate and a stale sensor are stated in a
-    full-width band at the top of their card, and the first screen repeats every fault."""
+    """Severity outranks every control: a degraded gate states its fault in the card it belongs
+    to, in the console's own chip treatment, instead of a page-level strip or an invented band."""
     html = (WEB / "index.html").read_text(encoding="utf-8")
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
-    assert 'id="sl2-attn"' in html
-    assert 'id="sl2-traf-band"' in html and "sl2-sev-band" in html
-    assert "renderSluiceAttention" in js and "sl2-sev-band" in js
-    assert 'stale: "high"' in js and 'degraded: "critical"' in js
-    # "New rule" is visually secondary even though it remains the header's one primary verb.
-    assert "#sl2-new.sl2-new" in (WEB / "style.css").read_text(encoding="utf-8")
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    # THE PAGE-LEVEL STRIP AND THE FULL-BLEED BAND WERE REMOVED (operator, 2026-11-20).
+    assert 'id="sl2-attn"' not in html
+    assert "sl2-sev-band" not in html
+    # The fault row is inside each gate card, before that card's controls.
+    assert 'class="chips sl2-fault hidden" id="sl2-dom-band"' in html
+    assert 'class="chips sl2-fault hidden" id="sl2-traf-band"' in html
+    dom_band = html.index('id="sl2-dom-band"')
+    assert dom_band < html.index('class="controls', dom_band)
+    traf_band = html.index('id="sl2-traf-band"')
+    assert traf_band < html.index('class="controls', traf_band)
+    assert "function sl2BandSet(" in js and "sl2-fault-chip" in js
+    assert 'degraded: "critical"' in js and 'stale: "high"' in js
+    # "New rule" is the shared header primary, not a second bespoke button style.
+    assert 'id="sl2-new" class="primary"' in html
+    assert "#sl2-new.sl2-new" not in css
 
 
 def test_rules_that_match_nothing_are_grouped_not_deleted():
@@ -176,29 +186,38 @@ def test_rules_that_match_nothing_are_grouped_not_deleted():
     assert "never match traffic" in js
 
 
-def test_state_is_a_capsule_pill_and_action_is_a_button():
+def test_state_is_a_shared_severity_chip_and_action_stays_a_button():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
     css = (WEB / "style.css").read_text(encoding="utf-8")
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
-    assert ".rp-sev-chip.sl2-pill" in css
-    assert "border-radius: 999px" in css
-    assert "sl2-pill" in js
-    # A pill has no solid control border; the button system keeps its 6px corners.
-    assert "border: 0; border-radius: 999px" in css.replace("\n", " ")
+    # THE STATE CHIP IS THE ALERTS CHIP. No second pill shape for Sluice.
+    assert '<span class="rp-sev-chip sev-low" id="sl2-dom-chip">' in html
+    assert '<span class="rp-sev-chip sev-low" id="sl2-traf-chip">' in html
+    assert "function sl2StateChip(" in js and "class: `rp-sev-chip sev-${sev}`" in js
+    assert "sl2-pill" not in js and ".sl2-pill" not in css
 
 
 def test_the_disabled_arming_control_names_its_reason_beside_it():
     html = (WEB / "index.html").read_text(encoding="utf-8")
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
     css = (WEB / "style.css").read_text(encoding="utf-8")
-    assert 'class="sl2-blocked-note hidden" id="sl2-traf-note"' in html
+    assert 'class="muted hidden" id="sl2-traf-note"' in html
     assert "Arming is unavailable: file a packet rule first." in js
-    assert ".sl2-blocked-note" in css
+    assert 'getElementById("sl2-traf-note")' in js
+    assert ".sl2-blocked-note" not in css
     assert "button:disabled" in css
 
 
-def test_the_revoked_filter_is_a_designed_control_not_a_native_box():
+def test_the_revoked_filter_is_a_real_labelled_checkbox():
     html = (WEB / "index.html").read_text(encoding="utf-8")
     css = (WEB / "style.css").read_text(encoding="utf-8")
-    assert 'class="sl2-check"' in html
-    assert ".sl2-show input:checked + .sl2-check" in css
-    assert "input:focus-visible + .sl2-check" in css
+    # The fake checkbox skin was deleted (operator, 2026-11-20): one native control, wrapped in
+    # its own label, with the visible text beside it.
+    assert '<input id="sl2-show-revoked" type="checkbox">' in html
+    assert (
+        '<label class="check">\n'
+        '          <input id="sl2-show-revoked" type="checkbox">\n'
+        "          <span>Show revoked</span>\n"
+        "        </label>"
+    ) in html
+    assert "sl2-check" not in html and ".sl2-check" not in css

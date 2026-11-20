@@ -966,3 +966,52 @@ def test_the_tracked_graph_climbs_the_same_ladder():
     out = assets.top_edges_for(client, ["198.51.100.10"], hours=24)
     assert out["available"] is True, out
     assert out["hours"] == 6 and out["narrowed_from"] == 24, out
+
+
+# ── the Assets scope is resolved, not ignored ────────────────────────────────────────────────
+
+def test_assets_route_rejects_external_and_unknown_scopes_by_name():
+    """MEASURED BEFORE THE FIX: /api/assets?scope=external returned the same 22 rows as all and
+    monitored, because the view never read the parameter -- the UI's client-side filter made the
+    ignored parameter look applied. An unsupported scope is now a named 400."""
+    from tests.support_routes import _Ctx
+    from weirvern.admin import flask_app
+
+    client = flask_app.create_app(_Ctx(), secret_key="assets-scope").test_client()
+    for scope in ("external", "galactic"):
+        got = client.get(f"/api/assets?scope={scope}")
+        assert got.status_code == 400, (scope, got.status_code, got.data[:160])
+        body = got.get_json()
+        assert "unsupported asset scope" in body["error"]
+        assert scope in body["error"]
+    # The two honest readings still reach the payload layer (which may answer a soft failure
+    # with this stub context; the point is that the scope was accepted, not rejected).
+    assert client.get("/api/assets?scope=monitored").status_code == 200
+    assert client.get("/api/assets?scope=all").status_code == 200
+
+
+def test_assets_scope_counts_are_counted_not_aliased(monkeypatch):
+    from weirvern.admin import assets as assets_mod
+    from weirvern.admin import payloads
+
+    def fake_inventory(client, hours):  # noqa: ARG001
+        return {"available": True, "hosts": [
+            {"addr": "10.0.0.1", "scope": "monitored"},
+            {"addr": "10.0.0.2", "scope": "monitored"},
+            {"addr": "203.0.113.9", "scope": "external"},
+        ]}
+
+    monkeypatch.setattr(assets_mod, "asset_inventory", fake_inventory)
+    out = payloads.assets(None, hours=24, scope="all")
+    assert out["scope_counts"] == {"all": 3, "monitored": 2, "external": 1}
+    # The counts are computed from the rows on every call, not copied from one alias.
+    out2 = payloads.assets(None, hours=24, scope="monitored")
+    assert out2["scope_counts"] == {"all": 3, "monitored": 2, "external": 1}
+    assert out["scope"] == "all" and out2["scope"] == "monitored"
+
+
+def test_the_assets_selector_no_longer_offers_external():
+    """A one-item dropdown is not a choice. The scope is stated in the controls instead."""
+    assert 'id="as-scope"' not in INDEX
+    assert ">external network<" not in INDEX
+    assert 'id="as-scope-note"' in INDEX

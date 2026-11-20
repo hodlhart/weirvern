@@ -287,6 +287,18 @@
         <button id="nw-status-alerted" class="chip act" type="button" data-nw-status="alerted"
                 aria-pressed="false"><span class="nw-swatch alerted"></span>Alerted</button>
       </div>
+      <!-- THE RIPPLE FILTER (operator, 2026-11-20): the graph already annotates ripple hosts;
+           this narrows the graph and BOTH tables to them. Same chip grammar as the status
+           filter above, keyboard reachable, 44px on a phone. -->
+      <div id="nw-ripple" class="chips" role="group" aria-label="filter graph by ripple presence">
+        <span class="muted">ripples</span>
+        <button class="chip act" type="button" data-nw-ripple="all"
+                aria-pressed="true">All</button>
+        <button class="chip act" type="button" data-nw-ripple="any"
+                aria-pressed="false">Hosts with ripples</button>
+        <button class="chip act" type="button" data-nw-ripple="high"
+                aria-pressed="false">High and above</button>
+      </div>
       <div class="info-text hidden" id="nw-info">
   <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
   <p><strong>What writes it.</strong> Netflow edges from every weirling in the window; Zeek enriches them where it runs.</p>
@@ -663,6 +675,10 @@
         <tbody></tbody>
       </table>
 
+      <!-- THE PHONE FORM OF THE MODEL LIST (2026-11-20). The 12-column table cannot fit a
+           phone; below the breakpoint this renders one stacked card per detection using the
+           same .rp-card geometry, severity chip and left edge as the ripple list. -->
+      <div id="anomalies-cards" class="rp-cards" aria-label="Model anomalies"></div>
       <!-- THE INCIDENT/LEAD TABLE. One row per episode, never one row per five-minute window.
            A row is only an incident when it is high/critical, pageable, and names a measured
            feature or an independent family; the rest stay one click away under Leads. -->
@@ -1265,15 +1281,11 @@
             <option value="name">by name</option>
           </select>
         </label>
-        <!-- ONE ASSETS TAB, ONE NETWORK SCOPE (operator, 2026-10-19: combine Assets and
-             Identity; look at monitored networks, the external network, or all). -->
-        <label>networks
-          <select id="as-scope">
-            <option value="all" selected>all networks</option>
-            <option value="monitored">monitored networks</option>
-            <option value="external">external network</option>
-          </select>
-        </label>
+        <!-- THE INVENTORY IS MONITORED-ONLY (operator, 2026-11-20: "in the assets tab remove
+             external it will always show 0"). A one-item scope dropdown was a choice that
+             could not change what was shown, so the scope is stated, not selected: the server
+             filters to the monitored networks and rejects any other scope by name. -->
+        <span class="muted" id="as-scope-note">monitored networks</span>
         
       </div>
       <!-- US-7: the services the inventory actually saw, as chips that filter it in place. -->
@@ -1509,35 +1521,27 @@
          source installViewHeaders reads; `sl2-new` must already sit inside .view-head or a
          hidden-at-boot section silently ends up with a second Refresh. -->
     <span id="sl2-count" class="hidden"></span>
-    <div class="view-head">
-      <button id="sl2-new" class="primary sl2-new" type="button">New rule</button>
+    <div class="view-head view-header">
+      <button id="sl2-new" class="primary" type="button">New rule</button>
     </div>
 
     <p id="sl2-readonly" class="empty hidden"></p>
 
-    <!-- THE FIRST SCREEN IS THE FAULT. A degraded gate or a stale sensor outranks every
-         control on this page: the band states what is wrong, why it is measured that way and
-         since when, and each line jumps to the card that owns it. Hidden when nothing is wrong. -->
-    <div id="sl2-attn" class="sl2-attn hidden" role="status" aria-live="polite"></div>
-
     <!-- ── STATE, THEN EVIDENCE, THEN THE CONTROL ─────────────────────────────────────────────
-         Each gate answers three questions in this order and no others: is it enforcing (from
-         what the supervisor measured, never a hand-set flag), what has it actually done in the
-         selected window, and only then the control that changes it. The tiles that repeated the
-         sentence's numbers are gone; a count lives in the sentence it belongs to. -->
+         A fault wears the console's own alert treatment: the shared severity chip and its
+         sentence inside the card that owns it. There is no page-level attention strip and no
+         full-bleed band -- the same chip that ranks a ripple ranks a degraded gate. -->
     <div class="grid2 sl2-gates">
-      <div class="card sl2-gate" id="sl2-dom-card">
-        <div class="sl2-sev-band hidden" id="sl2-dom-band">
-          <div class="sl2-sev-band-head">
-            <span class="sl2-sev-band-word">Degraded</span>
-            <span class="sl2-sev-band-since"></span>
-          </div>
-          <p class="sl2-sev-band-why"></p>
-        </div>
+      <div class="card sl2-gate">
         <h2>Domain gate <span class="muted">DNS</span> <span class="rp-sev-chip sev-low" id="sl2-dom-chip">loading&hellip;</span>
           <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
                   aria-expanded="false" title="what this view shows">i</button>
         </h2>
+        <div class="chips sl2-fault hidden" id="sl2-dom-band" role="status">
+          <span class="rp-sev-chip sev-critical sl2-fault-chip">Degraded</span>
+          <span class="sl2-fault-why"></span>
+          <span class="muted sl2-fault-since"></span>
+        </div>
         <div class="info-text hidden" id="sl-info">
   <p><strong>What it is.</strong> Two gates on one page: the Domain Gate answers DNS names through
   blocklists and domain rules; the Traffic Gate drops packets on a weirling that sits in path.</p>
@@ -1557,23 +1561,21 @@
         </div>
       </div>
 
-      <div class="card sl2-gate" id="sl2-traf-card">
+      <div class="card sl2-gate">
         <!-- THE FAULT IS THE CARD'S FIRST LINE, not a paragraph with the same weight as a fact.
              It carries the state word, the measured reason and the last report time, and it sits
              against the card's own top edge so a degraded gate cannot be mistaken for a quiet one. -->
-        <div class="sl2-sev-band hidden" id="sl2-traf-band">
-          <div class="sl2-sev-band-head">
-            <span class="sl2-sev-band-word">Degraded</span>
-            <span class="sl2-sev-band-since"></span>
-          </div>
-          <p class="sl2-sev-band-why" id="sl-gate-warning"></p>
-        </div>
         <h2>Traffic gate <span class="muted">packets</span> <span class="rp-sev-chip sev-low" id="sl2-traf-chip">loading&hellip;</span></h2>
+        <div class="chips sl2-fault hidden" id="sl2-traf-band" role="status">
+          <span class="rp-sev-chip sev-critical sl2-fault-chip">Degraded</span>
+          <span class="sl2-fault-why" id="sl-gate-warning"></span>
+          <span class="muted sl2-fault-since"></span>
+        </div>
         <p class="sl2-gate-what" id="sl2-traf-line">loading&hellip;</p>
         <p class="sl2-gate-ev" id="sl2-traf-ev">loading&hellip;</p>
         <div class="controls sl2-gate-actions">
           <button id="sl2-traf-toggle" type="button" class="quiet" disabled>&hellip;</button>
-          <span class="sl2-blocked-note hidden" id="sl2-traf-note"></span>
+          <span class="muted hidden" id="sl2-traf-note"></span>
           <a class="link" href="#v=blocked">View blocks</a>
         </div>
         <div id="sl2-auto" class="sl2-auto hidden"></div>
@@ -1585,7 +1587,7 @@
     <!-- FLEET PACKET GATES: the sibling card, full width. Every row is a sensor that reports its
          own gate state; a sensor with no matches says so in words rather than showing a table of
          empty cells. `sl-reach` names where a packet rule can actually bite. -->
-    <div class="card sl2-section" id="sl2-fleet-card">
+    <div class="card sl2-section">
       <h2>Fleet packet gates <span class="muted" id="sl2-fleet-note"></span></h2>
       <div id="sl-reach" class="chips"></div>
       <div id="sl2-fleet" class="sl2-fleet"></div>
@@ -1596,13 +1598,12 @@
       <!-- One filter row: the gate chips and the revoked toggle answer the same question
            ("which rules am I looking at"), so they sit on one line instead of the toggle
            floating above the heading. -->
-      <div class="controls sl2-filterbar" id="sl2-filters" role="group" aria-label="filter rules by gate">
+      <div class="controls" id="sl2-filters" role="group" aria-label="filter rules by gate">
         <button class="dc-chip active" type="button" data-gate="all" aria-pressed="true">All rules</button>
         <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain gate</button>
         <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
-        <label class="sl2-show check">
+        <label class="check">
           <input id="sl2-show-revoked" type="checkbox">
-          <span class="sl2-check" aria-hidden="true"></span>
           <span>Show revoked</span>
         </label>
       </div>

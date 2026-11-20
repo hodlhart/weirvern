@@ -59,7 +59,7 @@ function sl2StateChip(kind, extra) {
   const text = `${glyph ? glyph + " " : ""}${sl2StateWord(kind)}${extra ? " · " + extra : ""}`;
   // STATE IS A PILL, ACTION IS A BUTTON. The pill's capsule shape and filled tint are the
   // vocabulary that keeps a revoked rule from reading like a disabled control.
-  return el("span", { class: `rp-sev-chip sl2-pill sev-${sev}`, text });
+  return el("span", { class: `rp-sev-chip sev-${sev}`, text });
 }
 
 /** Replace the chip in place, keeping its id: the markup owns one element, and the renderer
@@ -272,67 +272,26 @@ function sl2TrafficKind(gate, settingsOn) {
   return { kind: measured, mismatch: "" };
 }
 
-/* ── Severity bands and the attention strip ─────────────────────────────────────────────────
+/* ── The fault line, in the console's own vocabulary ────────────────────────────────────────
  *
- * THE FAULT OWNS THE TOP OF ITS CARD. A band is not decoration: it is the state in words, the
- * measured reason and the last report time, and it is the first thing painted inside the card.
- * The attention strip repeats only enough of each fault to make the first screen truthful.
+ * A fault is a severity chip and the measured sentence beside it -- the same pair an Alerts row
+ * carries. There is no full-bleed band and no page-level attention strip: the card that owns
+ * the fault states it, and every card uses the same chip geometry and the same type scale.
  */
-function sl2Short(text, max) {
-  const t = String(text || "").replace(/\s+/g, " ").trim();
-  const limit = max || 180;
-  if (t.length <= limit) return t;
-  const cut = t.slice(0, limit);
-  const space = cut.lastIndexOf(" ");
-  return `${cut.slice(0, space > limit * 0.6 ? space : limit).trimEnd()}…`;
-}
-
 function sl2BandSet(bandId, word, why, since, sev) {
   const band = document.getElementById(bandId);
   if (!band) return;
   const show = Boolean(String(why || "").trim());
-  band.classList.remove("sl2-band-critical", "sl2-band-high", "sl2-band-medium");
-  band.classList.add(`sl2-band-${sev || "critical"}`);
   band.classList.toggle("hidden", !show);
-  const wordEl = band.querySelector(".sl2-sev-band-word");
-  if (wordEl) wordEl.textContent = word || "Degraded";
-  const whyEl = band.querySelector(".sl2-sev-band-why");
+  const chip = band.querySelector(".sl2-fault-chip");
+  if (chip) {
+    chip.className = `rp-sev-chip sl2-fault-chip sev-${sev || "critical"}`;
+    chip.textContent = word || "Degraded";
+  }
+  const whyEl = band.querySelector(".sl2-fault-why");
   if (whyEl) whyEl.textContent = why || "";
-  const sinceEl = band.querySelector(".sl2-sev-band-since");
+  const sinceEl = band.querySelector(".sl2-fault-since");
   if (sinceEl) sinceEl.textContent = since || "";
-}
-
-/** The first screen names every fault, with its measured reason and how long it has stood. */
-function renderSluiceAttention(faults) {
-  const host = document.getElementById("sl2-attn");
-  if (!host) return;
-  const items = (faults || []).filter((f) => f && f.name);
-  host.replaceChildren();
-  if (!items.length) {
-    host.classList.add("hidden");
-    return;
-  }
-  host.classList.remove("hidden");
-  const glyphOf = (sev) => (typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[sev]) || "▲";
-  host.appendChild(el("div", { class: "sl2-attn-head", text:
-    `${items.length} ${items.length === 1 ? "fault needs" : "faults need"} attention` }));
-  const list = el("ul", { class: "sl2-attn-list" });
-  for (const f of items) {
-    const row = el("button", { class: "sl2-attn-item", attrs: { type: "button" } }, [
-      el("span", { class: "sl2-attn-jump", text: `${glyphOf(f.sev)} ${f.name}` }),
-      el("span", { class: "sl2-attn-why", text: f.why || "" }),
-      f.when ? el("span", { class: "sl2-attn-when", text: f.when }) : null,
-    ].filter(Boolean));
-    row.addEventListener("click", () => {
-      const target = document.getElementById(f.target || "");
-      if (!target) return;
-      try { target.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_e) { /* optional */ }
-      target.classList.add("flash-hit");
-      setTimeout(() => target.classList.remove("flash-hit"), 1400);
-    });
-    list.appendChild(el("li", { class: `sl2-attn-li sev-${f.sev || "critical"}` }, [row]));
-  }
-  host.appendChild(list);
 }
 
 /* ── Gate state ─────────────────────────────────────────────────────────────────────────────── */
@@ -374,11 +333,6 @@ function renderSluiceGates(d) {
     }
     renderSluiceFleet(d.gates || [], d);
     renderSluiceReach(d);
-    renderSluiceAttention([{
-      sev: "critical", name: "Gate state unreadable",
-      why: `Cannot read the gate state: ${why}`,
-      when: "", target: "sl2-traf-card",
-    }]);
     return;
   }
 
@@ -388,7 +342,6 @@ function renderSluiceGates(d) {
   const live = Number(gate.rules_active || 0) || 0;
   const total = Number(gate.rules_total || 0) || 0;
   const windowText = sl2Window(d.hits_hours);
-  const faults = [];
 
   // ── DOMAIN GATE ────────────────────────────────────────────────────────────────────────────
   const dom = sl2DomainFacts(d);
@@ -420,10 +373,12 @@ function renderSluiceGates(d) {
     domEv = `0 names covered · ${sl2Count(dom.dnsHits, "DNS match", "DNS matches")} recorded in ${windowText}`;
   }
   sl2SetStateChip("sl2-dom-chip", domKind);
+  // ONE STATE CHIP PER CARD. When the card is faulted the fault line's chip is the state; a
+  // second, identical chip in the title would be the duplicate this convergence removes.
+  const domChip = document.getElementById("sl2-dom-chip");
+  if (domChip) domChip.classList.toggle("hidden", domKind === "degraded");
   if (domKind === "degraded") {
     sl2BandSet("sl2-dom-band", "Degraded", domEv, "", "critical");
-    faults.push({ sev: "critical", name: "Domain gate degraded", why: domEv,
-                  when: "", target: "sl2-dom-card" });
   } else {
     sl2BandSet("sl2-dom-band", "", "", "", "critical");
   }
@@ -451,6 +406,8 @@ function renderSluiceGates(d) {
   // ── TRAFFIC GATE ───────────────────────────────────────────────────────────────────────────
   const traf = sl2TrafficKind(gate, gateOnSetting);
   sl2SetStateChip("sl2-traf-chip", traf.kind);
+  const trafChip = document.getElementById("sl2-traf-chip");
+  if (trafChip) trafChip.classList.toggle("hidden", traf.kind === "degraded" || traf.kind === "stale");
   const iface = ifaceList(gate.iface);
   const trafLineEl = document.getElementById("sl2-traf-line");
   const warning = document.getElementById("sl-gate-warning");
@@ -484,8 +441,6 @@ function renderSluiceGates(d) {
     const sev = traf.kind === "stale" ? "high" : "critical";
     const word = traf.kind === "stale" ? "Stale" : "Degraded";
     sl2BandSet("sl2-traf-band", word, showWhy, since, sev);
-    faults.push({ sev, name: `Traffic gate ${word.toLowerCase()}`,
-                  why: sl2Short(showWhy, 190), when: since, target: "sl2-traf-card" });
   } else {
     sl2BandSet("sl2-traf-band", "", "", "", "critical");
   }
@@ -586,24 +541,8 @@ function renderSluiceGates(d) {
       autoEl.replaceChildren();
     }
   }
-  for (const g of (d.gates || [])) {
-    const state = String(g.state || "").toLowerCase();
-    if (!g.stale && state !== "degraded") continue;
-    if (traf.kind === "stale" && g.sensor && gate.sensor && g.sensor === gate.sensor) continue;
-    const ago = sl2Ago(g.age_s) || "some time ago";
-    faults.push({
-      sev: g.stale ? "high" : "critical",
-      name: `${g.sensor || "unnamed sensor"} ${g.stale ? "stale" : "degraded"}`,
-      why: g.stale
-        ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
-        : "Its rules are not installed and the gate has opened.",
-      when: "",
-      target: "sl2-fleet-card",
-    });
-  }
   renderSluiceFleet(d.gates || [], d);
   renderSluiceReach(d);
-  renderSluiceAttention(faults);
 }
 
 
@@ -686,14 +625,13 @@ function renderSluiceFleet(gates, d) {
 
     const ago = g.age_s === null || g.age_s === undefined ? "some time ago" : sl2Ago(g.age_s);
     const band = (kind === "stale" || kind === "degraded")
-      ? el("div", { class: `sl2-sev-band sl2-band-${SL2_STATE_SEV[kind]}` }, [
-          el("div", { class: "sl2-sev-band-head" }, [
-            el("span", { class: "sl2-sev-band-word", text: kind === "stale" ? "Stale" : "Degraded" }),
-            el("span", { class: "sl2-sev-band-since", text: `last reported ${ago}` }),
-          ]),
-          el("p", { class: "sl2-sev-band-why", text: kind === "stale"
+      ? el("div", { class: "chips sl2-fault", attrs: { role: "status" } }, [
+          el("span", { class: `rp-sev-chip sl2-fault-chip sev-${SL2_STATE_SEV[kind]}`,
+                       text: kind === "stale" ? "Stale" : "Degraded" }),
+          el("span", { class: "sl2-fault-why", text: kind === "stale"
             ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
             : "Its rules are not installed and the gate has opened." }),
+          el("span", { class: "muted sl2-fault-since", text: `last reported ${ago}` }),
         ])
       : null;
 
@@ -701,12 +639,14 @@ function renderSluiceFleet(gates, d) {
       class: g.sensor && typeof openWeirling === "function" ? "sl2-sensor clickable" : "sl2-sensor",
       attrs: g.sensor ? { role: "button", tabindex: "0", "aria-label": `open ${g.sensor}` } : {},
     }, [
-      band,
       el("div", { class: "sl2-sensor-head" }, [
         el("span", { class: "sl2-sensor-name", text: g.sensor || "unnamed sensor" }),
         g.local ? el("span", { class: "muted", text: "· this hub" }) : null,
-        sl2StateChip(kind),
+        // The fault line below carries the state chip when there is one; a second chip here
+        // would state the same severity twice.
+        band ? null : sl2StateChip(kind),
       ].filter(Boolean)),
+      band,
       el("div", { class: "sl2-sensor-meta", text: bits.join(" · ") }),
       el("div", { class: "sl2-sensor-ev", text: what }),
       el("div", { class: "sl2-sensor-meta", text: ev }),
@@ -886,7 +826,7 @@ function renderSluiceOrphans(list) {
     btn.addEventListener("click", () => openRuleSheet(rule));
     const chip = sl2StateChip(state.kind);
     chip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
-    chip.className = `rp-sev-chip sl2-pill sev-${state.sev}`;
+    chip.className = `rp-sev-chip sev-${state.sev}`;
     rows.appendChild(el("div", { class: "sl2-orphan" }, [btn, chip]));
   }
   details.appendChild(rows);
@@ -956,9 +896,9 @@ function renderSluiceRules(d) {
     }
     const stateChip = sl2StateChip(state.kind);
     stateChip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
-    stateChip.className = `rp-sev-chip sl2-pill sev-${state.sev}`;
+    stateChip.className = `rp-sev-chip sev-${state.sev}`;
     const tr = el("tr", {
-      class: "sl2-rule-row",
+      class: "clickable sl2-rule-row",
       attrs: { "data-rule-id": rule.rule_id },
     }, [
       el("td", {}, [sentence, evidence, links.children.length ? links : null].filter(Boolean)),

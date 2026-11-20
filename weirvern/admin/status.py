@@ -2729,8 +2729,21 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         where.append("src_addr = %(host)s")
         params["host"] = str(host)
     if severity:
-        where.append("severity = %(sev)s")
-        params["sev"] = str(severity)
+        # THE FILTER SPEAKS THE SAME BAND VOCABULARY AS THE CHIP. The Alerts list now labels
+        # model rows high/medium/low, and the criticality tiles filter that label; a raw
+        # `severity = 'high'` would hide the critical rows the high band includes. An explicit
+        # ensemble severity (critical, or any older caller) still filters exactly.
+        band = str(severity).strip().lower()
+        if band == "high":
+            where.append("severity IN ('critical', 'high')")
+        elif band in ("medium", "low"):
+            where.append("severity = %(sev)s")
+            params["sev"] = band
+        elif band == "unclassified":
+            where.append("(severity IS NULL OR severity NOT IN ('critical', 'high', 'medium', 'low'))")
+        else:
+            where.append("severity = %(sev)s")
+            params["sev"] = str(severity)
     if model:
         # Same exact-name semantics as anomalies_detailed (see its note).
         where.append("arrayExists(m -> trimBoth(m) = %(model)s, "
@@ -2766,7 +2779,12 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         # Group by the row's visible identity; carry the per-model detail as MAX for display.
         "GROUP BY src_addr, anomaly_score, severity, detected_by_models, "
         "primary_deviation_feature, baseline_comparison "
-        "ORDER BY detected_at DESC LIMIT %(n)s",
+        # CRITICALITY FIRST, THEN RECENCY -- the ordering the ripple list uses. The band is
+        # derived from `severity` with the same fold as weirvern.criticality.corroboration_band;
+        # it is repeated in SQL (rather than sorting the limited result in Python) so a LIMIT
+        # can never drop a high row in favour of newer low ones.
+        "ORDER BY multiIf(severity IN ('critical', 'high'), 3, severity = 'medium', 2, "
+        "severity = 'low', 1, 0) DESC, detected_at DESC LIMIT %(n)s",
         parameters=params,
     )
     names = list(result.column_names)

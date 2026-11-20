@@ -114,6 +114,7 @@ def health_payload(report) -> dict:
 
 
 def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
+                      band_counts: dict | None = None,
                       discipline: dict | None = None,
                       watch_error: str | None = None,
                       total_unfiltered: int | None = None,
@@ -159,7 +160,13 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
             "discipline": discipline or {
                 "available": False, "reason": "fired/acted-on counts were not read"},
             "severity_counts": severity_counts or {
-                "available": False, "reason": "severity counts were not read", "counts": []}}
+                "available": False, "reason": "severity counts were not read", "counts": []},
+            # THE RIPPLE VOCABULARY'S OWN COUNTS. `severity_counts` is the ensemble's four raw
+            # values (kept for callers that need them); `band_counts` is the three-band fold the
+            # Alerts tiles and chips actually render, computed by the same module that stamps
+            # each row's `severity_band`.
+            "band_counts": band_counts or {
+                "available": False, "reason": "band counts were not read", "counts": []}}
 
 
 def panic_page(*, fleet: dict | None, audit: dict | None, alerts: dict | None,

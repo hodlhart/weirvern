@@ -700,7 +700,18 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             hours = web.window_arg(request.args, 24, 1, 24 * 14)
         except ValueError as exc:
             return _json_error(400, f"bad time range: {exc}")
-        return _soft_route(payloads.assets, payloads.assets_failure, hours=hours)
+        # SCOPE IS RESOLVED, NOT IGNORED. The inventory covers monitored networks only (the
+        # operator's rule: an external peer is not an asset we are responsible for). `all` and
+        # `monitored` are therefore the two honest readings; `external` cannot be a third, and
+        # an unknown value must not quietly return the full set as if the filter had applied.
+        scope = str(request.args.get("scope") or "all").strip().lower()
+        if scope not in ("all", "monitored"):
+            return _json_error(
+                400,
+                f"unsupported asset scope '{scope}': the inventory covers monitored networks "
+                "only, so the supported scopes are 'all' and 'monitored'",
+            )
+        return _soft_route(payloads.assets, payloads.assets_failure, hours=hours, scope=scope)
 
     @app.get("/api/asset-changes")
     @gated

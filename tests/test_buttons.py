@@ -28,7 +28,11 @@ BUTTON_CLASSES = (
 #   `gate-linkish` is a button DELIBERATELY dressed as a text link (US-4's grammar).
 SIZE_PROPS = ("font-size", "padding", "height", "min-height", "border-radius", "min-width")
 ALLOW_SIZE = {"button", ".setting-help-btn", ".info-btn", ".dc-chip", ".dc-chip-x",
-              ".gate-linkish", ".tab", ".icon-btn"}
+              ".gate-linkish", ".tab", ".icon-btn",
+              #   .pager-btn: the pager is icon-sized at desktop; its mobile rule raises the
+              #     width to the 44px touch floor, which is the same sanctioned exception the
+              #     icon buttons carry, not a new button size.
+              ".pager-btn"}
 
 
 def _rules(css: str):
