@@ -476,6 +476,10 @@ def promotion_plan(
 
     def decision_for(name: str, **kwargs: Any) -> Decision:
         ev = by_name[name]
+        # A CALIBRATING INCUMBENT KEEPS ITS EVIDENCE SENTENCE, interval included. Without this the
+        # one row that is still contributing renders as "calibrating (n=…)" and drops the FAR/CI
+        # that the same measurement carries everywhere else.
+        kwargs.setdefault("reason", ev.reason if ev.calibrating else "")
         return Decision(name=name, evidence=ev, budget=budget,
                         calibrating=bool(ev.calibrating), **kwargs)
 
