@@ -2479,6 +2479,31 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && /family dns/.test(needEl("nw-caption").textContent)
           && /subnet 192\.0\.2\.0\/24/.test(needEl("nw-caption").textContent),
           needEl("nw-caption").textContent);
+    // A GENUINE EMPTY FILTER RESULT KEEPS THE FILTER'S WORD. This is the contrast that gives the
+    // failed read below its meaning: zero rows because the filters selected none is not a failure.
+    check("...and an empty FILTER result still says 'Nothing matches', with the filters named",
+          /Nothing matches/.test(doc.querySelector("#nw-hosts-table tbody").textContent)
+          && !!doc.querySelector('#nw-hosts-table .empty-state[data-state="filtered"]'),
+          doc.querySelector("#nw-hosts-table tbody").textContent.replace(/\s+/g, " ").trim().slice(0, 160));
+
+    // A FAILED GRAPH READ IS NOT AN EMPTY FILTER RESULT. The host table used to fall through to
+    // "Nothing matches" in amber on a failed /api/graph read, implying the operator's filters had
+    // emptied it while the edges table beside it said "Could not read". Both surfaces must state
+    // the same fact, and the failure must never borrow the filter's word.
+    H.ASSETS_STATE.graph = { available: false, hours: 24,
+      reason: "the graph query timed out after 20s" };
+    H.renderNetwork();
+    const failedHosts = doc.querySelector("#nw-hosts-table tbody").textContent;
+    check("a failed graph read says 'Could not read' in the host table, not 'Nothing matches'",
+          /Could not read/.test(failedHosts) && !/Nothing matches/.test(failedHosts)
+          && !!doc.querySelector('#nw-hosts-table .empty-state[data-state="failed"]'),
+          failedHosts.replace(/\s+/g, " ").trim().slice(0, 160));
+    check("...and it names the read that failed, not the operator's filters",
+          /connection graph could not be read/i.test(failedHosts)
+          && /timed out after 20s/.test(failedHosts),
+          failedHosts.replace(/\s+/g, " ").trim().slice(0, 160));
+    H.ASSETS_STATE.graph = FILTER_GRAPH;
+    H.renderNetwork();
 
     doc.querySelector('#nw-family [data-nw-family="all"]').click();
     check("clearing the family leaves the subnet reading in place",

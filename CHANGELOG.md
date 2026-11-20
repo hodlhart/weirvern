@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.115 — 2026-11-20
+
+TWO READING DEFECTS the audit caught on a 390px sheet. No detection, capture or enforcement
+semantics changed.
+
+- **A finding row no longer wraps its timestamp.** The scan sheet's finding row was one flex line:
+  the severity chip, the name and the time all competed for 390px, and the timestamp broke across
+  two or three lines while rows stopped lining up with each other. The row is a two-column grid
+  now — the chip spans both rows at the start, the name and the timestamp stack in the text column
+  — and the timestamp is `white-space: nowrap`, so a long finding name wraps instead of the time.
+- **A failed graph read says "Could not read", not "Nothing matches".** Blocking `/api/graph` left
+  the Network host table showing the amber *filtered* empty state — "Nothing matches", with the
+  operator's filters named — while the edges table beside it correctly said "Could not read". A
+  read failure is not a filter result. The host table now carries the failed state and the
+  server's reason ("The connection graph could not be read: … The host list is part of that
+  read."), and the same fix covers the host-status-unavailable branch. A genuine empty filter
+  result still says "Nothing matches" with its filters; `scripts/jsdom_render.js` pins both facts
+  against a real failed payload and fails if either surface borrows the other's word.
+
 ## 0.23.114 — 2026-11-20
 
 TWO JOBS: the scan sheet the operator asked to watch, and the three console unifications the audit

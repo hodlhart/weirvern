@@ -989,13 +989,22 @@ function nwWorstCell(node) {
   return cell;
 }
 
-function renderNetworkHosts(nodes, d) {
+function renderNetworkHosts(nodes, d, opts = {}) {
   const table = document.querySelector("#nw-hosts-table tbody");
   const caption = document.getElementById("nw-hosts-caption");
   const note = document.getElementById("nw-hosts-note");
   if (!table) return;
   table.replaceChildren();
   const hours = Number(d && (d.hours || ASSETS_STATE.hours)) || 24;
+  // A FAILED GRAPH READ IS NOT A FILTERED HOST LIST. The screenshot audit caught this one:
+  // blocking /api/graph left the edges table saying "Could not read" while this one said
+  // "Nothing matches" in amber, implying the operator's filters had emptied it.
+  if (opts.failure) {
+    if (caption) caption.textContent = "host list unavailable";
+    if (note) note.textContent = "";
+    emptyRow(table, 7, opts.failure, null, { state: "failed" });
+    return;
+  }
   const ordered = nwSortHosts(nodes || []);
   if (caption) {
     caption.textContent = `${ordered.length} host${ordered.length === 1 ? "" : "s"} · ${hours}h window`;
@@ -1048,7 +1057,10 @@ function renderNetwork() {
     caption.textContent = `The connection graph could not be read: ${d.reason || "no reason was reported"}.`;
     host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`, "failed"));
     renderNetworkRippleLine([], d);
-    renderNetworkHosts([], d);
+    renderNetworkHosts([], d, {
+      failure: `The connection graph could not be read: ${d.reason || "no reason was reported"}. `
+        + "The host list is part of that read.",
+    });
     emptyRow(table, 7, "The graph read failed — no edges were read.", null, { state: "failed" });
     return;
   }
@@ -1092,7 +1104,10 @@ function renderNetwork() {
       caption.textContent = `Host status is unavailable: ${d.status_reason || "the source could not be read"}.`;
       host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed.", "failed"));
       renderNetworkRippleLine(nodes, d);
-      renderNetworkHosts([], d);
+      renderNetworkHosts([], d, {
+        failure: "Host status is unavailable, so the host list cannot be filtered by "
+          + "blocked/alerted. Use All to see the map.",
+      });
       emptyRow(table, 7, "Host status is unavailable; no edges are listed under this filter.", null,
       { state: "failed" });
       return;

@@ -392,7 +392,8 @@ function scanRenderBody() {
         el("span", { class: `bubble state sev-${String(f.severity || "low").toLowerCase()}`,
           text: String(f.severity || "unknown") }),
         el("span", { class: "scan-finding-name", text: f.name || f.template_id || "unnamed finding" }),
-        el("span", { class: "muted mono", text: f.last_seen ? fmtTime(f.last_seen) : "" }),
+        el("span", { class: "muted mono scan-finding-when",
+          text: f.last_seen ? fmtTime(f.last_seen) : "" }),
       ]));
     }
     els.body.appendChild(list);

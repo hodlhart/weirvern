@@ -1013,8 +1013,14 @@ svg.spark rect.cur { fill: var(--accent); }
 .scan-findings-count { margin: 0 0 6px; font-size: var(--fs-2); color: var(--fg-2); }
 .scan-findings-list { list-style: none; margin: 0; padding: 0; display: flex;
   flex-direction: column; gap: 6px; }
-.scan-finding { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); }
-.scan-finding-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* TWO COLUMNS, TWO ROWS: the severity chip spans both lines, the name and its timestamp stack
+   in the text column. A single flex row squeezed the timestamp to two or three broken lines on
+   a 390px sheet, and the rows no longer lined up with each other. */
+.scan-finding { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline; gap: 2px 8px; font-size: var(--fs-2); }
+.scan-finding > .bubble { grid-row: 1 / span 2; align-self: start; }
+.scan-finding-name { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+.scan-finding-when { grid-column: 2; white-space: nowrap; }
 .scan-queue-title { margin: 20px 0 8px; font-size: var(--fs-3); }
 .scan-queue { display: flex; flex-direction: column; gap: 4px; }
 /* The row is a button, so it opts out of the global inline-flex/nowrap button shape: it is a
