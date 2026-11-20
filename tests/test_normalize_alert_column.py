@@ -102,3 +102,24 @@ def test_a_failed_join_is_unavailable_never_no_alert():
     assert out["errors"], "a failed join must carry the reason"
     # The row is left without a claim; the UI renders 'unavailable' from the payload flag.
     assert rows[0]["alert_kind"] == "—"
+
+
+def test_an_aware_datetime_and_its_iso_string_produce_the_same_hour_key():
+    """ClickHouse returns tz-aware datetimes; the feed's rows carry their ISO strings.
+
+    MEASURED LIVE 2026-11-20: the join matched nothing on the box and every row read the em
+    dash, because the datetime branch kept the offset ("16:00:00-06:00") while the string branch
+    dropped it ("16:00:00"). Every fixture here was naive, so the suite could not see it.
+    """
+    aware = _dt.datetime(2026, 11, 20, 16, 42, tzinfo=_dt.timezone(_dt.timedelta(hours=-6)))
+    assert normalize_store._hour_key(aware) == normalize_store._hour_key(
+        "2026-11-20T16:42:00-06:00") == "2026-11-20 16:00:00"
+
+    rows = [_row(first_seen="2026-11-20T16:05:00-06:00",
+                 last_seen="2026-11-20T16:55:00-06:00")]
+    out = normalize_store._annotate_alerts(_Client(models=[("192.0.2.40", aware, "high")]),
+                                           rows, hours=24)
+    assert out["available"] is True
+    assert rows[0]["alert_kind"] == "Anomaly", (
+        "an aware timestamp from ClickHouse did not match the row's ISO string")
+    assert rows[0]["alert_band"] == "high"

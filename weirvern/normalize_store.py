@@ -22,9 +22,18 @@ _ALERT_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
 def _hour_key(value: Any) -> str:
-    """The UTC hour a timestamp falls in, as a comparable string ('' when unreadable)."""
+    """The UTC hour a timestamp falls in, as a comparable string ('' when unreadable).
+
+    ONE REPRESENTATION FOR BOTH INPUTS. ClickHouse returns an aware datetime for a DateTime
+    column (the deployment's tz, e.g. ``...16:00:00-06:00``) while the feed's own rows carry the
+    ISO string of the same value. The datetime branch used to keep the offset and the string
+    branch dropped it, so the Alert join compared "16:00:00-06:00" with "16:00:00" and matched
+    NOTHING -- every Normalize row read the em dash on a live deployment. Both branches now
+    produce the same wall-clock hour, offset-free, which is the form the two sources share.
+    """
     if isinstance(value, datetime):
-        return value.replace(minute=0, second=0, microsecond=0).isoformat(sep=" ")
+        return (value.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+                .isoformat(sep=" "))
     text = str(value or "").replace("T", " ")[:19]
     try:
         return datetime.fromisoformat(text).replace(minute=0, second=0, microsecond=0).isoformat(sep=" ")
