@@ -507,10 +507,11 @@ function renderSluiceGates(d) {
   if (traf.kind === "unknown") {
     trafEv = "No gate state has been recorded for this sensor.";
   } else if (traf.kind === "degraded" || traf.kind === "stale") {
+    // The severity band already carries the report time; repeating it here would state the same
+    // measurement twice inside one card.
     trafEv = (total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
                    : "no packet rules stored")
-      + ` · ${sl2Count(pkts, "packet")} dropped as of the last report`
-      + ` · ${reported}`;
+      + ` · ${sl2Count(pkts, "packet")} dropped as of the last report`;
   } else if (traf.kind === "off") {
     trafEv = `${sl2Count(total, "packet rule")} stored · ${sl2Count(pkts, "packet")} dropped as of `
       + `the last report · ${reported}`;

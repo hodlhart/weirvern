@@ -1923,7 +1923,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   border-start-end-radius: var(--r-sm); border-end-end-radius: var(--r-sm);
   background: color-mix(in srgb, var(--muted) 6%, transparent);
   color: var(--muted); font-size: var(--fs-1); line-height: 1.4; }
-#sl2-traf-note { flex: 1 0 100%; order: 2; }
+#sl2-traf-note { flex: 0 0 auto; width: 100%; order: 2; }
 .sl2-gate-actions .link { order: 1; }
 .sl2-blocked-note::before { content: "\2298"; color: var(--muted); font-size: var(--fs-2);
   line-height: 1; }
