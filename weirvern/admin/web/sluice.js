@@ -906,7 +906,8 @@ function sl2OpenCreate(domain, prefill) {
   const note = document.getElementById("sl2-create-note");
   if (note) note.textContent = "";
   const btn = document.getElementById("sl2-create-submit");
-  if (btn) { delete btn.dataset.confirm; btn.textContent = "Create rule"; btn.disabled = false; }
+  if (btn) { delete btn.dataset.confirm; btn.textContent = "Create rule";
+    btn.disabled = !sl2Writes().enabled; }
   sl2OpenSheet();
   const focus = document.getElementById(kind && kind.value === "traffic" ? "sl2-src" : "sl2-domain");
   if (focus) focus.focus();
@@ -977,9 +978,12 @@ function sl2OpenDetail(rule) {
         ? "This rule is revoked. Its record is kept for audit; it cannot be edited."
         : (rule.not_live ? "This rule is not in the live store; it is shown as a record only." : ""));
   }
+  // A VIEWER'S SHEET IS READ-ONLY TOO. The server refuses the write either way, but a control
+  // that looks live and then fails teaches the operator nothing.
+  const mayWrite = sl2Writes().enabled;
   for (const id of ["sl2-mode-save", "sl-rule-delete", "sl-rule-delete-reason", "sl2-detail-mode"]) {
     const field = document.getElementById(id);
-    if (field) field.disabled = Boolean(rule.revoked || rule.not_live);
+    if (field) field.disabled = !mayWrite || Boolean(rule.revoked || rule.not_live);
   }
   const delReason = document.getElementById("sl-rule-delete-reason");
   if (delReason) delReason.value = "";
