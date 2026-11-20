@@ -107,12 +107,24 @@ class _Result:
 
 
 class _Client:
+    """A database stand-in.
+
+    It answers the seeder's OWN question with a row count and everything else with no rows, because
+    the seed now also writes blocks, a proposal and an inventory, and those stores read before they
+    write. Returning the traffic count for every query made `load_sources` index into a one-column
+    row and raised, which is the fake being wrong rather than the product.
+    """
+
     def __init__(self, live_rows=0):
         self.live_rows = live_rows
         self.inserts = []
+        self.queries = []
 
     def query(self, sql, parameters=None):
-        return _Result([(self.live_rows,)])
+        self.queries.append(" ".join(str(sql).split()))
+        if "FROM weirvern.flows" in str(sql) and "count()" in str(sql):
+            return _Result([(self.live_rows,)])
+        return _Result([])
 
     def insert(self, table, rows, column_names=None):
         self.inserts.append((table, len(rows), list(column_names or [])))
@@ -170,7 +182,11 @@ def test_force_overrides_the_refusal(monkeypatch):
 
     code = demo_seed.main(["--hours", "1", "--hosts", "3", "--force"])
     assert code == 0
-    assert len(client.inserts) == len(demo_seed.COLUMNS)
+    written = {table.split(".", 1)[-1] for table, _n, _c in client.inserts}
+    missing = set(demo_seed.COLUMNS) - written
+    assert not missing, f"the seed skipped these data tables: {sorted(missing)}"
+    # And the test-drive surfaces beyond the raw data.
+    assert "sluice_rules" in written and "block_proposals" in written
 
 
 def test_dry_run_writes_nothing(monkeypatch):
@@ -303,6 +319,38 @@ def test_a_failed_evidence_pass_does_not_lose_the_seed(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "pass failed" in out and "clickhouse unavailable" in out
 
+def _flow_windows(data, host):
+    """The five-minute window starts for one host, taken from its flow rows."""
+    return sorted({
+        dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["time_flow_start"]
+        for row in data["flows"]
+        if dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["src_addr"] == host
+    })
+
+
+def _per_window(data, table, host_field, time_field, windows, host):
+    """Count rows into the window that CONTAINS each row's timestamp.
+
+    A Zeek event time is an instant inside a window and never equals its start, so matching rows to
+    windows by timestamp equality counts one per row and makes every comparison built on it
+    vacuous. That is not hypothetical: it is how an earlier version of these tests passed with the
+    plant deleted.
+    """
+    from collections import Counter
+    from datetime import timedelta
+
+    counts = Counter()
+    for row in data[table]:
+        rec = dict(zip(demo_seed.COLUMNS[table], row, strict=True))
+        if rec[host_field] != host:
+            continue
+        for start_at in reversed(windows):
+            if start_at <= rec[time_field] < start_at + timedelta(minutes=5):
+                counts[start_at] += 1
+                break
+    return [counts.get(w, 0) for w in windows]
+
+
 def test_a_two_host_seed_does_not_raise():
     """The anomaly roles are positional, and a small smoke seed used to crash on the third one."""
     data = demo_seed.build(hours=1, hosts=2, seed=3)
@@ -342,42 +390,198 @@ def test_the_final_hour_is_extreme_enough_to_be_an_incident(data):
 
 
 def test_the_ripple_plant_also_moves_a_second_family(data):
-    """Two families have to corroborate, so the burst cannot be flows alone.
-
-    A DNS row's `ts` is the event time inside a window, never the window start, so this buckets each
-    lookup into the window that contains it. Looking rows up by an exact timestamp match returns
-    zero for every hour and makes the comparison below vacuous, which is how the first version of
-    this test passed with the burst deleted.
-    """
-    from collections import Counter
-    from datetime import timedelta
-
+    """Two families have to corroborate, so the burst cannot be flows alone."""
     rippled = demo_seed._hosts(__import__("random").Random(7), 6)[2]
-
-    windows = sorted({
-        dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["time_flow_start"]
-        for row in data["flows"]
-        if dict(zip(demo_seed.COLUMNS["flows"], row, strict=True))["src_addr"] == rippled
-    })
-    dns = Counter()
-    for row in data["zeek_dns"]:
-        rec = dict(zip(demo_seed.COLUMNS["zeek_dns"], row, strict=True))
-        if rec["src_addr"] != rippled:
-            continue
-        for start_at in reversed(windows):
-            if start_at <= rec["ts"] < start_at + timedelta(minutes=5):
-                dns[start_at] += 1
-                break
-
-    counts = [dns.get(w, 0) for w in windows]
+    windows = _flow_windows(data, rippled)
+    counts = _per_window(data, "zeek_dns", "src_addr", "ts", windows, rippled)
     hours = [sum(counts[i:i + 12]) for i in range(0, len(counts) - 11, 12)]
     assert len(hours) >= 2, "need the burst hour plus history"
     final, history = hours[-1], hours[:-1]
     burst_floor = int(0.8 * demo_seed.RIPPLE_LOOKUPS_PER_WINDOW * demo_seed.RIPPLE_WINDOWS)
     assert final >= burst_floor, (
-        f"the final hour holds {final} lookups, below the {burst_floor} the plant should produce; "
-        "one family alone cannot make a ripple"
+        f"the final hour holds {final} lookups, below the {burst_floor} the plant should produce"
     )
     assert final >= 5 * max(history), (
         f"the final hour holds {final} lookups against a historical max of {max(history)}"
     )
+
+
+def test_the_weird_log_has_a_history_not_only_a_burst(data):
+    """A burst from zero is not a spike, it is an unmeasurable channel.
+
+    The evidence builds a baseline only from windows that hold rows, so a channel that never spoke
+    is skipped rather than reported. The live site's weird log runs continuously, so the seed needs
+    a background before its final hour can mean anything. Without this the notice family silently
+    contributes nothing and the demo shows three families where the real deployment shows four.
+    """
+    rippled = demo_seed._hosts(__import__("random").Random(7), 6)[2]
+    windows = _flow_windows(data, rippled)
+    counts = _per_window(data, "zeek_weird", "src_addr", "ts", windows, rippled)
+    hours = [sum(counts[i:i + 12]) for i in range(0, len(counts) - 11, 12)]
+    assert len(hours) >= 2, "need the burst hour plus history"
+    assert min(hours[:-1]) > 0, "the earlier hours carry no weird events, so there is no baseline"
+    assert hours[-1] >= 5 * max(hours[:-1]), (
+        f"the final hour holds {hours[-1]} weird events against a historical max of "
+        f"{max(hours[:-1])}"
+    )
+
+
+def test_a_second_host_carries_a_diversity_shaped_incident(data):
+    """Two incidents of DIFFERENT shapes show the grouping reads evidence, not a template.
+
+    The first host is a volume burst. This one reaches many destinations and Host headers it has
+    never used, so the http family moves through diversity. One shape alone would be a demo that
+    cannot tell a threshold from a correlation.
+    """
+    from collections import Counter
+
+    hosts = Counter()
+    for row in data["zeek_http"]:
+        rec = dict(zip(demo_seed.COLUMNS["zeek_http"], row, strict=True))
+        hosts[rec["src_addr"]] += 1
+    assert hosts, "no http rows at all"
+    expected_broad = demo_seed._hosts(__import__("random").Random(7), 6)[3]
+
+    distinct_hosts = Counter()
+    for row in data["zeek_http"]:
+        rec = dict(zip(demo_seed.COLUMNS["zeek_http"], row, strict=True))
+        if rec["src_addr"] == expected_broad:
+            distinct_hosts[rec["host"]] += 1
+    assert len(distinct_hosts) >= 10, (
+        f"the diversity host touched only {len(distinct_hosts)} distinct hostnames; the http "
+        "channel measures diversity, not volume, so a few repeats would not move it"
+    )
+
+# --- the test-drive surfaces: blocks, the inventory, and a decision --------------------------
+#
+# The seed used to leave Sluice, Approvals and Network empty while filling 300,000 rows. Someone
+# taking the product for a test drive reads those empty panels as unfinished features, and a class
+# demo cannot tell an empty table from a broken one.
+
+
+class _RecordingStores:
+    """Stands in for the sluice, blocklist, proposal and identity stores, and records the calls."""
+
+    def __init__(self):
+        self.rules = []
+        self.events = []
+        self.gate = None
+        self.domains = []
+        self.sources_ensured = 0
+        self.proposals = []
+        self.observations = []
+        self.persisted = 0
+
+    def install(self, monkeypatch):
+        from weirvern import blocklists, host_identity, proposals, sluice, sluice_store
+
+        rec = self
+
+        class _Rule:
+            def __init__(self, rid):
+                self.rule_id = rid
+                self.origin = "demo-seed"
+
+        def create_rule(_client, **kwargs):
+            rec.rules.append(kwargs)
+            return _Rule(f"rule-{len(rec.rules)}")
+
+        monkeypatch.setattr(sluice_store, "create_rule", create_rule)
+        monkeypatch.setattr(sluice_store, "write_events",
+                            lambda _c, evs, **_k: (rec.events.extend(evs), len(evs))[1])
+        monkeypatch.setattr(sluice_store, "write_gate_state",
+                            lambda _c, sensor, state, **_k: setattr(rec, "gate", (sensor, state)))
+        monkeypatch.setattr(blocklists, "add_custom_domain",
+                            lambda _c, d, **_k: (rec.domains.append(d), d)[1])
+        monkeypatch.setattr(blocklists, "ensure_default_sources",
+                            lambda _c: setattr(rec, "sources_ensured", rec.sources_ensured + 1))
+        monkeypatch.setattr(proposals, "create_proposal",
+                            lambda _c, req: (rec.proposals.append(req),
+                                             {"proposal_id": "bp_test"})[1])
+        monkeypatch.setattr(host_identity, "record_observation",
+                            lambda _c, ts, host, mac, source, raw, **_k:
+                            rec.observations.append((host, source, raw)))
+        monkeypatch.setattr(host_identity, "build_identity",
+                            lambda _c, days=7, **_k: [{"host": "h"}] * 3)
+        monkeypatch.setattr(host_identity, "persist",
+                            lambda _c, verdicts, **_k: setattr(rec, "persisted", len(verdicts)))
+        return sluice
+
+
+def test_the_seed_leaves_a_traffic_block_and_a_name_block(monkeypatch):
+    """Both kinds of block, because "block a host" and "block a name" are different products."""
+    rec = _RecordingStores()
+    rec.install(monkeypatch)
+
+    made = demo_seed._seed_enforcement(object(), hosts=6, seed=7)
+
+    traffic = [r for r in rec.rules if r.get("src_cidr")]
+    names = [r for r in rec.rules if r.get("domain")]
+    assert len(traffic) == 1, "a traffic block is missing from the seed"
+    assert len(names) == 1, "a DNS block is missing from the seed"
+    assert traffic[0]["mode"] == "block" and names[0]["mode"] == "block"
+    assert traffic[0]["origin"] == demo_seed.DEMO_ORIGIN
+    assert names[0]["domain"] == demo_seed.BEACON_DOMAIN
+    assert names[0]["domain"] in rec.domains, "the blocked name is not on the blocklist pane"
+    assert made["traffic_rule"] and made["dns_rule"]
+
+
+def test_the_seed_records_hits_for_both_rules(monkeypatch):
+    """A rule with no events reads as a rule that matched nothing, which is a different statement."""
+    rec = _RecordingStores()
+    rec.install(monkeypatch)
+
+    demo_seed._seed_enforcement(object(), hosts=6, seed=7)
+
+    kinds = {e["kind"] for e in rec.events}
+    assert kinds == {"flow", "dns"}, f"the events cover {kinds}, not both kinds of block"
+    by_kind = {k: [e for e in rec.events if e["kind"] == k] for k in kinds}
+    assert by_kind["flow"] and all(e["dst_addr"] for e in by_kind["flow"])
+    assert by_kind["dns"] and all(e["domain"] == demo_seed.BEACON_DOMAIN for e in by_kind["dns"])
+    assert rec.gate is not None, "no gate state was written, so the panel cannot say ARMED"
+    sensor, state = rec.gate
+    assert state.state == "armed"
+    assert state.rules_active == 2 and state.rules_total == 2
+    assert state.packets_blocked > 0, "the gate reports no blocked packets while writing hits"
+
+
+def test_the_seed_leaves_a_decision_for_a_person(monkeypatch):
+    """The approval path is part of the product; an empty Approvals surface hides it."""
+    rec = _RecordingStores()
+    rec.install(monkeypatch)
+
+    demo_seed._seed_enforcement(object(), hosts=6, seed=7)
+
+    assert len(rec.proposals) == 1
+    assert rec.proposals[0]["host"]
+    assert len(rec.proposals[0]["reason"]) >= 20, "a proposal needs a reviewable reason"
+
+
+def test_the_inventory_is_classified_through_the_real_writer(monkeypatch):
+    """The Network and Assets views read a classification, not the traffic tables."""
+    rec = _RecordingStores()
+    rec.install(monkeypatch)
+
+    classified = demo_seed._seed_identity(object(), hosts=6, seed=7)
+
+    hosts = {h for h, _source, _raw in rec.observations}
+    sources = {source for _h, source, _raw in rec.observations}
+    assert len(hosts) == 6, f"{len(hosts)} of 6 hosts got an observation"
+    assert {"oui", "dhcp_hostname", "software"} <= sources, f"only {sources} were recorded"
+    assert rec.persisted == classified > 0
+
+
+def test_a_rerun_does_not_stack_a_second_block(monkeypatch):
+    """Two identical blocks, the second with no hits, reads as a rule that matched nothing."""
+    from weirvern import sluice_store
+
+    class _Rule:
+        def __init__(self, origin):
+            self.origin = origin
+
+    monkeypatch.setattr(sluice_store, "load_all_rules",
+                        lambda _c: [_Rule("demo-seed"), _Rule("manual"), _Rule("demo-seed")])
+    assert demo_seed._enforcement_exists(object()) == 2
+
+    monkeypatch.setattr(sluice_store, "load_all_rules", lambda _c: [])
+    assert demo_seed._enforcement_exists(object()) == 0
