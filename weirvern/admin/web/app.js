@@ -7643,7 +7643,7 @@ async function loadModels() {
     const note = document.getElementById("md-note");
     if (note) {
       note.textContent += (note.textContent ? " · " : "") +
-        `mean detector agreement ${mean.toFixed(2)} across ${pts.length} scored anomalies`;
+        `mean detector agreement ${mean.toFixed(2)} over the window`;
     }
   }
 }
