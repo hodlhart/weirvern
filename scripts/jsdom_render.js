@@ -6011,10 +6011,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && doc.querySelectorAll("#tabs .tab-group-label").length === 0,
           groups.map((g) => g.querySelectorAll(".tab").length + " tab(s)").join(", "));
     const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
-    check("...and all thirteen tabs survive the regrouping",
-          views.length === 13 && new Set(views).size === 13
-          && ["health", "anomalies", "logs", "network", "netflow", "discover", "dns", "zeek",
-              "sluice", "weirlings", "models", "assets", "settings"]
+    // FOURTEEN, NOT THIRTEEN. Logs joined the row (2026-10-18) and Normalize followed
+    // (2026-11-19); the count is the contract, so it moves with the product. The list is spelled
+    // out so a tab cannot vanish quietly while the count is padded by a duplicate.
+    check("...and all fourteen tabs survive the regrouping",
+          views.length === 14 && new Set(views).size === 14
+          && ["health", "anomalies", "normalize", "logs", "network", "netflow", "discover", "dns",
+              "zeek", "sluice", "weirlings", "models", "assets", "settings"]
              .every((v) => views.includes(v)),
           views.join(","));
     check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
@@ -6039,7 +6042,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           crumbs.textContent.trim());
     check("...and the nav stays on screen inside the detail view",
           !doc.getElementById("tabs").classList.contains("hidden")
-          && doc.querySelectorAll("#tabs .tab").length === 13);
+          && doc.querySelectorAll("#tabs .tab").length === 14);
     const back = [...crumbs.querySelectorAll("button.crumb")].find((b) => /Weirlings/.test(b.textContent));
     check("...with a real, clickable way back out of the drill", !!back);
     if (back) back.click();
@@ -6296,11 +6299,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // The policy CARD is gone (the per-rule mode select replaced it), so this checks the shape
     // that still matters: an empty rule list renders the gates and says why the table is empty
     // instead of leaving a blank card.
+    // THE GATE PAIR IS KEYED BY ITS OWN CLASS. The 2026-11-18 house-pattern rebuild moved the
+    // pair from `.grid` to `.grid2` (same two-column intent), so pinning the grid utility made
+    // this check fail on a page that was rendering correctly. `.sl2-gates` is the contract.
     const emptyLine = doc.getElementById("sl2-empty");
     check("an empty rule list still renders the gates and says why the table is empty",
           !!emptyLine && !emptyLine.classList.contains("hidden")
           && /no (live )?rules match/i.test(emptyLine.textContent || "")
-          && doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card").length === 2,
+          && doc.querySelectorAll("#view-sluice .sl2-gates > .card").length === 2,
           emptyLine ? emptyLine.textContent.slice(0, 100) : "no empty line");
     await H.loadSluice();   // tidy back to the full fixture
   }
@@ -6775,31 +6781,41 @@ check("the gate's STATE is shown, not just a rule count",
       slText().slice(0, 200));
 
 // THE OPERATOR'S ORDER (2026-10-19): the working DNS gate first, then the packet gate.
+// The 2026-11-18 rebuild moved the pair to `.grid2` and sentence-cased the headings ("Domain
+// gate"), so the old `.grid` selector and the capital-G regex both went stale. Assert the ORDER
+// and the identity of the two gates, not the utility class or the capitalization.
 check("the sluice page leads with the Domain Gate and then the Traffic Gate",
       (() => {
-        const heads = [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card h2, "
-          + "#view-sluice .grid.sl2-gates > .card h3")];
-        return heads.length === 2 && /Domain Gate/.test(heads[0].textContent)
-          && /Traffic Gate/.test(heads[1].textContent);
-      })(), [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card h2, "
-        + "#view-sluice .grid.sl2-gates > .card h3")]
+        const heads = [...doc.querySelectorAll("#view-sluice .sl2-gates > .card h2, "
+          + "#view-sluice .sl2-gates > .card h3")];
+        return heads.length === 2 && /domain gate/i.test(heads[0].textContent)
+          && /traffic gate/i.test(heads[1].textContent);
+      })(), [...doc.querySelectorAll("#view-sluice .sl2-gates > .card h2, "
+        + "#view-sluice .sl2-gates > .card h3")]
         .map((h) => h.textContent.trim()).join(",") || "no first card");
 check("the two gate cards share one horizontal grid, not two stacked full-width cards",
       (() => {
-        const g = doc.querySelector("#view-sluice .grid.sl2-gates");
+        const g = doc.querySelector("#view-sluice .sl2-gates");
         if (!g) return false;
-        return [...g.children].filter((c) => c.classList.contains("card")).length === 2;
-      })(), doc.querySelector("#view-sluice .grid.sl2-gates")
-        ? "grid missing cards" : "no sl2-gates grid");
+        return window.getComputedStyle(g).display === "grid"
+          && [...g.children].filter((c) => c.classList.contains("card")).length === 2;
+      })(), doc.querySelector("#view-sluice .sl2-gates")
+        ? "grid missing cards or not display:grid" : "no sl2-gates grid");
 check("the fleet packet table is its own card, not folded into a gate card",
       (() => {
         const fleet = doc.querySelector("#sl2-fleet");
         return !!fleet && !!fleet.closest("#sl2-fleet-card") && !fleet.closest(".sl2-gate");
       })(), "fleet table is not in its own card");
+// THE DOMAIN CARD MUST NOT BORROW THE PACKET GATE'S NUMBERS. The 2026-11-18 rebuild moved the
+// packet state ("armed on eth1", rule counts) onto the Traffic card and left the Domain card with
+// only list/domain/hit facts -- the defect this check was written for is fixed. The assertion
+// still pinned the old `.grid` wrapper and a capital-G heading, so it read no card at all and
+// reported the copy bug it was meant to guard. Keep the no-packet-facts rule; match the card by
+// its own container and case-insensitively.
 check("the Domain Gate carries no packet/interface facts",
       (() => {
-        const domain = [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card")]
-          .find((c) => /Domain Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
+        const domain = [...doc.querySelectorAll("#view-sluice .sl2-gates > .card")]
+          .find((c) => /domain gate/i.test((c.querySelector("h2, h3") || {}).textContent || ""));
         return !!domain && !/packet state|packet rules|interfaces?/i.test(domain.textContent);
       })(), "DNS card still carries packet facts");
 const gateHeads =

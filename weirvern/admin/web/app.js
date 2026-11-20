@@ -6030,6 +6030,7 @@ const VH_COUNTS = Object.create(null);
 const VIEW_HEADER_META = {
   health: { heading: "Health", count: "hp-summary" },
   anomalies: { heading: "Ripples", count: "rp-count" },
+  normalize: { heading: "Normalize", count: "nz-count" },
   network: { heading: "Network", count: "nw-caption" },
   netflow: { heading: "Netflow", count: "nf-summary" },
   discover: { heading: "Flows", count: "dc-summary" },
@@ -6099,9 +6100,12 @@ function installViewHeaders() {
       }
     }
     // The header title was the ONE h2 we kept; demote any h2 in sheets/modals outside views too.
-    for (const h2 of document.querySelectorAll("h2:not(.view-title)")) vhDemote(h2);
+    // DO THIS ONCE, AFTER EVERY VIEW HAS ITS TITLE. Inside the loop it demoted the headings of
+    // views not yet visited: Settings lost its real h2 and got a duplicate title, and a tab that
+    // ships its own header (Normalize) ended the boot with no title at all.
     title.classList.add("view-title");
   }
+  for (const h2 of document.querySelectorAll("h2:not(.view-title)")) vhDemote(h2);
   syncViewHeaderCounts();
 }
 

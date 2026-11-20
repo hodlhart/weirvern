@@ -687,14 +687,17 @@
      selects rows from, and marks as normal. Normal traffic joins the host's adaptive baseline
      permanently, so the models learn it; nothing here silences an alert. -->
 <section id="view-normalize" class="view">
+  <!-- THE HOUSE HEADER reads this count: installViewHeaders copies #nz-count into the title on its
+       sync tick, so the value lives in one place and the header is not a second copy to update. -->
+  <span id="nz-count" class="hidden"></span>
+  <div class="view-head">
+    <h2>Normalize
+      <button class="info-btn" data-info="nz-info" aria-label="what normalizing does and does not do"
+              aria-expanded="false" title="what normalizing does and does not do">i</button>
+    </h2>
+    <button id="nz-apply" class="primary" type="button" disabled>Normalize selected</button>
+  </div>
   <div class="card">
-    <div class="view-head">
-      <h2>Normalize <span class="muted" id="nz-count"></span>
-        <button class="info-btn" data-info="nz-info" aria-label="what normalizing does and does not do"
-                aria-expanded="false" title="what normalizing does and does not do">i</button>
-      </h2>
-      <button id="nz-apply" class="primary" type="button" disabled>Normalize selected</button>
-    </div>
     <p class="muted" id="nz-note">Loading…</p>
     <div class="controls">
       <label>window <select id="nz-hours">
