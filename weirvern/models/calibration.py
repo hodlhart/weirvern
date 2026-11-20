@@ -29,6 +29,7 @@ from weirvern import __version__
 from weirvern.clock import utcnow
 from weirvern.config import FUSED_MODEL, Settings
 from weirvern.features import CROSS_SECTIONAL_FEATURES, IF_FEATURES, TELEMETRY_FEATURES
+from weirvern.models.eval_report import wilson
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +371,29 @@ def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
     return eligible
 
 
+def eligibility_scales(client: Client, settings: Settings) -> tuple[dict[str, bool],
+                                                                    dict[str, float]]:
+    """Eligibility AND the per-detector calibrated thresholds, from ONE evaluation.
+
+    The fusion needs both: the membership (`eligible`) and, for each member, the threshold that
+    puts its score on the common calibrated scale (`Report.thresholds`). Reading them from one
+    `evaluate` call matters -- two reads could see different calibration rows and normalise a
+    score against a threshold the gate did not admit it with.
+
+    A detector contributing without a usable threshold is simply absent from `thresholds`; the
+    fusion then falls back to its raw scale rather than mixing units.
+    """
+    from weirvern.models import eligibility as _eligibility  # noqa: PLC0415
+
+    report = _eligibility.evaluate(client, settings, persist=True)
+    eligible = report.eligible
+    out = sorted(name for name, ok in eligible.items() if not ok)
+    if out:
+        logger.warning("ML eligibility: %d detector(s) not contributing: %s",
+                       len(out), ", ".join(out))
+    return eligible, dict(report.thresholds)
+
+
 def record_population(client: Client, population: Iterable[dict], *,
                       model_version: str) -> int:
     """Persist RAW per-model scores for every scored host-window.
@@ -688,6 +712,11 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         # construction and could never say "insufficient".
         evidence = coverage_evidence(reference, MODEL_EXPECTED_FEATURES.get(model_name))
         source += _coverage_source_note(evidence, len(reference))
+        # THE FAR IS A PROPORTION, SO IT IS STORED WITH ITS DENOMINATOR AND ITS INTERVAL. A row
+        # that says 0.045 and nothing else cannot be judged: on 110 windows that is 2%-10%, and
+        # the eligibility rule now refuses to decide on an interval that wide.
+        successes = int(round(max(0.0, min(1.0, float(cal.observed_far))) * cal.validation_count))
+        bounds = wilson(successes, int(cal.validation_count))
         return {
             "model_name": model_name,
             "scope": scope,
@@ -701,6 +730,8 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
             "sample_count": cal.sample_count,
             "validation_count": cal.validation_count,
             "observed_far": cal.observed_far,
+            "far_lower": bounds[0] if bounds else None,
+            "far_upper": bounds[1] if bounds else None,
             "reference_source": source,
             "model_version": __version__,
             # NULL, never a number, when the reference carried no coverage: history that was
@@ -811,6 +842,7 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         return []
     columns = ["model_name", "scope", "subject", "statistic", "target_far", "threshold",
                "p50", "p95", "p99", "sample_count", "validation_count", "observed_far",
+               "far_lower", "far_upper",
                "reference_source", "model_version", "coverage", "coverage_observed",
                "coverage_expected", "coverage_detail", "missing_mode", "excluded_windows"]
     client.insert(
@@ -829,8 +861,9 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
 
 __all__ = ["Calibration", "COVERAGE_CONTRACT", "MIN_STRATUM_SAMPLES", "MODEL_COLUMNS",
            "MODEL_EXPECTED_FEATURES", "POPULATION_MODELS", "ScoreContract",
-           "StratifiedCalibration", "conformal_pvalue", "conformal_threshold", "contract_for",
-           "coverage_evidence", "coverage_stratum", "eligibility",
+           "StratifiedCalibration", "calibrated_bar", "conformal_pvalue", "conformal_threshold",
+           "contract_for", "coverage_evidence", "coverage_stratum", "eligibility",
+           "eligibility_scales",
            "fit", "fit_stratified", "record_population", "register_model_contract", "run",
            "usable_scores"]
 

@@ -1705,10 +1705,18 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             return []
 
     eligible = None
+    thresholds: dict[str, float] | None = None
     if getattr(settings, "ml_eligibility", False):
         try:
             from weirvern.models import calibration as _cal  # noqa: PLC0415
-            eligible = _cal.eligibility(client, settings)
+            if getattr(settings, "ml_calibrated_threshold", False):
+                # ELIGIBILITY AND THE SCALES FROM ONE EVALUATION. The fusion compares each
+                # detector on its own calibrated scale, so it needs the thresholds the gate
+                # admitted the detectors with -- reading them separately could normalise against
+                # a row the gate never saw.
+                eligible, thresholds = _cal.eligibility_scales(client, settings)
+            else:
+                eligible = _cal.eligibility(client, settings)
             ineligible = sorted(name for name, ok in eligible.items() if not ok)
             if ineligible:
                 logger.warning("ML eligibility: %s barred from fused score: %s",
@@ -1718,11 +1726,13 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # run this sweep; say so rather than silently behaving as if it passed.
             logger.warning("ML eligibility read failed (detection continues, gate skipped): %s", exc)
     # THE BAR COMES FROM THE CALIBRATION WHEN THERE IS ONE, because a conformal threshold is the
-    # only construction here whose value IS the chosen alerts-per-day. A missing or saturated row
-    # returns None and the decision keeps its own threshold, so this cannot fail closed into a
+    # only construction here whose value IS the chosen alerts-per-day. With per-detector scales
+    # the bar is `base_threshold` by construction (each detector's own threshold maps onto it), so
+    # the fused calibration is only read when the scales are unavailable. A missing or saturated
+    # row returns None and the decision keeps its own threshold, so this cannot fail closed into a
     # silent engine without saying so in the log.
     calibrated_bar = None
-    if getattr(settings, "ml_calibrated_threshold", False):
+    if getattr(settings, "ml_calibrated_threshold", False) and not thresholds:
         try:
             from weirvern.models import calibration as _cal  # noqa: PLC0415
             calibrated_bar = _cal.calibrated_bar(client, settings)
@@ -1731,10 +1741,13 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
                         else f"uncalibrated, base_threshold {settings.base_threshold}")
         except Exception as exc:  # noqa: BLE001
             logger.warning("calibrated bar read failed (using base_threshold): %s", exc)
+    elif thresholds:
+        logger.info("Alert bar: per-detector calibrated scale at base_threshold %s (%d "
+                    "threshold(s))", settings.base_threshold, len(thresholds))
     score_population: list[dict] = []
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses,
                                       eligible=eligible, score_population=score_population,
-                                      calibrated_bar=calibrated_bar)
+                                      calibrated_bar=calibrated_bar, thresholds=thresholds)
     logger.info(
         "Detection sweep: scored %d host-window(s), %d near miss(es), %d verdict(s) above "
         "threshold",

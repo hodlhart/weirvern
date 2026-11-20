@@ -20,7 +20,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from weirvern.config import FUSED_MODEL, ModelConfig, Settings
-from weirvern.ensemble import detect_flows, fusion_excluded
+from weirvern.ensemble import calibrated_scores, detect_flows, fuse_scores, fusion_excluded
 from weirvern.models import calibration
 
 
@@ -214,8 +214,47 @@ def test_the_fused_score_is_never_treated_as_a_detector_for_eligibility():
         def query(self, sql, parameters=None):  # noqa: ANN001, ANN201
             if "ml_calibration" in sql and "dateDiff" in sql:
                 return type("R", (), {"result_rows": [
-                    (FUSED_MODEL, 0.99, 0.01, 0.9, 17, 19, "2026-11-19 08:21:17", 60)]})()
+                    (FUSED_MODEL, 0.99, 0.01, 0.9, 17, 19, "2026-11-19 08:21:17", 60, 2000, 0.9)]})()
             return type("R", (), {"result_rows": []})()
 
     report = evaluate(_Client(), Settings(model_dir=""))
     assert FUSED_MODEL not in report.decisions
+
+
+# ── the calibrated scale: 0.35 means the same thing with 1, 2 or 5 members ────────────────────
+#
+# BEFORE: `max` over raw scores. With KNN alone, 0.35 was a raw score it exceeded on 79.2% of
+# windows (its own 1% threshold sat at 0.962); with five members the same 0.35 was a different
+# quantile of a different distribution. The bar changed meaning whenever the membership changed.
+# AFTER: each detector's own conformal threshold maps onto 0.35, so the bar is a position inside
+# every member's measured tail rather than a raw number.
+
+def test_a_single_detector_score_is_comparable_to_a_multi_detector_one():
+    bar = Settings().base_threshold
+    thresholds = {"KNN distance": 0.962, "Isolation Forest": 0.85, "LOF": 0.89}
+    one = calibrated_scores({"KNN distance": 0.962}, thresholds, bar)
+    many = calibrated_scores(
+        {"KNN distance": 0.10, "Isolation Forest": 0.85, "LOF": 0.20}, thresholds, bar)
+    # Each detector AT its own calibrated threshold lands exactly on the shared bar...
+    assert one["KNN distance"] == many["Isolation Forest"] == bar
+    assert fuse_scores(one) == fuse_scores(many) == bar
+    # ...and the same raw KNN score is the same number whether it is alone or one of five.
+    alone = calibrated_scores({"KNN distance": 0.48}, thresholds, bar)
+    together = calibrated_scores(
+        {"KNN distance": 0.48, "Isolation Forest": 0.1, "LOF": 0.2}, thresholds, bar)
+    assert alone["KNN distance"] == together["KNN distance"]
+
+
+def test_the_same_score_is_judged_the_same_way_with_one_or_five_members():
+    """The near-miss record is written at the comparison, before the agreement gate."""
+    thresholds = {"KNN distance": 0.962, "Isolation Forest": 0.85, "LOF": 0.89,
+                  "Adaptive Baseline": 0.375}
+    one: list[dict] = []
+    _run(_det(KNN_distance=0.90), near_misses=one, thresholds=thresholds)
+    five: list[dict] = []
+    _run(_det(Isolation_Forest=0.20, Gradient_Boosting=0.01, KNN_distance=0.90,
+              LOF=0.10, Adaptive_Baseline=0.0),
+         near_misses=five, thresholds=thresholds)
+    assert one and five, "both windows should be near misses at the calibrated bar"
+    assert one[0]["anomaly_score"] == five[0]["anomaly_score"] == 0.90
+    assert one[0]["threshold_used"] == five[0]["threshold_used"] == 0.962

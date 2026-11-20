@@ -33,6 +33,7 @@ def _rows(*, observed: float | None = 1.0, target: float | None = 0.01,
           trained: bool = True, name: str = "KNN distance",
           coverage: float | None = 0.83, coverage_observed: int | None = 16,
           coverage_expected: int | None = 19, age_hours: float = 0.5,
+          validation_count: int = 2000, threshold: float = 0.86,
           decisions: dict | None = None) -> list[dict]:
     """One detector's row, with each evidence source switched on or off independently."""
     training = {name: {"trained_at": TODAY, "samples": 5000}} if trained else {}
@@ -40,7 +41,8 @@ def _rows(*, observed: float | None = 1.0, target: float | None = 0.01,
     calibration = ({name: {"observed_far": observed, "target_far": target,
                            "coverage": coverage, "coverage_observed": coverage_observed,
                            "coverage_expected": coverage_expected,
-                           "age_hours": age_hours}}
+                           "age_hours": age_hours, "validation_count": validation_count,
+                           "threshold": threshold}}
                    if observed is not None else {})
     return detector_rows(training, artifacts, calibration, decisions=decisions)
 
@@ -118,10 +120,11 @@ def test_a_detector_the_engine_no_longer_builds_has_no_row() -> None:
                 "DBSCAN": {"trained_at": TODAY, "samples": 5000}}
     artifacts = {"LOF": {"version": "v5"}, "DBSCAN": {"version": "v5"}}
     calibration = {"LOF": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
-                           "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5},
+                           "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+                           "validation_count": 2000, "threshold": 0.89},
                    "DBSCAN": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.9,
                               "coverage_observed": 17, "coverage_expected": 19,
-                              "age_hours": 0.5}}
+                              "age_hours": 0.5, "validation_count": 2000, "threshold": 0.9}}
     rows = detector_rows(training, artifacts, calibration, known_names=("LOF",))
     assert [row["name"] for row in rows] == ["LOF"]
     assert "DBSCAN" not in json.dumps(rows)
@@ -133,18 +136,24 @@ def test_the_fused_score_is_never_shown_without_its_target() -> None:
         {n: {"trained_at": TODAY, "samples": 100} for n in names},
         {n: {"version": "v5"} for n in names},
         {"Isolation Forest": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
-                              "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5},
+                              "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+                              "validation_count": 2000, "threshold": 0.85},
          "Gradient Boosting": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
-                               "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5},
+                               "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+                               "validation_count": 2000, "threshold": 0.98},
          "KNN distance": {"observed_far": 1.0, "target_far": 0.01, "coverage": 0.83,
-                          "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5},
+                          "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+                          "validation_count": 2000, "threshold": 0.96},
          "Adaptive Baseline": {"observed_far": 1.0, "target_far": 0.01, "coverage": 0.83,
-                               "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5}},
+                               "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+                               "validation_count": 2000, "threshold": 0.37}},
         known_names=names,
     )
-    summary = detector_summary(rows, {"observed_far": 0.04, "target_far": 0.01})
+    summary = detector_summary(rows, {"observed_far": 0.04, "target_far": 0.01,
+                                      "validation_count": 110, "far_lower": 0.020,
+                                      "far_upper": 0.089})
     assert summary == ("4 detectors: 2 eligible. Fused false-alarm rate 0.04 "
-                       "against a 0.01 target.")
+                       "(95% CI 0.020-0.089, n=110) against a 0.01 target.")
     assert "0.04" in summary and "0.01" in summary
 
 
@@ -196,10 +205,12 @@ def test_the_models_fetcher_derives_the_rows_from_the_live_reads(monkeypatch, tm
                 # AGE IS IN HOURS (`dateDiff('second', ...) / 3600.0 AS age_hours`): sixty
                 # SECONDS old, not sixty hours.
                 rows = [("KNN distance", 1.0, 0.01, 0.83, 16, 19, "2026-11-19 08:21:17",
-                         60 / 3600.0)]
+                         60 / 3600.0, 2000, 0.86)]
             elif "argMax" in sql:
-                rows = [("KNN distance", 1.0, 0.01, 0.83, 0, "16/19", 16, 19, "on"),
-                        ("__fused__", 0.04, 0.01, 0.78, 0, "1542/1975", 1542, 1975, "on")]
+                rows = [("KNN distance", 1.0, 0.01, 0.83, 0, "16/19", 16, 19, "on",
+                         2000, 0.86, 0.996, 1.0),
+                        ("__fused__", 0.04, 0.01, 0.78, 0, "1542/1975", 1542, 1975, "on",
+                         110, 0.71, 0.020, 0.089)]
             elif "ml_calibration" in sql:
                 rows = [("KNN distance", 1.0, 0.01)]
             elif "ml_window_scores" in sql:
@@ -261,7 +272,8 @@ def test_a_calibration_older_than_the_artifact_is_not_evidence_about_it() -> Non
         {"KNN distance": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
         {"KNN distance": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
                           "coverage_observed": 16, "coverage_expected": 19,
-                          "computed_at": "2026-11-19 09:00:00", "age_hours": 0.5}},
+                          "computed_at": "2026-11-19 09:00:00", "age_hours": 0.5,
+                          "validation_count": 2000, "threshold": 0.86}},
     )
     row = rows[0]
     assert row["contributing"] is False
@@ -275,6 +287,7 @@ def test_a_calibration_newer_than_the_artifact_still_contributes():
         {"KNN distance": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
         {"KNN distance": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
                           "coverage_observed": 16, "coverage_expected": 19,
-                          "computed_at": "2026-11-19 11:00:00", "age_hours": 0.5}},
+                          "computed_at": "2026-11-19 11:00:00", "age_hours": 0.5,
+                          "validation_count": 2000, "threshold": 0.86}},
     )
     assert rows[0]["contributing"] is True

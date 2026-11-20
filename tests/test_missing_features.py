@@ -357,7 +357,8 @@ def _detector_row(*, coverage_value, observed=0.0, target=0.01):
         {"KNN distance": {"observed_far": observed, "target_far": target,
                           "coverage": coverage_value,
                           "coverage_observed": int(round(coverage_value * 19)),
-                          "coverage_expected": 19, "age_hours": 0.5}},
+                          "coverage_expected": 19, "age_hours": 0.5,
+                          "validation_count": 2000, "threshold": 0.86}},
         min_coverage=DEFAULT_MIN_COVERAGE,
     )[0]
 

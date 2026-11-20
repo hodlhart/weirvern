@@ -118,6 +118,47 @@ def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = Non
     return float(min(MAX_FUSED_SCORE, max(scores.values())))
 
 
+def calibrated_scores(scores: dict[str, float],
+                      thresholds: dict[str, float] | None,
+                      bar: float) -> dict[str, float]:
+    """Put every detector's score on ONE scale: its own calibrated threshold maps to `bar`.
+
+    WHY THIS EXISTS. `max` fusion over raw scores is only comparable when the members are. With one
+    eligible detector the fused score IS that detector's raw score, and `BASE_THRESHOLD` 0.35 then
+    means whatever that detector happens to emit: measured live on 2026-11-20, KNN alone exceeded
+    0.35 on 79.2% of windows while its own calibrated 1% threshold sat near 0.96 on the same scale.
+    Adding or removing a detector changed the meaning of the bar because it changed the units.
+
+    THE MAP. `score * bar / threshold_i` is monotone, so ranking inside a detector is untouched and
+    its calibrated threshold lands exactly on `bar`. 0.35 therefore means "this detector at its
+    calibrated false-alarm point" whether the membership is one, two or five. The result is capped
+    at MAX_FUSED_SCORE so the thin-window invariant (`MAX_FUSED_SCORE * floor >= bar`) still holds.
+
+    A detector with no usable threshold keeps its raw score: inventing a scale for an uncalibrated
+    detector would put a number in front of every alert that looks calibrated and is not. Callers
+    should only take this path when every contributing detector has one.
+    """
+    if not thresholds:
+        return dict(scores)
+    scale = float(bar)
+    out: dict[str, float] = {}
+    for name, score in scores.items():
+        threshold = thresholds.get(name)
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            continue
+        try:
+            t = float(threshold) if threshold is not None else 0.0
+        except (TypeError, ValueError):
+            t = 0.0
+        if math.isfinite(t) and t > 0:  # noqa: PLR2004 - a threshold is a positive score
+            out[name] = float(min(MAX_FUSED_SCORE, max(0.0, value * scale / t)))
+        else:
+            out[name] = value
+    return out
+
+
 def contributing_scores(scores: dict[str, float],
                         eligible: dict[str, bool] | None = None) -> dict[str, float]:
     """Scores that may set the fused result.
@@ -365,6 +406,7 @@ def detect_flows(
     eligible: dict[str, bool] | None = None,
     score_population: list[dict[str, Any]] | None = None,
     calibrated_bar: float | None = None,
+    thresholds: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
@@ -487,23 +529,65 @@ def detect_flows(
             mode=cfg.fusion_mode,
         )
 
+        # ── TWO NUMBERS, ON PURPOSE ───────────────────────────────────────────────────────────
+        #
+        # `final_score` stays the RAW fused score: it is what severity tiers, confidence, the
+        # stored anomaly score and the operator all read, and rescaling it would silently move
+        # every one of those. `decision_score` is the same max taken over CALIBRATED scores, where
+        # each detector's own 1% threshold maps to `base_threshold`; that is the number the alert
+        # bar compares. With one eligible detector the raw comparison was the detector's own
+        # quantile and paged on 79.2% of windows; the calibrated one pages on its measured tail.
+        active_members = [n for n in contributing if n not in excluded]
+        scales = thresholds or {}
+        scales_active = bool(scales) and bool(active_members) and all(
+            scales.get(n) is not None and float(scales[n]) > 0 for n in active_members)
+        scaled_contributing: dict[str, float] | None = None
+        if scales_active:
+            scaled_contributing = calibrated_scores(
+                contributing, thresholds, float(getattr(settings, "base_threshold", 0.35)))
+            decision_score = fuse_scores(
+                scaled_contributing,
+                {n: _weight_of(n, weights) for n in scores},
+                mode=cfg.fusion_mode,
+            )
+        else:
+            decision_score = final_score
+
         # Damp statistically thin windows (see detection_confidence_factor)
-        final_score = round(final_score * detection_confidence_factor(flow, cfg), 4)
+        damping = detection_confidence_factor(flow, cfg)
+        final_score = round(final_score * damping, 4)
+        decision_score = round(decision_score * damping, 4)
 
         # THE FUSED SCORE JOINS THE POPULATION, because it is the number the decision compares and
         # therefore the only one a calibrator can turn into an alert budget. Recorded pre-threshold,
-        # like the per-model scores beside it.
+        # like the per-model scores beside it. It is the DECISION score: a calibration of a raw max
+        # over a membership that changes cannot describe the bar the decision actually uses.
         if sample is not None and score_population is not None:
-            sample["scores"][FUSED_MODEL] = final_score
+            sample["scores"][FUSED_MODEL] = decision_score
             score_population.append(sample)
 
-        if calibrated_bar is not None and math.isfinite(calibrated_bar) and calibrated_bar > 0:
-            # The calibrated threshold IS the chosen alerts-per-day, so no per-window reduction is
-            # applied on top of it: a reduction there would spend a budget nobody selected, which is
-            # how the measured false-alarm rate came to describe a threshold nothing alerted at.
-            threshold = float(calibrated_bar)
+        if scales_active:
+            # The calibrated scale IS the budget: each detector's own 1% point sits on
+            # `base_threshold`, so a per-window reduction on top of it would spend a budget
+            # nobody selected. The raw threshold reported beside a near miss is the threshold of
+            # the detector that got closest on the calibrated scale, so score and bar stay in the
+            # same units for a reader.
+            threshold = float(getattr(settings, "base_threshold", 0.35))
+            top = max(active_members,
+                      key=lambda n: (scaled_contributing or {}).get(n, 0.0), default=None)
+            raw_threshold = float((thresholds or {})[top]) if top is not None else threshold
+            top_raw_score = float(scores.get(top, 0.0)) if top is not None else 0.0
         else:
-            threshold = adaptive_threshold_for(flow, settings.base_threshold)
+            if calibrated_bar is not None and math.isfinite(calibrated_bar) and calibrated_bar > 0:
+                # The calibrated threshold IS the chosen alerts-per-day, so no per-window
+                # reduction is applied on top of it: a reduction there would spend a budget
+                # nobody selected, which is how the measured false-alarm rate came to describe a
+                # threshold nothing alerted at.
+                threshold = float(calibrated_bar)
+            else:
+                threshold = adaptive_threshold_for(flow, settings.base_threshold)
+            raw_threshold = threshold
+            top_raw_score = final_score
         bar = strong_signal_threshold(settings)
         # A direct structural signature can corroborate a lone specialist. It is evaluated from
         # the RAW scores: an ineligible model may still be the one that saw the scan, and the
@@ -511,7 +595,7 @@ def detect_flows(
         # fused score below the bar, the signature restores the raw strongest signal.
         signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
                                             strong_signal=bar)
-        if final_score < threshold:
+        if decision_score < threshold:
             if signature:
                 # RAW scores, minus the fusion exclusions. Eligibility is deliberately ignored here
                 # (a barred model may be the one that saw the scan), but an excluded model must not
@@ -519,18 +603,21 @@ def detect_flows(
                 # and the score would still be set by the model we removed.
                 restore = max((s for n, s in scores.items() if n not in excluded), default=0.0)
                 final_score = round(max(final_score, restore), 4)
+                # The signature is direct evidence, so it clears the calibrated bar too; leaving
+                # decision_score below it would alert on a number the gate never accepted.
+                decision_score = max(decision_score, threshold)
             else:
                 # NEAR MISS (band): scored close to the bar but under it. The band floor is
                 # threshold * near_miss_band -- measured against the threshold this host faced,
                 # not the global default, so a host with a raised adaptive bar does not flood
                 # the table with its ordinary traffic.
-                if near_misses is not None and final_score >= threshold * cfg.near_miss_band:
+                if near_misses is not None and decision_score >= threshold * cfg.near_miss_band:
                     near_misses.append({
                         "window_start": flow["window_start"],
                         "window_end": flow.get("window_end"),
                         "src_addr": src,
-                        "anomaly_score": round(final_score, 4),
-                        "threshold_used": round(threshold, 4),
+                        "anomaly_score": round(top_raw_score, 4),
+                        "threshold_used": round(raw_threshold, 4),
                         "reason": "below-threshold",
                         "model_agreement": round(
                             len([n for n, s in contributing_scores(scores, eligible).items()
@@ -618,7 +705,7 @@ def detect_flows(
                     "window_end": flow.get("window_end"),
                     "src_addr": src,
                     "anomaly_score": round(final_score, 4),
-                    "threshold_used": round(threshold, 4),
+                    "threshold_used": round(raw_threshold, 4),
                     "reason": "agreement-gate",
                     "model_agreement": round(agreement, 4),
                     "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
@@ -644,6 +731,6 @@ def detect_flows(
             "strong_models": strong_models,
             "strong_families": strong_families,
             "signature": signature,
-            "threshold_used": round(threshold, 4),
+            "threshold_used": round(raw_threshold, 4),
         })
     return results

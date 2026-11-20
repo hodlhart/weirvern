@@ -96,8 +96,10 @@ def test_retrain_newer_than_calibration_forces_ineligible():
     client = FakeClient(
         calibration_rows=[
             # AGE IS IN HOURS: five minutes old (300 / 3600), well inside the 6h interval.
-            ["Isolation Forest", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0],
-            ["LOF", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0],
+            # The last two columns are the sample floor's denominator and the detector's own
+            # threshold; without a validation count every row is `calibrating` by design.
+            ["Isolation Forest", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0, 2000, 0.86],
+            ["LOF", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0, 2000, 0.89],
         ],
         trained_rows=[
             ["Isolation Forest", BASE + timedelta(hours=1)],

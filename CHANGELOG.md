@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.23.103 — 2026-11-20
+
+A FAR ESTIMATE MUST BE ABLE TO ANSWER BEFORE IT BENCHES A DETECTOR, AND 0.35 MUST MEAN THE SAME
+THING WITH ONE DETECTOR AS WITH FIVE.
+
+- **The eligibility rule now judges the Wilson 95% upper bound, on a minimum sample.** Measured
+  live: three detectors read FAR 0.045–0.091 over ~110 validation windows and were benched, after
+  the SAME detector had read 0.000 seven minutes earlier. 5/110 is 0.045 but its interval is
+  0.020–0.102 — it cannot separate the 1% target from the 3% tolerance. Below
+  `ML_ELIGIBILITY_MIN_WINDOWS` (default **300**: the smallest n at which a detector realising the
+  1% target has an upper bound of 2.9%, inside 3%) the state is
+  `calibrating (n=X, need Y)` and the detector keeps the state it held; above it, a detector fails
+  only when the interval's upper bound exceeds the tolerance. `ML_ELIGIBILITY_MULTIPLE` is
+  unchanged at 3.0.
+- **Every calibration row records its denominator and both bounds.** Schema `060` adds
+  `far_lower` / `far_upper` to `ml_calibration` and its history; `calibration.run` writes them from
+  (`observed_far`, `validation_count`) and the eligibility read recomputes them for older rows. The
+  Detectors table cannot print a FAR without `95% CI … n=…` again, and the fused summary line
+  carries the same.
+- **The fused alert bar is now a calibrated scale.** Raw `max` fusion meant 0.35 was whatever the
+  current member emitted: with KNN alone (own threshold 0.962) it fired on **79.2%** of windows.
+  Each detector's score is mapped by `score × BASE_THRESHOLD / threshold_i`, putting its own
+  conformal threshold on 0.35. Measured on the live 6-hour population (154 windows with all five
+  detectors scored): fused rate at 0.35 before → after was **80.5% → 13.0%** with KNN alone,
+  **83.8% → 14.9%** with KNN+LOF, **89.6% → 17.5%** with all five. The promotion budget is
+  measured on the same calibrated scale (its SQL scales each compared model), so a candidate is
+  judged by the bar the decision uses. The raw fused score still drives severity, confidence and
+  the stored anomaly score; only the alert comparison is rescaled.
+- **The promotion state no longer writes an evidence failure as a promotion state.** A stale or
+  under-sampled reading is recomputed every sweep; overwriting the recorded state with
+  `not-eligible` made a transient measurement sticky and lost incumbency. `save_state` preserves
+  the prior state for `calibrating` / `not-eligible` decisions instead.
+
 ## 0.23.102 — 2026-11-20
 
 ELIGIBILITY IS MEASURED EVIDENCE, A PROMOTION MUST FIT THE ALERT BUDGET, AND DBSCAN IS GONE.

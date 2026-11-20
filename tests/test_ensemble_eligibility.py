@@ -19,9 +19,11 @@ from types import SimpleNamespace
 from weirvern.config import ModelConfig, Settings
 from weirvern.ensemble import MODEL_FAMILIES, contributing_scores, detect_flows, fuse_scores
 from weirvern.models.eligibility import (
+    STATE_CALIBRATING,
     STATE_ELIGIBLE,
     STATE_HELD,
     STATE_NOT_ELIGIBLE,
+    Decision,
     Rate,
     evaluate,
     evidence_from_row,
@@ -29,8 +31,11 @@ from weirvern.models.eligibility import (
 )
 
 # One calibration row, in the shape `calibration._calibration_rows` hands to the evidence rule.
+# `validation_count` is the denominator the interval is computed on; 2,000 is comfortably above
+# the 300-window floor, so these fixtures exercise the FAR rule rather than the calibrating state.
 FRESH = {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
-         "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5}
+         "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5,
+         "validation_count": 2000, "threshold": 0.86}
 
 
 def _evidence(name: str = "KNN distance", **overrides):
@@ -92,7 +97,11 @@ def test_a_far_over_the_configured_multiple_names_both_numbers():
 
 def test_the_tolerance_is_target_times_multiple_not_a_constant():
     """ML_ELIGIBILITY_MULTIPLE is a setting; 3x is not baked into the rule."""
-    ev = evidence_from_row("LOF", {**FRESH, "observed_far": 0.04}, target_far=0.01, multiple=5.0,
+    # 4% at n=4000 has a Wilson upper bound of 4.6%, inside the 5% tolerance: the test is the
+    # multiple, not a lucky sample. (At n=1000 the same rate's upper bound is 5.5% and the
+    # interval rule would -- correctly -- refuse to call it within 5%.)
+    ev = evidence_from_row("LOF", {**FRESH, "observed_far": 0.04, "validation_count": 4000},
+                           target_far=0.01, multiple=5.0,
                            retrain_every_h=6.0, grace_h=1.0)
     assert ev.calibrated is True and ev.tolerance == 0.05
 
@@ -195,12 +204,12 @@ class _Client:
 def _cal(name, **over):
     values = {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
               "coverage_observed": 16, "coverage_expected": 19, "computed_at": None,
-              "age_hours": 0.5, **over}
+              "age_hours": 0.5, "validation_count": 2000, "threshold": 0.86, **over}
     # AGE IS IN HOURS, the unit `_calibration_rows` reads (the SQL alias is `age_hours`).
     # Converting it back to seconds here is what let a 60h fixture look fresh.
     return (name, values["observed_far"], values["target_far"], values["coverage"],
             values["coverage_observed"], values["coverage_expected"], values["computed_at"],
-            float(values["age_hours"]))
+            float(values["age_hours"]), values["validation_count"], values["threshold"])
 
 
 def test_the_card_registry_no_longer_vetoes_a_calibrated_detector(tmp_path, monkeypatch):
@@ -317,3 +326,95 @@ def test_an_ineligible_cross_sectional_detector_still_allows_a_structural_signat
                             eligible={"KNN distance": False})
     assert verdicts, "the structural signature must survive KNN ineligibility"
     assert verdicts[0]["signature"] is True
+
+
+# ── the sample floor and the interval: a FAR estimate must be able to answer ──────────────────
+
+def test_a_110_window_far_reading_cannot_bench_a_detector(tmp_path):
+    """THE LIVE FLIP-FLOP, pinned: the same detector read 0.000 and 0.045 seven minutes apart.
+
+    5/110 has a 95% interval of roughly 2%-10%; it cannot separate the 1% target from the 3%
+    tolerance, so it must not change the detector's state. The detector was eligible and stays
+    eligible, with the sample and the shortfall named in its sentence.
+    """
+    settings = Settings(model_dir=str(tmp_path), ml_fused_budget_min_windows=1)
+    first = _Client(calibration=[_cal("KNN distance")], rates={"row": (500, 120, 100)})
+    before = evaluate(first, settings, names=["KNN distance"], persist=True)
+    assert before.decisions["KNN distance"].state == STATE_ELIGIBLE
+
+    # Seven minutes later the same detector reads five exceedances in 110 validation windows.
+    noisy = _Client(calibration=[_cal("KNN distance", observed_far=5 / 110,
+                                      validation_count=110)])
+    after = evaluate(noisy, settings, names=["KNN distance"], persist=True)
+    decision = after.decisions["KNN distance"]
+    assert decision.calibrating is True
+    assert decision.state == STATE_ELIGIBLE, "an unjudgeable sample benched a working detector"
+    assert decision.contributing is True
+    assert "n=110" in decision.sentence() and "need 300" in decision.sentence()
+    # Its calibrated scale is still the one it earned; the gap did not erase it.
+    assert after.thresholds["KNN distance"] == 0.86
+
+
+def test_a_detector_with_no_held_state_is_calibrating_not_failed():
+    ev = _evidence(observed_far=5 / 110, validation_count=110)
+    assert ev.calibrating is True and ev.calibrated is False
+    assert "calibrating (n=110, need 300)" in ev.reason
+    assert "FAR 0.045" in ev.reason, "the rate is still reported -- beside its sample"
+    assert ev.far_upper is not None and ev.far_upper > 0.09
+
+
+def test_a_genuinely_bad_far_on_a_large_sample_still_benches_it():
+    """The rule must still be able to say NO: 9% at n=2,000 has an upper bound near 10%."""
+    ev = _evidence(observed_far=0.09, validation_count=2000)
+    assert ev.calibrated is False and ev.calibrating is False
+    assert "95% CI" in ev.reason and "n=2000" in ev.reason
+    assert "0.030 tolerance" in ev.reason and "3 x 0.010 target" in ev.reason
+
+
+def test_a_far_is_never_sentenced_without_its_sample_size():
+    """Every FAR sentence carries n and its interval; the fused summary carries them too."""
+    from weirvern.models.detector_status import detector_summary
+
+    ev = _evidence(observed_far=0.09, validation_count=2000)
+    failed = Decision(name="LOF", state=STATE_NOT_ELIGIBLE, evidence=ev, reason=ev.reason)
+    assert "n=2000" in failed.sentence() and "95% CI" in failed.sentence()
+    assert "0.090" in failed.sentence()
+
+    cal = _evidence(observed_far=5 / 110, validation_count=110)
+    waiting = Decision(name="LOF", state=STATE_CALIBRATING, evidence=cal,
+                       calibrating=True, reason=cal.reason)
+    assert "n=110" in waiting.sentence() and "need 300" in waiting.sentence()
+
+    summary = detector_summary(
+        [{"name": "LOF", "contributing": False, "status": waiting.sentence()}],
+        {"observed_far": 0.045, "target_far": 0.01, "validation_count": 110,
+         "far_lower": 0.020, "far_upper": 0.102})
+    assert "n=110" in summary and "95% CI 0.020-0.102" in summary
+
+
+def test_a_calibrating_incumbent_is_still_counted_as_a_budget_member(tmp_path):
+    """A candidate must be measured against the detector that is in the fused set right now."""
+    settings = Settings(model_dir=str(tmp_path), ml_fused_budget_min_windows=1)
+    first = _Client(calibration=[_cal("KNN distance")], rates={"row": (500, 120, 100)})
+    evaluate(first, settings, names=["KNN distance"], persist=True)
+
+    class _BudgetClient(_Client):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.sql: list[str] = []
+
+        def query(self, sql, parameters=None):
+            if "ml_window_scores" in sql:
+                self.sql.append(sql)
+            return super().query(sql, parameters)
+
+    second = _BudgetClient(
+        calibration=[_cal("KNN distance", observed_far=5 / 110, validation_count=110),
+                     _cal("LOF", validation_count=2000, threshold=0.89)],
+        rates={"row": (500, 130, 120)})
+    report = evaluate(second, settings, names=["KNN distance", "LOF"])
+    assert report.decisions["KNN distance"].state == STATE_ELIGIBLE
+    assert second.sql, "the candidate's rate was never measured"
+    # LOF was measured against KNN (the calibrating incumbent), not against an empty set.
+    assert "KNN distance" in second.sql[0] and "LOF" in second.sql[0]
+    assert report.decisions["LOF"].state == STATE_ELIGIBLE

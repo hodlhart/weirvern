@@ -34,7 +34,14 @@ within a quarter of a point of target in *every* coverage stratum (1.05% / 1.07%
 against kNN's +0.46). Both enter the ensemble at the neutral weight of 1.0, and the shipped
 `max` fusion does not read weights at all.
 
-Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.
+Scores are fused (default `max`) and gated by `BASE_THRESHOLD` **on a calibrated scale**. Each
+detector's raw score is mapped by `score × BASE_THRESHOLD / threshold_i`, so its own conformal
+threshold lands exactly on 0.35. Without this, the bar's meaning moved with the membership:
+measured live on 2026-11-20, KNN alone (whose 1% threshold sat at 0.962) exceeded a raw 0.35 on
+**79.2%** of windows, while the same 0.35 over five members was a different quantile again. With
+the map, 0.35 is each detector's own measured 1% point whether one, two or five detectors are
+eligible. The raw fused score is still what severity, confidence and the stored anomaly score read;
+only the alert comparison uses the calibrated scale.
 
 **Fusion reads ELIGIBLE detectors only, and an ineligible one is *removed*, not zeroed.** A model
 is excluded when a measurement is missing; it is not counted as a zero (a zero still drags a mean
@@ -51,12 +58,17 @@ the engine:
    `ML_CALIBRATION_GRACE_H` (the calibration pass runs after the retrain it measures);
 2. **covered** — that row recorded `coverage_observed` / `coverage_expected`; NULL means coverage
    was never measured, and an unmeasured vector is not evidence;
-3. **in budget** — its realised false-alarm rate is within `ML_TARGET_FAR ×
-   ML_ELIGIBILITY_MULTIPLE` (0.01 × 3 = 0.03 by default).
+3. **in budget** — its realised false-alarm rate's **Wilson 95% upper bound** is within
+   `ML_TARGET_FAR × ML_ELIGIBILITY_MULTIPLE` (0.01 × 3 = 0.03 by default), judged only once the
+   validation sample reaches `ML_ELIGIBILITY_MIN_WINDOWS` (300). Below that floor the state is
+   `calibrating (n=X, need Y)` and the detector keeps whatever state it held: 5 exceedances in 110
+   windows is 0.045, but its interval is 0.020–0.102, so it cannot separate the 1% target from the
+   3% tolerance. At n=300 a detector realising the 1% target has an upper bound of 2.9%.
 
 A failing check names itself in the Detectors table (`not contributing: coverage not recorded`,
-`not contributing: FAR 0.083 above the 0.030 tolerance`), so the operator is sent to the right
-remedy. A model with no calibration row is never eligible.
+`not contributing: FAR 0.083 (95% CI 0.058-0.117, n=420) above the 0.030 tolerance`), so the
+operator is sent to the right remedy. Every FAR is printed with its sample size and interval. A
+model with no calibration row is never eligible.
 
 ### Promotion and the alert budget
 

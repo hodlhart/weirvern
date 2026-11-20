@@ -477,6 +477,7 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         min_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)),
         retrain_every_h=float(getattr(settings, "retrain_every_h", 6) or 6),
         grace_h=float(getattr(settings, "ml_calibration_grace_h", 1.0) or 0.0),
+        min_validation_windows=int(getattr(settings, "ml_eligibility_min_windows", 300) or 300),
         # The engine's roster: a name that is no longer built has no row at all.
         known_names=DETECTOR_NAMES,
         decisions=(report.decisions if report is not None else None),
@@ -868,7 +869,9 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
             "argMax(target_far, computed_at), argMax(coverage, computed_at), "
             "argMax(excluded_windows, computed_at), argMax(coverage_detail, computed_at), "
             "argMax(coverage_observed, computed_at), argMax(coverage_expected, computed_at), "
-            "argMax(missing_mode, computed_at) "
+            "argMax(missing_mode, computed_at), argMax(validation_count, computed_at), "
+            "argMax(threshold, computed_at), argMax(far_lower, computed_at), "
+            "argMax(far_upper, computed_at) "
             "FROM weirvern.ml_calibration FINAL WHERE scope = 'global' GROUP BY model_name")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
         # THE COVERAGE COLUMNS ARRIVED IN 056 AND THE COUNTS IN 058. A deployment still on an
@@ -898,7 +901,7 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
                 return {}
     out: dict[str, dict[str, Any]] = {}
     for row in (getattr(res, "result_rows", None) or []):
-        values = list(row) + [None] * 9
+        values = list(row) + [None] * 13
         out[str(values[0])] = {
             "observed_far": values[1],
             "target_far": values[2],
@@ -908,6 +911,11 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
             "coverage_observed": values[6],
             "coverage_expected": values[7],
             "missing_mode": values[8] or "",
+            # THE SAMPLE AND THE INTERVAL: a FAR without them is the reading this release fixes.
+            "validation_count": values[9],
+            "threshold": values[10],
+            "far_lower": values[11],
+            "far_upper": values[12],
         }
     return out
 

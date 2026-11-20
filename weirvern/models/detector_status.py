@@ -36,6 +36,7 @@ from typing import Any
 
 from weirvern.config import FUSED_MODEL
 from weirvern.models.eligibility import (
+    DEFAULT_MIN_VALIDATION_WINDOWS,
     STATE_ELIGIBLE,
     STATE_HELD,
     STATE_NOT_ELIGIBLE,
@@ -139,6 +140,7 @@ def detector_rows(
     known_names: tuple[str, ...] | list[str] | None = None,
     retrain_every_h: float = DEFAULT_RETRAIN_EVERY_H,
     grace_h: float = DEFAULT_GRACE_H,
+    min_validation_windows: int = DEFAULT_MIN_VALIDATION_WINDOWS,
 ) -> list[dict[str, Any]]:
     """One row per detector the ENGINE builds, from the union of its log and the calibration.
 
@@ -175,7 +177,8 @@ def detector_rows(
         is_trained = bool(trained) and outcome != "degenerate-reference"
         evidence = evidence_from_row(
             name, cal, target_far=target_far, multiple=multiple,
-            retrain_every_h=retrain_every_h, grace_h=grace_h, min_coverage=min_coverage)
+            retrain_every_h=retrain_every_h, grace_h=grace_h, min_coverage=min_coverage,
+            min_validation_windows=min_validation_windows)
         # THE HOLDOUT LOCK (calibration.eligibility's rule, kept in step here): a calibration
         # computed BEFORE the newest artifact is not evidence about the model serving now. Without
         # this the table could call a just-retrained model eligible on its predecessor's score.
@@ -205,6 +208,12 @@ def detector_rows(
             # THE TOLERANCE IS A COLUMN, NOT A SENTENCE. `target_far` alone cannot tell an operator
             # whether 6.5% is inside the policy: the multiple is what turns a target into a bar.
             "far_tolerance": float(evidence.tolerance or 0.0),
+            # THE DENOMINATOR AND ITS INTERVAL, so a FAR in this table is never read alone.
+            "validation_count": int(evidence.validation_count or 0),
+            "far_lower": evidence.far_lower,
+            "far_upper": evidence.far_upper,
+            "threshold": evidence.threshold,
+            "calibrating": bool(evidence.calibrating),
             "eligible": contributing,
             # THE COVERAGE EVIDENCE, carried on the row so the status is derived from a number
             # rather than from a sentence, and so the table can show why it said what it said.
@@ -230,10 +239,12 @@ def detector_rows(
         row["calibration_age_h"] = evidence.age_hours
         row["coverage_note"] = coverage_note(row)
         row["status"] = _status(row, evidence=evidence, decision=decision, outcome=outcome)
-        # THE SENTENCE AND THE BOOLEAN CANNOT DISAGREE: a row is `contributing` exactly when its
-        # status is the eligible sentence. Deriving one from the other is what stops a table that
-        # reads "not trained" from counting the model as a contributor.
-        contributing = row["status"] == ELIGIBLE
+        # THE SENTENCE AND THE BOOLEAN CANNOT DISAGREE: a row contributes exactly when its
+        # decision says it does. The decision is the authority because "eligible" can carry a
+        # calibrating note; a string comparison against the bare word would turn a contributing
+        # incumbent into a non-contributor the moment its sentence gained the sample size.
+        contributing = (bool(decision.contributing) if decision is not None
+                        else row["status"] == ELIGIBLE)
         row["contributing"] = contributing
         row["eligible"] = contributing
         rows.append(row)
@@ -261,7 +272,10 @@ def _status(row: dict[str, Any], *, evidence: Any, decision: Decision | None,
         if decision.state == STATE_NOT_ELIGIBLE:
             return f"not contributing: {decision.reason}"
         if decision.state == STATE_ELIGIBLE:
-            return ELIGIBLE
+            # THE SENTENCE, NOT THE BARE WORD: an eligible incumbent whose next sample is still
+            # filling reads `eligible (calibrating (n=34, need 300))`, so the operator can see the
+            # number behind the state instead of a claim with no measurement in it.
+            return decision.sentence()
         # Any other state (a fusion exclusion) is decided by configuration, and its sentence says
         # which one -- never a budget number it was not judged against.
         return decision.sentence()
@@ -278,8 +292,9 @@ def detector_summary(rows: list[dict[str, Any]],
     so it is quoted with the target it was calibrated for. When there is no fused row the sentence
     says `nothing measured yet` rather than falling back to a count with no reading behind it.
 
-    The count is over the rows given, so the caller can pass the same list the table renders and
-    the heading cannot disagree with it.
+    THE SAMPLE SIZE AND INTERVAL RIDE BESIDE THE FAR. A fused rate of 0.00 on 34 validation
+    windows is not evidence of a met 0.01 target; printing the bare number was the same defect
+    the eligibility rule just fixed, one layer up.
     """
     total = len(rows)
     contributing = sum(1 for row in rows if row.get("contributing"))
@@ -290,7 +305,17 @@ def detector_summary(rows: list[dict[str, Any]],
     target = _number((fused or {}).get("target_far"))
     if observed is None or target is None:
         return f"{head} Nothing measured yet: the fused score has no calibration row."
-    return f"{head} Fused false-alarm rate {observed:.2f} against a {target:.2f} target."
+    n = _number((fused or {}).get("validation_count"))
+    lower = _number((fused or {}).get("far_lower"))
+    upper = _number((fused or {}).get("far_upper"))
+    if n is not None and n > 0 and lower is not None and upper is not None:
+        sample = f" (95% CI {lower:.3f}-{upper:.3f}, n={int(n)})"
+    elif n is not None and n > 0:
+        sample = f" (n={int(n)})"
+    else:
+        sample = " (n=0)"
+    return (f"{head} Fused false-alarm rate {observed:.2f}{sample} against a "
+            f"{target:.2f} target.")
 
 
 __all__ = [

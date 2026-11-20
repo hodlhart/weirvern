@@ -204,14 +204,22 @@ class Settings:
     # budget from controlling the alert count at all. Empty string restores the old fusion.
     ml_fusion_exclude: str = field(
         default_factory=lambda: _env_str("ML_FUSION_EXCLUDE", "Gradient Boosting"))
-    # WHEN ON, the alert bar is the calibrated threshold for the fused score rather than
-    # `base_threshold` reduced per window. The point of a conformal calibrator is that the
-    # threshold IS the chosen alerts-per-day, and an adaptive reduction applied on top of it
-    # silently spends a budget nobody chose. Off restores the previous decision exactly.
+    # WHEN ON, each detector's score is compared on its own CALIBRATED scale: its conformal
+    # threshold is mapped onto `base_threshold`, so 0.35 means the same thing with one detector in
+    # the fusion as with five. (Before this, with KNN alone, 0.35 was 79.2% of windows because it
+    # was a raw score and KNN's own 1% threshold sat near 0.96.) Off restores the previous
+    # decision exactly: raw `max` fusion with `calibrated_bar` or the adaptive base threshold.
     ml_calibrated_threshold: bool = field(
         default_factory=lambda: _env_bool("ML_CALIBRATED_THRESHOLD", True))
     ml_eligibility_multiple: float = field(
         default_factory=lambda: _env_float("ML_ELIGIBILITY_MULTIPLE", 3.0)
+    )
+    # THE SMALLEST VALIDATION SAMPLE THAT MAY FAIL A DETECTOR ON ITS FAR. Below it the interval is
+    # too wide to separate the 1% target from the 3% tolerance (5/110 is 2%-10%), so the state is
+    # `calibrating (n=X, need Y)` and the detector keeps the state it held. 300 is the smallest n
+    # at which a detector realising the 1% target has a Wilson upper bound (2.9%) inside 3%.
+    ml_eligibility_min_windows: int = field(
+        default_factory=lambda: _env_int("ML_ELIGIBILITY_MIN_WINDOWS", 300)
     )
     # ── THE CALIBRATION WINDOW AND THE PROMOTION BUDGET ──────────────────────────────────────
     #
@@ -629,6 +637,10 @@ class Settings:
         if self.ml_fused_budget_hours < 1:
             raise ValueError(
                 f"ML_FUSED_BUDGET_HOURS must be >= 1, got {self.ml_fused_budget_hours}"
+            )
+        if self.ml_eligibility_min_windows < 1:
+            raise ValueError(
+                f"ML_ELIGIBILITY_MIN_WINDOWS must be >= 1, got {self.ml_eligibility_min_windows}"
             )
         if self.ml_calibration_grace_h < 0:
             raise ValueError(
