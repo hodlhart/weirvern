@@ -137,6 +137,9 @@ RETENTION_TABLES: tuple[RetentionTable, ...] = (
                    "per-host timing features derived from the same flows"),
     RetentionTable("flows_window", "window_start",
                    "the detection stack's window unit and the ripple layer's flow source"),
+    RetentionTable("flows_window_endpoint", "window_start",
+                   "the per-ENDPOINT window (host, direction) the ripple flow channels read; "
+                   "the inbound half of the network"),
     # ── the Zeek logs the detection and ripple layers read ────────────────────────────────
     RetentionTable("zeek_conn", "ts", "connection volume/diversity/reset channels"),
     RetentionTable("zeek_dns", "ts", "DNS volume/query-diversity/NXDOMAIN/reverse channels"),

@@ -58,14 +58,20 @@ WHO THE SUBJECT IS. A ripple is a change in a MONITORED host's behaviour, never 
 peer's. Every row is attributed to its monitored endpoint: the source if the source is inside a
 monitored CIDR, otherwise the destination. A flow row with no monitored endpoint is dropped.
 
-THE SCHEMA, VERIFIED ON THE LIVE BOX (2026-11-19), NOT ASSUMED. `flows_window` has exactly
-`window_start, src_addr, flow_count, total_bytes, total_packets, unique_dst_ips, updated_at`.
-There is NO destination column, and `unique_dst_ips` is a COUNT, not a list, so an inbound flow
-cannot be attributed to the internal host that received it. Those rows are dropped rather than
-reported under the remote address -- this is unchanged and it is a real gap, not a design
-preference. The blocking schema change is a `dst_addr` column (or a second aggregate keyed by
-destination) on `flows_window`; `weirvern.flows` itself carries both endpoints, so the data
-exists upstream and the roll-up is what loses it. No column is added by this module.
+THE SCHEMA. `flows_window` (schema 050) is keyed on `src_addr` alone, so it can only describe the
+SOURCE endpoint of a flow. `flows_window_endpoint` (schema 061) is the parallel table keyed on
+(window_start, host_addr, direction): 'out' rows describe a flow's source (the same population as
+`flows_window`), 'in' rows describe its destination. That second direction is what lets an inbound
+flow be attributed to the internal host that received it, instead of being dropped. The two tables
+have the same aggregate-state shapes and the same retention policy; the endpoint table is the one
+the flow channels below read, and a channel declares its direction so the two directions are never
+summed into a number that corresponds to nothing.
+
+WHAT THIS IS NOT. 'in' and 'out' are the two ENDS of one flow record, not two flows. A flow between
+two monitored hosts appears in both directions because each host's behaviour is a different fact. A
+reader that wants the network total picks one direction; a reader that wants a host's traffic reads
+both and labels them. Within the ripple layer they are one FAMILY, so inbound volume cannot
+corroborate outbound volume -- they are the same measurement seen from opposite ends.
 
 THE FOUR FAMILIES ADDED 2026-11-19, one per new collection pipeline. They are independent of
 flow/conn/dns/identity in the sense that matters: each observes something none of those four
@@ -132,7 +138,7 @@ from weirvern.models.ripple import (
     severity_bands,
 )
 
-MODEL_VERSION = "ripple-evidence-4"
+MODEL_VERSION = "ripple-evidence-5"
 
 #: The lookback a scale gets when the retention in force cannot be read: the historical 7-day
 #: window, which is also the FLOOR of every derived lookback. It is no longer the answer -- see
@@ -174,26 +180,48 @@ ADDITIVE_KINDS = frozenset({"count", "sum", "ratio"})
 # a family and can never corroborate each other. See `ripple.CHANNEL_FAMILIES` for the map and
 # the reason the other groups are drawn where they are.
 #
-# `flows_window` is pre-aggregated by source, so it has no peer column and cannot attribute an
-# inbound row to its destination. Its rows are filtered to monitored sources; an external
-# source is dropped rather than reported under the remote address. The Zeek tables do carry
-# `dst_addr`, so those channels attribute an inbound row to the monitored destination.
+# `flows_window_endpoint` has ONE row per (window, host, direction): 'out' is the source endpoint
+# and 'in' the destination. The three original flow channels keep their names and their exact
+# outbound population, so a stored score and a new one mean the same thing. The three `flow_in_*`
+# channels are the half that did not exist: a host that only receives traffic now has flow
+# evidence instead of nothing.
 FLOW_SPECS: tuple[ChannelSpec, ...] = (
-    # flows_window is an AggregatingMergeTree. Reading it with plain `count()` would sum
-    # partial states as if they were values; the `-Merge` combinators are mandatory.
-    ChannelSpec("flow_volume", "flow", "weirvern.flows_window", "src_addr",
+    # flows_window_endpoint is an AggregatingMergeTree. Reading it with plain `count()` would sum
+    # partial states as if they were values; the `-Merge` combinators are mandatory. The `direction`
+    # declaration puts `direction = 'out'` INSIDE the same select as the merge.
+    ChannelSpec("flow_volume", "flow", "weirvern.flows_window_endpoint", "host_addr",
                 time_column="window_start", kind="count", count_state="flow_count",
-                required_columns=("window_start", "src_addr", "flow_count"),
+                direction="out",
+                required_columns=("window_start", "host_addr", "direction", "flow_count"),
                 scales=EVIDENCE_SCALES, retention_days=7),
-    ChannelSpec("flow_bytes", "flow", "weirvern.flows_window", "src_addr",
+    ChannelSpec("flow_bytes", "flow", "weirvern.flows_window_endpoint", "host_addr",
                 time_column="window_start", kind="sum", count_state="flow_count",
-                sum_state="total_bytes",
-                required_columns=("window_start", "src_addr", "total_bytes"),
+                sum_state="total_bytes", direction="out",
+                required_columns=("window_start", "host_addr", "direction", "total_bytes"),
                 scales=EVIDENCE_SCALES, retention_days=7),
-    ChannelSpec("flow_dst_diversity", "flow", "weirvern.flows_window", "src_addr",
+    ChannelSpec("flow_dst_diversity", "flow", "weirvern.flows_window_endpoint", "host_addr",
                 time_column="window_start", kind="diversity", count_state="flow_count",
-                uniq_state="unique_dst_ips",
-                required_columns=("window_start", "src_addr", "unique_dst_ips"),
+                uniq_state="unique_peer_ips", direction="out",
+                required_columns=("window_start", "host_addr", "direction", "unique_peer_ips"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+    # INBOUND. The subject is the destination endpoint, and the peer counted by the diversity
+    # channel is the set of senders. Named `flow_in_*` rather than folded into the channels above:
+    # a host's received bytes and sent bytes are different quantities, and one column cannot hold
+    # both without becoming their sum (which is neither).
+    ChannelSpec("flow_in_volume", "flow", "weirvern.flows_window_endpoint", "host_addr",
+                time_column="window_start", kind="count", count_state="flow_count",
+                direction="in",
+                required_columns=("window_start", "host_addr", "direction", "flow_count"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+    ChannelSpec("flow_in_bytes", "flow", "weirvern.flows_window_endpoint", "host_addr",
+                time_column="window_start", kind="sum", count_state="flow_count",
+                sum_state="total_bytes", direction="in",
+                required_columns=("window_start", "host_addr", "direction", "total_bytes"),
+                scales=EVIDENCE_SCALES, retention_days=7),
+    ChannelSpec("flow_in_peer_diversity", "flow", "weirvern.flows_window_endpoint", "host_addr",
+                time_column="window_start", kind="diversity", count_state="flow_count",
+                uniq_state="unique_peer_ips", direction="in",
+                required_columns=("window_start", "host_addr", "direction", "unique_peer_ips"),
                 scales=EVIDENCE_SCALES, retention_days=7),
 )
 

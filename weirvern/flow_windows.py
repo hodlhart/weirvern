@@ -15,9 +15,19 @@ has to sit beside the merge so part pruning applies.
 
 So the fragment lives here, once, and callers splice it in. The alternative -- a view
 -- was tried and was the bug.
+
+THE ENDPOINT VARIANT. `flows_window` is keyed on the SOURCE of a flow, so it cannot represent a
+host that only receives traffic. `flows_window_endpoint` (schema 061) is the parallel table keyed
+on (window, host, direction), and `folded_endpoint()` is its folded read: same merge combinators,
+same predicate-beside-the-merge rule, with `direction` ('out'/'in') as part of the grain. The
+outbound direction is the same population as `flows_window`; the inbound direction is the half
+that did not exist.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
 
 # Columns the folded subquery exposes, in the order callers expect.
 FOLDED_COLUMNS = (
@@ -28,6 +38,24 @@ FOLDED_COLUMNS = (
     "total_bytes",
     "total_packets",
     "unique_dst_ips",
+)
+
+#: The directions `flows_window_endpoint` stores. 'out' is the source endpoint of a flow (the same
+#: population `flows_window` holds); 'in' is the destination endpoint, which `flows_window` cannot
+#: represent at all. A direction outside this tuple is refused rather than interpolated.
+DIRECTIONS = ("out", "in")
+
+#: Columns the folded ENDPOINT subquery exposes. `host_addr` replaces `src_addr` and `direction`
+#: is part of the row's identity, because the grain is (window, host, direction).
+ENDPOINT_COLUMNS = (
+    "window_start",
+    "window_end",
+    "host_addr",
+    "direction",
+    "flow_count",
+    "total_bytes",
+    "total_packets",
+    "unique_peer_ips",
 )
 
 _MERGE_BODY = """
@@ -84,6 +112,82 @@ def folded(predicate: str, alias: str = "a") -> str:
     """
     body = _MERGE_BODY.replace("{predicate}", predicate)
     return f"(\n{body}\n    ) AS {alias}"
+
+
+_ENDPOINT_MERGE_BODY = """
+        SELECT
+            window_start,
+            window_start + INTERVAL 5 MINUTE          AS window_end,
+            host_addr,
+            direction,
+            countMerge(flow_count)                    AS flow_count,
+            sumMerge(total_bytes)                     AS total_bytes,
+            sumMerge(total_packets)                   AS total_packets,
+            uniqMerge(unique_peer_ips)                AS unique_peer_ips
+        FROM weirvern.flows_window_endpoint
+        WHERE {predicate} AND direction = '{direction}'
+        GROUP BY window_start, host_addr, direction
+"""
+
+
+def endpoint_between(start: str, end: str) -> str:
+    """The folded-endpoint predicate for a formatted start and end.
+
+    The same helper as `between`, for the same reason: a string literal nested inside an f-string
+    expression is not substituted by the enclosing f-string, so every caller must build the
+    predicate in plain code rather than inline it.
+    """
+    return f"window_start BETWEEN '{start}' AND '{end}'"
+
+
+def folded_endpoint(predicate: str, direction: str = "out", alias: str = "e") -> str:
+    """Return a derived table of merged (host, direction) windows.
+
+    THE GRAIN IS (window_start, host_addr, direction). `direction` is part of the GROUP BY and of
+    the row's identity: 'out' rows describe the source endpoint of each flow, 'in' rows the
+    destination endpoint. Reading both directions without distinguishing them would sum a host's
+    sent and received bytes into a number that corresponds to nothing, so the direction is a
+    required argument with a validated value rather than a free-form fragment.
+
+    As with `folded`, the time predicate sits in the SAME select as the merge. Through a view (or
+    an outer WHERE) ClickHouse would materialise the whole retained table first, which is the
+    OOMKill 050 documents.
+    """
+    if direction not in DIRECTIONS:
+        raise ValueError(
+            f"unknown direction {direction!r}: expected one of {', '.join(DIRECTIONS)}"
+        )
+    body = _ENDPOINT_MERGE_BODY.replace("{predicate}", predicate).replace(
+        "{direction}", direction)
+    return f"(\n{body}\n    ) AS {alias}"
+
+
+def host_windows(client: Any, host: str, *, since: datetime, until: datetime,
+                 direction: str = "out", limit: int = 10_000) -> list[dict[str, Any]]:
+    """One host's folded endpoint windows for ONE direction, oldest first.
+
+    A THIN READER OVER `folded_endpoint`, not a second SQL shape: the merge, the direction filter
+    and the time predicate are spliced exactly as the ripple channels splice them, so a number
+    read here is the number the evidence layer measured. `host` and `direction` are bound as query
+    parameters / validated against `DIRECTIONS`; the datetimes are formatted by the caller (or
+    here) into the predicate, never taken from a row.
+
+    Returns one dict per window with integer totals. An empty list means this host had no traffic
+    in that direction inside the bounds -- not that the read failed (a failed read raises).
+    """
+    if direction not in DIRECTIONS:
+        raise ValueError(
+            f"unknown direction {direction!r}: expected one of {', '.join(DIRECTIONS)}"
+        )
+    predicate = endpoint_between(f"{since:%Y-%m-%d %H:%M:%S}", f"{until:%Y-%m-%d %H:%M:%S}")
+    # THE HOST FILTER SITS INSIDE THE MERGED SELECT, beside the time predicate. An outer WHERE
+    # would still be correct but would aggregate every host in the range before discarding all
+    # but one; this keeps the read proportional to the host's own windows.
+    columns = ", ".join(ENDPOINT_COLUMNS)
+    fragment = folded_endpoint(predicate + " AND host_addr = %(host)s", direction)
+    sql = f"SELECT {columns} FROM {fragment} ORDER BY window_start LIMIT %(limit)s"
+    rows = list(client.query(sql, parameters={"host": host, "limit": int(limit)}).result_rows)
+    return [dict(zip(ENDPOINT_COLUMNS, row, strict=False)) for row in rows]
 
 
 def avg_fragment(alias: str = "a") -> str:

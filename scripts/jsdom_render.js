@@ -2155,6 +2155,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             .includes("203.0.113.42"),
           nwRows[1] ? nwRows[1].children[2].textContent : "no row");
 
+    // THE INBOUND HALF. An edge whose ONLY rippling endpoint is its TARGET must still carry the
+    // chip: that host's evidence comes from the inbound flow channels, and before schema 061 it
+    // had none. A source-only lookup would draw this edge as quiet.
+    H.ASSETS_STATE.graph = { ...RIPPLE_GRAPH, ripples: [RIPPLE_GRAPH.ripples[1]] };
+    H.renderNetwork();
+    const targetRows = [...doc.querySelectorAll("#nw-table tbody tr")];
+    check("an edge is attributed to its DESTINATION endpoint when only the target ripples",
+          !!targetRows[1] && !!targetRows[1].querySelector(".nw-ripple-chip.sev-low")
+          && targetRows[1].querySelector(".nw-ripple-chip").getAttribute("title")
+            .includes("192.0.2.40"),
+          targetRows[1] ? targetRows[1].children[2].textContent : "no row");
+    H.ASSETS_STATE.graph = RIPPLE_GRAPH;
+    H.renderNetwork();
+
     const line = needEl("nw-ripple-line").textContent.replace(/\s+/g, " ");
     check("the Network header counts the hosts in view and the same ripple count",
           /2 of 4 hosts in view have 2 ripples in this 24h window/.test(line)
@@ -2578,7 +2592,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const fusedText = needEl("an-fused-line").textContent.replace(/\s+/g, " ");
     check("the fused-score status names the score, the target and the contributing detectors",
           /0\.910/.test(fusedText) && /0\.85/.test(fusedText)
-          && /Isolation Forest/.test(fusedText) && /DBSCAN/.test(fusedText)
+          && /Isolation Forest/.test(fusedText) && /LOF/.test(fusedText)
           && /corroboration, not 3 incidents/.test(fusedText),
           fusedText.slice(0, 260));
   }

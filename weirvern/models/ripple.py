@@ -158,6 +158,11 @@ CHANNEL_FAMILIES: dict[str, str] = {
     "flow_volume": "flow",
     "flow_bytes": "flow",
     "flow_dst_diversity": "flow",
+    # The destination END of the same flow records: one family, because inbound and outbound
+    # volume are two views of one measurement and must never corroborate each other.
+    "flow_in_volume": "flow",
+    "flow_in_bytes": "flow",
+    "flow_in_peer_diversity": "flow",
     "conn_volume": "conn",
     "conn_dst_diversity": "conn",
     "conn_service_diversity": "conn",

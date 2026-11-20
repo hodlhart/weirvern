@@ -137,6 +137,34 @@ model score feeding a channel would turn one observation into two. The only plac
 the anomaly page's **corroboration block**, which is display, not input. Do not wire a detector
 score into `weirvern/models/ripple*.py`.
 
+### The two ends of a flow
+
+`flows_window` is keyed on a flow's **source**, so a host that only receives traffic — a file
+server, a NAS, a printer, a camera — had no flow evidence at all. Roughly half the addresses on a
+LAN are in that position at any moment. Schema `061` adds `flows_window_endpoint`, keyed on
+`(window_start, host_addr, direction)`:
+
+| direction | `host_addr` | `unique_peer_ips` |
+|---|---|---|
+| `out` | the flow's source (the same population `flows_window` holds) | distinct destinations |
+| `in` | the flow's destination | distinct senders |
+
+A **parallel table, not a new column**: adding `dst_addr` to `flows_window` would change its grain
+from one row per host-window to one row per host PAIR, silently redefining every aggregate that
+reads it. The endpoint table is fed by `flows_window_endpoint_mv`, a `UNION ALL` of the two
+endpoints over `weirvern.flows`; each flow contributes one row per direction, so the outbound
+side can be checked against `flows_window` for exact parity and the inbound side is new
+information rather than a recount. The directions are one FAMILY in the ripple layer: inbound
+volume cannot corroborate outbound volume, because they are the same flow records seen from
+opposite ends.
+
+The ripple flow channels read it through `flow_windows.folded_endpoint()` (merge states plus the
+time predicate in one select, the rule that keeps part pruning working). The **detection sweep,
+candidate matrix, specialists, scope profiling and host-hour detector stay on `flows_window`**:
+their unit is the per-host outbound window their models were fitted on, and changing that
+population mid-flight would reshape every baseline and score. The endpoint table is a ripple and
+Network-view source, and its retention is on the same derived window as everything else.
+
 ### Shadow calibration and challengers
 
 The production ensemble is the five detectors above. The newer layer is

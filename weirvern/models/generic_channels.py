@@ -70,9 +70,14 @@ class ChannelSpec:
     time_column: str = "ts"
     #: The OTHER endpoint of the row, when the table records one. This is what lets the ripple
     #: layer attribute an inbound flow to the monitored destination instead of its remote
-    #: source. `flows_window` has no peer column: it is pre-aggregated by source only, so an
-    #: unattributable row there is dropped rather than emitted under the external address.
+    #: source. `flows_window_endpoint` does not need it: its `host_addr` IS the monitored
+    #: endpoint and `direction` says which end of the flow it is.
     peer_column: str | None = None
+    #: The direction this channel measures, for a table whose grain includes one ('out' or 'in'
+    #: on `flows_window_endpoint`). It is a validated two-value label, never a free-form SQL
+    #: fragment, and it is appended to the WHERE inside the same select as the aggregate so part
+    #: pruning still applies. None means the table has no direction column.
+    direction: str | None = None
     #: The scales this source can be measured at. `compute()` skips any scale the lookback
     #: cannot supply a baseline for, so declaring 7d costs nothing where retention is 7 days.
     scales: tuple[str, ...] = ("5m",)
@@ -93,6 +98,11 @@ class ChannelSpec:
     required_columns: tuple[str, ...] = ()
 
     def sql(self, *, since_s: int) -> str:
+        if self.direction is not None:
+            raise ValueError(
+                f"{self.channel}: a direction-aware channel must be read with sql_anchored(); "
+                "the 5m shape has no direction predicate"
+            )
         if self.kind == "diversity":
             if not self.value_column:
                 raise ValueError(f"{self.channel}: a diversity channel needs a value column")
@@ -136,11 +146,27 @@ class ChannelSpec:
             peer_expr = f"if(({src_in}), {self.peer_column}, {self.host_column})"
             scope_where = f" AND (({src_in}) OR ({dst_in}))"
         else:
-            # PRE-AGGREGATED BY SOURCE, with no destination column to fall back to. A row
-            # whose source is not monitored cannot be attributed to one of ours, so it is
-            # dropped rather than reported under the remote address.
+            # PRE-AGGREGATED BY ENDPOINT: `host_addr` is already the endpoint the row describes,
+            # so the scope test is on that column alone. An external host's row is dropped rather
+            # than reported under a remote address -- the same rule as every other channel.
             scope_where = f" AND ({src_in})"
         return host_expr, peer_expr, scope_where
+
+    def _direction_clause(self) -> str:
+        """The validated direction predicate for a table whose grain includes one.
+
+        A DIRECTION IS NOT A FREE-FORM FRAGMENT. The value comes from a declaration in this
+        repository, and anything else is refused here rather than interpolated into SQL. The
+        clause goes INSIDE the same select as the aggregate, beside the time predicate, so the
+        partition/primary index still prunes.
+        """
+        if self.direction is None:
+            return ""
+        if self.direction not in ("out", "in"):
+            raise ValueError(
+                f"{self.channel}: direction must be 'out' or 'in', not {self.direction!r}"
+            )
+        return f" AND direction = '{self.direction}'"
 
     def sql_values(self, *, bucket_s: int, anchor: datetime, since: datetime,
                    until: datetime,
@@ -165,7 +191,8 @@ class ChannelSpec:
             f"{self.value_column} AS v "
             f"FROM {self.table} "
             f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
-            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where} "
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where}"
+            f"{self._direction_clause()} "
             "GROUP BY host, k, v"
         )
 
@@ -233,8 +260,9 @@ class ChannelSpec:
             f"{n_expr} AS n, {u_expr} AS u, {b_expr} AS b "
             f"FROM {self.table} "
             f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
-            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where} "
-            f"GROUP BY host, k"
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where}"
+            f"{self._direction_clause()} "
+            "GROUP BY host, k"
         )
 
 

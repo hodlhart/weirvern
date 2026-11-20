@@ -26,6 +26,11 @@ SOURCES: dict[str, tuple[str, str | None, bool]] = {
     # cardinality semantics; a coverage check that conflated them would report the old
     # table's health while the models read the new one.
     "flows_window": ("weirvern.flows_window", "window_start", True),
+    # The per-endpoint window the RIPPLE flow channels read. Optional on purpose: the detection
+    # and promotion path does not depend on it, but an operator should be able to see whether the
+    # inbound half of the network is being rolled up and backfilled. Reporting it as required would
+    # gate promotion on a table the models never read.
+    "flows_window_endpoint": ("weirvern.flows_window_endpoint", "window_start", False),
     "zeek_conn": ("weirvern.zeek_conn", "ts", False),
     "zeek_ssl": ("weirvern.zeek_ssl", "ts", False),
     "zeek_dns": ("weirvern.zeek_dns", "ts", False),

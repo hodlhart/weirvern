@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.23.105 — 2026-11-20
+
+THE OTHER HALF OF THE NETWORK WAS INVISIBLE: A HOST THAT ONLY RECEIVES TRAFFIC HAD NO FLOW EVIDENCE.
+
+- **`flows_window` describes sources only, and that is half a LAN.** Measured live before this
+  change: `flows` over 3.4 days held **4,800 distinct sources against 5,666 distinct
+  destinations**, so at least 866 addresses — servers, NAS, printers, cameras — never appeared as
+  a source and produced no flow channel at all. The ripple layer dropped their inbound rows
+  because the only host column was `src_addr`.
+- **A parallel table, not a `dst_addr` column.** `flows_window` is one row per
+  `(window_start, src_addr)` with AggregateFunction states; adding `dst_addr` would change the
+  grain to host PAIRS and silently redefine every aggregate that reads it. Schema `061` adds
+  `flows_window_endpoint` keyed on `(window_start, host_addr, direction)`, with the same state
+  columns, `AggregatingMergeTree`, partitioned by month and bootstrapped on the 7-day TTL floor
+  (the retention pass converges it like every other managed table).
+- **The view is a `UNION ALL` of the two endpoints** (`flows_window_endpoint_mv`, dropped and
+  recreated the way `050` does): `src_addr` as `'out'` with `uniqState(dst_addr)`, and `dst_addr`
+  as `'in'` with `uniqState(src_addr)`. Each flow reaches the aggregate exactly once per
+  direction, so the outbound side is the same population as `flows_window` — the property the
+  live parity check uses — and inbound is new information, not a recount.
+- **Six flow channels, two directions.** `flow_volume`, `flow_bytes` and `flow_dst_diversity` now
+  read the endpoint table's `'out'` rows with their names and meaning unchanged; `flow_in_volume`,
+  `flow_in_bytes` and `flow_in_peer_diversity` read the `'in'` rows and attribute them to the
+  receiving host. All six are one FAMILY, so inbound volume cannot corroborate outbound volume —
+  they are one measurement seen from opposite ends.
+- **The Network tab attributes both endpoints.** No second mapping was added: `/api/graph` already
+  carries the `/api/ripples` rows, and the edge chip already takes the higher band of its two
+  ends. What was missing was a ripple ROW on the receiving endpoint; the jsdom harness now pins
+  an edge whose only rippling end is its target.
+- **A bounded, idempotent backfill** (`scripts/backfill_flows_window_endpoint.py`, dry-run by
+  default). The view only sees inserts after it exists, so the retained history was re-derived:
+  it deletes and rewrites a bounded range (`--days`, default 7) ending at the previous five-minute
+  boundary, clamped to the first complete window raw `flows` still holds (deleting a range whose
+  raw rows have expired would erase what cannot be rebuilt). It reports rows before/after per
+  direction, the inbound-only host count measured both from the table and from raw flows, a
+  measured time estimate, and outbound parity against raw flows over the whole range plus against
+  `flows_window` over the last 24 hours, where the old table is itself a faithful roll-up.
+- **Deliberately still on `flows_window`:** the detection sweep (`worker.py`), the candidate
+  matrix, the specialist detectors, scope profiling and the host-hour detector. Their unit is the
+  per-host outbound window the models were fitted on; changing that population mid-flight would
+  reshape every baseline and score. The endpoint table is a ripple and Network-view source.
+
 ## 0.23.103 — 2026-11-20
 
 A FAR ESTIMATE MUST BE ABLE TO ANSWER BEFORE IT BENCHES A DETECTOR, AND 0.35 MUST MEAN THE SAME

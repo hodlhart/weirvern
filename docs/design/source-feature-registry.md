@@ -34,6 +34,7 @@ dns_reverse_map | join-only
 fleet_audit | excluded
 flows | join-only
 flows_window | feature-now
+flows_window_endpoint | feature-now
 flows_aggregated | feature-now
 flows_aggregated_diversity | feature-now
 flows_aggregated_temporal | feature-now

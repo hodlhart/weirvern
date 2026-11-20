@@ -98,15 +98,26 @@ class FakeClient:
         until = _parse(until_match.group(1))
         nets = [ipaddress.ip_network(cidr) for cidr in dict.fromkeys(_SCOPE.findall(sql))]
         has_peer = "isIPAddressInRange(dst_addr" in sql
-        distinct = "uniqExact" in sql
-        peer_diversity = "uniqExact(if(" in sql
+        # THE ENDPOINT TABLE HAS A DIRECTION, and the fake must honour it or every test would read
+        # both halves as one population. 'out' attributes to the source, 'in' to the destination,
+        # exactly as the view's UNION ALL does.
+        direction_match = re.search(r"direction = '(in|out)'", sql)
+        direction = direction_match.group(1) if direction_match else None
+        # `uniqMerge` is a distinct-count state just as `uniqExact` is a distinct count; the old
+        # table and the endpoint table both express diversity through it.
+        distinct = "uniqExact" in sql or "uniqMerge" in sql
+        peer_diversity = "uniqExact(if(" in sql or "uniqMerge(unique_peer_ips)" in sql
         values_mode = " AS v " in sql
         buckets: dict[tuple[str, int], tuple[int, set[str], float]] = {}
         value_buckets: dict[tuple[str, int], set[str]] = {}
         for src, dst, when, value, nbytes in self.events[table]:
             if not (since <= when < until):
                 continue
-            if has_peer:
+            if direction == "out":
+                subject, peer = (src, dst) if _in_scope(src, nets) else ("", "")
+            elif direction == "in":
+                subject, peer = (dst, src) if _in_scope(dst, nets) else ("", "")
+            elif has_peer:
                 subject, peer = ((src, dst) if _in_scope(src, nets)
                                  else (dst, src) if _in_scope(dst, nets) else ("", ""))
             else:
@@ -261,7 +272,7 @@ def test_one_family_at_the_floor_is_not_a_ripple_when_it_cannot_reach_the_bar():
 def test_flow_bytes_and_flow_volume_are_one_family_and_cannot_corroborate():
     """The exact 2026-11-19 defect: two units for the same flows counted as two channels."""
     events = {
-        "weirvern.flows_window": _series("flow", counts={0: 6}, bytes_for={0: 5000.0}),
+        "weirvern.flows_window_endpoint": _series("flow", counts={0: 6}, bytes_for={0: 5000.0}),
     }
     items = ripple_evidence.compute(FakeClient(events), now=NOW)
     significant = [item for item in items if item.pvalue <= 0.01]
@@ -272,6 +283,51 @@ def test_flow_bytes_and_flow_volume_are_one_family_and_cannot_corroborate():
               _evidence("flow_volume", "flow", 0.005)]
     assert group_evidence(direct, monitored=NETS) == [], \
         "one family is one measurement, however many channels it is viewed through"
+
+
+def test_an_inbound_only_host_now_has_flow_evidence():
+    """THE GAP THIS WORK EXISTS FOR: a host that only receives traffic had NO flow evidence.
+
+    The events are external -> HOST on every row, which is what a server, a NAS or a printer
+    actually produces. Before schema 061 the flow channels read `src_addr`, every row belonged to
+    an external address, and `compute()` dropped all of it.
+    """
+    events = {"weirvern.flows_window_endpoint": _series("flow", base=6, reverse=True)}
+    items = ripple_evidence.compute(FakeClient(events), now=NOW)
+
+    by_host = {(item.host, item.channel) for item in items}
+    assert (HOST, "flow_in_volume") in by_host
+    assert (HOST, "flow_in_bytes") in by_host
+    assert (HOST, "flow_in_peer_diversity") in by_host
+    assert not [item for item in items if item.host == HOST
+                and item.channel in {"flow_volume", "flow_bytes", "flow_dst_diversity"}], (
+        "an inbound-only host must not be reported as an outbound source"
+    )
+    assert not [item for item in items if item.host == EXTERNAL], (
+        "the remote sender is a peer, never the subject of a ripple"
+    )
+
+
+def test_a_host_that_only_sends_is_not_double_counted():
+    """One flow, one outbound row. The inbound channel must stay empty for a send-only host."""
+    events = {"weirvern.flows_window_endpoint": _series("flow", counts={0: 6}, base=6)}
+    items = ripple_evidence.compute(FakeClient(events), now=NOW)
+
+    volume = [item for item in items if item.channel == "flow_volume" and item.scale == "1h"]
+    assert len(volume) == 1
+    # Six events in the current bucket. A view that emitted both endpoints into the same
+    # direction, or a reader that summed the two directions, would read 12.
+    assert volume[0].value == 6.0, volume[0].value
+    assert not [item for item in items if item.host == HOST and item.channel.startswith("flow_in_")], (
+        "a host that never received a flow must not acquire inbound evidence"
+    )
+
+
+def test_inbound_volume_cannot_corroborate_outbound_volume():
+    """Both directions are one family, so a symmetric host cannot make a two-family ripple."""
+    both = [_evidence("flow_volume", "flow", 0.005),
+            _evidence("flow_in_volume", "flow", 0.005)]
+    assert group_evidence(both, monitored=NETS) == []
 
 
 def test_p_at_the_attainable_floor_with_a_short_baseline_is_not_evidence():
