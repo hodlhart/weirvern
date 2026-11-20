@@ -1955,7 +1955,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   margin: 0 0 var(--s4); padding: var(--s2) var(--s3);
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--r-lg); }
-.sl2-filterbar .dc-chip { flex: none; }
+.sl2-filterbar .dc-chip { flex: none; align-self: center; }
 .controls label.sl2-show { position: relative; display: inline-flex; align-items: center; gap: 8px;
   margin-left: auto; padding: 0 4px; min-height: 44px;
   color: var(--muted); font-size: var(--fs-2); cursor: pointer; }
