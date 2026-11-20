@@ -824,30 +824,47 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
         res = client.query(
             "SELECT model_name, argMax(observed_far, computed_at), "
             "argMax(target_far, computed_at), argMax(coverage, computed_at), "
-            "argMax(excluded_windows, computed_at) "
+            "argMax(excluded_windows, computed_at), argMax(coverage_detail, computed_at), "
+            "argMax(coverage_observed, computed_at), argMax(coverage_expected, computed_at), "
+            "argMax(missing_mode, computed_at) "
             "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
-        # THE COVERAGE COLUMNS ARRIVED IN 056. A deployment still on the older schema must not
-        # lose the whole Detectors table to a field that only the missing-data path writes, so
-        # the read falls back to the three columns it has always been able to answer.
+        # THE COVERAGE COLUMNS ARRIVED IN 056 AND THE COUNTS IN 058. A deployment still on an
+        # older schema must not lose the whole Detectors table to a field only the missing-data
+        # path writes, so the read falls back through the column sets it has. The row then says
+        # `coverage not recorded` -- which is the truth about that deployment, not a default.
         logger.warning("calibration coverage columns unavailable (%s); detector coverage will "
                        "read as not measured", exc)
+        res = None
         try:
             res = client.query(
                 "SELECT model_name, argMax(observed_far, computed_at), "
-                "argMax(target_far, computed_at) "
+                "argMax(target_far, computed_at), argMax(coverage, computed_at), "
+                "argMax(excluded_windows, computed_at) "
                 "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
         except Exception as exc2:  # noqa: BLE001
-            logger.warning("model calibration rows unavailable: %s", exc2)
-            return {}
+            logger.warning("calibration coverage columns unavailable (%s); falling back to the "
+                           "pre-056 shape", exc2)
+            try:
+                res = client.query(
+                    "SELECT model_name, argMax(observed_far, computed_at), "
+                    "argMax(target_far, computed_at) "
+                    "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+            except Exception as exc3:  # noqa: BLE001
+                logger.warning("model calibration rows unavailable: %s", exc3)
+                return {}
     out: dict[str, dict[str, Any]] = {}
     for row in (getattr(res, "result_rows", None) or []):
-        values = list(row) + [None] * 5
+        values = list(row) + [None] * 9
         out[str(values[0])] = {
             "observed_far": values[1],
             "target_far": values[2],
             "coverage": values[3],
             "excluded_windows": values[4],
+            "coverage_detail": values[5] or "",
+            "coverage_observed": values[6],
+            "coverage_expected": values[7],
+            "missing_mode": values[8] or "",
         }
     return out
 

@@ -2694,6 +2694,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderDetectors([
     { name: "DBSCAN", trained: true, trained_at: "2026-11-19T08:21:17", samples: 5000,
       artifact_version: "v5", observed_far: 1.0, target_far: 0.01,
+      coverage: 0.1299, coverage_detail: "10/77",
+      coverage_note: "10 of 77 inputs (67 imputed)", missing_mode: "on",
       eligible: false, barred: true, contributing: false,
       status: "trained, not contributing (FAR 1.00 vs 0.01)" },
     { name: "Isolation Forest", trained: true, trained_at: "2026-11-19T08:21:17", samples: 11900,
@@ -2705,6 +2707,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         `${doc.querySelectorAll("#md-table tbody tr").length} row(s)`);
   check("a detector over its FAR budget states both numbers and does not contribute",
         /trained, not contributing \(FAR 1\.00 vs 0\.01\)/.test(needEl("md-table").textContent));
+  // A FAR is not readable without what it was measured on. The count is the whole point of the
+  // missing-data work: 0.0097 against 0.01 is a different claim on 10 of 77 than on 77 of 77.
+  check("a detector row states how many inputs its FAR was measured on",
+        /10 of 77 inputs \(67 imputed\)/.test(needEl("md-table").textContent));
+  // NEVER COMPLETE BY DEFAULT. A row with no coverage record must say so; rendering it as
+  // 77/77 would turn "we did not look" into "we looked at everything".
+  check("an unrecorded coverage reads as unrecorded, never as complete",
+        /coverage not recorded/.test(needEl("md-table").textContent)
+        && !/77 of 77/.test(needEl("md-table").textContent));
   check("the summary carries the fused rate AND its target",
         /0\.04/.test(needEl("md-summary").textContent)
         && /0\.01 target/.test(needEl("md-summary").textContent));

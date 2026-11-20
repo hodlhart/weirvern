@@ -2552,19 +2552,33 @@ function rippleScaleSentence(scale, report) {
   const windows = Number(b.baseline_windows || 0);
   const floor = Number(b.p_floor);
   const days = Number(b.required_lookback_days || 0);
+  // THE RETENTION THE LOOKBACK CAME FROM, and the lookback the BAR needs. Both are payload
+  // fields; when an older payload omits them the floor's numbers are the honest fallback.
+  const retention = Number(b.retention_days || 0);
+  const lookback = Number(b.lookback_days || 0);
+  const needBar = Number(b.required_lookback_days_for_bar || 0) || days;
+  const barWindows = Number(b.windows_for_bar || 0) || minimum;
   if (b.usable) {
     return `${scale} scale is usable: ${windows} baseline windows (minimum ${minimum})` +
+      (lookback && retention
+        ? `, reading ${lookback} of the ${retention} day${retention === 1 ? "" : "s"} kept`
+        : "") +
       (Number.isFinite(floor) ? `, p floor ${floor.toPrecision(3)}.` : ".");
   }
   let line = `${scale} scale needs ${minimum} baseline windows: ${windows} of ${minimum}`;
   if (windows < minimum) {
     const missing = minimum - windows;
     line += `; it becomes usable after ${missing} more ${scale} window${missing === 1 ? "" : "s"}`;
-    line += days
-      ? `, which needs a lookback of at least ${days} day${days === 1 ? "" : "s"}.`
-      : ", which needs more history than this deployment keeps.";
+    line += needBar
+      ? `, which needs a lookback of at least ${needBar} day${needBar === 1 ? "" : "s"}`
+      : ", which needs more history than this deployment keeps";
+    line += retention ? ` (retention allows ${retention}).` : ".";
   } else {
-    line += b.reason ? ` (${b.reason}).` : ".";
+    // THE COUNT IS NOT THE BLOCKER HERE. The scale has the 30-window floor but not the 100
+    // windows a p below 0.01 requires; print both numbers rather than implying more of the same.
+    line += `; ${barWindows} windows are needed to resolve the bar and ${needBar} day` +
+      `${needBar === 1 ? "" : "s"} of lookback would hold them` +
+      (retention ? `, while retention allows ${retention}.` : ".");
   }
   return line;
 }
@@ -2613,22 +2627,30 @@ function renderRippleEmpty(data) {
   const list = el("ul", { class: "rp-scales" });
   for (const scale of scales) list.appendChild(el("li", { text: rippleScaleSentence(scale, base[scale]) }));
   box.appendChild(list);
-  // THE NEXT SCALE, NAMED. The smallest shortfall is the scale closest to usability, and the
-  // lookback it needs is the payload's number, not a duration guessed here.
-  const pending = short.map((scale) => ({ scale, b: base[scale] || {} }))
-    .filter((x) => Number(x.b.baseline_windows || 0) < Number(x.b.minimum_windows || 0))
-    .sort((a, b) => (Number(a.b.minimum_windows || 0) - Number(a.b.baseline_windows || 0))
-                  - (Number(b.b.minimum_windows || 0) - Number(b.b.baseline_windows || 0)));
+  // THE NEXT SCALE, NAMED. The smallest LOOKBACK shortfall is the scale closest to usability --
+  // not the smallest window shortfall, because a scale with the 30-window floor can still be
+  // short of the 100 windows the bar needs. Both numbers come from the payload.
+  const pending = short.map((scale) => {
+    const b = base[scale] || {};
+    const have = Number(b.lookback_days || 0);
+    const need = Number(b.required_lookback_days_for_bar || 0) ||
+      Number(b.required_lookback_days || 0);
+    return { scale, b, have, need, gap: Math.max(0, need - have) };
+  }).filter((x) => x.need && x.gap > 0).sort((a, b) => a.gap - b.gap);
   if (pending.length) {
     const next = pending[0];
-    const need = Number(next.b.required_lookback_days || 0);
-    const have = Number(next.b.lookback_days || 0);
+    const minimum = Number(next.b.minimum_windows || 0);
+    const windows = Number(next.b.baseline_windows || 0);
+    const barWindows = Number(next.b.windows_for_bar || 0) || minimum;
+    const wanted = windows < minimum ? minimum : barWindows;
+    const more = Math.max(0, wanted - windows);
+    const retention = Number(next.b.retention_days || 0);
     box.appendChild(el("p", { text: `The next scale to become available is ${next.scale}: it ` +
-      `needs ${next.b.minimum_windows} baseline windows and has ${next.b.baseline_windows} ` +
-      `(${Number(next.b.minimum_windows || 0) - Number(next.b.baseline_windows || 0)} more ` +
-      `${next.scale} windows)` +
-      (need ? `, so it needs a lookback of at least ${need} day${need === 1 ? "" : "s"}` +
-        (have ? ` (today's is ${have} days).` : ".") : ".") }));
+      `needs ${wanted} baseline windows and has ${windows} (${more} more ` +
+      `${next.scale} window${more === 1 ? "" : "s"}), so it needs a lookback of at least ` +
+      `${next.need} day${next.need === 1 ? "" : "s"}` +
+      (next.have ? ` while today's lookback is ${next.have}` : "") +
+      (retention ? ` and retention allows ${retention}.` : ".") }));
   }
 }
 
@@ -6410,6 +6432,12 @@ function renderDetectors(detectors, summary, cardsAvailable) {
       // printing a rate that would read as measured.
       el("td", { class: "num", text: observed !== null && target !== null
         ? observed.toFixed(2) : "not measured" }),
+      // AND NEVER A FALSE-ALARM RATE WITHOUT WHAT IT WAS MEASURED ON. '0.01 against 0.01'
+      // reads as a met budget until the row says it was ten of seventy-seven columns. The
+      // server derives this sentence; a NULL coverage says `coverage not recorded` and is
+      // never rendered as complete, because that would turn "we did not look" into "we
+      // looked at everything".
+      el("td", { class: "mono muted", text: d.coverage_note || "coverage not recorded" }),
       el("td", { class: "num", text: target !== null ? target.toFixed(2) : "not measured" }),
       el("td", {}, [el("span", { class: statusClass(d.status),
                                  text: d.status || "not trained" })]),

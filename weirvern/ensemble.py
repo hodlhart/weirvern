@@ -14,7 +14,7 @@ from weirvern.config import FUSED_MODEL, ModelConfig, Settings
 from weirvern.features import TELEMETRY_FEATURES, extract_features
 from weirvern.models.base import BaseDetector
 from weirvern.models.detectors import AdaptiveBaselineDetector
-from weirvern.models.missing import DEFAULT_MIN_COVERAGE, coverage
+from weirvern.models.missing import DEFAULT_MIN_COVERAGE, coverage_counts
 
 logger = logging.getLogger(__name__)
 
@@ -419,15 +419,22 @@ def detect_flows(
         # the four detectors consume (`None` with the flag off: not measured is not zero), and
         # once per detector over its OWN vector, because DBSCAN's 19 columns and the wide
         # pair's 77 are covered differently. Both feed calibration; the per-detector number is
-        # what a detector's row reports.
-        window_coverage = coverage(features, TELEMETRY_FEATURES) if missing_mode else None
+        # what a detector's row reports. THE COUNTS RIDE WITH THE RATIO: calibration stores
+        # '10 of 77' so a false-alarm rate can never be read without knowing what it was
+        # measured on. They come from `coverage_counts`, the same count `coverage` divides.
+        window_counts = coverage_counts(features, TELEMETRY_FEATURES) if missing_mode else None
+        window_coverage = (window_counts[0] / window_counts[1]) if window_counts else None
         model_coverage: dict[str, float] | None = None
+        model_coverage_counts: dict[str, tuple[int, int]] | None = None
         if missing_mode:
             model_coverage = {}
+            model_coverage_counts = {}
             for det in detectors:
-                declared = getattr(det, "expected_feature_columns", None)
-                names = declared() if callable(declared) else []
-                model_coverage[det.name] = coverage(features, names or TELEMETRY_FEATURES)
+                declared: Any = getattr(det, "expected_feature_columns", None)
+                names = list(declared()) if callable(declared) else []
+                counts = coverage_counts(features, names or TELEMETRY_FEATURES)
+                model_coverage_counts[det.name] = counts
+                model_coverage[det.name] = counts[0] / counts[1] if counts[1] else 1.0
         scores: dict[str, float] = {}
         for det in detectors:
             scores[det.name] = det.predict(flow, features)
@@ -441,7 +448,9 @@ def detect_flows(
                 "src_addr": src,
                 "scores": dict(scores),
                 "coverage": window_coverage,
+                "coverage_counts": window_counts,
                 "model_coverage": model_coverage,
+                "model_coverage_counts": model_coverage_counts,
                 "excluded": bool(window_coverage is not None
                                  and window_coverage < coverage_floor),
             }

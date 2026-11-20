@@ -60,6 +60,22 @@ def _is_observed(value: Any) -> bool:
         return False
 
 
+def coverage_counts(features: Mapping[str, Any] | None,
+                    names: Sequence[str]) -> tuple[int, int]:
+    """The (observed, expected) column counts behind `coverage`.
+
+    THE ONE PLACE observed-vs-expected IS COMPUTED. `coverage()` divides these two numbers and
+    nothing else does the count itself, so a calibration row stores the same measurement the
+    detector's score was built from rather than a second definition that can drift.
+    """
+    expected = len(names)
+    if not expected:
+        return 0, 0
+    data = features or {}
+    observed = sum(1 for name in names if _is_observed(data.get(name)))
+    return observed, expected
+
+
 def coverage(features: Mapping[str, Any] | None, names: Sequence[str]) -> float:
     """The share of `names` that carries a measured value.
 
@@ -67,11 +83,10 @@ def coverage(features: Mapping[str, Any] | None, names: Sequence[str]) -> float:
     against coverage. `names` empty means there is nothing to measure and the answer is 1.0
     (a detector with no vector contract cannot be under-covered).
     """
-    if not names:
+    observed, expected = coverage_counts(features, names)
+    if not expected:
         return 1.0
-    data = features or {}
-    observed = sum(1 for name in names if _is_observed(data.get(name)))
-    return observed / len(names)
+    return observed / expected
 
 
 def below_floor(features: Mapping[str, Any] | None, names: Sequence[str],
@@ -290,6 +305,6 @@ def null_absent_zeek(X: np.ndarray, names: Sequence[str]) -> np.ndarray:
 
 __all__ = [
     "DEFAULT_MIN_COVERAGE", "INDICATOR_SUFFIX", "MissingAwarePreprocessor", "below_floor",
-    "column_neutrals", "coverage", "indicator_names", "masked_distance", "model_input_columns",
-    "null_absent_zeek",
+    "column_neutrals", "coverage", "coverage_counts", "indicator_names", "masked_distance",
+    "model_input_columns", "null_absent_zeek",
 ]

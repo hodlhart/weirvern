@@ -3981,18 +3981,38 @@ def calibration_overview(client, settings=None) -> dict:
         res = client.query(
             "SELECT model_name, scope, subject, statistic, target_far, threshold, "
             "p50, p95, p99, sample_count, validation_count, observed_far, "
-            "reference_source, model_version, computed_at "
+            "reference_source, model_version, computed_at, coverage, excluded_windows, "
+            "coverage_detail, coverage_observed, coverage_expected, missing_mode "
             "FROM weirvern.ml_calibration FINAL "
             "ORDER BY model_name, scope, subject"
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("calibration_overview failed: %s", exc)
-        return {"available": False, "reason": f"calibration query failed: {type(exc).__name__}",
-                "rows": []}
+        # THE COVERAGE COLUMNS ARRIVED IN 056 AND THE COUNTS IN 058. A deployment on an older
+        # schema must still render the calibration table; the missing fields read as unrecorded
+        # rather than taking the whole panel down.
+        logger.warning("calibration coverage columns unavailable (%s); reading the pre-056 "
+                       "columns", exc)
+        try:
+            res = client.query(
+                "SELECT model_name, scope, subject, statistic, target_far, threshold, "
+                "p50, p95, p99, sample_count, validation_count, observed_far, "
+                "reference_source, model_version, computed_at "
+                "FROM weirvern.ml_calibration FINAL "
+                "ORDER BY model_name, scope, subject"
+            )
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning("calibration_overview failed: %s", exc2)
+            return {"available": False,
+                    "reason": f"calibration query failed: {type(exc2).__name__}",
+                    "rows": []}
     cols = list(res.column_names)
     rows = []
     for r in res.result_rows:
         row = dict(zip(cols, r, strict=False))
+        for column, default in (("coverage", None), ("excluded_windows", 0),
+                                ("coverage_detail", ""), ("coverage_observed", None),
+                                ("coverage_expected", None), ("missing_mode", "")):
+            row.setdefault(column, default)
         computed = row["computed_at"]
         row["computed_at"] = (computed.isoformat() if hasattr(computed, "isoformat")
                               else str(computed or ""))

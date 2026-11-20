@@ -61,8 +61,43 @@ def _number(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _count(value: Any) -> int | None:
+    """A column count, or None. None stays None: an unrecorded count is not zero columns."""
+    number = _number(value)
+    return None if number is None else int(round(number))
+
+
 def _trained_at(training: dict[str, Any] | None) -> str:
     return str((training or {}).get("trained_at") or "")
+
+
+def coverage_note(row: dict[str, Any]) -> str:
+    """How much of the detector's vector the calibration was measured on, in words.
+
+    A FALSE-ALARM RATE IS ONLY READABLE BESIDE ITS COVERAGE. '0.0097 against 0.01' sounds like a
+    met budget until you learn it was measured on ten of seventy-seven columns, most of them
+    imputed. The counts come from the calibration row (measured by `missing.coverage_counts` at
+    scoring time); the ratio is only a fallback for rows written before the counts existed.
+
+    A NULL coverage is `coverage not recorded` -- NEVER complete. Rendering an unmeasured vector
+    as 77/77 would turn "we did not look" into "we looked at everything", which is the exact
+    defect `ml_missing_features` exists to end.
+    """
+    coverage_value = _number(row.get("coverage"))
+    if coverage_value is None:
+        return "coverage not recorded"
+    detail = str(row.get("coverage_detail") or "").strip()
+    observed = expected = None
+    if "/" in detail:
+        left, _, right = detail.partition("/")
+        try:
+            observed, expected = int(round(float(left))), int(round(float(right)))
+        except ValueError:
+            observed = expected = None
+    if observed is None or expected is None or expected <= 0:
+        return f"coverage {coverage_value:.2f} (counts not recorded)"
+    imputed = max(expected - observed, 0)
+    return f"{observed} of {expected} inputs ({imputed} imputed)"
 
 
 def detector_status(row: dict[str, Any]) -> str:
@@ -177,7 +212,13 @@ def detector_rows(
             "eligible": is_eligible,
             # THE COVERAGE EVIDENCE, carried on the row so the status is derived from a number
             # rather than from a sentence, and so the table can show why it said what it said.
+            # The counts and the mode travel with it: a FAR measured on a different vector is a
+            # different measurement, and the operator must be able to see which one this is.
             "coverage": measured_coverage,
+            "coverage_detail": str(cal.get("coverage_detail") or ""),
+            "coverage_observed": _count(cal.get("coverage_observed")),
+            "coverage_expected": _count(cal.get("coverage_expected")),
+            "missing_mode": str(cal.get("missing_mode") or ""),
             "excluded_windows": int(_number(cal.get("excluded_windows")) or 0),
         }
         # `min_coverage` is a DERIVED key, not a column: the schema audit's producer scan sees
@@ -193,6 +234,7 @@ def detector_rows(
         row["barred"] = is_barred
         row["calibration_stale"] = calibration_stale
         row["insufficient_telemetry"] = insufficient
+        row["coverage_note"] = coverage_note(row)
         row["contributing"] = bool(is_trained and is_eligible and not is_barred)
         row["status"] = detector_status(row)
         rows.append(row)
@@ -224,6 +266,6 @@ def detector_summary(rows: list[dict[str, Any]],
 
 __all__ = [
     "BARRED", "CONTRIBUTING", "DEFAULT_ELIGIBILITY_MULTIPLE", "DEFAULT_MIN_COVERAGE",
-    "DEFAULT_TARGET_FAR", "INSUFFICIENT_TELEMETRY", "NOT_TRAINED",
+    "DEFAULT_TARGET_FAR", "INSUFFICIENT_TELEMETRY", "NOT_TRAINED", "coverage_note",
     "detector_rows", "detector_status", "detector_summary",
 ]

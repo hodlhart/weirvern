@@ -169,7 +169,7 @@ def test_the_card_and_its_summary_are_wired_in_both_files() -> None:
     match = re.search(r'<table id="md-table">.*?<thead>(.*?)</thead>', html, re.S)
     assert match, "the Detectors table is not in the markup"
     headers = len(re.findall(r"<th", match.group(1)))
-    assert headers == 7, f"{headers} header cells"
+    assert headers == 8, f"{headers} header cells"
 
     assert 'id="md-summary"' in html, "the summary line has no element"
     assert 'querySelector("#md-table tbody")' in js, "the JS does not render into the table"
