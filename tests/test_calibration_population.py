@@ -30,10 +30,11 @@ class FakeClient:
         if "FROM weirvern.ml_window_scores" in sql:
             return Result(["model_name", "score"], self.population_rows)
         if "FROM weirvern.ml_calibration" in sql:
-            # The eligibility read carries coverage and the AGE ClickHouse computed; a row without
-            # them is evidence of nothing (see models.eligibility.evidence_from_row).
+            # The eligibility read carries coverage and the AGE ClickHouse computed, in HOURS
+            # (`... AS age_hours`). The column is named here so a fixture cannot pass a
+            # seconds-shaped number off as hours, or an old row off as fresh.
             return Result(["model_name", "observed_far", "target_far", "coverage",
-                           "coverage_observed", "coverage_expected", "computed_at", "age_s"],
+                           "coverage_observed", "coverage_expected", "computed_at", "age_hours"],
                           self.calibration_rows)
         if "FROM weirvern.ml_models" in sql:
             return Result(["model_type", "max(trained_at)"], self.trained_rows)
@@ -94,8 +95,9 @@ def test_record_population_writes_one_row_per_model_and_window():
 def test_retrain_newer_than_calibration_forces_ineligible():
     client = FakeClient(
         calibration_rows=[
-            ["Isolation Forest", 0.01, 0.01, 0.9, 17, 19, BASE, 300],
-            ["LOF", 0.01, 0.01, 0.9, 17, 19, BASE, 300],
+            # AGE IS IN HOURS: five minutes old (300 / 3600), well inside the 6h interval.
+            ["Isolation Forest", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0],
+            ["LOF", 0.01, 0.01, 0.9, 17, 19, BASE, 300 / 3600.0],
         ],
         trained_rows=[
             ["Isolation Forest", BASE + timedelta(hours=1)],

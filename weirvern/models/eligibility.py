@@ -420,7 +420,7 @@ def _calibration_rows(client: Any) -> dict[str, dict[str, Any]]:
     """The newest pooled calibration per model, with the AGE measured by ClickHouse."""
     res = client.query(
         "SELECT model_name, observed_far, target_far, coverage, coverage_observed, "
-        "coverage_expected, computed_at, dateDiff('second', computed_at, now()) AS age_s "
+        "coverage_expected, computed_at, dateDiff('second', computed_at, now()) / 3600.0 AS age_hours "
         "FROM weirvern.ml_calibration FINAL "
         # ONLY THE POOLED ROW: per-stratum rows measure a sub-population and are written beside it.
         "WHERE scope = 'global' AND computed_at = (SELECT max(computed_at) "
@@ -432,7 +432,7 @@ def _calibration_rows(client: Any) -> dict[str, dict[str, Any]]:
         out[name] = {
             "observed_far": row[1], "target_far": row[2], "coverage": row[3],
             "coverage_observed": row[4], "coverage_expected": row[5], "computed_at": row[6],
-            "age_hours": (float(row[7]) / 3600.0) if row[7] is not None else None,
+            "age_hours": (float(row[7]) if row[7] is not None else None),
         }
     return out
 
@@ -465,14 +465,19 @@ def _seed_incumbents(client: Any, calibrated: Iterable[str]) -> list[str]:
 
         allowed = cards_mod.production_allowed(cards_mod.status_map(cards_mod.current_cards(client)))
     except Exception as exc:  # noqa: BLE001
+        # AN UNREADABLE REGISTRY SEEDS NOTHING. Treating "I could not read the cards" as "every
+        # card says production" would make the first evaluation a no-op guard and admit exactly
+        # the alert-rate doubling this guard exists to stop, so the budget decides instead.
         logger.warning("promotion guard: no recorded state and the card registry is unreadable "
-                       "(%s); seeding every calibrated detector as an incumbent", exc)
-        return names
+                       "(%s); seeding nothing, so every calibrated detector faces the budget", exc)
+        return []
     seeded = [name for name in names if allowed.get(name, False)]
     if not seeded:
+        # THE SAME RULE FOR AN EMPTY REGISTRY. No card admitting a detector is not a licence to
+        # admit them all: the seed migrates what the old gate was running, and it was running
+        # nothing. Every calibrated detector is therefore a candidate for the measured budget.
         logger.warning("promotion guard: no recorded state and no card admits any detector; "
-                       "seeding every calibrated detector as an incumbent")
-        return names
+                       "seeding nothing, so every calibrated detector faces the budget")
     return seeded
 
 

@@ -196,9 +196,11 @@ def _cal(name, **over):
     values = {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
               "coverage_observed": 16, "coverage_expected": 19, "computed_at": None,
               "age_hours": 0.5, **over}
+    # AGE IS IN HOURS, the unit `_calibration_rows` reads (the SQL alias is `age_hours`).
+    # Converting it back to seconds here is what let a 60h fixture look fresh.
     return (name, values["observed_far"], values["target_far"], values["coverage"],
             values["coverage_observed"], values["coverage_expected"], values["computed_at"],
-            int(values["age_hours"] * 3600))
+            float(values["age_hours"]))
 
 
 def test_the_card_registry_no_longer_vetoes_a_calibrated_detector(tmp_path, monkeypatch):

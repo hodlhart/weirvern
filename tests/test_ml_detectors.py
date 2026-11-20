@@ -193,7 +193,10 @@ def test_the_models_fetcher_derives_the_rows_from_the_live_reads(monkeypatch, tm
                 rows = [("KNN distance", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000,
                          "ok")]
             elif "ml_calibration" in sql and "dateDiff" in sql:
-                rows = [("KNN distance", 1.0, 0.01, 0.83, 16, 19, "2026-11-19 08:21:17", 60)]
+                # AGE IS IN HOURS (`dateDiff('second', ...) / 3600.0 AS age_hours`): sixty
+                # SECONDS old, not sixty hours.
+                rows = [("KNN distance", 1.0, 0.01, 0.83, 16, 19, "2026-11-19 08:21:17",
+                         60 / 3600.0)]
             elif "argMax" in sql:
                 rows = [("KNN distance", 1.0, 0.01, 0.83, 0, "16/19", 16, 19, "on"),
                         ("__fused__", 0.04, 0.01, 0.78, 0, "1542/1975", 1542, 1975, "on")]
