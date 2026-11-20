@@ -3,6 +3,6 @@
   "private": true,
   "description": "Node tooling for Weirvern's repo checks. The only dependency is jsdom, used by scripts/jsdom_render.js (the DOM harness that executes the shipping GUI JavaScript against the shipping HTML).",
   "devDependencies": {
-    "jsdom": "^30.1.0"
+    "jsdom": "^31.0.1"
   }
 }
