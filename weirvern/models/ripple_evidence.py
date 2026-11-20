@@ -23,8 +23,9 @@ the tables have IN FORCE -- `retention.days_in_force()`, which reads each source
 back from `system.tables` -- and caps it at what that scale needs:
 
     scale  1h    6h     24h    7d
-    need   7d    26d    103d   721d      (100 windows + 2 spare, see below)
-    at a 258-day retention: 7d, 26d, 103d, 258d -> the first three are usable; 7d is not
+    need   5d    26d    103d   721d      (100 windows + 2 spare, see below)
+    read   7d    26d    103d   258d      (1h keeps the 7-day floor; 7d is capped by retention)
+    at a 258-day retention the first three are usable; 7d is not
 
 TWO NUMBERS, AND THEY ARE NOT THE SAME. The 30-window floor is what makes a rank worth
 computing, and `required_lookback_days` still reports the lookback it needs (2/8/31/217). But
