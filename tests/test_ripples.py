@@ -9,12 +9,15 @@ a hand-written row fixture would not catch.
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
+import statistics
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from weirvern.admin import payloads
-from weirvern.models import ripple_evidence
+from weirvern.models import ripple_evidence, ripple_tail
+from weirvern.models.generic_channels import ChannelSpec
 from weirvern.models.ripple import (
     CHANNEL_FAMILIES,
     ChannelEvidence,
@@ -728,11 +731,23 @@ def test_the_lookback_is_derived_from_retention_and_capped_per_scale():
                 f"{scale} at retention {retention} would read past the tables"
 
 
-def test_a_retention_below_a_scales_requirement_names_both_numbers():
-    """8 days is enough for the 30-window floor and NOT for the 0.01 bar; say so."""
-    report = ripple_evidence.scale_report("6h", retention_days=8)
+def test_a_short_lookback_uses_the_validated_tail_instead_of_going_mute():
+    """8 days is enough for the 30-window floor but NOT for the empirical 0.01 bar.
 
-    assert report["usable"] is False
+    Before the fitted tail this scale was measured and refused. Now it is usable FOR COUNT
+    CHANNELS, with the method named in the report and the empirical floor retained as the number
+    the rank test would have had. The bar is unchanged: the report does not claim the empirical
+    test can resolve it.
+    """
+    report = ripple_evidence.scale_report("6h", retention_days=8, kind="count")
+
+    assert report["usable"] is True
+    assert report["method"] == "parametric"
+    assert report["p_floor"] >= ripple_evidence.DEFAULT_FAMILY_MAX_P, \
+        "the empirical floor is still above the bar; that is why the tail is needed"
+    assert report["p_floor_kind"] == "empirical"
+    assert report["tail_p_floor"] == 1e-6
+    assert report["tail_supported"] is True
     assert report["lookback_days"] == 8
     assert report["retention_days"] == 8
     assert report["baseline_windows"] == 31
@@ -740,8 +755,14 @@ def test_a_retention_below_a_scales_requirement_names_both_numbers():
     assert report["required_lookback_days"] == 8, "the 30-window floor's lookback is unchanged"
     assert report["windows_for_bar"] == 100
     assert report["required_lookback_days_for_bar"] == 26
-    assert "8" in report["reason"] and "26" in report["reason"]
-    assert "retention allows 8" in report["reason"]
+    assert report["reason"] == ""
+
+    # A byte SUM is not a count, so the same scale refuses the fitted tail and says why.
+    summed = ripple_evidence.scale_report("6h", retention_days=8, kind="sum")
+    assert summed["usable"] is False
+    assert summed["method"] == "insufficient"
+    assert "not defined for a sum statistic" in summed["reason"]
+    assert summed["tail_supported"] is False
 
 
 def test_retention_above_the_requirement_makes_the_scale_usable():
@@ -757,11 +778,14 @@ def test_retention_above_the_requirement_makes_the_scale_usable():
     assert day["lookback_days"] == 103
     assert day["baseline_windows"] == 102
 
-    # 7d is declared and honestly unreachable at this bar, not measured at a wish.
+    # 7d is declared and honestly not usable at this deployment: the tail is implemented but the
+    # scale is not enabled until a 30-window fit exists, and the report names both numbers.
     week = ripple_evidence.scale_report("7d", retention_days=258)
     assert week["usable"] is False
+    assert week["method"] == "insufficient"
     assert week["lookback_days"] == 258
     assert "721" in week["reason"] and "258" in week["reason"]
+    assert "30 are required" in week["reason"], week["reason"]
 
 
 def test_no_query_reads_further_back_than_retention():
@@ -869,3 +893,161 @@ def test_a_grouped_ripple_ships_the_band_the_page_renders():
 
     assert row["severity"] == "medium"
     assert row["severity"] == severity_band(row["score"], row["families"])
+
+
+# ── THE FITTED TAIL (2026-11-20) ─────────────────────────────────────────────────────────────
+#
+# The empirical test's floor is 1/(n+1); the bar is 0.01. These tests pin the selection rule (the
+# empirical p is never replaced where it can resolve; the fitted tail is used only below 100
+# windows), the provenance on every row, and the two ways the fit must refuse rather than invent
+# a number: an over-dispersed baseline (which a Poisson tail would call a ripple) and a
+# degenerate one (all zeros / zero variance).
+
+def _count_spec(*, kind: str = "count", channel: str = "conn_volume") -> ChannelSpec:
+    return ChannelSpec(channel=channel, family="conn", table="weirvern.zeek_conn",
+                       host_column="src_addr", peer_column="dst_addr", kind=kind)
+
+
+def _count_measure(reference: list[float], current: float, *, kind: str = "count",
+                   scale: str = "6h") -> ChannelEvidence:
+    return ripple_evidence._measure(
+        _count_spec(kind=kind), scale=scale, host=HOST, moment=WINDOW, value=current,
+        reference=[float(value) for value in reference], coverage=1.0)
+
+
+def _parametric_row(channel: str, family: str, pvalue: float) -> ChannelEvidence:
+    return ChannelEvidence(
+        channel=channel, family=family, scale="6h", model_id=f"source:{channel}",
+        model_version="test", score=10.0, pvalue=pvalue, freshness_s=0.0, present=True,
+        host=HOST, observed_at=WINDOW, value=10.0, baseline_median=1.0, sample_count=40,
+        coverage=1.0, direction="rose", p_floor=pvalue_floor(40),
+        p_method="negbin", p_detail="negbin n=40 mean=7 var=110.8 index=15.8 size=0.47")
+
+
+def test_at_100_windows_the_empirical_p_is_unchanged():
+    """The rank test wins the moment it can resolve the bar; the tail never shadows it."""
+    reference = [float(index % 17) for index in range(100)]
+    current = max(reference) + 3.0
+    item = _count_measure(reference, current)
+
+    assert item.p_method == "empirical"
+    assert item.pvalue == empirical_pvalue_two_sided(current, reference)
+    assert item.p_detail == "ranks n=100"
+    assert item.floor() == pvalue_floor(100)
+    assert item.at_floor() is True          # it is the maximum, and n=100 resolves 0.01
+    assert item.resolves(ripple_evidence.DEFAULT_FAMILY_MAX_P) is True
+
+
+def test_below_100_windows_the_fitted_tail_is_used_and_the_method_is_recorded():
+    """94 windows cannot express p<0.01 empirically (floor 0.0105); the tail can, and says so."""
+    reference = [1.0] * 30 + [25.0] * 10          # mean 7, variance ~110: bursty
+    item = _count_measure(reference, 50.0)        # p ~ 0.0098 under the fitted NB
+
+    assert item.p_method == "negbin"
+    assert item.pvalue < pvalue_floor(len(reference)), \
+        "the fitted p must be below what the empirical test could have expressed"
+    assert item.at_floor() is False
+    assert item.resolves(ripple_evidence.DEFAULT_FAMILY_MAX_P) is True
+    assert item.as_dict()["p_method"] == "negbin"
+    assert item.as_dict()["p_detail"].startswith("negbin n=40")
+    # The empirical floor is still reported, so a reader can compare the two resolutions.
+    assert item.as_dict()["p_floor"] == round(pvalue_floor(40), 8)
+
+
+def test_an_overdispersed_baseline_does_not_produce_the_poisson_false_ripple():
+    """The whole reason for the negative binomial: Poisson would call this a ripple."""
+    reference = [1.0] * 30 + [25.0] * 10
+    fit = ripple_tail.fit_counts(reference)
+    assert fit.method == "negbin", fit.summary()
+    poisson = ripple_tail.TailFit(ripple_tail.POISSON, len(reference),
+                                  mean=statistics.mean(reference))
+
+    assert ripple_tail.tail_pvalue(40.0, poisson) <= 0.01, "the Poisson tail would fire"
+    assert ripple_tail.tail_pvalue(40.0, fit) > 0.01, "the fitted NB tail must not"
+
+    item = _count_measure(reference, 40.0)
+    assert item.p_method == "negbin"
+    assert item.pvalue > 0.01
+    assert group_evidence([item], monitored=NETS) == []
+
+
+def test_a_degenerate_baseline_reports_insufficient_not_p_zero():
+    """All-zero and zero-variance baselines are a named state, never a fabricated p."""
+    for reference in ([0.0] * 40, [5.0] * 40):
+        item = _count_measure(reference, 5.0)
+
+        assert item.p_method == "insufficient"
+        assert math.isnan(item.pvalue)
+        assert item.as_dict()["p_value"] is None
+        assert item.as_dict()["p_method"] == "insufficient"
+        assert item.p_detail.startswith("insufficient")
+        assert item.at_floor() is False
+        assert item.resolves(0.01) is False
+        assert group_evidence([item], monitored=NETS) == []
+
+
+def test_a_non_count_statistic_reports_insufficient_instead_of_a_modelled_p():
+    """A negative binomial over bytes would be a category error; the row says so."""
+    item = _count_measure([1000.0 + index for index in range(40)], 99999.0, kind="sum")
+
+    assert item.p_method == "insufficient"
+    assert math.isnan(item.pvalue)
+    assert "not defined for a sum statistic" in item.p_detail
+
+
+def test_the_family_rule_and_the_score_bar_are_unchanged_for_parametric_rows():
+    """The tail changes how a p is produced, never what a ripple requires."""
+    # Two views of ONE measurement still cannot corroborate: each is below the family bar but
+    # neither is at the extreme bar, so one family is one family and no ripple forms.
+    assert group_evidence(
+        [_parametric_row("flow_volume", "flow", 0.005),
+         _parametric_row("flow_bytes", "flow", 0.005)], monitored=NETS) == []
+    # Two independent families at the family bar score 2 * -log10(0.01) = 4.0.
+    out = group_evidence([_parametric_row("conn_volume", "conn", 0.01),
+                          _parametric_row("dns_volume", "dns", 0.01)], monitored=NETS)
+    assert len(out) == 1
+    assert abs(out[0].score - 4.0) < 1e-9
+    # Two families at 0.02 are not significant, so there is no ripple and no score arithmetic.
+    assert group_evidence([_parametric_row("conn_volume", "conn", 0.02),
+                           _parametric_row("dns_volume", "dns", 0.02)], monitored=NETS) == []
+    # One family at the extreme bar still forms the single-family ripple, and says so.
+    out = group_evidence([_parametric_row("conn_volume", "conn", 0.0004)], monitored=NETS)
+    assert len(out) == 1 and out[0].single_family is True
+
+
+def test_the_stored_row_and_the_read_path_carry_the_method():
+    """Provenance is not a comment: it survives the write and the read."""
+    item = _count_measure([1.0] * 30 + [25.0] * 10, 50.0)
+    row = ripple_evidence._row(item)
+
+    assert "p_method" in ripple_evidence.COLUMNS
+    assert "p_detail" in ripple_evidence.COLUMNS
+    assert row[ripple_evidence.COLUMNS.index("p_method")] == "negbin"
+    assert row[ripple_evidence.COLUMNS.index("p_detail")].startswith("negbin")
+
+    window = WINDOW
+    stored = (window, window + timedelta(hours=1), HOST, "conn_volume", "conn", "6h", 50.0,
+              7.0, 0.0098, "negbin", "negbin n=40 mean=7", 40, 1.0, "rose", window)
+
+    def query(sql, parameters=None):
+        if "network_scopes" in sql:
+            return SimpleNamespace(result_rows=[(str(NET),)])
+        return SimpleNamespace(result_rows=[stored])
+
+    items = ripple_evidence.read(SimpleNamespace(query=query), hours=24, now=NOW)
+    assert len(items) == 1
+    assert items[0].p_method == "negbin"
+    assert items[0].p_detail == "negbin n=40 mean=7"
+
+
+def test_the_7d_scale_reports_usable_or_not_with_a_reason():
+    """The coarse scale may not silently disappear: it says which state it is in and why."""
+    report = ripple_evidence.scale_report("7d", retention_days=234, kind="count")
+
+    if report["usable"]:
+        assert report["method"] in ("empirical", "parametric")
+        assert report["reason"] == ""
+    else:
+        assert report["method"] == "insufficient"
+        assert report["reason"]
+        assert "7d" in ripple_evidence.EVIDENCE_SCALES

@@ -1,0 +1,980 @@
+{
+  "alpha": 0.01,
+  "anchor": "2026-11-20T15:55:00+00:00",
+  "generated_at": "2026-11-20T15:55:16.729392+00:00",
+  "max_acceptable_far": 0.03,
+  "note": "Live held-out validation of the fitted ripple tail. Fit on each host's older windows, score the next one. Produced by scripts/ripple_tail_far.py; see CHANGELOG 0.23.108. Synthetic entries are labelled and are not live evidence.",
+  "retention_days": 234,
+  "scales": {
+    "1h": {
+      "channels": {
+        "conn_volume": {
+          "empirical_far": 0.047619,
+          "empirical_fires": 1,
+          "far": 0.047619,
+          "far_interval": {
+            "high": 0.226698,
+            "low": 0.008456
+          },
+          "fires": 1,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 21,
+          "method_counts": {
+            "empirical": 14,
+            "insufficient": 7
+          },
+          "n": 21,
+          "normal_tests": 15,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.154644,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 21
+            },
+            "n": 21
+          },
+          "windows_max": 160
+        },
+        "dns_volume": {
+          "empirical_far": 0.055556,
+          "empirical_fires": 1,
+          "far": 0.055556,
+          "far_interval": {
+            "high": 0.257578,
+            "low": 0.009875
+          },
+          "fires": 1,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 18,
+          "method_counts": {
+            "empirical": 10,
+            "insufficient": 8
+          },
+          "n": 18,
+          "normal_tests": 12,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.175885,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 18
+            },
+            "n": 18
+          },
+          "windows_max": 135
+        },
+        "flow_volume": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.14866,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 22,
+          "method_counts": {
+            "empirical": 17,
+            "insufficient": 5
+          },
+          "n": 22,
+          "normal_tests": 19,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.14866,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 22
+            },
+            "n": 22
+          },
+          "windows_max": 146
+        },
+        "http_host_diversity": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.324416,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 8,
+          "method_counts": {
+            "empirical": 2,
+            "insufficient": 6
+          },
+          "n": 8,
+          "normal_tests": 7,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.324416,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 8
+            },
+            "n": 8
+          },
+          "windows_max": 131
+        },
+        "http_ua_novelty": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 131
+        },
+        "kerberos_volume": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.657628,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 2,
+          "method_counts": {
+            "insufficient": 2
+          },
+          "n": 2,
+          "normal_tests": 2,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.657628,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 2
+            },
+            "n": 2
+          },
+          "windows_max": 68
+        },
+        "tls_fingerprint_diversity": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.203889,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 15,
+          "method_counts": {
+            "empirical": 6,
+            "insufficient": 9
+          },
+          "n": 15,
+          "normal_tests": 15,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.203889,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "insufficient": 15
+            },
+            "n": 15
+          },
+          "windows_max": 134
+        },
+        "zeek_notice_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 3
+        }
+      },
+      "empirical_far": 0.023256,
+      "expected_windows": 167,
+      "far": 0.023256,
+      "far_interval": {
+        "high": 0.080882,
+        "low": 0.006401
+      },
+      "far_on_normal": 0.0,
+      "far_on_normal_interval": {
+        "high": 0.052025,
+        "low": 0.0
+      },
+      "fires_001": 2,
+      "fires_001_extreme": 0,
+      "fires_empirical_001": 2,
+      "fires_on_normal": 0,
+      "fit_mean_median": null,
+      "fit_size_median": null,
+      "lookback_days": 7,
+      "method": "empirical",
+      "method_counts": {
+        "empirical": 49,
+        "insufficient": 37
+      },
+      "normal_tests": 70,
+      "observed_max_windows": 160,
+      "p01_lower_median": null,
+      "p01_upper_median": null,
+      "provisional": false,
+      "reason": "the empirical test resolves the bar at the observed window count",
+      "scale": "1h",
+      "small_n": {
+        "far": 0.0,
+        "far_interval": {
+          "high": 0.04276,
+          "low": 0.0
+        },
+        "fires": 0,
+        "method_counts": {
+          "insufficient": 86
+        },
+        "size": 35,
+        "tests": 86
+      },
+      "tests": 86,
+      "usable": true
+    },
+    "24h": {
+      "channels": {
+        "conn_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 7
+        },
+        "dns_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 7
+        },
+        "flow_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 7
+        },
+        "http_host_diversity": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 29
+        },
+        "http_ua_novelty": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 29
+        },
+        "kerberos_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 10
+        },
+        "tls_fingerprint_diversity": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 7
+        },
+        "zeek_notice_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 6
+        }
+      },
+      "empirical_far": null,
+      "expected_windows": 102,
+      "far": null,
+      "far_interval": null,
+      "far_on_normal": null,
+      "far_on_normal_interval": null,
+      "fires_001": 0,
+      "fires_001_extreme": 0,
+      "fires_empirical_001": 0,
+      "fires_on_normal": 0,
+      "fit_mean_median": null,
+      "fit_size_median": null,
+      "lookback_days": 103,
+      "method": "insufficient",
+      "method_counts": {},
+      "normal_tests": 0,
+      "observed_max_windows": 29,
+      "p01_lower_median": null,
+      "p01_upper_median": null,
+      "provisional": true,
+      "reason": "the data holds 29 window(s); 30 are required for a fit",
+      "scale": "24h",
+      "small_n": {
+        "far": null,
+        "far_interval": null,
+        "fires": 0,
+        "method_counts": {},
+        "size": 35,
+        "tests": 0
+      },
+      "tests": 0,
+      "usable": false
+    },
+    "6h": {
+      "channels": {
+        "conn_volume": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.561506,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": 491.032258,
+          "fit_size_median": 6.032432,
+          "hosts": 3,
+          "method_counts": {
+            "negbin": 3
+          },
+          "n": 3,
+          "normal_tests": 3,
+          "p01_lower_median": 164.0,
+          "p01_upper_median": 1075.0,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.561506,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "negbin": 3
+            },
+            "n": 3
+          },
+          "windows_max": 31
+        },
+        "dns_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 27
+        },
+        "flow_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 29
+        },
+        "http_host_diversity": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.2,
+          "far_interval": {
+            "high": 0.624472,
+            "low": 0.036223
+          },
+          "fires": 1,
+          "fires_extreme": 1,
+          "fires_on_normal": 0,
+          "fit_mean_median": 6.97561,
+          "fit_size_median": 1.404353,
+          "hosts": 5,
+          "method_counts": {
+            "negbin": 1,
+            "poisson": 4
+          },
+          "n": 5,
+          "normal_tests": 4,
+          "p01_lower_median": 0.0,
+          "p01_upper_median": 7.0,
+          "small_n": {
+            "far": 0.2,
+            "far_interval": {
+              "high": 0.624472,
+              "low": 0.036223
+            },
+            "fires": 1,
+            "method_counts": {
+              "negbin": 1,
+              "poisson": 4
+            },
+            "n": 5
+          },
+          "windows_max": 94
+        },
+        "http_ua_novelty": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 94
+        },
+        "kerberos_volume": {
+          "empirical_far": 0.0,
+          "empirical_fires": 0,
+          "far": 0.0,
+          "far_interval": {
+            "high": 0.793457,
+            "low": 0.0
+          },
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 1,
+          "method_counts": {
+            "poisson": 1
+          },
+          "n": 1,
+          "normal_tests": 1,
+          "p01_lower_median": 40.0,
+          "p01_upper_median": 75.0,
+          "small_n": {
+            "far": 0.0,
+            "far_interval": {
+              "high": 0.793457,
+              "low": 0.0
+            },
+            "fires": 0,
+            "method_counts": {
+              "poisson": 1
+            },
+            "n": 1
+          },
+          "windows_max": 38
+        },
+        "tls_fingerprint_diversity": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 27
+        },
+        "zeek_notice_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 6
+        }
+      },
+      "empirical_far": 0.0,
+      "expected_windows": 103,
+      "far": 0.111111,
+      "far_interval": {
+        "high": 0.435006,
+        "low": 0.01989
+      },
+      "far_on_normal": 0.0,
+      "far_on_normal_interval": {
+        "high": 0.324416,
+        "low": 0.0
+      },
+      "fires_001": 1,
+      "fires_001_extreme": 1,
+      "fires_empirical_001": 0,
+      "fires_on_normal": 0,
+      "fit_mean_median": 476.449462,
+      "fit_size_median": 5.618805,
+      "lookback_days": 26,
+      "method": "parametric",
+      "method_counts": {
+        "negbin": 4,
+        "poisson": 5
+      },
+      "normal_tests": 8,
+      "observed_max_windows": 94,
+      "p01_lower_median": 0.0,
+      "p01_upper_median": 30.0,
+      "provisional": true,
+      "reason": "realised FAR 11.11% on 9 held-out window(s); on the 8 window(s) the empirical test calls ordinary (p>0.05) the tail fired 0 time(s) (0.00%), at or below the 3% acceptance line",
+      "scale": "6h",
+      "small_n": {
+        "far": 0.111111,
+        "far_interval": {
+          "high": 0.435006,
+          "low": 0.01989
+        },
+        "fires": 1,
+        "method_counts": {
+          "negbin": 4,
+          "poisson": 5
+        },
+        "size": 35,
+        "tests": 9
+      },
+      "tests": 9,
+      "usable": true
+    },
+    "7d": {
+      "channels": {
+        "conn_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 1
+        },
+        "dns_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 1
+        },
+        "flow_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 1
+        },
+        "http_host_diversity": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 4
+        },
+        "http_ua_novelty": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 4
+        },
+        "kerberos_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 1
+        },
+        "tls_fingerprint_diversity": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 1
+        },
+        "zeek_notice_volume": {
+          "empirical_fires": 0,
+          "fires": 0,
+          "fires_extreme": 0,
+          "fires_on_normal": 0,
+          "fit_mean_median": null,
+          "fit_size_median": null,
+          "hosts": 0,
+          "method_counts": {},
+          "n": 0,
+          "normal_tests": 0,
+          "p01_lower_median": null,
+          "p01_upper_median": null,
+          "small_n": {
+            "fires": 0,
+            "method_counts": {},
+            "n": 0
+          },
+          "windows_max": 3
+        }
+      },
+      "empirical_far": null,
+      "expected_windows": 32,
+      "far": null,
+      "far_interval": null,
+      "far_on_normal": null,
+      "far_on_normal_interval": null,
+      "fires_001": 0,
+      "fires_001_extreme": 0,
+      "fires_empirical_001": 0,
+      "fires_on_normal": 0,
+      "fit_mean_median": null,
+      "fit_size_median": null,
+      "lookback_days": 234,
+      "method": "insufficient",
+      "method_counts": {},
+      "normal_tests": 0,
+      "observed_max_windows": 4,
+      "p01_lower_median": null,
+      "p01_upper_median": null,
+      "provisional": true,
+      "reason": "the data holds 4 window(s); 30 are required for a fit",
+      "scale": "7d",
+      "small_n": {
+        "far": null,
+        "far_interval": null,
+        "fires": 0,
+        "method_counts": {},
+        "size": 35,
+        "tests": 0
+      },
+      "tests": 0,
+      "usable": false
+    }
+  },
+  "synthetic": {
+    "draws": 2000,
+    "empirical_far": 0.0,
+    "far": 0.026,
+    "far_interval": {
+      "high": 0.033935,
+      "low": 0.019882
+    },
+    "mean": 476.449462,
+    "note": "draws are negative binomial by construction; this measures the estimator, not the live deployment",
+    "scale": "7d",
+    "size": 5.618805,
+    "synthetic": true,
+    "windows": 32
+  }
+}

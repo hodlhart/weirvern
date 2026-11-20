@@ -146,7 +146,7 @@
      sub-menus -- nothing collapses, every tab stays one click away). -->
 <nav id="tabs">
   <div class="tab-group" data-group="operations">
-    <button class="tab" data-view="anomalies">Ripples</button>
+    <button class="tab" data-view="anomalies">Alerts</button>
     <button class="tab" data-view="normalize">Normalize</button>
   </div>
   <div class="tab-group" data-group="network">
@@ -296,7 +296,7 @@
 
       <p class="muted" id="nw-caption">loading…</p>
       <!-- THE RIPPLE SIGNPOST: how many hosts ON THIS MAP have a ripple in the same window,
-           with the count and bands attached to the graph payload. It opens the Ripples tab at
+           with the count and bands attached to the graph payload. It opens the Alerts tab at
            the same global range; it never changes the window. -->
       <p class="muted" id="nw-ripple-line"></p>
       <div id="nw-selected" class="chips"></div>
@@ -557,16 +557,19 @@
     </div>
   </section>
 
-  <!-- ── Ripples (the anomaly page) ──────────────────────────────────────── -->
+  <!-- ── ALERTS (the anomaly page) ───────────────────────────────────────── -->
   <!-- THE OPERATOR'S DIRECTION (2026-11-19): "the anomaly page is actually the ripples". A
        ripple is the thing an operator reads: independent families that moved together, on one
        host, in one hour, against that host's own history. The model's fused score is
-       CORROBORATION below, never the verdict and never the primary list. -->
+       CORROBORATION below, never the verdict and never the primary list.
+       RENAMED 2026-11-20 (operator): "Because we have ripples and anomalies in the ripples tab.
+       Rename it to Alerts". The view id stays `anomalies` so deep links and the API routes do
+       not move; only the operator-facing name changed. -->
 
   <section id="view-anomalies" class="view">
     <div class="card">
       <div class="view-head">
-        <h2>Ripple evidence <button class="info-btn" data-info="rp-info" aria-label="what a ripple is and how its score is built" aria-expanded="false">i</button></h2>
+        <h2>Alerts <span class="muted">ripples first, model detections as corroboration — read-only</span> <button class="info-btn" data-info="rp-info" aria-label="what a ripple is and how its score is built" aria-expanded="false">i</button></h2>
         <div class="rp-head-right">
           <span id="rp-count" class="muted"></span>
           <!-- THE ML SIGNPOST (operator, 2026-11-20): the model detections are below the
@@ -596,7 +599,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <div id="ripples-cards" class="rp-cards" aria-label="Ripples"></div>
+      <div id="ripples-cards" class="rp-cards" aria-label="Alerts"></div>
       <div id="rp-pager" class="pager"></div>
       <div class="info-text hidden" id="rp-info">
   <p><strong>What it is.</strong> A ripple is one host and one hour in which several independent measurements moved together, each against that host's own trailing history. The sentence on the row names the channel, the value, the baseline median it was ranked against, the scale, and the p-value over the number of baseline windows behind it.</p>
@@ -1042,7 +1045,7 @@
       </div>
     </div>
     <div class="card">
-      <h2>Ripples <span class="muted">each host measured against its own history — read-only</span></h2>
+      <h2>Alerts <span class="muted">each host measured against its own history — read-only</span></h2>
       <p class="muted" id="m-ripples-note">loading…</p>
       <div class="tablewrap">
         <table id="m-ripples">

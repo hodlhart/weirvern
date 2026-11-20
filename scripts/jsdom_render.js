@@ -2172,7 +2172,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const line = needEl("nw-ripple-line").textContent.replace(/\s+/g, " ");
     check("the Network header counts the hosts in view and the same ripple count",
           /2 of 4 hosts in view have 2 ripples in this 24h window/.test(line)
-          && /open Ripples/.test(line), line.slice(0, 180));
+          && /open Alerts/.test(line), line.slice(0, 180));
 
     const rippleNodes = [...doc.querySelectorAll("#nw-graph g.node.has-ripple")];
     check("a ripple host's graph node carries a severity ring",
@@ -2559,12 +2559,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     const tab = [...doc.querySelectorAll("#tabs .tab")]
       .find((t) => t.dataset.view === "anomalies");
-    check("the tab is labelled Ripples and keeps the stable view id",
-          !!tab && tab.textContent.trim() === "Ripples" && !!doc.getElementById("view-anomalies"),
+    check("the tab is labelled Alerts and keeps the stable view id",
+          !!tab && tab.textContent.trim() === "Alerts"
+          && !!doc.getElementById("view-anomalies"),
           tab ? tab.textContent.trim() : "no tab");
     const heading = doc.querySelector("#view-anomalies .view-title");
-    check("the view heading says Ripples", !!heading && /Ripples/.test(heading.textContent),
+    check("the view heading says Alerts, not only Ripples", !!heading
+          && /Alerts/.test(heading.textContent)
+          && /ripples first, model detections as corroboration/.test(
+            needEl("view-anomalies").textContent),
           heading ? heading.textContent : "no heading");
+    // THE NAME CHANGED, THE HONESTY DID NOT. "Read-only: this page does not alert" became a
+    // contradiction once the tab was called Alerts; this check pins the replacement sentence and
+    // the absence of the old one, so a later copy edit cannot quietly reintroduce it.
+    const readOnly = needEl("rp-note").textContent.replace(/\s+/g, " ");
+    check("the Alerts page says it is a record and does not send notifications",
+          /Alerts collects ripples and model detections/.test(readOnly)
+          && /This page is a record: it does not send notifications\./.test(readOnly)
+          && !/does not alert/.test(readOnly),
+          readOnly.slice(0, 240));
 
     const rows = [...doc.querySelectorAll("#ripples-table tbody tr")];
     const text = rows.map((r) => r.textContent).join(" ");
@@ -2721,8 +2734,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               signature_capable: false },
             { channel: "dns_volume", family: "dns", scale: "1h", value: 60,
               baseline_median: 6, p_value: 0.006, p_floor: 0.001996, at_floor: false,
-              baseline_short: false, sample_count: 500, direction: "rose",
-              signature_capable: false },
+              baseline_short: false, sample_count: 94, direction: "rose",
+              p_method: "negbin", p_detail: "negbin n=94 mean=87.8 var=2146 index=24.4 "
+                + "size=3.2", signature_capable: false },
             { channel: "tls_fingerprint_diversity", family: "tls", scale: "1h", value: 7,
               baseline_median: 2, p_value: 0.002, p_floor: 0.001996, at_floor: false,
               baseline_short: false, sample_count: 500, direction: "rose",
@@ -2748,6 +2762,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && /1h/.test(sheetText) && /0\.00400/.test(sheetText)
           && /500 windows/.test(sheetText) && /conn/.test(sheetText) && /dns/.test(sheetText),
           sheetText.slice(0, 320));
+    // A FITTED P MUST SAY IT IS FITTED. The row's p_method travels from the API into the sheet,
+    // so a reader can tell a rank from a negative-binomial tail without opening the database.
+    check("a fitted-tail p-value is labelled with the method that produced it",
+          /0\.00600 \(negbin tail\)/.test(sheetText)
+          && /94 windows/.test(sheetText), sheetText.slice(0, 420));
     check("the sheet labels the model anomalies as corroboration, not the finding",
           /corroboration, not the finding/.test(sheetText), sheetText.slice(0, 260));
     const corrText = needEl("rp-corroboration").textContent.replace(/\s+/g, " ");
@@ -8383,7 +8402,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       check("...and Evidence has ONE labeled back control, not a crumb plus a button",
             needEl("view-evidence").classList.contains("active")
             && !!evBackFirst && !evBackFirst.hidden
-            && /back to ripples/i.test(evBackFirst.textContent)
+            && /back to alerts/i.test(evBackFirst.textContent)
             && crumbs.classList.contains("hidden"),
             evBackFirst ? `back=${evBackFirst.textContent} crumbs=${crumbs.textContent}` : "no #ev-back");
       H.syncURL();
@@ -8884,7 +8903,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
             needEl("view-evidence").classList.contains("active"));
       const evBack = needEl("ev-back");
       check("...and the evidence page carries a visible way back",
-            !!evBack && !evBack.hidden && /back to ripples/i.test(evBack.textContent),
+            !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
             evBack ? `hidden=${evBack.hidden} text=${evBack.textContent}` : "no #ev-back");
       if (evBack) {
         evBack.click();
@@ -9115,7 +9134,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(320);
     const evBack = needEl("ev-back");
     check("RETURN: Evidence's exit is the labeled back button",
-          !!evBack && !evBack.hidden && /back to ripples/i.test(evBack.textContent),
+          !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
           evBack ? evBack.textContent : "no #ev-back");
     scrollTo = [];
     if (evBack) { evBack.click(); }
@@ -9137,7 +9156,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const hBack = needEl("hp-back");
     check("HOST RETURN: the jump lands with the labeled back button",
           needEl("view-host").classList.contains("active")
-          && !!hBack && /back to ripples/i.test(hBack.textContent),
+          && !!hBack && /back to alerts/i.test(hBack.textContent),
           hBack ? hBack.textContent : "no #hp-back");
     check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
           HOST_REQS.some((u) => /hours=6/.test(u)), HOST_REQS.join(" ").slice(0, 120));

@@ -12,8 +12,8 @@
   },
   {
    "id": "anomalies",
-   "label": "Ripples",
-   "job": "what moved together, against each host's own history",
+   "label": "Alerts",
+   "job": "ripples first, model detections as corroboration, against each host's own history",
    "tab": true,
    "module": "app.js"
   },

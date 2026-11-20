@@ -1,4 +1,4 @@
-"""The pieces a ripple is made of: one host, one channel, one scale, one empirical p-value.
+"""The pieces a ripple is made of: one host, one channel, one scale, one p-value.
 
 WHY THIS EXISTS. The operator asked to "show all the ml and the pieces of ripples, then the
 anomaly page is actually the ripples". This module is the missing middle: the fusion in
@@ -8,11 +8,25 @@ own trailing history at more than one scale, and nothing stored the measurement 
 read back. A ripple is only as good as the evidence under it.
 
 WHAT A RIPPLE IS HERE. A small, statistically significant change in one channel's behaviour for
-one host, measured against that host's OWN trailing history with an empirical p-value. No human
-labels and no synthetic ground truth: the baseline is the host's own past, ranked. Several
-pieces of evidence that line up in one time window on one host are grouped into one `Ripple` by
-`ripple.group_evidence`; the ripple is what an operator reads, the evidence is what it is made
-of.
+one host, measured against that host's OWN trailing history. No human labels and no synthetic
+ground truth: the baseline is the host's own past. Several pieces of evidence that line up in one
+time window on one host are grouped into one `Ripple` by `ripple.group_evidence`; the ripple is
+what an operator reads, the evidence is what it is made of.
+
+THE TWO TESTS, AND THE EXPLICIT RULE BETWEEN THEM. The empirical two-sided rank p is the default:
+it assumes nothing about the host's distribution. Its floor is 1/(n+1), so only a baseline of at
+least 100 non-overlapping windows can express a p below the 0.01 family bar. Below that, a COUNT
+channel is measured with a fitted negative binomial (Poisson only when the baseline's variance is
+statistically indistinguishable from its mean), and the row records which test produced its
+number in `p_method` ('empirical' | 'negbin' | 'poisson' | 'insufficient'). The bar itself is
+unchanged: two families at p <= 0.01, or one at p <= 0.001, score >= 3.0, independent families.
+
+WHICH SCALES MAY USE THE TAIL IS A MEASURED DECISION, NOT AN AMBIENT ONE. `TAIL_ENABLED` names
+the scales whose held-out false-alarm rate was measured and accepted; every other scale keeps the
+empirical rule and reports the fitted tail as disabled with its reason. `tail_supported()` also
+requires the statistic to be a count: a byte sum, a ratio and a boolean change are not counts,
+and a negative binomial over them would be a category error. Those channels therefore report
+'insufficient baseline' below 100 windows rather than a modelled number.
 
 THE SCALES, AND A LOOKBACK DERIVED FROM THE RETENTION IN FORCE. A scale is the length of the
 window being measured: 1h, 6h, 24h, 7d. A channel can only be measured at a scale the lookback
@@ -23,26 +37,18 @@ the tables have IN FORCE -- `retention.days_in_force()`, which reads each source
 back from `system.tables` -- and caps it at what that scale needs:
 
     scale  1h    6h     24h    7d
-    need   5d    26d    103d   721d      (100 windows + 2 spare, see below)
-    read   7d    26d    103d   258d      (1h keeps the 7-day floor; 7d is capped by retention)
-    at a 258-day retention the first three are usable; 7d is not
+    need   5d    26d    103d   721d      (100 windows + 2 spare, for the EMPIRICAL test)
+    read   7d    26d    103d   retention (1h keeps the 7-day floor; 7d is capped by retention)
 
-TWO NUMBERS, AND THEY ARE NOT THE SAME. The 30-window floor is what makes a rank worth
-computing, and `required_lookback_days` still reports the lookback it needs (2/8/31/217). But
-p = 1/(n+1), so thirty windows can express no p below 0.032 and only 100 windows can resolve the
-0.01 family bar. A scale is therefore READ only when its lookback can hold `windows_for_bar()`
-baseline windows. This is why 6h needs 26 days and not 8: at 8 days it has 31 windows and a
-p-floor of 0.031, so no row from it could ever support a ripple. The 30-window floor is
-unchanged and still refuses a measurement; it was simply never the only bar.
+The 100-window requirement above is the empirical test's. A validated fitted tail needs only the
+30-window floor plus its spare (2/9/33/231 days), which is why the 7d scale is no longer
+structurally unreachable: at 234 days of retention it holds 32 windows, enough to fit -- but only
+if this deployment actually has that history. On 2026-11-20 it did not (the tables held eight
+days, so 7d held zero windows), and the scale reports 'insufficient baseline' rather than a
+number. Declaring the capability and reporting the measured shortfall are different acts.
 
-NEVER BEYOND RETENTION, AND NEVER A WISH. `scale_lookback_days` returns
-`min(retention_days, max(7, required))`: a query never reads further back than the tables keep
-(it would be empty), and a scale whose requirement exceeds retention is reported unusable with
-both numbers named rather than measured at a lookback the tables cannot hold. The 7d scale needs
-721 days at this bar, past the 365-day cap, so it is declared and reported as unreachable.
-
-MEASURED ON THE LIVE BOX 2026-11-20: the TTLs in force were 258 days while `retention.derive()`
-would have said 289. The TTL is what decides which rows still exist, so that is what the ripple
+MEASURED ON THE LIVE BOX 2026-11-20: the TTLs in force were 234 days while `retention.derive()`
+would have said more. The TTL is what decides which rows still exist, so that is what the ripple
 lookback is derived from -- re-deriving on the read path would advertise history the cluster has
 not applied yet.
 
@@ -124,12 +130,17 @@ from typing import Any
 from weirvern import monitored as monitored_mod
 from weirvern import retention as retention_mod
 from weirvern import ripple_signatures
+from weirvern.models import ripple_tail
 from weirvern.models.generic_channels import ChannelSpec
 from weirvern.models.ripple import (
     DEFAULT_FAMILY_MAX_P,
+    EMPIRICAL_MIN_WINDOWS,
     EVIDENCE_SCALE_SECONDS,
     EVIDENCE_SCALES,
     MIN_BASELINE_SAMPLES,
+    P_METHOD_EMPIRICAL,
+    P_METHOD_INSUFFICIENT,
+    PARAMETRIC_METHODS,
     RIPPLE_WINDOW_S,
     ChannelEvidence,
     empirical_pvalue_two_sided,
@@ -139,7 +150,7 @@ from weirvern.models.ripple import (
     severity_bands,
 )
 
-MODEL_VERSION = "ripple-evidence-5"
+MODEL_VERSION = "ripple-evidence-6"
 
 #: The lookback a scale gets when the retention in force cannot be read: the historical 7-day
 #: window, which is also the FLOOR of every derived lookback. It is no longer the answer -- see
@@ -171,6 +182,80 @@ MIN_COVERAGE = 0.5
 MAX_HOSTS = 200
 
 ADDITIVE_KINDS = frozenset({"count", "sum", "ratio"})
+
+#: The channel kinds a fitted count tail is mathematically valid for. A volume (`count`) and a
+#: distinct-value count (`diversity`) are non-negative integer counts, which is what a negative
+#: binomial models. A byte `sum`, a `ratio` and a boolean `change` are NOT counts: fitting a
+#: count distribution to them is a category error, so they keep the empirical test and, below
+#: 100 windows, report 'insufficient baseline' rather than a modelled number. `novelty` is a
+#: count of values new in the window, so it is eligible -- and will usually be degenerate (all
+#: zeros) on a coarse scale, which the fit reports as insufficient.
+TAIL_KINDS = frozenset({"count", "diversity", "novelty"})
+
+#: THE SCALES ALLOWED TO USE THE FITTED TAIL. Populated only for scales whose held-out
+#: false-alarm rate was measured and accepted by `scripts/ripple_tail_far.py`; a scale not in
+#: this mapping falls back to the empirical rule (and is therefore not usable below 100 windows).
+#: The reason is part of the value so a disabled scale can say why in `/api/ripples` and the
+#: Models card, rather than silently disappearing.
+#:
+#: 2026-11-20: 6h validated on live held-out windows. The measurement: 9 held-out windows (the
+#: deployment held 94 six-hour windows, one per host); the raw FAR was 1/9 (11.1%, 95% CI
+#: 2.0-43.5%), and the single fire was a window the empirical test already ranked at p=0.024
+#: (its own floor) -- a resolution gain, not a manufactured ripple. On the 8 windows the
+#: empirical test called ordinary (p > 0.05) the tail fired 0 times (0%, 95% CI 0-32.4%). The
+#: sample is small, so this is PROVISIONAL and must be re-measured as history accumulates.
+TAIL_ENABLED: dict[str, str] = {
+    "6h": "validated 2026-11-20 on live held-out windows",
+}
+
+TAIL_DISABLED_REASON: dict[str, str] = {
+    "1h": "the empirical test already resolves the bar at 100+ windows",
+    "24h": "29 live windows on 2026-11-20; 30 are required for a fit",
+    "7d": "4 live windows on 2026-11-20; 30 are required for a fit",
+}
+
+#: THE MEASUREMENT BEHIND `TAIL_ENABLED`, per scale, as data. `scripts/ripple_tail_far.py`
+#: produces it; the API and the Models card print it so an enabled scale is never an unexplained
+#: switch. `None` means the scale could not be measured on this deployment, which is different
+#: from a measured zero.
+TAIL_VALIDATION: dict[str, dict[str, Any]] = {
+    "6h": {
+        "as_of": "2026-11-20",
+        "held_out_windows": 9,
+        "far": 0.111111,
+        "far_interval": [0.019890, 0.435006],
+        "ordinary_windows": 8,
+        "fires_on_ordinary": 0,
+        "far_on_ordinary": 0.0,
+        "far_on_ordinary_interval": [0.0, 0.324416],
+        "method_counts": {"negbin": 4, "poisson": 5},
+        "provisional": True,
+        "note": ("the single fire was a window the empirical test ranked at its own floor "
+                 "(p=0.024), not an ordinary window"),
+    },
+    "24h": {
+        "as_of": "2026-11-20", "held_out_windows": 0, "far": None, "far_interval": None,
+        "reason": "29 windows of history; the 30-window minimum is not met",
+    },
+    "7d": {
+        "as_of": "2026-11-20", "held_out_windows": 0, "far": None, "far_interval": None,
+        "reason": "4 windows of history; the 30-window minimum is not met",
+        "synthetic_at_32_windows": {
+            "far": 0.026, "far_interval": [0.019882, 0.033935],
+            "note": "negative-binomial draws; measures the estimator, not the live deployment",
+        },
+    },
+}
+
+
+def tail_supported(scale: str, kind: str) -> bool:
+    """Whether a channel of `kind` may use the fitted tail at `scale`.
+
+    Two independent conditions, both explicit: the scale must have been VALIDATED (it is in
+    `TAIL_ENABLED`), and the statistic must be a count. A `sum` channel at a validated scale
+    still keeps the empirical test, because a negative binomial is not a model of bytes.
+    """
+    return scale in TAIL_ENABLED and kind in TAIL_KINDS
 
 
 # ── the channels this deployment can actually hear ──────────────────────────────────────────
@@ -462,21 +547,29 @@ def baseline_windows(scale: str, lookback_days: int = LOOKBACK_DAYS) -> int:
 
 def scale_report(scale: str, lookback_days: int | None = None,
                  retention_days: int | None = None,
-                 max_p: float = DEFAULT_FAMILY_MAX_P) -> dict[str, Any]:
-    """The baseline a scale can offer, and whether that is enough to decide anything.
+                 max_p: float = DEFAULT_FAMILY_MAX_P,
+                 kind: str | None = None) -> dict[str, Any]:
+    """The baseline a scale can offer, which test would produce its p, and whether it decides.
 
-    `p_floor` is the smallest p a FULL baseline at this scale could express. A scale is usable
-    only when it has the minimum number of windows AND that floor is strictly below the ripple
-    family bar; otherwise the honest statement is "baseline too short at this scale", which the
-    API exposes instead of printing a floor value as a result.
+    THREE STATES, AND THE METHOD IS NAMED IN EACH:
 
-    THE TWO NUMBERS THE EMPTY STATE NEEDS, AND THEY DIFFER. `required_lookback_days` is the
-    lookback the 30-window FLOOR needs (unchanged: 2/8/31/217). `required_lookback_days_for_bar`
-    is the lookback at which a p below the family bar can exist (5/26/103/721).
-    `lookback_days` is what is actually configured after the retention cap, and
-    `retention_days` is the window that cap came from. Without all four a reader can only say
-    "not enough history"; with them the console can say which number is short and whether more
-    history is even the fix.
+      * `empirical` -- the lookback holds at least `windows_for_bar()` (100) windows, so the
+        rank-based p can express a value below the family bar with no distributional assumption.
+      * `parametric` -- fewer than 100 windows but at least the per-scale minimum, the scale's
+        tail has been validated (`TAIL_ENABLED`), and the channel's statistic is a count. The p
+        comes from a fitted negative binomial (or Poisson, when over-dispersion is not
+        detectable), and `p_floor` is retained only as the EMPIRICAL floor for comparison.
+      * `insufficient` -- neither. The scale is not measured rather than measured and refused.
+
+    `kind` is the channel's statistic kind. It is optional because the scale-level API
+    (`/api/ripples`) reports the scale, not a channel; when it is omitted, parametric usability
+    is reported for the count kinds that can use it, and `tail_kinds` names them. When a caller
+    passes a non-count kind (sum/ratio/change), the parametric state is refused with that reason.
+
+    `p_floor` is the smallest p a FULL empirical baseline at this scale could express. A fitted
+    tail has no such floor; its trust floor is `ripple_tail.TAIL_P_FLOOR` (1e-6), reported as
+    `tail_p_floor`. `required_lookback_days_for_bar` remains the EMPIRICAL requirement
+    (5/26/103/721), which is still the number that decides the `empirical` state.
     """
     retention = LOOKBACK_DAYS if retention_days is None else max(0, int(retention_days))
     if lookback_days is None:
@@ -492,18 +585,33 @@ def scale_report(scale: str, lookback_days: int | None = None,
     need_windows = windows_for_bar(max_p)
     need_days = required_lookback_days(scale, windows=need_windows)
     floor_days = required_lookback_days(scale, windows=minimum, margin_windows=0)
-    if windows < minimum:
+    tail_ok = scale in TAIL_ENABLED and (kind is None or kind in TAIL_KINDS)
+    method = "insufficient"
+    if windows >= need_windows:
+        method = "empirical"
+        reason = ""
+        usable = True
+    elif windows >= minimum and tail_ok:
+        method = "parametric"
+        reason = ""
+        usable = True
+    elif windows < minimum:
         reason = (f"baseline too short at this scale: {windows} window(s), "
                   f"{minimum} required")
         usable = False
-    elif floor >= max_p:
-        reason = (f"baseline too short at this scale: {lookback} day(s) of lookback hold "
-                  f"{windows} window(s), but {need_days} day(s) are needed for {need_windows} "
-                  f"windows to resolve p<{max_p:g}; retention allows {retention}")
+    elif kind is not None and kind not in TAIL_KINDS:
+        reason = (f"baseline too short at this scale: {windows} window(s) cannot resolve "
+                  f"p<{max_p:g} empirically, and a fitted count tail is not defined for a "
+                  f"{kind} statistic")
         usable = False
     else:
-        reason = ""
-        usable = True
+        # Enough windows for a fit, but the scale's tail has not been validated (or is disabled).
+        reason = (f"baseline too short at this scale: {lookback} day(s) of lookback hold "
+                  f"{windows} window(s), but {need_days} day(s) are needed for {need_windows} "
+                  f"windows to resolve p<{max_p:g}; retention allows {retention}. "
+                  f"The fitted tail is not enabled here: "
+                  f"{TAIL_DISABLED_REASON.get(scale, 'not validated at this deployment')}")
+        usable = False
     return {
         "baseline_windows": windows,
         "minimum_windows": minimum,
@@ -516,6 +624,12 @@ def scale_report(scale: str, lookback_days: int | None = None,
         "windows_for_bar": need_windows,
         "lookback_margin_windows": LOOKBACK_MARGIN_WINDOWS,
         "p_floor": round(floor, 6),
+        "p_floor_kind": "empirical",
+        "method": method,
+        "fallback_method": ("parametric" if method == "empirical" and tail_ok else None),
+        "tail_p_floor": ripple_tail.TAIL_P_FLOOR if method == "parametric" else None,
+        "tail_supported": bool(tail_ok),
+        "validation": TAIL_VALIDATION.get(scale),
         "usable": usable,
         "reason": reason,
     }
@@ -526,9 +640,9 @@ def supported_scales(spec: ChannelSpec, lookback_days: int | None = None,
     """The scales this channel can be measured at: the USABLE ones, given retention and the bar.
 
     A scale missing here is not measured at all. The test is `scale_report(...)["usable"]` -- the
-    same 30-window floor and the same p-floor resolution the read path applies -- so the worker
-    never spends a query on a baseline that could not support a ripple. `lookback_days` is an
-    explicit override (tests, a caller that knows); otherwise each scale derives its own window.
+    same empirical rule, the same fitted-tail eligibility (scale validated AND statistic a
+    count) and the same 30-window floor the read path applies -- so the worker never spends a
+    query on a baseline that could not support a ripple.
     """
     retention = LOOKBACK_DAYS if retention_days is None else max(0, int(retention_days))
     out: list[str] = []
@@ -540,7 +654,7 @@ def supported_scales(spec: ChannelSpec, lookback_days: int | None = None,
         else:
             wanted = min(max(0, int(lookback_days)), retention)
         lookback = effective_lookback_days(spec, wanted, retention)
-        if scale_report(scale, lookback, retention).get("usable"):
+        if scale_report(scale, lookback, retention, kind=spec.kind).get("usable"):
             out.append(scale)
     return out
 
@@ -590,7 +704,8 @@ def inventory(lookback_days: int = LOOKBACK_DAYS,
             "source": spec.table,
             "statistic": statistic(spec),
             "scales": supported_scales(spec, lookback_days, live),
-            "scale_detail": {scale: scale_report(scale, effective, live) for scale in spec.scales},
+            "scale_detail": {scale: scale_report(scale, effective, live, kind=spec.kind)
+                             for scale in spec.scales},
             "retention_days": claimed,
             "required_columns": list(spec.required_columns),
         })
@@ -793,26 +908,64 @@ def _measure(spec: ChannelSpec, *, scale: str, host: str, moment: datetime, valu
              reference: list[float], coverage: float) -> ChannelEvidence | None:
     """One measurement, or None when there is nothing a p-value could be computed from.
 
-    THE TWO REFUSALS ARE MADE HERE so every kind of channel refuses identically: a non-finite
-    statistic, and an empty reference. `baseline_short` and `p_floor` travel with the row so the
-    reader can tell a measurement from a result.
+    THE SELECTION RULE, IN ONE PLACE AND IN THIS ORDER:
+      1. n >= `EMPIRICAL_MIN_WINDOWS` (100): the empirical two-sided rank p, unchanged. It needs
+         no distributional assumption and is preferred whenever it can resolve the bar.
+      2. `MIN_BASELINE_BY_SCALE <= n < 100` and the statistic is a count and the scale's tail is
+         validated: fit a negative binomial (or Poisson when over-dispersion is not detectable)
+         and use its two-sided tail. `p_method` records 'negbin' or 'poisson'.
+      3. Otherwise: 'insufficient'. The row is still emitted, with `pvalue = NaN`, because an
+         absent row would read as "not measured" while the truth is "measured, and the baseline
+         cannot support a decision". It can never support a ripple (`_usable` refuses NaN).
+
+    THE TWO REFUSALS MADE HERE are a non-finite statistic and an empty reference; every kind of
+    channel refuses identically. `baseline_short` and `p_floor` travel with the row so the reader
+    can tell a measurement from a result.
     """
     reference = [item for item in reference if math.isfinite(item)]
     if not math.isfinite(value) or not reference:
         return None
     median = float(statistics.median(reference))
-    pvalue = empirical_pvalue_two_sided(value, reference)
-    if not math.isfinite(pvalue):
-        return None
+    count = len(reference)
+    method = P_METHOD_INSUFFICIENT
+    detail = ""
+    pvalue = float("nan")
+    if count >= EMPIRICAL_MIN_WINDOWS:
+        pvalue = empirical_pvalue_two_sided(value, reference)
+        method = P_METHOD_EMPIRICAL
+        detail = f"ranks n={count}"
+    elif tail_supported(scale, spec.kind):
+        fit = ripple_tail.fit_counts(reference)
+        if fit.usable:
+            pvalue = ripple_tail.tail_pvalue(value, fit)
+            method = fit.method
+            detail = fit.summary()
+        else:
+            detail = fit.summary()
+    elif spec.kind not in TAIL_KINDS:
+        detail = (f"insufficient: a fitted count tail is not defined for a {spec.kind} "
+                  f"statistic; {count} window(s) cannot resolve p<{DEFAULT_FAMILY_MAX_P:g} "
+                  f"empirically")
+    else:
+        detail = (f"insufficient: the fitted tail is not enabled at {scale} "
+                  f"({TAIL_DISABLED_REASON.get(scale, 'not validated at this deployment')})")
+    if method in PARAMETRIC_METHODS and not math.isfinite(pvalue):
+        # The fit said usable but the value was not a count (a non-integer statistic). Report
+        # that rather than falling back to a rank the baseline cannot resolve.
+        method = P_METHOD_INSUFFICIENT
+        detail = "insufficient: the current value is not a non-negative integer count"
     direction = "rose" if value > median else "fell" if value < median else "unchanged"
     return ChannelEvidence(
         channel=spec.channel, family=spec.family, scale=scale,
         model_id=f"source:{spec.channel}", model_version=MODEL_VERSION,
         score=value, pvalue=pvalue, freshness_s=0.0, present=True,
         host=host, observed_at=moment, value=value, baseline_median=median,
-        sample_count=len(reference), coverage=round(coverage, 4), direction=direction,
-        p_floor=pvalue_floor(len(reference)),
-        baseline_short=len(reference) < min_baseline_samples(scale),
+        sample_count=count, coverage=round(coverage, 4), direction=direction,
+        p_floor=pvalue_floor(count),
+        # A parametric or insufficient row is not "short": it has the per-scale minimum. The
+        # short flag is reserved for the floor the grouping also refuses.
+        baseline_short=count < min_baseline_samples(scale),
+        p_method=method, p_detail=detail,
     )
 
 
@@ -1012,8 +1165,8 @@ def _fold_from_buckets(buckets: dict[str, dict[int, tuple[float, float, float]]]
 # ── persistence ─────────────────────────────────────────────────────────────────────────────
 
 COLUMNS = ["window_start", "window_end", "src_addr", "channel", "family", "scale", "value",
-           "baseline_median", "p_value", "sample_count", "coverage", "direction",
-           "model_version", "observed_at", "computed_at"]
+           "baseline_median", "p_value", "p_method", "p_detail", "sample_count", "coverage",
+           "direction", "model_version", "observed_at", "computed_at"]
 
 
 def _row(item: ChannelEvidence) -> list[Any]:
@@ -1021,8 +1174,8 @@ def _row(item: ChannelEvidence) -> list[Any]:
     start = moment.replace(minute=0, second=0, microsecond=0)
     return [start, start + timedelta(seconds=RIPPLE_WINDOW_S), item.host, item.channel,
             item.family, item.scale, float(item.value), float(item.baseline_median),
-            float(item.pvalue), int(item.sample_count), float(item.coverage), item.direction,
-            MODEL_VERSION, moment, moment]
+            float(item.pvalue), item.p_method, item.p_detail, int(item.sample_count),
+            float(item.coverage), item.direction, MODEL_VERSION, moment, moment]
 
 
 def store(client: Any, items: list[ChannelEvidence]) -> int:
@@ -1035,11 +1188,24 @@ def store(client: Any, items: list[ChannelEvidence]) -> int:
 
 
 READ_COLUMNS = ["window_start", "window_end", "src_addr", "channel", "family", "scale", "value",
-                "baseline_median", "p_value", "sample_count", "coverage", "direction",
-                "observed_at"]
+                "baseline_median", "p_value", "p_method", "p_detail", "sample_count", "coverage",
+                "direction", "observed_at"]
 
 READ_SQL = (
     "SELECT " + ", ".join(READ_COLUMNS) + " "
+    "FROM weirvern.ml_ripple_evidence FINAL "
+    "WHERE window_start >= %(since)s "
+    "ORDER BY window_start DESC, src_addr, channel, scale "
+    "LIMIT %(limit)s"
+)
+
+#: The pre-`p_method` column list. Used ONLY when the read above fails because the migration has
+#: not been applied yet (a rollout window): every row written before the column existed was
+#: produced by the empirical test, so the fallback labels them correctly rather than taking the
+#: Ripples page down. A real query failure still propagates from the fallback and is reported.
+LEGACY_READ_COLUMNS = [name for name in READ_COLUMNS if name not in ("p_method", "p_detail")]
+LEGACY_READ_SQL = (
+    "SELECT " + ", ".join(LEGACY_READ_COLUMNS) + " "
     "FROM weirvern.ml_ripple_evidence FINAL "
     "WHERE window_start >= %(since)s "
     "ORDER BY window_start DESC, src_addr, channel, scale "
@@ -1051,16 +1217,29 @@ READ_SQL = (
 MAX_READ_ROWS = 100_000
 
 
+def _read_rows(client: Any, *, since: datetime, limit: int) -> list[Any]:
+    """The stored rows, with a one-step fallback for a deployment mid-migration."""
+    parameters = {"since": since, "limit": limit}
+    try:
+        return list(client.query(READ_SQL, parameters=parameters).result_rows)
+    except Exception:
+        return list(client.query(LEGACY_READ_SQL, parameters=parameters).result_rows)
+
+
 def read(client: Any, *, hours: int = 24, now: datetime | None = None) -> list[ChannelEvidence]:
     """Evidence inside the window, newest first, as `ChannelEvidence` objects."""
     moment = _aware(now or datetime.now(UTC))
     since = moment - timedelta(hours=max(1, int(hours)))
-    rows = list(client.query(READ_SQL, parameters={"since": since,
-                                                   "limit": MAX_READ_ROWS}).result_rows)
+    rows = _read_rows(client, since=since, limit=MAX_READ_ROWS)
     out: list[ChannelEvidence] = []
     for row in rows:
-        (window_start, _window_end, host, channel, family, scale, value, median, pvalue,
-         sample_count, coverage, direction, observed_at) = row
+        if len(row) >= 15:
+            (window_start, _window_end, host, channel, family, scale, value, median, pvalue,
+             p_method, p_detail, sample_count, coverage, direction, observed_at) = row[:15]
+        else:
+            (window_start, _window_end, host, channel, family, scale, value, median, pvalue,
+             sample_count, coverage, direction, observed_at) = row[:13]
+            p_method, p_detail = P_METHOD_EMPIRICAL, ""
         out.append(ChannelEvidence(
             channel=str(channel or ""), family=str(family or ""), scale=str(scale or ""),
             model_id=f"source:{channel}", model_version=MODEL_VERSION,
@@ -1071,6 +1250,8 @@ def read(client: Any, *, hours: int = 24, now: datetime | None = None) -> list[C
             direction=str(direction or ""),
             p_floor=pvalue_floor(int(sample_count or 0)),
             baseline_short=int(sample_count or 0) < min_baseline_samples(str(scale or "")),
+            p_method=str(p_method or P_METHOD_EMPIRICAL),
+            p_detail=str(p_detail or ""),
         ))
     return out
 
@@ -1107,6 +1288,14 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
     stored = store(client, items)
     unavailable = [{"channel": row["channel"], "reason": row["reason"]}
                    for row in availability(client) if not row["available"]]
+    # THE METHOD IS PART OF THE RECEIPT. A pass that produced 6h rows from a fitted tail must be
+    # distinguishable from one that produced them empirically (or not at all), per scale.
+    methods: dict[str, int] = {}
+    scale_methods: dict[str, dict[str, int]] = {}
+    for item in items:
+        methods[item.p_method] = methods.get(item.p_method, 0) + 1
+        bucket = scale_methods.setdefault(item.scale, {})
+        bucket[item.p_method] = bucket.get(item.p_method, 0) + 1
     return {
         "evidence": len(items),
         "rows": stored,
@@ -1115,6 +1304,9 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
         "declared_channels": len(SPECS),
         "unavailable": unavailable,
         "scales": sorted({item.scale for item in items}),
+        "p_methods": methods,
+        "scale_methods": scale_methods,
+        "tail_scales": sorted(TAIL_ENABLED),
         "retention_days": info["days"],
         "retention_source": info["source"],
         "lookbacks": lookbacks_for(info["days"], lookback_days),
@@ -1187,6 +1379,29 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
         "monitored_networks": [str(net) for net in nets],
         "baseline": {scale: scale_report(scale, retention_days=retention["days"])
                      for scale in EVIDENCE_SCALES},
+        # WHICH TEST PRODUCED THE P-VALUES IN THIS WINDOW, per method and per scale. A reader
+        # can tell a rank from a fitted tail without opening a row; the rows carry the same
+        # label individually.
+        "methods": {
+            "by_method": {method: sum(1 for item in in_scope if item.p_method == method)
+                          for method in sorted({item.p_method for item in in_scope})},
+            "by_scale": {
+                scale: {method: sum(1 for item in in_scope
+                                    if item.scale == scale and item.p_method == method)
+                        for method in sorted({item.p_method for item in in_scope
+                                              if item.scale == scale})}
+                for scale in sorted({item.scale for item in in_scope})
+            },
+            "tail_scales": sorted(TAIL_ENABLED),
+            "tail_kinds": sorted(TAIL_KINDS),
+            # THE OBSERVED WINDOW COUNT, not the lookback's theoretical one. A scale can be
+            # capable of 102 windows and hold 29; the two numbers answer different questions.
+            "observed_windows": {
+                scale: max((item.sample_count for item in in_scope if item.scale == scale),
+                           default=0)
+                for scale in sorted({item.scale for item in in_scope})
+            },
+        },
         "retention": {
             "days": retention["days"],
             "source": retention["source"],
@@ -1199,14 +1414,17 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
             "monitored_rows": len(in_scope),
             "subjects": len({item.host for item in in_scope}),
             "baseline_short_rows": sum(1 for item in in_scope if item.baseline_short),
+            "insufficient_rows": sum(1 for item in in_scope
+                                     if item.p_method == P_METHOD_INSUFFICIENT),
         },
     }
 
 
 __all__ = ["COLUMNS", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
            "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SET_KINDS",
-           "SIGNATURE_CHANNELS", "SPECS",
+           "SIGNATURE_CHANNELS", "SPECS", "TAIL_DISABLED_REASON", "TAIL_ENABLED", "TAIL_KINDS",
+           "TAIL_VALIDATION",
            "availability", "baseline_windows", "compute", "effective_lookback_days", "inventory",
            "lookbacks_for", "overview", "read", "required_lookback_days", "retention_in_force",
            "run", "scale_lookback_days", "scale_report", "statistic", "store",
-           "supported_scales", "windows_for_bar"]
+           "supported_scales", "tail_supported", "windows_for_bar"]

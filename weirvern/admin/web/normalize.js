@@ -233,7 +233,7 @@
     if (!SIGS.length) {
       body.appendChild(el("tr", {}, [el("td", {
         class: "muted", attrs: { colspan: 8 },
-        text: "No ripple patterns are normalized. Open a ripple on the Ripples tab and use "
+        text: "No ripple patterns are normalized. Open a ripple on the Alerts tab and use "
           + "\"Normalize this pattern\" on an evidence line." })]));
       return;
     }

@@ -2618,9 +2618,12 @@ function rippleNum(value) {
   return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n * 10000) / 10000);
 }
 
-function rippleP(value, atFloor) {
+function rippleP(value, atFloor, method) {
+  const how = String(method || "empirical");
+  if (how === "insufficient") return "insufficient baseline";
   const p = Number(value);
   if (!Number.isFinite(p)) return "not measured";
+  if (how === "negbin" || how === "poisson") return `${p.toPrecision(3)} (${how} tail)`;
   return atFloor ? `<= ${p.toPrecision(3)} (floor)` : p.toPrecision(3);
 }
 
@@ -2758,7 +2761,7 @@ function renderRippleEmpty(data) {
   const subjects = Number(ev.subjects || 0);
   const nets = (data && data.monitored_networks) || [];
   box.appendChild(el("p", {}, [
-    el("strong", { text: `No ripple formed in the last ${hours}h.` }),
+    el("strong", { text: `No alert in the last ${hours}h.` }),
     el("span", { text: " That is a measurement, not a blank: no monitored host had two " +
       "independent families — or one family at the extreme bar — move together in the same hour." }),
   ]));
@@ -2901,15 +2904,15 @@ function renderRipplePage(data) {
     return;
   }
   const rows = data.ripples || [];
-  if (count) count.textContent = `${rows.length} ripple${rows.length === 1 ? "" : "s"} · ${hours}h`;
+  if (count) count.textContent = `${rows.length} alert${rows.length === 1 ? "" : "s"} · ${hours}h`;
   if (note) {
     note.textContent = rows.length
-      ? `${rows.length} ripple${rows.length === 1 ? "" : "s"} in the last ${hours}h, newest first. Each row is one host and one hour; open it for the evidence behind it. Read-only: this page does not alert.`
-      : `No ripple formed in the last ${hours}h. The scales and baseline counts below say what the engine could measure. Read-only: this page does not alert.`;
+      ? `${rows.length} alert${rows.length === 1 ? "" : "s"} in the last ${hours}h, newest first. Ripples come first; model detections below corroborate them. Alerts collects ripples and model detections. This page is a record: it does not send notifications.`
+      : `No alert in the last ${hours}h. The scales and baseline counts below say what the engine could measure. Alerts collects ripples and model detections. This page is a record: it does not send notifications.`;
   }
   if (!rows.length) {
     if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
-      text: `No ripple formed in the last ${hours}h — the scale and baseline detail is above.` })]));
+      text: `No alert in the last ${hours}h — the scale and baseline detail is above.` })]));
     renderRippleEmpty(data);
     if (empty) empty.classList.remove("hidden");
   } else {
@@ -2957,7 +2960,8 @@ function rippleEvidenceTable(ripple) {
       el("td", { class: "mono", text: e.scale || "—" }),
       el("td", { class: "num", text: rippleNum(e.value) }),
       el("td", { class: "num", text: rippleNum(e.baseline_median) }),
-      el("td", { class: "num", text: rippleP(e.p_value, e.at_floor) }),
+      el("td", { class: "num", text: rippleP(e.p_value, e.at_floor, e.p_method),
+                 attrs: e.p_detail ? { title: e.p_detail } : {} }),
       el("td", { text: baseline }),
       el("td", { class: "muted", text: e.direction || "—" }),
     ]));
@@ -4718,7 +4722,7 @@ async function lookupFingerprint(ja4) {
  * navigation systems. The button is now the only exit, and the crumb trail is left to surfaces
  * that do not already have a labeled button. */
 function evidenceBackLabel(view) {
-  const named = { anomalies: "Back to Ripples", assets: "Back to assets", host: "Back to host",
+  const named = { anomalies: "Back to Alerts", assets: "Back to assets", host: "Back to host",
                    evidence: "Back to evidence" };
   if (named[view]) return named[view];
   const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === view);
@@ -6437,7 +6441,7 @@ document.addEventListener("DOMContentLoaded", () => {
 const VH_COUNTS = Object.create(null);
 const VIEW_HEADER_META = {
   health: { heading: "Health", count: "hp-summary" },
-  anomalies: { heading: "Ripples", count: "rp-count" },
+  anomalies: { heading: "Alerts", count: "rp-count" },
   normalize: { heading: "Normalize", count: "nz-count" },
   network: { heading: "Network", count: "nw-caption" },
   netflow: { heading: "Netflow", count: "nf-summary" },

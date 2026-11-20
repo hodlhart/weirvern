@@ -55,6 +55,23 @@ RIPPLE_WINDOW_S = 3600
 MIN_BASELINE_SAMPLES = 30
 MIN_BASELINE_BY_SCALE: dict[str, int] = {scale: MIN_BASELINE_SAMPLES for scale in EVIDENCE_SCALES}
 
+#: THE EMPIRICAL TEST'S RESOLUTION LIMIT, and the point at which the parametric tail takes over.
+#: p = 1/(n+1) needs n >= `windows_for_bar()` = 100 to express a value below 0.01; below that a
+#: rank-based p is a bound, not a measurement. The selection rule is explicit and one-way: use
+#: the empirical p whenever n >= this, and the fitted tail only below it. `p_method` on every row
+#: records which one produced the number.
+EMPIRICAL_MIN_WINDOWS = 100
+
+#: The `p_method` values a row can carry. 'empirical' is assumption-free; 'negbin'/'poisson' are
+#: the fitted tail; 'insufficient' means the baseline could not support either and the row has no
+#: p-value (never p=0, never p=1).
+P_METHOD_EMPIRICAL = "empirical"
+P_METHOD_NEGBIN = "negbin"
+P_METHOD_POISSON = "poisson"
+P_METHOD_INSUFFICIENT = "insufficient"
+PARAMETRIC_METHODS = frozenset({P_METHOD_NEGBIN, P_METHOD_POISSON})
+P_METHODS = frozenset({P_METHOD_EMPIRICAL, *PARAMETRIC_METHODS, P_METHOD_INSUFFICIENT})
+
 #: THE NEW RIPPLE BAR. A family is significant at `DEFAULT_FAMILY_MAX_P`; two independent
 #: families are required, or ONE family at `DEFAULT_EXTREME_P`. `DEFAULT_MIN_RIPPLE_SCORE` is
 #: the joint-surprise bar: 3.0 is exactly one family at 0.001, and two families at 0.01 score
@@ -247,6 +264,14 @@ class ChannelEvidence:
     #: the per-scale minimum, so the row is a measurement but cannot support a ripple decision.
     p_floor: float = float("nan")
     baseline_short: bool = False
+    #: WHICH TEST PRODUCED `pvalue`. 'empirical' (rank-based, n >= 100), 'negbin' or 'poisson'
+    #: (the fitted tail, n < 100), or 'insufficient' (no p-value exists; `pvalue` is NaN).
+    #: Defaulting to 'empirical' keeps every pre-existing construction honest: before the tail
+    #: existed, every row was empirical by construction.
+    p_method: str = P_METHOD_EMPIRICAL
+    #: The fitted parameters, as text, for a parametric row (empty otherwise). A reader can see
+    #: the mean, variance, dispersion index and size that produced the p without a second query.
+    p_detail: str = ""
 
     def floor(self) -> float:
         """The attainable floor, computed from the row when the writer did not carry it."""
@@ -255,18 +280,29 @@ class ChannelEvidence:
         return pvalue_floor(self.sample_count)
 
     def at_floor(self) -> bool:
-        """True when the measurement sits at the baseline's resolution limit.
+        """True when the measurement sits at the EMPIRICAL baseline's resolution limit.
 
-        This is not a statement about the size of the change. It says every baseline window was
-        less extreme, and the test has no finer number to give.
+        A parametric row's p is not a rank and has no such limit, so it is never "at the floor"
+        even when it is small. The empirical 1/(n+1) bound is still reported in `p_floor` for
+        every row, so a reader can compare the two resolutions.
         """
+        if self.p_method in PARAMETRIC_METHODS:
+            return False
         if not math.isfinite(float(self.pvalue)):
             return False
         floor = self.floor()
         return floor > 0.0 and float(self.pvalue) <= floor * (1.0 + 1e-9)
 
     def resolves(self, alpha: float) -> bool:
-        """Whether this row's baseline can express a p-value strictly below `alpha`."""
+        """Whether this row's test can express a p-value strictly below `alpha`.
+
+        The fitted tail can, down to `ripple_tail.TAIL_P_FLOOR` (1e-6); the empirical test can
+        only when its 1/(n+1) floor is below alpha. An 'insufficient' row cannot at all.
+        """
+        if self.p_method in PARAMETRIC_METHODS:
+            return True
+        if self.p_method == P_METHOD_INSUFFICIENT:
+            return False
         return self.floor() < float(alpha)
 
     def as_dict(self) -> dict[str, Any]:
@@ -280,6 +316,8 @@ class ChannelEvidence:
             "baseline_median": _round(self.baseline_median),
             "p_value": _round(self.pvalue, 8),
             "p_floor": _round(self.floor(), 8),
+            "p_method": self.p_method,
+            "p_detail": self.p_detail,
             "at_floor": self.at_floor(),
             "baseline_short": bool(self.baseline_short),
             "sample_count": int(self.sample_count),
@@ -511,7 +549,12 @@ def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence],
     parts = []
     for item in sorted(chosen, key=lambda e: (e.pvalue, e.channel)):
         family = channel_family(item.channel, item.family)
-        if item.at_floor():
+        if item.p_method in PARAMETRIC_METHODS:
+            # THE FITTED TAIL IS NAMED. A reader must be able to tell a modelled p from a rank,
+            # and the model's parameters ride in the row (`p_detail`) for the sheet.
+            p_text = (f"p={item.pvalue:.3g} from a {item.p_method} tail over "
+                      f"{item.sample_count} baseline windows")
+        elif item.at_floor():
             p_text = (f"p<={item.pvalue:.3g}, the floor for {item.sample_count} baseline "
                       f"windows")
         else:
@@ -533,15 +576,20 @@ def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence],
 def _usable(item: ChannelEvidence, *, max_p: float) -> bool:
     """Whether a row is allowed to support a ripple at all.
 
-    THREE REFUSALS, ALL LOUD IN THE DATA. Too few baseline windows is a short baseline. A row
-    whose p-value is at the floor when the floor is not below `max_p` cannot claim `max_p`; the
-    test is out of resolution. Everything else is a measurement.
+    THREE REFUSALS, ALL LOUD IN THE DATA. Too few baseline windows is a short baseline. A
+    non-finite p-value is an insufficient (or failed) fit, and must never be read as quiet. A
+    row whose p-value is at the EMPIRICAL floor when the floor is not below `max_p` cannot claim
+    `max_p`; the test is out of resolution. A parametric row is not subject to the last refusal:
+    its p is a fitted tail, not a rank, and `resolves()` says so. The bar itself is unchanged.
     """
     if item.baseline_short or item.sample_count < min_baseline_samples(item.scale):
         return False
     if not math.isfinite(item.pvalue) or not 0.0 < item.pvalue <= 1.0:
         return False
-    return not (item.at_floor() and not item.resolves(max_p))
+    if item.p_method == P_METHOD_INSUFFICIENT:
+        return False
+    return not (item.p_method == P_METHOD_EMPIRICAL and item.at_floor()
+                and not item.resolves(max_p))
 
 
 def group_evidence(
@@ -669,8 +717,10 @@ def evidence_from_shadow(
 
 __all__ = ["CHANNEL_FAMILIES", "ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_FAMILY_MAX_P",
            "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P", "DEFAULT_MIN_RIPPLE_SCORE",
-           "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS", "MIN_BASELINE_BY_SCALE",
-           "MIN_BASELINE_SAMPLES", "RIPPLE_WINDOW_S", "Ripple", "RippleResult", "SCALES",
-           "channel_family", "empirical_pvalue", "empirical_pvalue_two_sided",
-           "evidence_from_shadow", "fisher_combined_p", "fuse", "group_evidence",
-           "min_baseline_samples", "pvalue_floor", "severity_band", "severity_bands"]
+           "EMPIRICAL_MIN_WINDOWS", "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS",
+           "MIN_BASELINE_BY_SCALE", "MIN_BASELINE_SAMPLES", "PARAMETRIC_METHODS", "P_METHODS",
+           "P_METHOD_EMPIRICAL", "P_METHOD_INSUFFICIENT", "P_METHOD_NEGBIN", "P_METHOD_POISSON",
+           "RIPPLE_WINDOW_S", "Ripple", "RippleResult", "SCALES", "channel_family",
+           "empirical_pvalue", "empirical_pvalue_two_sided", "evidence_from_shadow",
+           "fisher_combined_p", "fuse", "group_evidence", "min_baseline_samples", "pvalue_floor",
+           "severity_band", "severity_bands"]

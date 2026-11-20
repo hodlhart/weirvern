@@ -1,4 +1,5 @@
-"""The Ripples page: the anomaly page is the ripples, and the seam that keeps it honest.
+"""The Alerts page: ripples first, model detections as corroboration, and the seam that keeps it
+honest.
 
 WHY THIS IS A TEST AND NOT A SCREENSHOT.
 
@@ -12,6 +13,10 @@ invisible in a screenshot:
   * the view hardcodes a 24-hour window while the payload answered for a different one;
   * the ripple sheet shows the fused score first, or calls it the finding;
   * the model anomalies disappear from the console because the primary list moved.
+
+The operator renamed the tab from Ripples to Alerts on 2026-11-20: the page holds both kinds of
+row, and "Ripples" named only one. The VIEW ID stays `anomalies`, and these tests pin that the
+name changed without the routes or the order moving.
 
 `scripts/jsdom_render.js` executes the shipping JavaScript against the shipping HTML and proves
 the render. These tests prove the other half of the seam: the payload carries the numbers the
@@ -50,15 +55,30 @@ class _EmptyEvidenceClient:
         return SimpleNamespace(result_rows=[])
 
 
-def test_the_tab_says_ripples_and_keeps_the_stable_view_id():
+def test_the_tab_says_alerts_and_keeps_the_stable_view_id():
     """The label is what the operator reads; the id is what every link and loader uses."""
     tabs = re.findall(r'<button class="tab[^"]*" data-view="([\w-]+)">([^<]+)</button>', HTML)
     labels = dict(tabs)
-    assert labels.get("anomalies") == "Ripples", labels.get("anomalies")
+    assert labels.get("anomalies") == "Alerts", labels.get("anomalies")
     assert 'id="view-anomalies"' in HTML
     # The other views are untouched: this was a retitle, not a renumbering of the nav.
     assert labels.get("models") == "Models"
     assert labels.get("normalize") == "Normalize"
+    # The old name is gone from the operator-facing tab row; the data model keeps the word
+    # "ripple" everywhere, because that is what the rows are.
+    assert "Ripples" not in "".join(labels.values())
+
+
+def test_the_page_says_it_is_a_record_and_does_not_send_notifications():
+    """A tab called Alerts must not carry the old 'this page does not alert' contradiction."""
+    start = APP.index("note.textContent = rows.length")
+    note = APP[start:APP.index("  if (!rows.length) {", start)]
+    assert "Alerts collects ripples and model detections." in note
+    assert "This page is a record: it does not send notifications." in note
+    assert "does not alert" not in note
+    # The empty state names Alerts too, not only the ripple noun.
+    empty = _between(APP, "function renderRippleEmpty(", "function renderRippleRows(")
+    assert "No alert in the last" in empty
 
 
 def test_ripples_are_primary_and_model_anomalies_are_still_on_the_same_page():
@@ -74,7 +94,8 @@ def test_ripples_are_primary_and_model_anomalies_are_still_on_the_same_page():
     assert 'id="detectors-table"' in view
     # And the order is the contract: the ripple list comes before the corroboration section.
     assert view.index('id="ripples-table"') < view.index('id="anomalies-table"')
-    assert view.index("Ripple evidence") < view.index("Model anomalies")
+    assert view.index("Alerts") < view.index("Model anomalies")
+    assert "ripples first, model detections as corroboration" in view
     assert "corroboration, not the finding" in view
 
 

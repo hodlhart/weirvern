@@ -564,7 +564,7 @@ function renderChips() {
  * THE BANDS COME FROM THE SERVER. `/api/graph` carries `ripples` (the same rows
  * `/api/ripples` grouped) and `severity_bands`; `rippleBand()` in app.js resolves a row's
  * band from its server-computed `severity` (or, for an older payload, the shipped table).
- * Nothing here restates a threshold: a second mapping would drift from the Ripples tab.
+ * Nothing here restates a threshold: a second mapping would drift from the Alerts tab.
  */
 const NW_RIPPLE_RANK = { low: 1, medium: 2, high: 3 };
 
@@ -635,10 +635,10 @@ function renderNetworkRippleLine(nodes, d) {
   const rows = d.ripples || [];
   const inView = (nodes || []).filter((n) => networkRipple(n.id));
   const btn = el("button", {
-    class: "rp-link", text: "open Ripples",
+    class: "rp-link", text: "open Alerts",
     attrs: { type: "button" },
   });
-  btn.setAttribute("title", "open the Ripples tab on this same window");
+  btn.setAttribute("title", "open the Alerts tab on this same window");
   btn.addEventListener("click", () => showView("anomalies"));
   const text = rows.length
     ? `${inView.length} of ${nodes.length} host${nodes.length === 1 ? "" : "s"} in view have ` +
@@ -660,7 +660,7 @@ function renderNetwork() {
 
   if (d.available === false) {
     // A FAILED GRAPH READ IS NOT AN EMPTY NETWORK. This branch used to print the same
-    // "No edges to show." as a genuinely quiet window, which is precisely how the Ripples
+    // "No edges to show." as a genuinely quiet window, which is precisely how the Alerts
     // tab could list hosts while this table looked calm.
     caption.textContent = `The connection graph could not be read: ${d.reason || "no reason was reported"}.`;
     host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`));
@@ -1333,7 +1333,7 @@ function drawGraph(host, nodes, edges, truncated) {
       transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
     });
     // A RIPPLE RING, DRAWN UNDER THE NODE so it reads as a halo, in the SAME band colour the
-    // Ripples tab uses. Colour is reinforcement: the title carries score, families and band.
+    // Alerts tab uses. Colour is reinforcement: the title carries score, families and band.
     if (rip) {
       g.appendChild(svgEl("circle", {
         r: (r + 3.5).toFixed(1), class: "node-ripple-ring rp-sev-" + rband,

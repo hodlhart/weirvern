@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.23.108 — 2026-11-20
+
+THE COARSE SCALES CAN NOW SPEAK WITHOUT INVENTING A RESULT, AND THE TAB IS CALLED ALERTS.
+
+- **A fitted negative-binomial tail, used only where the rank test cannot resolve the bar.** The
+  empirical two-sided p has a floor of 1/(n+1): 94 baseline windows (the live 6h count) can
+  express no p below 0.0105, and 30 windows no p below 0.032, so those rows were measured and then
+  refused against the 0.01 family bar. A **count** channel (`count`, `diversity`, `novelty`) below
+  100 windows is now measured against a negative binomial fitted to its own baseline (mean and
+  size by method of moments), with Poisson only when the chi-square dispersion test cannot
+  distinguish the variance from the mean. A byte `sum`, a `ratio` and a boolean `change` are not
+  counts and keep the empirical test; below 100 windows they report `insufficient baseline`.
+- **The selection rule is explicit and one-way.** n >= 100 → `empirical` (unchanged); 30 <= n <
+  100 and the scale is validated and the statistic is a count → `negbin` or `poisson`; otherwise
+  `insufficient` (no p at all, never p=0 and never p=1). Every evidence row now carries
+  `p_method` and `p_detail` (the fitted mean/variance/dispersion/size, or the reason for the
+  refusal), stored in `ml_ripple_evidence` by schema **063** and returned by `/api/ripples`,
+  `/api/anomalies`' ripple payload and the evidence sheet. The sheet prints `0.00600 (negbin
+  tail)` and shows the fit on hover.
+- **THE BAR IS UNCHANGED.** Two independent families at p <= 0.01, or one at p <= 0.001, score
+  >= 3.0. The tail changes how a p is produced, not what a ripple requires; the family-collapse
+  and criticality code was not touched, and a parametric row cannot corroborate a second view of
+  its own family.
+- **Validation, measured rather than asserted** (`scripts/ripple_tail_far.py`, live ClickHouse
+  2026-11-20, retention 234d, fit-on-baseline/score-the-next-window):
+  - **1h** — 160 observed windows, empirical (n >= 100). 86 held-out tests, FAR 2/86 = **2.3%**
+    (95% Wilson 0.6–8.1%); 0/70 on windows the empirical test called ordinary (p > 0.05).
+  - **6h** — 94 windows, the tail's actual use. 9 held-out tests, **1/9 = 11.1%** raw FAR (95% CI
+    2.0–43.5%); the single fire was a window the empirical test ranked at its own floor
+    (p=0.024), i.e. a resolution gain, not an ordinary window. On the 8 ordinary windows the tail
+    fired **0/8 (0%, 95% CI 0–32.4%)**. 4 fits chose negbin, 5 Poisson. **Enabled, provisional**:
+    the sample is small and the interval is wide; it must be re-measured as history accumulates.
+  - **24h** — 29 observed windows, one short of the 30-window fit minimum. **Disabled**, reason
+    named; it becomes method-usable when the tables hold 30+ days.
+  - **7d** — 4 observed windows (the deployment holds eight days). **Disabled**, reason named.
+    Its expected 32-window lookback is method-capable, and a negative-binomial replay at 32
+    windows puts the estimator's FAR at **2.6%** (95% CI 2.0–3.4%) — reported as SYNTHETIC, not as
+    live evidence. The 7d scale does **not** become live-usable at this deployment.
+- **The 6h report is honest about which number is which.** `scale_report` now returns `method`
+  (`empirical` | `parametric` | `insufficient`), `fallback_method`, `tail_p_floor` (1e-6 trust
+  floor) beside the empirical `p_floor`, the validation record (`held_out_windows`, FAR and
+  interval, ordinary-window FAR), and `observed_windows` is exposed per scale so a 102-window
+  capability with 29 windows of history cannot read as a working baseline.
+- **The Ripples tab is now Alerts** (operator: "Because we have ripples and anomalies in the
+  ripples tab. Rename it to Alerts"). The view id `anomalies`, the API routes, the ripple data
+  model and the severity bands are unchanged. The page heading is `Alerts` with the subtitle
+  "ripples first, model detections as corroboration — read-only"; the Models card, the Network
+  tab's "open Alerts" link, breadcrumbs and Normalize's empty state follow. The old copy
+  "Read-only: this page does not alert" became a contradiction under the new name and is replaced
+  by "Alerts collects ripples and model detections. This page is a record: it does not send
+  notifications."
+- **Dependencies.** `scipy` is declared (it was already present transitively via scikit-learn) for
+  the regularized incomplete beta/gamma tails and the dispersion test. `MODEL_VERSION` is
+  `ripple-evidence-6`; a deployment mid-migration falls back to the pre-063 column list and labels
+  those rows `empirical`, which is what they are.
+- **Tests.** New coverage for: n >= 100 keeps the empirical p unchanged; n < 100 uses the fitted
+  tail and records `p_method`; an over-dispersed baseline stays quiet where a Poisson tail fires;
+  a degenerate baseline reports `insufficient` rather than p=0; a non-count statistic refuses the
+  tail; the family rule and score bar are unchanged for parametric rows; the stored row and the
+  read path carry the method; the 7d scale reports usable-or-not with a reason. jsdom
+  `1049 passed, 0 failed` adds the Alerts tab/heading, the read-only sentence and a
+  `(negbin tail)` provenance label on the evidence sheet.
+
 ## 0.23.107 — 2026-11-20
 
 HISTORY SHOULD NOT SILENTLY CONTRACT BECAUSE THE DISK GOT FULLER.
