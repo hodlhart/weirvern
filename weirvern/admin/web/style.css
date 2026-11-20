@@ -1459,6 +1459,14 @@ nav::-webkit-scrollbar-track { background: transparent; }
    * tower, and stays tall enough to tap a host. */
   .graph { height: clamp(320px, 52vh, 480px); }
 
+  /* NETWORK FILTERS AND WORKLIST. A chip is a finger target here, not a desktop label; the
+     host table sheds its two least-scanned columns instead of forcing the page sideways. */
+  #nw-filters .chip.act { min-height: 44px; padding: 10px 12px; }
+  #nw-hosts-table th, #nw-hosts-table td { padding: 9px 6px; }
+  #nw-hosts-table tbody tr { min-height: 44px; }
+  #nw-hosts-table .nw-h-name, #nw-hosts-table .nw-h-peers { display: none; }
+  .nw-host-k { flex-basis: 96px; }
+
   /* Settings rows stack: the key, then its control at full width -- a control aligned to the
    * far edge of a phone-width row is a control nobody finds. */
   .setting { flex-direction: column; align-items: stretch; gap: 6px; }
@@ -1852,6 +1860,41 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 }
 
 .legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }
+.legend-swatch.normalized { background: transparent; border: 1.5px dashed var(--muted); border-radius: 50%; }
+
+/* ── the Network investigation surfaces ─────────────────────────────────────────────────── */
+.nw-filters { display: flex; flex-direction: column; gap: 2px; }
+.nw-filter-fields { margin: 0 0 8px; }
+.nw-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.nw-sig-cell { white-space: nowrap; }
+.chip.nw-sig { font-size: var(--fs-1); padding: 2px 8px; }
+.nw-worst-cell { white-space: nowrap; }
+.graph .node .node-normalized-ring {
+  stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: 0.85;
+}
+
+/* The host sheet: one section per question, with the window stated once at the top. */
+.nw-host-section { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; }
+.nw-host-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.nw-host-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nw-host-head h3 { margin: 0; font-size: var(--fs-3); }
+.nw-host-kv { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
+  font-size: var(--fs-2); }
+.nw-host-k { color: var(--muted); flex: 0 0 118px; }
+.nw-host-v { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nw-host-stat { display: flex; align-items: baseline; gap: 8px; padding: 4px 0;
+  font-size: var(--fs-2); }
+.nw-host-stat-label { color: var(--muted); flex: 0 0 44px; text-transform: uppercase;
+  letter-spacing: 0.04em; font-size: var(--fs-1); }
+.nw-host-note-line, .nw-host-empty { color: var(--muted); font-size: var(--fs-2); margin: 6px 0; }
+.nw-host-table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
+.nw-host-table th { text-align: left; color: var(--muted); font-weight: 500;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.nw-host-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.nw-host-ripple { padding: 8px 0; border-bottom: 1px solid var(--border);
+  cursor: pointer; min-height: 44px; }
+.nw-host-ripple-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nw-host-ripple-sentence { margin: 6px 0 0; font-size: var(--fs-2); }
 
 /* ── Sluice Gate (2026-11-20 CONVERGENCE) ───────────────────────────────────────────────────
  * This tab speaks the console's vocabulary, not a local one. Measured from Alerts, Models,

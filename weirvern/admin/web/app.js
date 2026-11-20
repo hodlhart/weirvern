@@ -6374,6 +6374,37 @@ document.addEventListener("DOMContentLoaded", () => {
       scheduleURLSync();
     });
   }
+  // THE COMPOSABLE FILTERS. Family is a chip group (one value at a time); subnet and text are
+  // inputs over the cached payload, so a keystroke never runs a query. Every change re-renders
+  // the graph, the host table and the edge table from the SAME state object.
+  for (const btn of document.querySelectorAll("#nw-family [data-nw-family]")) {
+    btn.addEventListener("click", () => {
+      nwSetFamilyFilter(btn.dataset.nwFamily);
+      scheduleURLSync();
+    });
+  }
+  const nwSubnet = document.getElementById("nw-subnet");
+  if (nwSubnet) nwSubnet.addEventListener("input", (e) => {
+    ASSETS_STATE.subnet = e.target.value;
+    if (typeof nwClearDetail === "function") nwClearDetail();
+    renderNetwork();
+    scheduleURLSync();
+  });
+  const nwFind = document.getElementById("nw-find");
+  if (nwFind) nwFind.addEventListener("input", (e) => {
+    ASSETS_STATE.query = e.target.value;
+    if (typeof nwClearDetail === "function") nwClearDetail();
+    renderNetwork();
+    scheduleURLSync();
+  });
+  const nwSort = document.getElementById("nw-sort");
+  if (nwSort) nwSort.addEventListener("change", (e) => {
+    ASSETS_STATE.sortHosts = e.target.value === "busy" ? "busy" : "interest";
+    renderNetwork();
+    scheduleURLSync();
+  });
+  // The host sheet's fixed controls (close, its two pivots, host page). One mount.
+  if (typeof nwWireHostSheet === "function") nwWireHostSheet();
   // US-7: the tracked-only chip. A real filter over the cached graph (no refetch), pressed when
   // it holds the filter, and carrying its state in the URL.
   const nwOnly = document.getElementById("nw-only-tracked");
@@ -8130,6 +8161,12 @@ function syncURL() {
   if (ASSETS_STATE.rippleFilter && ASSETS_STATE.rippleFilter !== "all") {
     p.set("nw.ripple", ASSETS_STATE.rippleFilter);
   }
+  if (ASSETS_STATE.family && ASSETS_STATE.family !== "all") p.set("nw.family", ASSETS_STATE.family);
+  if (String(ASSETS_STATE.subnet || "").trim()) p.set("nw.subnet", String(ASSETS_STATE.subnet).trim());
+  if (String(ASSETS_STATE.query || "").trim()) p.set("nw.q", String(ASSETS_STATE.query).trim());
+  if (ASSETS_STATE.sortHosts && ASSETS_STATE.sortHosts !== "interest") {
+    p.set("nw.sort", ASSETS_STATE.sortHosts);
+  }
   const dcFeedSel = document.getElementById("dc-feed");
   if (dcFeedSel && dcFeedSel.value && dcFeedSel.value !== "netflow") {
     p.set("dc.feed", dcFeedSel.value);
@@ -8262,6 +8299,22 @@ function applyURLState() {
     btn.setAttribute("aria-pressed",
       btn.dataset.nwRipple === ASSETS_STATE.rippleFilter ? "true" : "false");
   }
+  const nwFamily = String(p.get("nw.family") || "all").toLowerCase();
+  ASSETS_STATE.family = ["flow", "conn", "dns", "tls", "http", "ssh", "notice"].includes(nwFamily)
+    ? nwFamily : "all";
+  for (const btn of document.querySelectorAll("#nw-family [data-nw-family]")) {
+    btn.setAttribute("aria-pressed",
+      btn.dataset.nwFamily === ASSETS_STATE.family ? "true" : "false");
+  }
+  ASSETS_STATE.subnet = p.get("nw.subnet") || "";
+  const nwSubnetEl = document.getElementById("nw-subnet");
+  if (nwSubnetEl) nwSubnetEl.value = ASSETS_STATE.subnet;
+  ASSETS_STATE.query = p.get("nw.q") || "";
+  const nwFindEl = document.getElementById("nw-find");
+  if (nwFindEl) nwFindEl.value = ASSETS_STATE.query;
+  ASSETS_STATE.sortHosts = p.get("nw.sort") === "busy" ? "busy" : "interest";
+  const nwSortEl = document.getElementById("nw-sort");
+  if (nwSortEl) nwSortEl.value = ASSETS_STATE.sortHosts;
   if (p.get("dc.feed")) {
     const feedEl = document.getElementById("dc-feed");
     if (feedEl) feedEl.value = p.get("dc.feed");

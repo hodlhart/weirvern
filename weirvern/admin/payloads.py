@@ -964,6 +964,38 @@ def model_retrain_failure(exc: BaseException) -> dict[str, Any]:
     return web_api.retrain_payload(None, None, available=False, reason=read_failure(exc))
 
 
+def _annotate_ripple_signals(payload: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Put each host's ripple count/band on the node and both ends of every edge.
+
+    THE SERVER COMPUTES THE BAND ONCE. The browser renders `ripple_worst`; a second mapping in
+    JavaScript would drift from the Alerts tab the day the bands move. `ripple_count` is the
+    number of ripple WINDOWS in this range (a host can ripple in several hours), so the host
+    table's "ripples N" is a count of findings, not a boolean.
+    """
+    ranks = {"low": 1, "medium": 2, "high": 3}
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        host = str(row.get("host") or "")
+        if not host:
+            continue
+        item = summary.setdefault(host, {"count": 0, "worst": "", "families": set()})
+        item["count"] += 1
+        band = str(row.get("severity") or "").lower()
+        if ranks.get(band, 0) > ranks.get(item["worst"], 0):
+            item["worst"] = band
+        item["families"].update(str(f) for f in (row.get("families") or []))
+    for node in payload.get("nodes") or []:
+        item = summary.get(str(node.get("id") or ""))
+        node["ripple_count"] = int(item["count"]) if item else 0
+        node["ripple_worst"] = item["worst"] if item else ""
+        node["ripple_families"] = sorted(item["families"]) if item else []
+    for edge in payload.get("edges") or []:
+        for side in ("source", "target"):
+            item = summary.get(str(edge.get(side) or ""))
+            edge[f"{side}_ripple_count"] = int(item["count"]) if item else 0
+            edge[f"{side}_ripple_worst"] = item["worst"] if item else ""
+
+
 def _attach_ripples(client: Client, payload: dict[str, Any], *, hours: int) -> dict[str, Any]:
     """Attach the window's ripples (and the ONE band table) to a graph payload.
 
@@ -972,10 +1004,29 @@ def _attach_ripples(client: Client, payload: dict[str, Any], *, hours: int) -> d
     may have narrowed), so a ring/chip on the map and a row on the Ripples tab are the same
     ripple with the same server-computed `severity`. A failed ripple read is named in the
     payload rather than drawn as "no ripples".
+
+    THE COVERAGE TRAVELS WITH THE ROWS. `ml_ripple_evidence` on this deployment began
+    2026-11-19 14:00 -- one day, not seven. A 7d request therefore has a one-day ripple reading,
+    and the payload says so (`ripple_coverage`) instead of letting the empty older hours read as
+    a quiet network.
     """
     from weirvern.models import ripple_evidence  # noqa: PLC0415
 
     effective = int(payload.get("hours") or hours)
+    coverage: dict[str, Any] = {"from": "", "to": "", "available": False, "reason": ""}
+    try:
+        cov = client.query(
+            "SELECT min(window_start), max(window_end) FROM weirvern.ml_ripple_evidence")
+        row = (getattr(cov, "result_rows", None) or [None])[0]
+        if row and row[0] is not None:
+            coverage = {"from": row[0].isoformat(), "to": row[1].isoformat(),
+                        "available": True, "reason": ""}
+        else:
+            coverage.update({"available": True, "reason": "no ripple evidence stored yet"})
+    except Exception as exc:  # noqa: BLE001 - coverage is an annotation, not the graph
+        logger.warning("graph ripple coverage unavailable: %s", exc)
+        coverage["reason"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+
     try:
         data = ripple_evidence.overview(client, hours=effective)
     except Exception as exc:  # noqa: BLE001 - the graph still stands without ripple presence
@@ -983,15 +1034,48 @@ def _attach_ripples(client: Client, payload: dict[str, Any], *, hours: int) -> d
         payload.update({"ripples": [], "ripple_available": False,
                         "ripple_reason": f"{type(exc).__name__}: {str(exc)[:160]}",
                         "ripple_window_hours": effective,
+                        "ripple_coverage": coverage,
                         "severity_bands": ripple_evidence.severity_bands()})
+        _annotate_ripple_signals(payload, [])
         return payload
+    rows = data.get("ripples") or []
     payload.update({
-        "ripples": data.get("ripples") or [],
+        "ripples": rows,
         "ripple_available": bool(data.get("available")),
         "ripple_reason": data.get("reason") or "",
         "ripple_window_hours": int(data.get("window_hours") or effective),
+        "ripple_coverage": coverage,
         "severity_bands": data.get("severity_bands") or ripple_evidence.severity_bands(),
     })
+    # WHICH CHANNELS THIS DEPLOYMENT CAN NAME A VALUE ON. The signature capability is computed
+    # from the specs server-side; the sheet must not keep a second list.
+    payload["signature_channels"] = data.get("signature_channels") or []
+    _annotate_ripple_signals(payload, rows)
+    return payload
+
+
+def _attach_normalized(client: Client, payload: dict[str, Any]) -> dict[str, Any]:
+    """Mark hosts whose traffic has a normalized baseline pattern.
+
+    `normal_ripple_signatures` is EMPTY on this deployment today, and that is a measured zero:
+    the table read succeeded and holds no active rows. A failed read is `normalized_available:
+    false`, never "nothing is normalized" -- the two must not look alike on the map.
+    """
+    try:
+        res = client.query(
+            "SELECT host_addr, count() FROM weirvern.normal_ripple_signatures FINAL "
+            "WHERE removed_at IS NULL GROUP BY host_addr")
+        counts = {str(r[0]): int(r[1] or 0) for r in (getattr(res, "result_rows", None) or [])}
+        payload["normalized_available"] = True
+        payload["normalized_reason"] = ""
+        for node in payload.get("nodes") or []:
+            node["normalized_count"] = counts.get(str(node.get("id") or ""), 0)
+    except Exception as exc:  # noqa: BLE001 - the graph draws without this annotation
+        logger.warning("graph normalized presence unavailable: %s", exc)
+        payload["normalized_available"] = False
+        payload["normalized_reason"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        for node in payload.get("nodes") or []:
+            node.pop("normalized_count", None)
     return payload
 
 
@@ -1011,10 +1095,32 @@ def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
         if tracked:
             payload = assets_mod.top_edges_for(client, tracked, hours=hours)
             payload.setdefault("tracked", tracked)
-            return _attach_ripples(client, payload, hours=hours)
-        return _attach_ripples(client, assets_mod.connection_graph(client, hours=hours), hours=hours)
+            return _attach_normalized(client, _attach_ripples(client, payload, hours=hours))
+        return _attach_normalized(
+            client, _attach_ripples(client, assets_mod.connection_graph(client, hours=hours),
+                                    hours=hours))
     except Exception as exc:  # noqa: BLE001
         return graph_failure(exc)
+
+
+def network_host(client: Client, *, addr: str, hours: int) -> dict[str, Any]:
+    """One host's investigation sheet for the Network tab.
+
+    It reads the SAME ripple grouping `/api/ripples` renders and the same anomaly table the
+    Alerts queue reads; it is a second VIEW of those facts, never a second definition.
+    """
+    from weirvern.admin import network_host as host_mod  # noqa: PLC0415
+
+    try:
+        return host_mod.host_sheet(client, addr, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return host_mod.host_sheet_failure(exc, addr=addr, hours=hours)
+
+
+def network_host_failure(exc: BaseException, *, addr: str = "", hours: int = 24) -> dict[str, Any]:
+    from weirvern.admin import network_host as host_mod  # noqa: PLC0415
+
+    return host_mod.host_sheet_failure(exc, addr=addr, hours=hours)
 
 
 def graph_failure(exc: BaseException) -> dict[str, Any]:
@@ -1025,6 +1131,9 @@ def graph_failure(exc: BaseException) -> dict[str, Any]:
     logger.warning("graph unavailable: %s", exc)
     return {"available": False, "nodes": [], "edges": [], "ripples": [],
             "ripple_available": False, "ripple_reason": read_failure(exc),
+            "ripple_coverage": {"from": "", "to": "", "available": False,
+                                "reason": "the graph did not load"},
+            "normalized_available": False, "normalized_reason": read_failure(exc),
             "severity_bands": ripple_evidence.severity_bands(),
             "reason": read_failure(exc), "data_error": str(exc)}
 

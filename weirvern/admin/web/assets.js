@@ -703,20 +703,35 @@ function renderNetworkRippleLine(nodes, d, baseNodes) {
   });
   btn.setAttribute("title", "open the Alerts tab on this same window");
   btn.addEventListener("click", () => showView("anomalies"));
+  // THE COVERAGE IS PART OF THE CLAIM. Ripple evidence on this deployment began on
+  // 2026-11-19 -- a 7d request holds ~1 day of evidence. Saying "0 ripples" without that
+  // sentence would read as a quiet week.
+  let covNote = "";
+  const cov = d.ripple_coverage || {};
+  if (cov.available && cov.from) {
+    const span = (new Date(cov.to) - new Date(cov.from)) / 36e5;
+    if (Number.isFinite(span) && span + 0.5 < Number(hours)) {
+      covNote = ` Ripple evidence covers ${fmtTime(cov.from)} → ${fmtTime(cov.to)} `
+        + `(${Math.max(1, Math.round(span))}h of ${hours}h).`;
+    }
+  } else if (cov.available === false) {
+    covNote = ` Ripple coverage unknown: ${cov.reason || "not read"}.`;
+  }
   // THE SENTENCE RESTATES THE ACTIVE FILTER. "3 of 19 hosts have ripples — showing 3" is the
   // count of what is on screen, not a count of the payload the reader cannot see.
   let text;
   if (!rows.length) {
-    text = `0 hosts in view have a ripple in this ${hours}h window — no host met the ripple bar.`;
+    text = `0 hosts in view have a ripple in this ${hours}h window — no host met the ripple bar.`
+      + covNote;
   } else if (mode !== "all") {
     const highOnly = mode === "high";
     const matched = nwRippleMatchedIds(pool);
     text = `${matched.size} of ${pool.length} host${pool.length === 1 ? "" : "s"} have `
       + `${highOnly ? "high-band " : ""}ripples in this ${hours}h window — showing `
-      + `${matched.size}.`;
+      + `${matched.size}.` + covNote;
   } else {
     text = `${inView.length} of ${pool.length} host${pool.length === 1 ? "" : "s"} in view have `
-      + `${rows.length} ripple${rows.length === 1 ? "" : "s"} in this ${hours}h window.`;
+      + `${rows.length} ripple${rows.length === 1 ? "" : "s"} in this ${hours}h window.` + covNote;
   }
   line.append(el("span", { text }), el("span", { text: " " }), btn);
 }
@@ -1212,11 +1227,17 @@ function nodeTitle(n) {
   const out = [`${n.name ? n.name + " · " : ""}${n.id}`, `${n.degree} peers`, fmtBytes(n.bytes)];
   if (n.blocked) out.push("blocked by a live block rule");
   if (n.alerted) out.push(`alerted: ${n.anomaly_count || 0} anomaly window${(n.anomaly_count || 0) === 1 ? "" : "s"}`);
+  const modelBand = String(n.model_worst || "");
+  if (modelBand) out.push(`model detections: ${n.anomaly_count || 0} (worst ${modelBand})`);
   const rip = typeof networkRipple === "function" ? networkRipple(n.id) : null;
   if (rip) {
     const band = rippleBand(rip, (ASSETS_STATE.graph || {}).severity_bands);
     out.push(`ripple: score ${Number(rip.score || 0).toFixed(2)}, ` +
       `${(rip.families || []).join(" / ") || "no family named"} (${band})`);
+  }
+  const normalized = Number(n.normalized_count || 0);
+  if (normalized) {
+    out.push(`${normalized} normalized pattern${normalized === 1 ? "" : "s"}`);
   }
   if (n.hops !== null && n.hops !== undefined) {
     out.push(`${n.hops} ${n.hops === 1 ? "hop" : "hops"} from the sensor (ttl ${n.ttl})`);
@@ -1451,9 +1472,11 @@ function drawGraph(host, nodes, edges, truncated) {
     const r = 5 + 9 * Math.sqrt((n.bytes || 0) / maxBytes);
     const rip = networkRipple(n.id);
     const rband = rip ? rippleBand(rip, (ASSETS_STATE.graph || {}).severity_bands) : "";
+    const normalizedN = Number(n.normalized_count || 0);
     const g = svgEl("g", {
       class: "node" + (selected ? " selected" : "") + (n.status ? " " + n.status : "") +
-        (rip ? " has-ripple rp-sev-" + rband : ""),
+        (rip ? " has-ripple rp-sev-" + rband : "") +
+        (normalizedN ? " has-normalized" : ""),
       transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
     });
     // A RIPPLE RING, DRAWN UNDER THE NODE so it reads as a halo, in the SAME band colour the
@@ -1461,6 +1484,15 @@ function drawGraph(host, nodes, edges, truncated) {
     if (rip) {
       g.appendChild(svgEl("circle", {
         r: (r + 3.5).toFixed(1), class: "node-ripple-ring rp-sev-" + rband,
+        fill: "none", "pointer-events": "none",
+      }));
+    }
+    // NORMALIZED IS ITS OWN HALO, not a dimmed node: dimming already means "observed network"
+    // on this map, and one appearance cannot carry two facts. The dashed outer ring says the
+    // host has at least one pattern the operator marked normal; the legend names it.
+    if (normalizedN) {
+      g.appendChild(svgEl("circle", {
+        r: (r + 7.5).toFixed(1), class: "node-normalized-ring",
         fill: "none", "pointer-events": "none",
       }));
     }
@@ -1534,8 +1566,8 @@ function drawGraph(host, nodes, edges, truncated) {
   const legend = document.getElementById("nw-legend");
   if (legend) {
     legend.replaceChildren();
-    const items = [
-      ["var(--series-1)", "host (size = bytes)"],
+    const legendItems = [
+      ["var(--series-1)", `host (size = bytes in this ${(ASSETS_STATE.graph || {}).hours || ASSETS_STATE.hours}h window)`],
       ["var(--series-2)", "tracked"],
       ["var(--bad)", "blocked by a live block rule"],
       ["var(--warn)", "alerted: anomaly in this range"],
@@ -1544,16 +1576,21 @@ function drawGraph(host, nodes, edges, truncated) {
       ["outline", "unclassified network (configure a scope)"],
     ];
     if (layout.rings.length) {
-      items.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
+      legendItems.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
     }
     if (nodes.some((n) => networkRipple(n.id))) {
-      items.push(["var(--sev-high)", "ripple ring on this host (low / medium / high)"]);
+      legendItems.push(["var(--sev-high)", "ripple ring on this host (low / medium / high)"]);
     }
-    for (const [colour, label] of items) {
+    if (nodes.some((n) => Number(n.normalized_count || 0) > 0)) {
+      legendItems.push(["normalized", "dashed outer halo = normalized pattern on this host"]);
+    }
+    for (const [colour, label] of legendItems) {
       const swatch = colour === "ring"
         ? el("span", { class: "legend-swatch ring" })
         : colour === "outline"
         ? el("span", { class: "legend-swatch outline" })
+        : colour === "normalized"
+        ? el("span", { class: "legend-swatch normalized" })
         : el("span", {
             class: "legend-swatch",
             attrs: { style: `background:${(colour.startsWith("#") || colour.startsWith("var(")) ? colour : "var(--border)"}` },
@@ -1764,12 +1801,19 @@ function showNodeDetail(node) {
   btn.addEventListener("click", () => { toggleTracked(node.id); showNodeDetail(node); });
   const open = el("button", { class: "review-act", text: "open host page" });
   open.addEventListener("click", (event) => { event.stopPropagation(); openHost(node.id); });
+  // THE GRAPH'S PATH TO THE HOST SHEET. The quick panel answers "what does it talk to";
+  // the sheet answers "why is it interesting" (names, in/out traffic, ripples, models).
+  const why = el("button", { class: "review-act", text: "why this host is interesting →" });
+  why.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openNetworkHost(node);
+  });
   host.appendChild(el("div", { class: "pair-side" }, [
     el("div", { class: "pair-label", text: "host" }),
     el("div", { class: "pair-addr", text: node.id }),
     node.name ? el("div", { class: "muted", text: node.name }) : null,
   ]));
-  host.appendChild(el("div", { class: "chips" }, [btn, open]));
+  host.appendChild(el("div", { class: "chips" }, [why, btn, open]));
 
   if (!touching.length) {
     table.appendChild(el("tr", {}, [
@@ -1814,6 +1858,385 @@ function edgeRow(e) {
 /** An address with its name in front, when there is one. Never a name INSTEAD of an address. */
 function label(name, addr) {
   return name ? `${name} (${addr})` : String(addr || "");
+}
+
+/* ── THE NETWORK HOST SHEET ─────────────────────────────────────────────────────────────────
+ *
+ * THE QUESTION THE TAB COULD NOT ANSWER. A dot, a line and a byte count say a host is PRESENT;
+ * they do not say why it is worth opening. This sheet reads one address for the global window
+ * and puts the facts in the order an analyst asks them: who is it (names), what did it move
+ * (in/out), who did it talk to, what services did it offer/use, what ripples did the engine
+ * form (with their own sentences), which model detections corroborate, and whether any pattern
+ * has been normalized. Every count names its window.
+ */
+let NW_HOST = { addr: "", data: null, node: null };
+
+function nwHostSection(title, linkText, onLink, children) {
+  const head = el("div", { class: "nw-host-head" }, [el("h3", { text: title })]);
+  if (linkText) {
+    const link = el("button", { class: "rp-link", text: linkText, attrs: { type: "button" } });
+    link.addEventListener("click", onLink);
+    head.appendChild(link);
+  }
+  return el("div", { class: "nw-host-section" }, [head].concat(children || []));
+}
+
+function nwHostKv(key, value, title) {
+  const v = el("span", { class: "nw-host-v", text: value === "" || value === null
+    || value === undefined ? "—" : String(value) });
+  if (title) v.setAttribute("title", title);
+  return el("div", { class: "nw-host-kv" }, [
+    el("span", { class: "nw-host-k", text: key }), v,
+  ]);
+}
+
+function nwNameLine(names, max) {
+  const list = (names || []).filter(Boolean);
+  if (!list.length) return "—";
+  const shown = list.slice(0, max || 8);
+  return shown.join(", ") + (list.length > shown.length ? ` +${list.length - shown.length} more` : "");
+}
+
+function nwOpenAlertsFor(addr) {
+  AN_FILTERS.host = addr;
+  AN_FILTERS.severity = "";
+  AN_FILTERS.model = "";
+  AN_FILTERS.feature = "";
+  showView("anomalies");
+}
+
+function nwOpenFlowsFor(addr) {
+  const box = document.getElementById("dc-addr");
+  if (box) box.value = addr;
+  showView("discover");
+}
+
+function nwHostWindowText(data) {
+  const w = (data && data.window) || {};
+  const hours = Number(w.hours || trHours()) || 24;
+  const range = w.since && w.until ? `${fmtTime(w.since)} → ${fmtTime(w.until)}` : "";
+  return `${hours}h window${range ? " · " + range : ""} · owned by the header time control`;
+}
+
+/** Whether a source's coverage reaches back to the window's start. */
+function nwCovered(coverage, data) {
+  const c = coverage || {};
+  const since = Date.parse(((data && data.window) || {}).since || "");
+  const from = Date.parse(c.from || "");
+  return Boolean(c.from) && Number.isFinite(since) && Number.isFinite(from) && from <= since;
+}
+
+function nwTrafficLine(block, label, data, coverage) {
+  if (!block) {
+    if (nwCovered(coverage, data)) {
+      return el("div", { class: "nw-host-stat" }, [
+        el("span", { class: "nw-host-stat-label", text: label }),
+        el("span", { text: "0 B · 0 packets · 0 flows (measured: no row in this window)" }),
+      ]);
+    }
+    return el("div", { class: "nw-host-stat" }, [
+      el("span", { class: "nw-host-stat-label", text: label }),
+      el("span", { class: "muted", text: `not measured${coverage && coverage.from
+        ? ` — this source starts ${fmtTime(coverage.from)}` : ""}` }),
+    ]);
+  }
+  return el("div", { class: "nw-host-stat" }, [
+    el("span", { class: "nw-host-stat-label", text: label }),
+    el("span", { text: `${fmtBytes(block.bytes)} · ${Number(block.packets || 0).toLocaleString()} `
+      + `packets · ${Number(block.flows || 0).toLocaleString()} flows · `
+      + `${Number(block.peers || 0).toLocaleString()} peers` }),
+  ]);
+}
+
+function nwRenderHostSheet(data, node) {
+  const body = document.getElementById("nw-host-body");
+  const note = document.getElementById("nw-host-note");
+  if (!body) return;
+  body.replaceChildren();
+  const hours = Number((data.window || {}).hours || trHours()) || 24;
+  const addr = data.addr || (node && node.id) || "";
+  if (note) note.textContent = nwHostWindowText(data);
+  if (data.available === false) {
+    body.appendChild(el("p", { class: "nw-host-empty", text:
+      `This host could not be read: ${data.reason || "no reason was reported"}.` }));
+    return;
+  }
+  const ident = data.identity || {};
+  const traffic = data.traffic || {};
+  const coverage = data.coverage || {};
+  const tls = data.tls || {};
+  const dns = data.dns || {};
+  const models = data.models || {};
+  const ripples = data.ripples || {};
+  const normalized = data.normalized || {};
+
+  // ── identity and names ──────────────────────────────────────────────────────────────
+  const idChildren = [];
+  if (ident.available === false) {
+    idChildren.push(el("p", { class: "nw-host-empty", text:
+      `Identity could not be read: ${ident.reason || "the read failed"}. That is not the same as a host with no name.` }));
+  } else {
+    idChildren.push(nwHostKv("PTR", ident.ptr || "—", "reverse DNS, resolved at read time"));
+    idChildren.push(nwHostKv("DNS names", nwNameLine(ident.hostnames, 10),
+      "names this host was seen asking for or holding, from the identity table"));
+    const netbios = (ident.netbios || []).map((n) => n.name + (n.domain ? ` (${n.domain})` : ""));
+    const dhcp = (ident.dhcp_names || []).map((n) => n.name);
+    idChildren.push(nwHostKv("NetBIOS", netbios.length ? netbios.join(", ") : "—",
+      "NTLM client hostnames in this window"));
+    idChildren.push(nwHostKv("DHCP name", dhcp.length ? dhcp.join(", ") : "—",
+      "DHCP option-12 names in this window"));
+    idChildren.push(nwHostKv("TLS SNI", nwNameLine((tls.names || []).map((n) => n.name), 8),
+      `server names in this ${hours}h window`));
+    idChildren.push(nwHostKv("JA4", `${Number(tls.ja4_count || 0)} fingerprints in this ${hours}h window`));
+    idChildren.push(nwHostKv("MAC", ident.mac || "—"));
+    idChildren.push(nwHostKv("OS", ident.os || "—"));
+    if (ident.role) idChildren.push(nwHostKv("Role", `${ident.role}${ident.role_scope ? " · " + ident.role_scope : ""}`));
+    idChildren.push(nwHostKv("First seen", ident.first_seen
+      ? `${fmtTime(ident.first_seen)} (${ident.first_seen_basis || "retained flow window"})`
+      : (ident.first_seen_basis === "read failed" ? "not read" : "not measured")));
+    idChildren.push(nwHostKv("Last seen", ident.last_seen ? fmtTime(ident.last_seen) : "—"));
+  }
+  body.appendChild(nwHostSection("Identity and names", "Flows →", () => nwOpenFlowsFor(addr), idChildren));
+
+  // ── traffic ─────────────────────────────────────────────────────────────────────────
+  const inCov = coverage.flows_window_endpoint || {};
+  const trafficChildren = [
+    nwTrafficLine(traffic.in, "in", data, inCov),
+    nwTrafficLine(traffic.out, "out", data, inCov),
+  ];
+  if (traffic.outbound_flows && !traffic.out) {
+    trafficChildren.push(nwTrafficLine(traffic.outbound_flows, "out (longer-retained flow table)", data, coverage.flows_window || {}));
+  }
+  if (inCov.from && !nwCovered(inCov, data)) {
+    trafficChildren.push(el("p", { class: "nw-host-note-line", text:
+      `In/out bytes are measured only from ${fmtTime(inCov.from)} — less than the ${hours}h window. `
+      + `Outbound totals come from flows_window and reach further back.` }));
+  }
+  if (traffic.available === false) {
+    trafficChildren.push(el("p", { class: "nw-host-empty", text:
+      `Traffic could not be read: ${traffic.reason || "the read failed"}.` }));
+  }
+  body.appendChild(nwHostSection(`Traffic in this ${hours}h window`, "Flows →",
+    () => nwOpenFlowsFor(addr), trafficChildren));
+
+  // ── peers ───────────────────────────────────────────────────────────────────────────
+  const peerRows = (data.peers || {}).rows || [];
+  const peerChildren = [];
+  if ((data.peers || {}).available === false) {
+    peerChildren.push(el("p", { class: "nw-host-empty", text:
+      `Peer records could not be read: ${data.peers.reason || "the read failed"}.` }));
+  } else if (!peerRows.length) {
+    peerChildren.push(el("p", { class: "nw-host-empty", text:
+      `No Zeek connection records for this host in this ${hours}h window. That is an empty log, not zero traffic.` }));
+  } else {
+    const t = el("table", { class: "nw-host-table" });
+    t.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Peer" }), el("th", { text: "Out" }), el("th", { text: "In" }),
+      el("th", { text: "Conns" }),
+    ])]));
+    const tb = el("tbody");
+    for (const r of peerRows) {
+      const tr = el("tr", { class: "clickable" }, [
+        el("td", { class: "mono link", text: r.peer }),
+        el("td", { class: "mono", text: fmtBytes(r.out_bytes || 0) }),
+        el("td", { class: "mono", text: fmtBytes(r.in_bytes || 0) }),
+        el("td", { class: "mono", text: String(Number(r.out_conns || 0) + Number(r.in_conns || 0)) }),
+      ]);
+      tr.addEventListener("click", () => openNetworkHost({ id: r.peer, name: "", bytes: 0 }));
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    peerChildren.push(t);
+  }
+  body.appendChild(nwHostSection("Top peers in this window", "", null, peerChildren));
+
+  // ── services / ports ───────────────────────────────────────────────────────────────
+  const svc = data.services || {};
+  const svcChildren = [];
+  if (svc.available === false) {
+    svcChildren.push(el("p", { class: "nw-host-empty", text:
+      `Services could not be read: ${svc.reason || "the read failed"}.` }));
+  } else {
+    const chips = el("div", { class: "chips" });
+    for (const s of svc.services || []) {
+      chips.appendChild(el("span", { class: "chip", text: `${s.service} ${Number(s.conns).toLocaleString()}` }));
+    }
+    if (!(svc.services || []).length) chips.appendChild(el("span", { class: "muted", text: "no service label in this window" }));
+    svcChildren.push(el("div", { class: "nw-host-kv" }, [
+      el("span", { class: "nw-host-k", text: "services" }), chips]));
+    svcChildren.push(nwHostKv("listening (inbound)",
+      (svc.listening_ports || []).map((p) => `${p.port}/${p.proto} ×${p.conns}`).join(", ") || "—",
+      "destination ports on this host — what it offers"));
+    svcChildren.push(nwHostKv("used (outbound)",
+      (svc.used_ports || []).map((p) => `${p.port}/${p.proto} ×${p.conns}`).join(", ") || "—",
+      "destination ports this host dialled — what it consumes"));
+  }
+  body.appendChild(nwHostSection("Services and ports", "Flows →", () => nwOpenFlowsFor(addr), svcChildren));
+
+  // ── DNS and TLS ────────────────────────────────────────────────────────────────────
+  const dnsChildren = [];
+  if (dns.available === false) {
+    dnsChildren.push(el("p", { class: "nw-host-empty", text:
+      `DNS queries could not be read: ${dns.reason || "the read failed"}.` }));
+  } else if (!(dns.queries || []).length) {
+    dnsChildren.push(el("p", { class: "nw-host-empty", text:
+      `No DNS query from this host in this ${hours}h window.` }));
+  } else {
+    dnsChildren.push(nwHostKv("asked", (dns.queries || []).map((q) => `${q.name} (qtype ${q.qtype}, ${q.asks})`).join(", ")));
+  }
+  if (tls.available === false) {
+    dnsChildren.push(el("p", { class: "nw-host-empty", text:
+      `TLS names could not be read: ${tls.reason || "the read failed"}.` }));
+  } else if (!(tls.names || []).length) {
+    dnsChildren.push(el("p", { class: "nw-host-empty", text:
+      `No TLS session with a server name from this host in this ${hours}h window.` }));
+  } else {
+    dnsChildren.push(nwHostKv("TLS names", (tls.names || []).map((n) => `${n.name} ×${n.sessions}`).join(", ")));
+  }
+  body.appendChild(nwHostSection("DNS and TLS", "Flows →", () => nwOpenFlowsFor(addr), dnsChildren));
+
+  // ── ripples ────────────────────────────────────────────────────────────────────────
+  const ripChildren = [];
+  if (ripples.available === false) {
+    ripChildren.push(el("p", { class: "nw-host-empty", text:
+      `Ripple presence could not be read: ${ripples.reason || "the read failed"}. That is not the same as no ripple.` }));
+  } else if (!(ripples.rows || []).length) {
+    ripChildren.push(el("p", { class: "nw-host-empty", text:
+      `No ripple on this host in this ${Number(ripples.window_hours || hours)}h window.` }));
+  } else {
+    ripChildren.push(el("p", { class: "nw-host-kv" }, [
+      el("span", { class: "nw-host-k", text: "worst" }),
+      el("span", { class: "rp-sev-chip sev-" + (ripples.worst || "low"), text: sevText(ripples.worst || "low") }),
+      el("span", { class: "muted", text: `${ripples.count} ripple window${ripples.count === 1 ? "" : "s"} in ${Number(ripples.window_hours || hours)}h` }),
+    ]));
+    for (const r of ripples.rows) {
+      const row = el("div", { class: "nw-host-ripple" }, [
+        el("div", { class: "nw-host-ripple-head" }, [
+          el("span", { class: "rp-sev-chip sev-" + (r.severity || "low"), text: sevText(r.severity || "low") }),
+          el("span", { class: "muted", text: `score ${Number(r.score || 0).toFixed(2)}` }),
+          el("span", { class: "muted", text: fmtTime(r.window_start) }),
+        ]),
+        el("p", { class: "nw-host-ripple-sentence", text: r.explanation || "No sentence was carried." }),
+      ]);
+      row.addEventListener("click", () => {
+        closeSheet(document.getElementById("nw-host-card"));
+        openRippleSheet(r, row);
+      });
+      ripChildren.push(row);
+    }
+  }
+  body.appendChild(nwHostSection("Ripples", "Alerts →", () => nwOpenAlertsFor(addr), ripChildren));
+
+  // ── model detections ───────────────────────────────────────────────────────────────
+  const modelChildren = [];
+  if (models.available === false) {
+    modelChildren.push(el("p", { class: "nw-host-empty", text:
+      `Model detections could not be read: ${models.reason || "the read failed"}.` }));
+  } else if (!(models.rows || []).length) {
+    modelChildren.push(el("p", { class: "nw-host-empty", text:
+      `No model detection on this host in this ${hours}h window.` }));
+  } else {
+    modelChildren.push(el("p", { class: "nw-host-kv" }, [
+      el("span", { class: "nw-host-k", text: "worst" }),
+      el("span", { class: "rp-sev-chip sev-" + (models.worst || "low"), text: sevText(models.worst || "low") }),
+      el("span", { class: "muted", text: `${models.count} detection${models.count === 1 ? "" : "s"} in this ${hours}h window` }),
+    ]));
+    const t = el("table", { class: "nw-host-table" });
+    t.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Window" }), el("th", { text: "Band" }), el("th", { text: "Score" }),
+      el("th", { text: "Models" }),
+    ])]));
+    const tb = el("tbody");
+    for (const m of models.rows) {
+      const tr = el("tr", { class: "clickable" }, [
+        el("td", { class: "mono", text: fmtTime(m.window_start) }),
+        el("td", {}, [el("span", { class: "rp-sev-chip sev-" + (m.severity || "low"), text: sevText(m.severity || "low") })]),
+        el("td", { class: "mono", text: Number(m.score || 0).toFixed(2) }),
+        el("td", { text: m.models || "—" }),
+      ]);
+      tr.addEventListener("click", () => nwOpenAlertsFor(addr));
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    modelChildren.push(t);
+  }
+  body.appendChild(nwHostSection("Model detections", "Alerts →", () => nwOpenAlertsFor(addr), modelChildren));
+
+  // ── normalized patterns ────────────────────────────────────────────────────────────
+  const normChildren = [];
+  if (normalized.available === false) {
+    normChildren.push(el("p", { class: "nw-host-empty", text:
+      `The normalization state could not be read: ${normalized.reason || "the read failed"}.` }));
+  } else if (!Number(normalized.count || 0)) {
+    normChildren.push(el("p", { class: "nw-host-empty", text:
+      `0 patterns normalized on this host (measured). Normalizing adds a pattern to the host's `
+      + `baseline; it is not a mute.` }));
+  } else {
+    for (const n of normalized.rows || []) {
+      normChildren.push(el("div", { class: "nw-host-kv" }, [
+        el("span", { class: "nw-host-k", text: `${n.channel}` }),
+        el("span", { class: "nw-host-v", text: `${n.value} · ${n.family} · ${fmtTime(n.created_at)}` }),
+      ]));
+    }
+  }
+  body.appendChild(nwHostSection("Normalized patterns", "", null, normChildren));
+
+  const errs = Object.keys(data.errors || {});
+  if (errs.length) {
+    body.appendChild(el("p", { class: "nw-host-note-line", text:
+      `Sections that could not be read: ${errs.join(", ")}.` }));
+  }
+}
+
+function openNetworkHost(node) {
+  const card = document.getElementById("nw-host-card");
+  if (!card || !node) return;
+  const addr = String(node.id || node.addr || "");
+  if (!addr) return;
+  NW_HOST = { addr, data: null, node };
+  const title = document.getElementById("nw-host-title");
+  const sub = document.getElementById("nw-host-addr");
+  if (title) title.textContent = node.name ? `${node.name}` : addr;
+  if (sub) sub.textContent = node.name ? `· ${addr}` : "";
+  const note = document.getElementById("nw-host-note");
+  if (note) note.textContent = `Reading this host for the ${trHours()}h window…`;
+  const body = document.getElementById("nw-host-body");
+  if (body) body.replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+  if (typeof openSheet === "function") {
+    openSheet(card, { scrimId: "nw-host-scrim", initialFocus: "nw-host-close" });
+  } else {
+    card.classList.remove("hidden");
+  }
+  getJSON(ASSET_API.networkHost(addr, trHours()))
+    .then((data) => { NW_HOST.data = data; nwRenderHostSheet(data, node); })
+    .catch((err) => {
+      if (note) note.textContent = `This host could not be read: ${err.message}`;
+      if (body) body.replaceChildren(el("p", { class: "nw-host-empty", text:
+        `The host sheet read failed: ${err.message}.` }));
+    });
+}
+
+/** Bind the sheet's fixed controls once. The view's own controls are wired in app.js. */
+function nwWireHostSheet() {
+  const card = document.getElementById("nw-host-card");
+  if (!card) return;
+  if (typeof wireSheet === "function") {
+    wireSheet(card, { scrimId: "nw-host-scrim" });
+  }
+  const close = () => closeSheet(card);
+  for (const id of ["nw-host-close", "nw-host-cancel"]) {
+    const btn = document.getElementById(id);
+    if (btn) btn.addEventListener("click", close);
+  }
+  const alerts = document.getElementById("nw-host-alerts");
+  if (alerts) alerts.addEventListener("click", () => nwOpenAlertsFor(NW_HOST.addr));
+  const flows = document.getElementById("nw-host-flows");
+  if (flows) flows.addEventListener("click", () => nwOpenFlowsFor(NW_HOST.addr));
+  const page = document.getElementById("nw-host-page");
+  if (page) page.addEventListener("click", () => {
+    closeSheet(card);
+    openHost(NW_HOST.addr);
+  });
 }
 
 /* ── Netflow: the port/protocol drill-down ─────────────────────────────────── */

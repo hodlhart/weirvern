@@ -81,6 +81,17 @@ def _rows(client, sql: str, params: dict, what: str,
         return None
 
 
+def _worst_severity(values: list[str]) -> str:
+    """The highest band word in `values` (critical > high > medium > low)."""
+    rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    best = ""
+    for value in values or ():
+        word = str(value or "").lower()
+        if rank.get(word, 0) > rank.get(best, 0):
+            best = word
+    return best
+
+
 def _has_curated_service_port(ports: list[int]) -> bool:
     """A port named in the shared curated service table (not merely a low-numbered port)."""
     from weirvern.admin import soc  # noqa: PLC0415
@@ -987,6 +998,26 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         node["bytes_norm"] = node["bytes"] / max_bytes
 
     status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=used_hours)
+    # WHAT THE RAW FLOWS TABLE ACTUALLY HOLDS. The graph reads `flows`, whose retention is
+    # shorter than the window selector allows (measured 2026-11-20: 3.3 days). A 7d request
+    # therefore draws 3.3 days of edges; without this block the map would look like it covered
+    # seven. The browser prints the pair -- the asked window and the held range -- like the
+    # narrower-window rule above.
+    coverage = {"available": False, "from": "", "to": "", "reason": "not read"}
+    cov_rows = _rows(client, "SELECT min(timestamp), max(timestamp) FROM weirvern.flows",
+                     {}, "connection graph (coverage)")
+    if cov_rows and cov_rows[0] and len(cov_rows[0]) >= 2 and cov_rows[0][0] is not None:
+        coverage = {
+            "available": True,
+            "from": cov_rows[0][0].isoformat() if hasattr(cov_rows[0][0], "isoformat")
+                    else str(cov_rows[0][0]),
+            "to": cov_rows[0][1].isoformat() if hasattr(cov_rows[0][1], "isoformat")
+                  else str(cov_rows[0][1]),
+            "reason": "",
+        }
+    elif cov_rows is None:
+        coverage = {"available": False, "from": "", "to": "",
+                    "reason": "the flows coverage read failed"}
     payload = {
         "available": True,
         "reason": "",
@@ -997,6 +1028,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "truncated": total > len(out_edges),
         "status_available": status_available,
         "status_reason": status_reason,
+        "coverage": coverage,
     }
     if used_hours != int(hours):
         # Named, not silent: the panel prints both windows so a narrowed graph is never mistaken
@@ -1067,7 +1099,7 @@ def attach_host_status(client, nodes: dict[str, dict], edges: list[dict], *, hou
         rows = _rows(
             client,
             "SELECT src_addr, count() AS n, max(detected_at) AS last_seen, "
-            "       max(anomaly_score) AS score "
+            "       max(anomaly_score) AS score, groupArray(severity) AS severities "
             "FROM weirvern.netflow_anomalies "
             # The Anomalies list is bounded by the WINDOW it describes, not by the
             # ingestion pass that noticed it. The graph must use the same boundary,
@@ -1086,6 +1118,10 @@ def attach_host_status(client, nodes: dict[str, dict], edges: list[dict], *, hou
                     "count": int(r[1] or 0),
                     "last_seen": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2] or ""),
                     "score": float(r[3] or 0.0),
+                    # WHICH BANDS, not just how many. The host table's "worst" column and the
+                    # network ranking both need the band; recomputing it from a count in the
+                    # browser would invent a severity the engine never assigned.
+                    "severities": [str(s) for s in (r[4] or [])],
                 }
     except Exception as exc:  # noqa: BLE001
         available = False
@@ -1107,6 +1143,14 @@ def attach_host_status(client, nodes: dict[str, dict], edges: list[dict], *, hou
             node["anomaly_count"] = anom["count"]
             node["anomaly_last"] = anom["last_seen"]
             node["anomaly_score"] = anom["score"]
+            node["model_worst"] = _worst_severity(anom.get("severities") or [])
+            node["model_by_severity"] = {
+                s: (anom.get("severities") or []).count(s)
+                for s in sorted(set(anom.get("severities") or []))
+            }
+        else:
+            node["model_worst"] = ""
+            node["model_by_severity"] = {}
 
     for edge in edges:
         src = nodes.get(str(edge.get("source")), {})

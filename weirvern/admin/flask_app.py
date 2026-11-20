@@ -954,6 +954,23 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return _json_error(400, str(exc))
         return _soft_route(payloads.graph, payloads.graph_failure, hours=hours, tracked=tracked)
 
+    @app.get("/api/network/host")
+    @gated
+    def network_host():
+        """The Network tab's host sheet: why is this address interesting, in this window."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            addr = web.host_addr(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.network_host, payloads.network_host_failure,
+                           addr=addr, hours=hours)
+
     @app.get("/api/blocked")
     @gated
     def blocked():
