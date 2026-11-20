@@ -15,12 +15,12 @@ detection, capture or enforcement semantics changed.
   `prune`, a current one passing in the table, and an image-less CronJob not becoming a phantom
   drift row.
 - **`sanitize_identifiers --write` no longer rewrites test assertions.** A `--write` run replaced
-  `10.0.0.0/8` with `198.51.100.0/8` inside a test, which changed what the test asserted while
-  leaving the suite green. `--write` now refuses anything under `tests/`/`test/`, any `test_*.py`,
-  `*_test.py` or `conftest.py`, and `scripts/jsdom_render.js`; inside other files it leaves quoted
-  literals on an assertion line and raw/regex literals alone; every skip is reported by path and
-  every rewrite prints a unified diff. A second run is a no-op. `--check` still reports identifiers
-  in tests — a leak there is still a leak, but a human replaces it.
+  a private /8 literal with a TEST-NET value inside a test, which changed what the test asserted
+  while leaving the suite green. `--write` now refuses anything under `tests/`/`test/`, any
+  `test_*.py`, `*_test.py` or `conftest.py`, and `scripts/jsdom_render.js`; inside other files it
+  leaves quoted literals on an assertion line and raw/regex literals alone; every skip is reported
+  by path and every rewrite prints a unified diff. A second run is a no-op. `--check` still reports
+  identifiers in tests — a leak there is still a leak, but a human replaces it.
 - **The ML host-hour shadow's datetime subtraction is fixed.** The worker logged `ML host-hour
   shadow failed: can't subtract offset-naive and offset-aware datetimes` on every tick: ClickHouse
   returns `DateTime` values aware (the deployment's tz) while the tick's clock is naive UTC. A new
