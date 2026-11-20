@@ -71,11 +71,10 @@ def test_the_tab_says_alerts_and_keeps_the_stable_view_id():
 
 def test_the_page_says_it_is_a_record_and_does_not_send_notifications():
     """A tab called Alerts must not carry the old 'this page does not alert' contradiction."""
-    start = APP.index("note.textContent = rows.length")
-    note = APP[start:APP.index("  if (!rows.length) {", start)]
-    assert "Alerts collects ripples and model detections." in note
-    assert "This page is a record: it does not send notifications." in note
-    assert "does not alert" not in note
+    body = _between(APP, "function renderRipplePage(", "function loadRipplePage(")
+    assert "Alerts collects ripples and model detections." in body
+    assert "This page is a record: it does not send notifications." in body
+    assert "does not alert" not in body
     # The empty state names Alerts too, not only the ripple noun.
     empty = _between(APP, "function renderRippleEmpty(", "function renderRippleRows(")
     assert "No alert in the last" in empty

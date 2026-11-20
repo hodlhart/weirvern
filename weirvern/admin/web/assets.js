@@ -58,7 +58,7 @@ const ASSETS_STATE = {
   // 245 hosts is unreadable as one scroll, and a table you have to scroll is a table you skim
   // rather than read.
   page: 1,
-  pageSize: 15,
+  pageSize: 25,
 };
 
 /* getJSON lives in app.js -- ONE definition for the whole page. The duplicate that used to
@@ -473,45 +473,115 @@ function compareAddr(a, b) {
   return String(a || "").localeCompare(String(b || ""));
 }
 
-function renderPager(hostId, total, page, pages, onGo, size = ASSETS_STATE.pageSize) {
+/* ── THE UNIVERSAL PAGER ────────────────────────────────────────────────────────────────────
+ * Operator (2026-11-20): "connection details and edges as a table needs previous and next
+ * buttons to reduce scrolling. any table that is long needs the same, make previous and next
+ * buttons universal in the whole project."
+ *
+ * ONE page size, ONE control, ONE count grammar. `PAGER_PAGE_SIZE` is the console's page size;
+ * a table that needs a different number has to change it here, so two tables cannot disagree
+ * about what "rows 1-25" means. `paginateTable` is wired ONCE per table and observes the tbody,
+ * so any renderer -- including ones written later -- is paged without a second implementation.
+ *
+ * COUNT HONESTY. `serverTotal` is the payload's own total, which can exceed the rows the server
+ * was willing to send (`truncated`). In that case the line says "first N of M (server cap)" and
+ * never implies M is available by paging: only the rows that exist can be paged.
+ */
+const PAGER_PAGE_SIZE = 25;
+const TABLE_PAGERS = Object.create(null);
+
+function renderPager(hostId, total, page, pages, onGo, size = PAGER_PAGE_SIZE, opts = {}) {
   const host = document.getElementById(hostId);
   if (!host) return;
   host.replaceChildren();
-  if (total === 0) return;
+  const label = opts.label || "this table";
+  const truncated = Boolean(opts.truncated && Number(opts.serverTotal) > Number(total));
+  if (total === 0 && !truncated) return;
+  // A one-page table keeps its range line when the payload was capped -- that sentence is the
+  // only place the operator learns the server held more. Otherwise a single page is furniture.
+  if (pages <= 1 && !truncated) return;
 
-  // `size` is a PARAMETER, not a module constant. It used to read ASSETS_STATE.pageSize
-  // directly, which silently made this helper single-purpose: a second table passing its own
-  // page size would render the Assets range while claiming to describe itself (the range line
-  // below is computed from `size`, so the two tables would disagree about what "showing 1-15"
-  // meant). Both tables page at 15 today, which is exactly why the bug would have gone unnoticed
-  // until one of them changed.
-  // A pager that says "1–1 of 1" is furniture, not information. The alert audit's outcome
-  // table often has one row; hiding a single-page pager keeps the Logs card calm and leaves
-  // the range on the one table that actually has multiple pages.
-  if (pages <= 1) return;
-
-  const first = (page - 1) * size + 1;
+  const first = total ? (page - 1) * size + 1 : 0;
   const last = Math.min(page * size, total);
+  const range = truncated
+    ? `first ${last} of ${Number(opts.serverTotal).toLocaleString()} (server cap)`
+    : `rows ${first}\u2013${last} of ${Number(total).toLocaleString()}`;
 
-  const btn = (label, target, disabled, title) => {
-    const b = el("button", { class: "pager-btn", text: label, title });
+  const btn = (text, target, disabled, aria) => {
+    const b = el("button", { class: "pager-btn", text, attrs: { type: "button", "aria-label": aria } });
     b.disabled = !!disabled;
     if (!disabled) b.addEventListener("click", () => onGo(target));
     return b;
   };
 
-  host.appendChild(btn("‹", page - 1, page <= 1, "previous page"));
+  host.appendChild(btn("\u2039 Previous", page - 1, page <= 1, `previous page of ${label}`));
   host.appendChild(el("span", {
     class: "pager-info",
-    text: `${first}\u2013${last} of ${total}   \u00b7   page ${page} of ${pages}`,
+    text: `page ${page} of ${pages}   \u00b7   ${range}`,
   }));
-  host.appendChild(btn("›", page + 1, page >= pages, "next page"));
+  host.appendChild(btn("Next \u203a", page + 1, page >= pages, `next page of ${label}`));
 
   // Jump-to-first/last only earn their space when there are enough pages to make them useful.
   if (pages > 3) {
-    host.appendChild(btn("\u00ab first", 1, page <= 1, "first page"));
-    host.appendChild(btn("last \u00bb", pages, page >= pages, "last page"));
+    host.appendChild(btn("\u00ab first", 1, page <= 1, `first page of ${label}`));
+    host.appendChild(btn("last \u00bb", pages, page >= pages, `last page of ${label}`));
   }
+}
+
+/** The pager's view of a table: how many rows it held on the last render, and its page. */
+function _tablePageState(tableId, rows) {
+  const sig = `${rows.length}|${rows.length ? rows[0].textContent : ""}|` +
+    `${rows.length ? rows[rows.length - 1].textContent : ""}`;
+  const st = TABLE_PAGERS[tableId] || (TABLE_PAGERS[tableId] = { sig: "", page: 1, total: null,
+                                                                 truncated: false });
+  // FILTER/SORT/RENDER CHANGED THE ROW SET -> page 1. An identical re-render (a refresh within
+  // the same filter) keeps the page, which is the operator's "survive a refresh" rule.
+  if (st.sig !== sig) { st.sig = sig; st.page = 1; }
+  return st;
+}
+
+function paginateTable(tableId) {
+  const table = document.getElementById(tableId);
+  const tbody = table && table.querySelector("tbody");
+  const host = document.getElementById(`${tableId}-pager`);
+  if (!tbody || !host) return;
+  const all = [...tbody.querySelectorAll(":scope > tr")];
+  // An empty-state row (`<td colspan=...>`) is a message, not a page of data.
+  const placeholder = all.length === 1 && all[0].querySelector("td[colspan]");
+  const rows = placeholder ? [] : all;
+  const st = _tablePageState(tableId, rows);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGER_PAGE_SIZE));
+  st.page = Math.min(Math.max(1, Number(st.page) || 1), pages);
+  const start = (st.page - 1) * PAGER_PAGE_SIZE;
+  rows.forEach((row, i) => { row.hidden = i < start || i >= start + PAGER_PAGE_SIZE; });
+  renderPager(host.id, rows.length, st.page, pages, (next) => {
+    st.page = Math.min(Math.max(1, Number(next) || 1), pages);
+    paginateTable(tableId);
+  }, PAGER_PAGE_SIZE, {
+    label: (TABLE_PAGERS[tableId] || {}).label || tableId,
+    serverTotal: st.total, truncated: st.truncated,
+  });
+}
+
+/** Register a table once; every later render of its tbody is paged automatically. */
+function wireTablePager(tableId, label) {
+  const table = document.getElementById(tableId);
+  const tbody = table && table.querySelector("tbody");
+  if (!tbody) return;
+  if (!TABLE_PAGERS[tableId]) TABLE_PAGERS[tableId] = { sig: "", page: 1, total: null, truncated: false };
+  TABLE_PAGERS[tableId].label = label || tableId;
+  if (tbody.dataset.pagerWired === "1") return;
+  tbody.dataset.pagerWired = "1";
+  new MutationObserver(() => paginateTable(tableId)).observe(tbody, { childList: true });
+  paginateTable(tableId);
+}
+
+/** The payload's own total, for the "first N of M (server cap)" line. */
+function setTablePagerTotal(tableId, total, truncated) {
+  if (!TABLE_PAGERS[tableId]) return;
+  TABLE_PAGERS[tableId].total = Number(total) || null;
+  TABLE_PAGERS[tableId].truncated = Boolean(truncated);
+  paginateTable(tableId);
 }
 
 /* ── Network: the connection graph ─────────────────────────────────────────── */
@@ -1261,6 +1331,10 @@ function renderNetwork() {
   renderNetworkHosts(matchedNodes, d);
 
   const nodeById = new Map((d.nodes || []).map((n) => [String(n.id), n]));
+  // The pager states the payload's own cap ("first 200 of 1,240") beside the page range.
+  if (typeof setTablePagerTotal === "function") {
+    setTablePagerTotal("nw-table", d.total_edges, d.truncated);
+  }
   for (const e of edges.slice(0, 200)) {
     const tr = el("tr", {}, [
       el("td", { class: "link mono", text: e.source }),
@@ -1757,24 +1831,34 @@ function drawGraph(host, nodes, edges, truncated) {
     const r = 5 + 9 * Math.sqrt((n.bytes || 0) / maxBytes);
     const rip = networkRipple(n.id);
     const rband = rip ? rippleBand(rip, (ASSETS_STATE.graph || {}).severity_bands) : "";
+    // A ripple ring is drawn only when the map has a measured band. SOLID, and in a COOL palette
+    // reserved for ripples: the fills own the status hues (blocked red, alerted orange, tracked
+    // green, observed grey), so a ring must never be orange or yellow or it reads as one of them
+    // (operator, 2026-11-20: "you have three icons that are basically orange ... unclassified,
+    // alerted and ripple"). Band order still reads: slate -> cyan -> violet, and the band word
+    // is in the aria-label/title, so colour is reinforcement rather than the only encoding.
+    const rmeasured = Boolean(rip) && Boolean(rband);
+    const rclass = ["low", "medium", "high"].includes(rband) ? rband : "unknown";
     const normalizedN = Number(n.normalized_count || 0);
     const g = svgEl("g", {
       class: "node" + (selected ? " selected" : "") + (n.status ? " " + n.status : "") +
-        (rip ? " has-ripple rp-sev-" + rband : "") +
+        (rmeasured ? " has-ripple rp-sev-" + rclass : "") +
         (normalizedN ? " has-normalized" : ""),
       transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
     });
     // A RIPPLE RING, DRAWN UNDER THE NODE so it reads as a halo, in the SAME band colour the
     // Alerts tab uses. Colour is reinforcement: the title carries score, families and band.
-    if (rip) {
+    // SOLID (dash is the unclassified cue); NO RING when the host has no ripple row at all.
+    if (rmeasured) {
       g.appendChild(svgEl("circle", {
-        r: (r + 3.5).toFixed(1), class: "node-ripple-ring rp-sev-" + rband,
+        r: (r + 3.5).toFixed(1), class: "node-ripple-ring rp-sev-" + rclass,
         fill: "none", "pointer-events": "none",
       }));
     }
     // NORMALIZED IS ITS OWN HALO, not a dimmed node: dimming already means "observed network"
-    // on this map, and one appearance cannot carry two facts. The dashed outer ring says the
-    // host has at least one pattern the operator marked normal; the legend names it.
+    // on this map, and one appearance cannot carry two facts. The solid outer ring says the
+    // host has at least one pattern the operator marked normal; the legend names it. Solid,
+    // because dash means unclassified.
     if (normalizedN) {
       g.appendChild(svgEl("circle", {
         r: (r + 7.5).toFixed(1), class: "node-normalized-ring",
@@ -1785,16 +1869,16 @@ function drawGraph(host, nodes, edges, truncated) {
     // it is a busy node, and a tracked blocked host keeps its tracked stroke without losing
     // the reason it is red. Normal selected nodes keep the green tracking fill.
     //
-    // SCOPE IS A READING, NOT A STATUS: an observed (unmonitored) host is muted, and an
-    // unclassified host gets a warning outline. Neither can override a live block or alert.
+    // SCOPE IS A READING, NOT A STATUS: an observed (unmonitored) host is muted. It is NOT
+    // drawn on the node: the scope word lives in the host table and the host sheet. An
+    // unclassified host renders as an ordinary node -- scope is not one of the graph's two
+    // signal layers, and an outline for it stole the ripple ring's colour and shape.
     const observed = n.scope_monitored === false;
-    const unclassified = n.network_scope === "unclassified";
     const fill = n.status === "blocked" ? "var(--bad)"
       : n.status === "alerted" ? "var(--warn)"
       : selected ? "var(--ok)"
       : observed ? "var(--dim)" : "var(--accent)";
-    const circleStyle = `fill:${fill}` +
-      (unclassified ? ";stroke:var(--warn);stroke-width:1.5;stroke-dasharray:2 2" : "");
+    const circleStyle = `fill:${fill}`;
     // ON A PHONE THE VISIBLE DOT IS NOT THE TAP TARGET. A host's circle is 5-14px radius; the
     // 44px floor applies to what a finger must hit, so a transparent r=22 circle carries the
     // pointer while the drawn circle keeps its data-scaled size.
@@ -1858,29 +1942,33 @@ function drawGraph(host, nodes, edges, truncated) {
       ["var(--warn)", "alerted: anomaly in this range"],
       ["edge width", "log of bytes"],
       ["var(--dim)", "observed network (not alertable)"],
-      ["outline", "unclassified network (configure a scope)"],
+      ["solidring", "solid ring = ripples in this window (colour = band: slate low / cyan medium / violet high)"],
+      ["noring", "no ring = no ripples measured in this window"],
     ];
     if (layout.rings.length) {
-      legendItems.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
-    }
-    if (nodes.some((n) => networkRipple(n.id))) {
-      legendItems.push(["var(--sev-high)", "ripple ring on this host (low / medium / high)"]);
+      legendItems.push(["ring", "thin solid ring = hop distance from the sensor (IP TTL)"]);
     }
     if (nodes.some((n) => Number(n.normalized_count || 0) > 0)) {
-      legendItems.push(["normalized", "dashed outer halo = normalized pattern on this host"]);
+      legendItems.push(["normalized", "thin outer halo = normalized pattern on this host"]);
     }
     for (const [colour, label] of legendItems) {
       const swatch = colour === "ring"
         ? el("span", { class: "legend-swatch ring" })
         : colour === "outline"
         ? el("span", { class: "legend-swatch outline" })
+        : colour === "solidring"
+        ? el("span", { class: "legend-swatch solidring" })
+        : colour === "noring"
+        ? el("span", { class: "legend-swatch noring", text: "∅" })
         : colour === "normalized"
         ? el("span", { class: "legend-swatch normalized" })
+        : colour === "none"
+        ? el("span", { class: "legend-swatch none" })
         : el("span", {
             class: "legend-swatch",
             attrs: { style: `background:${(colour.startsWith("#") || colour.startsWith("var(")) ? colour : "var(--border)"}` },
           });
-      legend.appendChild(el("span", { class: "legend-item" }, [
+      legend.appendChild(el("span", { class: "legend-item" + (colour === "none" ? " muted" : "") }, [
         swatch,
         el("span", { text: label }),
       ]));

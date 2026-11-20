@@ -347,6 +347,11 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     controls the scripts wire and re-press; the wrapper is layout and is
               #     never written to.
               "nw-filters",
+              # The shared pager hosts: populated by `renderPager` through a variable id, so the
+              # scanner cannot see a literal getElementById; each is written on every page change.
+              "nw-table-pager", "nw-detail-table-pager", "nw-hosts-table-pager",
+              "anomalies-table-pager", "nf-detail-table-pager", "zk-hosts-table-pager",
+              "sl2-rules-pager", "audit-table-pager", "nz-feed-pager",
               #   as-scope-note: static copy for the Assets inventory's monitored-only rule. The
               #     server enforces the scope; the span states it, so there is deliberately no
               #     client writer and the id is a test anchor, not an empty placeholder.

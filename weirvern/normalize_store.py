@@ -14,8 +14,92 @@ from typing import Any
 from clickhouse_connect.driver.client import Client
 
 from weirvern import normalize
+from weirvern.admin import timewindow
 
 logger = logging.getLogger(__name__)
+
+_ALERT_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def _hour_key(value: Any) -> str:
+    """The UTC hour a timestamp falls in, as a comparable string ('' when unreadable)."""
+    if isinstance(value, datetime):
+        return value.replace(minute=0, second=0, microsecond=0).isoformat(sep=" ")
+    text = str(value or "").replace("T", " ")[:19]
+    try:
+        return datetime.fromisoformat(text).replace(minute=0, second=0, microsecond=0).isoformat(sep=" ")
+    except ValueError:
+        return ""
+
+
+def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) -> dict[str, Any]:
+    """Which alert the row's own activity raised: Ripple, Anomaly, both, or a measured neither.
+
+    SERVER-SIDE, ONE TRUTH (operator, 2026-11-20: "normalize needs an Alert column"). The feed
+    row is matched against the SAME two sources the Alerts tab reads:
+
+      * `ml_ripple_evidence` for the host, the feed lane's channel (`dns` for a DNS row,
+        `conn`/`flow` for a flow or Zeek row) and the hour the traffic was last seen;
+      * `netflow_anomalies` for the host and that same hour.
+
+    Both reads obey the console's global window (`timewindow.w`), so an absolute range answered
+    here is the range the rest of the page answers. A FAILED READ IS NOT "NO ALERT": it sets
+    `available: false` and the column says the join could not be read.
+    """
+    w = timewindow.w(hours)
+    params = {"since": w["since"], "until": w["until"]}
+    ripples: set[tuple[str, str, str]] = set()
+    models: dict[tuple[str, str], str] = {}
+    errors: dict[str, str] = {}
+    try:
+        res = client.query(
+            "SELECT DISTINCT src_addr, channel, window_start "
+            "FROM weirvern.ml_ripple_evidence FINAL "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s",
+            parameters=params,
+        )
+        for r in getattr(res, "result_rows", None) or []:
+            ripples.add((str(r[0] or ""), str(r[1] or "").lower(), _hour_key(r[2])))
+    except Exception as exc:  # noqa: BLE001 - one source, never the feed
+        logger.warning("normalize alert join (ripples) failed: %s", exc)
+        errors["ripples"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+    try:
+        res = client.query(
+            "SELECT src_addr, window_start, severity FROM weirvern.netflow_anomalies "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s LIMIT 50000",
+            parameters=params,
+        )
+        for r in getattr(res, "result_rows", None) or []:
+            key = (str(r[0] or ""), _hour_key(r[1]))
+            band = str(r[2] or "").lower()
+            if _ALERT_RANK.get(band, 0) > _ALERT_RANK.get(models.get(key, ""), 0):
+                models[key] = band
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normalize alert join (model anomalies) failed: %s", exc)
+        errors["models"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+    for r in rows:
+        src = str(r.get("src_addr") or "")
+        keys = {k for k in (_hour_key(r.get("first_seen")), _hour_key(r.get("last_seen"))) if k}
+        channels = {"dns"} if r.get("source") == "dns" else {"conn", "flow"}
+        ripple_hit = sorted({h for (host, ch, h) in ripples
+                             if host == src and ch in channels and h in keys})
+        model_hits = sorted({h for (host, h) in models if host == src and h in keys})
+        kinds = []
+        if ripple_hit:
+            kinds.append("Ripple")
+        if model_hits:
+            kinds.append("Anomaly")
+        r["alert_kind"] = " + ".join(kinds) if kinds else "—"
+        r["alert_band"] = max((models.get((src, h), "") for h in model_hits),
+                              key=lambda b: _ALERT_RANK.get(b, 0), default="")
+        r["alert_ref"] = {
+            "host": src,
+            "kinds": kinds,
+            "ripple_window": ripple_hit[0] if ripple_hit else "",
+            "model_window": model_hits[0] if model_hits else "",
+        }
+    return {"available": not errors, "errors": errors}
 
 # A /24 for IPv4 and the address itself otherwise. IPv6 is left whole: a /64 is the smallest
 # block worth calling a segment, but slicing the text of a v6 literal by '.' is meaningless, and
@@ -209,8 +293,13 @@ def feed(client: Client, *, hours: int = 24, source: str = "", segment: str = ""
         logger.debug("normalize older probe failed: %s", exc)
 
     newest = rows[0]["last_seen"] if rows else ""
+    # THE ALERT COLUMN, JOINED SERVER-SIDE (operator, 2026-11-20). It is computed after the row
+    # set is final so the column describes exactly the rows on this page.
+    alerts = _annotate_alerts(client, rows, hours=hours)
     return {"available": True, "reason": "", "rows": rows, "entries": live,
             "summary": normalize.summarise(live),
+            "alert_available": alerts["available"],
+            "alert_reason": "; ".join(f"{k}: {v}" for k, v in alerts["errors"].items()),
             "window": {"offset": offset, "hours": hours, "newest": newest, "older": older}}
 
 

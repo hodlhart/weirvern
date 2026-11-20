@@ -2487,39 +2487,60 @@ async function loadDetectors() {
   registryApplyFlash();
 }
 
-function anRenderSeverity(sc) {
-  const box = document.getElementById("an-sev");
+/** ONE COUNTER COMPONENT, USED TWICE (operator, 2026-11-20: "the model anomalies criticality
+ * counters to look like the ripple ones"). Both the Alerts ripple header and the Model
+ * anomalies header render through this helper and the SAME `.sev-tiles .tile` markup, so
+ * geometry, type scale, band order and colours cannot drift between the two lists.
+ *
+ * A tile is a real button: native Enter/Space, `aria-pressed` for the active band, a 44px
+ * minimum target (CSS), and a second click clears the band (the caller decides by passing the
+ * same band back). `unclassified` is a real band with its own count, never a catch-all.
+ */
+function renderBandCounters(hostId, totals, activeBand, onSelect, opts = {}) {
+  const box = document.getElementById(hostId);
   if (!box) return;
   box.replaceChildren();
-  // THE TILES SPEAK THE SAME BAND VOCABULARY AS THE CHIPS. `band_counts` is the server's fold
-  // of the ensemble's four severities onto high/medium/low/unclassified; it is the same helper
-  // that stamps every row's `severity_band`. Clicking a band sets the same filter the row chip
-  // names, so the tile and the list cannot disagree about what "high" means.
+  const order = CRITICALITY_BANDS;
+  const sorted = order.filter((b) => Number(totals[b] || 0)).map((b) => ({ band: b, count: Number(totals[b]) }));
+  if (!sorted.length) {
+    box.appendChild(el("span", { class: "muted", text: opts.empty || "No findings in this window to split by criticality." }));
+    return;
+  }
+  for (const c of sorted) {
+    const active = String(activeBand || "") === c.band;
+    const tile = el("button", {
+      class: "tile" + (active ? " active" : ""),
+      attrs: {
+        type: "button",
+        "aria-pressed": active ? "true" : "false",
+        "aria-label": active ? `clear the ${c.band} filter` : `filter the list to ${c.band}`,
+      },
+    }, statCells(c.band, String(c.count), { vClass: "sev-" + c.band }));
+    tile.addEventListener("click", () => onSelect(c.band));
+    box.appendChild(tile);
+  }
+}
+
+function anRenderSeverity(sc) {
   const counts = (sc && sc.available) ? (sc.counts || []) : [];
   if (!counts.length) {
+    const box = document.getElementById("an-sev");
+    if (!box) return;
+    box.replaceChildren();
     box.appendChild(el("span", { class: "muted", text: sc && !sc.available
       ? `Criticality counts unavailable \u2014 ${sc.reason || "the read did not run"}.`
       : "No anomalies in this window to split by criticality." }));
     return;
   }
-  const order = CRITICALITY_BANDS;
-  // Fold defensively too: an older payload can carry both `critical` and `high`, which are the
-  // same band. The server's `band_counts` is already merged; this makes the fallback equal.
+  // Fold defensively: an older payload can carry both `critical` and `high`, which are the same
+  // band. The server's `band_counts` is already merged; this makes the fallback equal.
   const totals = {};
   for (const c of counts) {
     const band = bandValue(c.band || c.severity);
     totals[band] = (totals[band] || 0) + Number(c.count || 0);
   }
-  const sorted = order.filter((b) => totals[b]).map((b) => ({ band: b, count: totals[b] }));
-  for (const c of sorted) {
-    const band = bandValue(c.band);
-    const active = AN_FILTERS.severity === band;
-    const tile = el("button", { class: "tile" + (active ? " active" : ""),
-      attrs: { title: active ? "click to remove this filter" : `filter the page to ${band}` } },
-      statCells(band, String(c.count), { vClass: "sev-" + band }));
-    tile.addEventListener("click", () => anSetFilter("severity", active ? "" : band));
-    box.appendChild(tile);
-  }
+  renderBandCounters("an-sev", totals, AN_FILTERS.severity,
+    (band) => anSetFilter("severity", AN_FILTERS.severity === band ? "" : band));
 }
 
 /** THE ML SIGNPOST IN THE RIPPLES HEADER (operator, 2026-11-20).
@@ -2619,7 +2640,7 @@ function anClearAllFilters() {
  * any kind. The list is paginated with the house pager because the window can hold a day of
  * ripples, and every empty answer names the measurement that produced it.
  */
-const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25, bands: null };
+const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25, bands: null, band: "" };
 let RIPPLE_SHEET = null;
 
 /** A server timestamp in milliseconds. Naive ISO strings are UTC, like the server's clock. */
@@ -2955,8 +2976,12 @@ function renderRipplePage(data) {
   RIPPLES_STATE.bands = (data && data.severity_bands) || null;
   const nextHours = Number((data && data.window_hours) || 0) || null;
   // THE PAGE IS KEPT ACROSS REFRESHES, and reset only when the window changed: a 15-second
-  // refresh must not throw an operator off page 3 of the same window.
-  if (nextHours !== RIPPLES_STATE.hours) RIPPLES_STATE.page = 1;
+  // refresh must not throw an operator off page 3 of the same window. The BAND filter resets
+  // with the window too, exactly like the model list's severity filter.
+  if (nextHours !== RIPPLES_STATE.hours) {
+    RIPPLES_STATE.page = 1;
+    RIPPLES_STATE.band = "";
+  }
   RIPPLES_STATE.hours = nextHours;
   const note = document.getElementById("rp-note");
   const count = document.getElementById("rp-count");
@@ -2993,18 +3018,49 @@ function renderRipplePage(data) {
     if (typeof syncViewHeaderCounts === "function") syncViewHeaderCounts();
     return;
   }
-  const rows = data.ripples || [];
-  if (count) count.textContent = `${rows.length} alert${rows.length === 1 ? "" : "s"} · ${hours}h`;
+  const allRows = data.ripples || [];
+  // ONE COUNTER COMPONENT, TWO LISTS. Counts are computed from the UNFILTERED payload, so a
+  // selected band's tile keeps its count and the operator can see what clearing it restores.
+  const totals = {};
+  for (const r of allRows) {
+    const band = bandValue(rippleBand(r, RIPPLES_STATE.bands));
+    totals[band] = (totals[band] || 0) + 1;
+  }
+  renderBandCounters("rp-sev", totals, RIPPLES_STATE.band, (band) => {
+    RIPPLES_STATE.band = RIPPLES_STATE.band === band ? "" : band;
+    RIPPLES_STATE.page = 1;
+    renderRipplePage(RIPPLES_STATE.data);
+    if (typeof scheduleURLSync === "function") scheduleURLSync();
+  }, { empty: `No ripples in this ${hours}h window to split by criticality.` });
+  const rows = RIPPLES_STATE.band
+    ? allRows.filter((r) => bandValue(rippleBand(r, RIPPLES_STATE.bands)) === RIPPLES_STATE.band)
+    : allRows;
+  if (count) {
+    count.textContent = RIPPLES_STATE.band
+      ? `${rows.length} of ${allRows.length} alerts \u00b7 ${hours}h \u00b7 ${RIPPLES_STATE.band} only`
+      : `${allRows.length} alert${allRows.length === 1 ? "" : "s"} \u00b7 ${hours}h`;
+  }
   if (note) {
-    note.textContent = rows.length
-      ? `${rows.length} alert${rows.length === 1 ? "" : "s"} in the last ${hours}h, newest first. Ripples come first; model detections below corroborate them. Alerts collects ripples and model detections. This page is a record: it does not send notifications.`
-      : `No alert in the last ${hours}h. The scales and baseline counts below say what the engine could measure. Alerts collects ripples and model detections. This page is a record: it does not send notifications.`;
+    const base = `Ripples come first; model detections below corroborate them. Alerts collects ripples and model detections. This page is a record: it does not send notifications.`;
+    note.textContent = RIPPLES_STATE.band
+      ? `${rows.length} ${RIPPLES_STATE.band} alert${rows.length === 1 ? "" : "s"} of ${allRows.length} in the last ${hours}h \u2014 the ${RIPPLES_STATE.band} counter is the filter; click it again to clear. ${base}`
+      : rows.length
+        ? `${rows.length} alert${rows.length === 1 ? "" : "s"} in the last ${hours}h, newest first. ${base}`
+        : `No alert in the last ${hours}h. The scales and baseline counts below say what the engine could measure. ${base}`;
   }
   if (!rows.length) {
+    const message = RIPPLES_STATE.band
+      ? `No ${RIPPLES_STATE.band} alert in the last ${hours}h \u2014 the ${RIPPLES_STATE.band} counter is the active filter. Clear it to see all ${allRows.length}.`
+      : `No alert in the last ${hours}h \u2014 the scale and baseline detail is above.`;
     if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
-      text: `No alert in the last ${hours}h — the scale and baseline detail is above.` })]));
-    renderRippleEmpty(data);
-    if (empty) empty.classList.remove("hidden");
+      text: message })]));
+    if (!RIPPLES_STATE.band) renderRippleEmpty(data);
+    if (empty) {
+      // The filtered-empty case names the filter; the unfiltered case keeps the scale/baseline
+      // block renderRippleEmpty just wrote (it is the measurement the page promises).
+      if (RIPPLES_STATE.band) empty.replaceChildren(el("p", { text: message }));
+      empty.classList.remove("hidden");
+    }
   } else {
     renderRippleRows(rows);
     renderRippleLegend(data, rows);
@@ -6137,6 +6193,23 @@ function startAuto(seconds) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  // ── ONE PAGER FOR EVERY LONG TABLE (operator, 2026-11-20) ────────────────────────────────
+  // Wired here, once, because every script is parsed by DOMContentLoaded. Registration is a
+  // registry: the paginator test reads PAGED_TABLES plus BOUNDED_TABLES and fails on a table
+  // that is in neither, so a new long table cannot ship unpaginated.
+  if (typeof wireTablePager === "function") {
+    for (const [id, label] of [
+      ["nw-table", "Network edges"],
+      ["nw-detail-table", "connection detail"],
+      ["nw-hosts-table", "Network hosts"],
+      ["anomalies-table", "model alerts"],
+      ["nf-detail-table", "flow drill-down"],
+      ["zk-hosts-table", "Zeek hosts"],
+      ["sl2-rules", "Sluice rules"],
+      ["audit-table", "write trail"],
+      ["nz-feed", "Normalize feed"],
+    ]) wireTablePager(id, label);
+  }
   for (const t of document.querySelectorAll(".tab")) {
     t.addEventListener("click", () => showView(t.dataset.view));
   }
@@ -8143,6 +8216,12 @@ function syncURL() {
   }
   if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
   if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
+  // THE ALERTS LISTS CARRY THEIR OWN BAND KEYS (operator, 2026-11-20): the ripple list and the
+  // model list can be filtered independently, so one key could not restore both.
+  if (AN_FILTERS.severity) p.set("al.model_band", AN_FILTERS.severity);
+  if (RIPPLES_STATE.band) p.set("al.band", RIPPLES_STATE.band);
+  if (window.NZ_FEED && window.NZ_FEED.band()) p.set("nz.band", window.NZ_FEED.band());
+  if (window.NZ_FEED && window.NZ_FEED.kind()) p.set("nz.kind", window.NZ_FEED.kind());
   if (AN_FILTERS.model) p.set("an.model", AN_FILTERS.model);
   if (AN_FILTERS.feature) p.set("an.feature", AN_FILTERS.feature);
   // US-10: the write trail's filters ride the URL too.
@@ -8266,6 +8345,17 @@ function applyURLState() {
   }
   if (p.get("an.host")) AN_FILTERS.host = p.get("an.host");
   if (p.get("an.sev")) AN_FILTERS.severity = p.get("an.sev");
+  if (p.get("al.model_band")) {
+    const mb = String(p.get("al.model_band") || "").toLowerCase();
+    if (CRITICALITY_BANDS.includes(mb)) AN_FILTERS.severity = mb;
+  }
+  {
+    const rb = String(p.get("al.band") || "").toLowerCase();
+    RIPPLES_STATE.band = CRITICALITY_BANDS.includes(rb) ? rb : "";
+  }
+  if (window.NZ_FEED && (p.get("nz.band") || p.get("nz.kind"))) {
+    window.NZ_FEED.apply(p.get("nz.band"), p.get("nz.kind"));
+  }
   if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
   if (p.get("an.feature")) AN_FILTERS.feature = p.get("an.feature");
   // US-6: filters that came from the URL are not this screen's choices -- say so.
