@@ -529,6 +529,18 @@ class Settings:
     scan_claim_interval_s: int = field(
         default_factory=lambda: _env_int("SCAN_CLAIM_INTERVAL_S", 10)
     )
+    # ── the one-click installer (memory-only sudo path) ───────────────────────────────────────
+    # THE CONSOLE'S DOOR TO THE GATEWAY, and the single-scope credential it presents. Mounted
+    # only into the console and the ingest pods; never into ClickHouse, never into a unit that
+    # does not need it. Empty means the path is closed (the console refuses, the gateway refuses
+    # with its own sentence) -- an absent credential is never "everyone may install".
+    gateway_url: str = field(default_factory=lambda: os.environ.get("WEIRVERN_GATEWAY_URL", ""))
+    gateway_ca: str = field(default_factory=lambda: os.environ.get("WEIRVERN_GATEWAY_CA", ""))
+    scan_install_token: str = field(
+        default_factory=lambda: os.environ.get("WEIRVERN_SCAN_INSTALL_TOKEN", ""))
+    # How often a weirling asks whether the hub has an install request for it.
+    scan_install_interval_s: int = field(
+        default_factory=lambda: _env_int("SCAN_INSTALL_INTERVAL_S", 5))
 
 
     # Models

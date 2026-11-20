@@ -96,9 +96,41 @@ docker build -t weirvern-scan:sha-<commit>   -f Containerfile.scanner .
 
 `weirvern-scan` is the Nmap-capable image `scripts/deploy-weirling.sh` ships to each sensor's
 agent container. If it is absent, the unit still deploys and reports `nmap missing`; the console
-renders the exact install command for that host's OS and a **Prepare this weirling** button that
-copies it (there is no shell channel from the hub to a sensor). Full detail, per-distro commands
-and the queue's derived states: [scanner.md](scanner.md).
+renders the exact install command for that host's OS.
+
+### Installing Nmap on a weirling: two paths
+
+**Scoped sudoers — recommended, no password.** Give the agent's user one sudoers entry (for
+example `/etc/sudoers.d/weirvern-nmap`) that permits exactly the package manager's install
+command and nothing else. The agent then reports `sudo_state=passwordless`, the console offers
+**Install nmap** with no password field, and one click is enough. Nothing secret ever leaves the
+host, and the privilege is bounded by a command allow-list rather than by root. This is the path
+to use on a fleet.
+
+**One-click prompt — the fallback.** When the agent reports `sudo_state=password`, the console
+shows a single field labelled *sudo password for &lt;host&gt;*. On submit the password travels in the
+POST body to the console, then over the cluster network to the ingest gateway, which holds it in
+memory for at most five minutes; the target weirling picks it up on its own mTLS poll, pipes it
+to `sudo -S`, and the buffer is overwritten. It is never written to ClickHouse, never an
+environment variable, never a log line, never an audit row and never a response. The audit
+records the actor, host, command, exit code, timestamp and the fact that a password was used —
+not the secret. Three attempts per host per ten minutes; the request expires after five. If the
+package manager cannot be detected, or the user is not in sudoers, the Install button is
+replaced by the copy-command line rather than a prompt that cannot work.
+
+**The tradeoff, in one paragraph.** The scoped-sudoers path removes the password from the flow
+entirely and survives a console outage, but it grants a standing privilege on the host. The
+prompt path grants nothing standing — the password is used once and discarded — but it depends
+on a console and gateway being up, on the operator typing a real secret into a browser, and on
+an in-memory request the operator must complete within five minutes. Prefer the first; use the
+second when the host cannot be given a sudoers entry.
+
+The install request is addressed to ONE registered weirling and delivered only over that
+unit's authenticated channel; an unregistered, revoked or disabled host is refused, and the
+console and gateway share one single-scope credential (`WEIRVERN_SCAN_INSTALL_TOKEN`) that
+opens the install routes and nothing else.
+
+Full detail, per-distro commands and the queue's derived states: [scanner.md](scanner.md).
 
 ## Deployment
 

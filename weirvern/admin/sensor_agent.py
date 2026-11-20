@@ -699,6 +699,34 @@ def _scan_worker(settings, sid: str, stop: threading.Event) -> None:
         stop.wait(interval)
 
 
+def _install_worker(settings, sid: str, stop: threading.Event) -> None:
+    """Run one-click Nmap install requests the hub delivers over this unit's mTLS channel.
+
+    THE PASSWORD IS NEVER LOGGED, NEVER STORED AND NEVER RE-SENT: it arrives in the request,
+    goes straight to sudo's stdin, and the buffer is overwritten afterwards. Only the outcome
+    (exit code, redacted output) travels back.
+    """
+    from weirvern import install_requests  # noqa: PLC0415
+
+    interval = max(5, int(getattr(settings, "scan_install_interval_s", 5)))
+    client = None
+    while not stop.is_set():
+        try:
+            if client is None:
+                client = connect(settings)
+            if getattr(client, "is_gateway", False):
+                request = client.install_next()
+                if request:
+                    result = install_requests.run_local(settings, request)
+                    client.install_result(str(request.get("request_id") or ""), result)
+                    logger.info("install: request %s -> %s", request.get("request_id"),
+                                "done" if result.get("ok") else "failed")
+        except Exception as exc:  # noqa: BLE001 - the heartbeat must survive a bad install pass
+            logger.warning("install: poll failed: %s", exc)
+            client = None
+        stop.wait(interval)
+
+
 def required_iface() -> str:
     """ZEEK_IFACE, or refuse: a unit without its capture port is a unit without a job."""
     iface = (os.environ.get("ZEEK_IFACE") or "").strip()
@@ -1136,6 +1164,12 @@ def main() -> None:
     # heartbeat, and it claims nothing unless its own Nmap measurement says it can.
     threading.Thread(target=_scan_worker, args=(settings, sid, stop), daemon=True,
                      name="scan-worker").start()
+
+    # THE ONE-CLICK INSTALLER'S OTHER END. It polls the hub for an install request addressed
+    # to THIS unit and runs only the allow-listed Nmap command; a password, when the host needs
+    # one, arrives over the same mTLS channel and never touches disk or a log line.
+    threading.Thread(target=_install_worker, args=(settings, sid, stop), daemon=True,
+                     name="install-worker").start()
 
     # THE UNIT'S OWN INTERCEPT, FROM ITS OWN PLAN. Nothing is armed until a plan says so: this
     # object starts inert and `refresh_plan` (below, once per PLAN_REFRESH_S) is the only thing

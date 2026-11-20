@@ -1809,6 +1809,46 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = payloads.scan_job_failure(exc)
         return jsonify(payload), code
 
+    @app.post("/api/weirlings/<sensor_id>/install")
+    def weirling_install(sensor_id: str):
+        """One-click Nmap install on ONE weirling. Admin only; the password is never echoed.
+
+        The body may carry `sudo_password`, which is read here, forwarded to the gateway over
+        the cluster network, and never written to a response, a log line or an audit row. The
+        console's own templates render this through `fetch`, so it never enters a URL.
+        """
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        reason = str(body.get("reason") or "").strip()
+        password = body.get("sudo_password")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.weirling_install(
+                    client, ctx.settings, sensor_id=sensor_id, reason=reason,
+                    actor=_scan_actor(),
+                    sudo_password=(str(password) if password else None))
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.scan_job_failure(exc)
+        return jsonify(payload), code
+
+    @app.get("/api/weirlings/install/<request_id>")
+    @gated
+    def weirling_install_status(request_id: str):
+        """Poll one install request. The gateway's answer has no secret in it."""
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        code, payload = payloads.weirling_install_status(ctx.settings, request_id)
+        return jsonify(payload), code
+
     @app.post("/api/sluice/block")
     def sluice_block():
         from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415

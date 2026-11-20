@@ -240,6 +240,16 @@ class GatewayClient:
         return bool(self._request("POST", "/v1/scan/result",
                                   {"job_id": job_id, "result": result}).get("ok"))
 
+    def install_next(self) -> dict | None:
+        """Claim a pending Nmap install for THIS unit, or None. The password, when one is
+        needed, arrives in this response over mTLS and is never written anywhere."""
+        request = self._request("GET", "/v1/scan/install/next").get("request")
+        return request if isinstance(request, dict) else None
+
+    def install_result(self, request_id: str, result: dict) -> bool:
+        return bool(self._request("POST", "/v1/scan/install/result",
+                                  {"request_id": request_id, **result}).get("ok"))
+
     def gate_rules(self) -> dict:
         return self._request("GET", "/v1/gate/rules")
 

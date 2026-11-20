@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.23.118 — 2026-11-20
+
+ONE-CLICK NMAP INSTALL ON A WEIRLING — the memory-only sudo path, and a cancel button that
+actually uses the route it was promised.
+
+- **A weirling can install Nmap without a shell channel.** The console asks the ingest gateway
+  (`POST /v1/scan/install`) for one registered host; the gateway holds the request in MEMORY for
+  five minutes and the target unit picks it up on its own authenticated mTLS poll
+  (`GET /v1/scan/install/next`), runs it, and reports the outcome. There is no inbound connection
+  to a sensor and no durable row: the request table is a process-local dict, so the sudo password
+  cannot be read out of ClickHouse, a ConfigMap, an environment variable or a backup.
+- **The password is used once and never recorded.** It arrives in the POST body, is forwarded
+  over the cluster network, delivered once to the unit, piped to `sudo -S` and the buffer is
+  overwritten. Three attempts per host per ten minutes; the prompt expires after five. The audit
+  row names the actor, host, command, exit code, timestamp and the FACT that a password was used
+  — never the secret. Tests search every serialised payload, log line and audit row for it.
+- **Only the shipped Nmap command can run.** The request carries a distro id and version; the
+  hub and the weirling each recompute the command from `scanner.nmap_install_command` and refuse
+  a mismatch. A crafted family string is a refusal, not an argument.
+- **One path, no dead ends.** `sudo_state=root|passwordless` gets one click and NO password
+  field; only `password` shows the field, labelled with the host. An unknown package manager or
+  a user outside sudoers replaces the button with the copy-command line rather than a prompt that
+  cannot work. The sheet streams the command's output, then one line: `nmap 7.95 installed; this
+  weirling can scan <networks>`, and the readiness card refreshes in place.
+- **The service credential is single-scope.** `WEIRVERN_SCAN_INSTALL_TOKEN` is a separate Secret
+  key mounted only into the console and the ingest gateway; it opens the two install routes and
+  nothing else, and an unset credential refuses (503) rather than accepting every caller. A
+  request for an unregistered, revoked or disabled host is refused before a request exists, and
+  a viewer cannot create one (403 before the body is read).
+- **The console's Cancel button now calls the DELETE route.** It was still POSTing to a
+  `/cancel` path the server no longer serves, and it collected no reason. It now reveals a
+  required reason field, sends `DELETE /api/scan-jobs/<id>` with that reason, and prints the
+  server's own receipt; a running job's 202 says the weirling has not confirmed and the row stays.
+  The DOM harness pins the DELETE route, the reason in the body and the receipt.
+- **A 390px fix on the same sheet.** The scanner table (415px inside a 336px card) had no
+  scroller and widened the page, so a phone opened every view scrolled sideways. The card keeps
+  its width and the table scrolls inside it.
+
 ## 0.23.117 — 2026-11-20
 
 NUCLEI IS REMOVED, AND SCANNING BECOMES A MEASURED FLEET CAPABILITY. A scan is now queued only

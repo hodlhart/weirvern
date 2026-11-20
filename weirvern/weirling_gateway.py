@@ -713,6 +713,96 @@ class Gateway:
         finally:
             client.close()
 
+    def install_create(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Create an in-memory install request for ONE registered weirling.
+
+        THE HOST IS CHECKED, not trusted: an unknown, revoked or disabled registration is a
+        403, and the request never exists. `sudo_password` is accepted only when the caller says
+        the host needs one; it is stored as bytes, never echoed, and dropped on delivery.
+        """
+        from weirvern import install_requests  # noqa: PLC0415
+
+        host_id = str(body.get("host_id") or "").strip()
+        if not host_id:
+            return 400, {"error": "host_id is required"}
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, host_id)
+            if err:
+                return err
+        finally:
+            client.close()
+        try:
+            request = install_requests.STORE.create(
+                host_id=host_id,
+                family=str(body.get("distro_family") or ""),
+                version=str(body.get("distro_version") or ""),
+                reason=str(body.get("reason") or ""),
+                actor=str(body.get("actor") or "operator"),
+                password=(str(body.get("sudo_password")) if body.get("sudo_password") else None),
+            )
+        except install_requests.InstallError as exc:
+            return exc.code, {"ok": False, "error": str(exc)}
+        logger.info("install: request %s for %s (%s)", request.request_id, host_id,
+                    request.command)
+        return 200, {"ok": True, **request.public()}
+
+    def install_status(self, request_id: str) -> tuple[int, dict[str, Any]]:
+        from weirvern import install_requests  # noqa: PLC0415
+
+        try:
+            return 200, install_requests.STORE.status(request_id).public()
+        except install_requests.InstallError as exc:
+            return exc.code, {"ok": False, "error": str(exc)}
+
+    def install_next(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        """The weirling's own pickup: ONE pending request for THIS host, password delivered once."""
+        from weirvern import install_requests  # noqa: PLC0415
+
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+        finally:
+            client.close()
+        request = install_requests.STORE.claim(sensor_id)
+        return 200, {"request": request or None}
+
+    def install_result(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Record the outcome and the FACT of the install; the secret was never part of it."""
+        from weirvern import install_requests  # noqa: PLC0415
+
+        request_id = str(body.get("request_id") or "").strip()
+        if not request_id:
+            return 400, {"error": "request_id is required"}
+        ok = bool(body.get("ok"))
+        exit_code = body.get("exit_code")
+        try:
+            request = install_requests.STORE.result(
+                request_id, sensor_id, ok=ok,
+                exit_code=(int(exit_code) if isinstance(exit_code, int) else None),
+                output=str(body.get("output") or ""),
+                nmap_version=str(body.get("nmap_version") or ""),
+                scan_mode=str(body.get("scan_mode") or ""))
+        except install_requests.InstallError as exc:
+            return exc.code, {"ok": False, "error": str(exc)}
+        client = self.client()
+        try:
+            # THE AUDIT SURVIVES THE REQUEST (which does not: it is in memory). It names the
+            # actor, host, command and outcome, and THAT a password was used -- never the value.
+            fleet_store.write_audit(
+                client, scope="scan", action="nmap_install",
+                target=f"{sensor_id} {request.command}"[:400],
+                reason=(f"{request.reason}; exit {request.exit_code}"
+                        f"{'; sudo password used' if request.password_used else ''}")[:400],
+                actor=request.actor)
+        finally:
+            client.close()
+        logger.info("install: %s on %s -> %s", request_id, sensor_id,
+                    "done" if request.state == "done" else "failed")
+        return 200, {"ok": True, "request_id": request_id, "state": request.state}
+
     def renew(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         client = self.client()
         try:
@@ -769,6 +859,26 @@ def _make_handler(gateway: Gateway):
                 self._json(401, {"error": "a valid weirling client certificate is required"})
             return sid
 
+        def _service(self) -> bool:
+            """THE INSTALL SERVICE CREDENTIAL: one bearer, one scope, compared in constant time.
+
+            It is mounted only into the console and this gateway, and it opens exactly the
+            install routes -- a bearer that leaked cannot read flows, write a heartbeat or
+            claim a scan. An unset credential refuses rather than accepting everything.
+            """
+            configured = str(getattr(gateway.settings, "scan_install_token", "") or "")
+            if not configured:
+                self._json(503, {"error": "the install service credential is not configured "
+                                          "on this gateway"})
+                return False
+            presented = self.headers.get("X-Weirvern-Scan-Install", "")
+            from weirvern import install_requests  # noqa: PLC0415
+
+            ok, code, message = install_requests.service_credential(gateway.settings, presented)
+            if not ok:
+                self._json(code, {"error": message})
+            return ok
+
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path == "/v1/healthz":
@@ -802,6 +912,17 @@ def _make_handler(gateway: Gateway):
                 from urllib.parse import unquote  # noqa: PLC0415
 
                 return self._json(*gateway.scan_cancel(sid, unquote(job_id)))
+            if path == "/v1/scan/install/next":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.install_next(sid))
+            if path.startswith("/v1/scan/install/"):
+                if not self._service():
+                    return
+                from urllib.parse import unquote  # noqa: PLC0415
+
+                return self._json(*gateway.install_status(unquote(path.rsplit("/", 1)[-1])))
             if path == "/v1/gate/rules":
                 sid = self._sensor()
                 if not sid:
@@ -822,6 +943,16 @@ def _make_handler(gateway: Gateway):
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(*gateway.enroll(body))
+            if path == "/v1/scan/install":
+                # SERVICE CREDENTIAL, NOT A SENSOR CERT: this is the console asking the hub to
+                # deliver an install request to one weirling on its next poll.
+                if not self._service():
+                    return
+                try:
+                    body = self._body()
+                except ValueError as exc:
+                    return self._json(400, {"error": str(exc)})
+                return self._json(*gateway.install_create(body))
             sid = self._sensor()
             if not sid:
                 return
@@ -845,6 +976,8 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.scan_capability(sid, body))
             if path == "/v1/scan/result":
                 return self._json(*gateway.scan_result(sid, body))
+            if path == "/v1/scan/install/result":
+                return self._json(*gateway.install_result(sid, body))
             if path == "/v1/gate/state":
                 return self._json(*gateway.gate_write_state(sid, body))
             if path == "/v1/gate/events":

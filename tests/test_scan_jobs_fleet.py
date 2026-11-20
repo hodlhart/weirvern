@@ -302,6 +302,13 @@ def test_a_viewer_cannot_create_or_cancel_a_scan():
                        json={"job_ids": ["job-1"], "reason": "not mine"}, headers=headers)
     assert bulk.status_code == 403, bulk.data
 
+    # THE INSTALLER IS A WRITE TOO, and it is the one that takes a sudo password. A viewer must
+    # be refused before the body is read, so the secret is never even parsed for them.
+    install = client.post("/api/weirlings/wl-a/install",
+                          json={"reason": "install nmap", "sudo_password": "hunter2"},
+                          headers=headers)
+    assert install.status_code == 403, install.data
+
 
 def test_an_admin_gets_past_the_same_gate():
     """THE NEGATIVE CONTROL: the 403s above are the role, not a route that always refuses."""

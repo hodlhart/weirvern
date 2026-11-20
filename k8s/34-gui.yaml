@@ -133,6 +133,21 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # THE ONE-CLICK INSTALLER'S DOOR. The console calls the ingest gateway server-side
+            # (a weirling is outbound-only, so the hub cannot open a connection to it) and
+            # presents the single-scope service credential from the Secret. Both the URL and
+            # the CA are explicit: the gateway's certificate is signed by the Weirling local
+            # CA, which is not in the system trust store.
+            - name: WEIRVERN_GATEWAY_URL
+              value: "https://weirvern-ingest:8443"
+            - name: WEIRVERN_GATEWAY_CA
+              value: /etc/weirling-root/root-ca.crt
+            - name: WEIRVERN_SCAN_INSTALL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: weirvern-secrets
+                  key: WEIRVERN_SCAN_INSTALL_TOKEN
+                  optional: true
           envFrom:
             - configMapRef:
                 name: weirvern-env
@@ -200,6 +215,11 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            # THE GATEWAY'S ROOT CA, for the server-side install call. `verify=` needs the same
+            # root that signed the ingest certificate; it is the weirling root, already a Secret.
+            - name: weirling-root
+              mountPath: /etc/weirling-root
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
         # bytecode caches and temp files. An emptyDir is the minimum that allows.
@@ -222,6 +242,12 @@ spec:
         - name: models
           persistentVolumeClaim:
             claimName: models
+        - name: weirling-root
+          secret:
+            secretName: weirling-root
+            items:
+              - key: root-ca.crt
+                path: root-ca.crt
 ---
 apiVersion: v1
 kind: Service

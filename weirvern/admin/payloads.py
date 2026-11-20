@@ -1842,6 +1842,96 @@ def scan_jobs_cancel(client: Client, *, job_ids: list[str], reason: str,
     }
 
 
+def weirling_install(client: Client, settings: Any, *, sensor_id: str, reason: str,
+                     actor: str = "operator", sudo_password: str | None = None
+                     ) -> tuple[int, dict[str, Any]]:
+    """Ask a weirling to install Nmap, with the sudo password only when that host needs one.
+
+    THE PREDICATES ARE CHECKED BEFORE THE GATEWAY IS CALLED, from the capability row the agent
+    itself wrote: an already-capable host is refused (nothing to install), a host with no
+    package manager is refused (the console shows the copy-command line instead), and a host
+    whose user is not in sudoers is refused with that sentence rather than a password prompt
+    that cannot work. A password supplied for a host that does not need one is DROPPED here,
+    not forwarded -- the gateway has no reason to hold a secret it will not use.
+    """
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
+    from weirvern.admin import gateway_call  # noqa: PLC0415
+
+    sid = str(sensor_id or "").strip().lower()
+    why = str(reason or "").strip()
+    if not sid:
+        return 400, {"ok": False, "code": 400, "error": "a weirling id is required"}
+    if not why:
+        return 400, {"ok": False, "code": 400, "refused": "reason_required",
+                     "error": "a reason is required to install Nmap; it is kept in the audit trail"}
+    rows = client.query(
+        "SELECT os_id, os_version, nmap_available, sudo_state "
+        "FROM weirvern.scanner_status FINAL WHERE sensor_id = %(s)s LIMIT 1",
+        parameters={"s": sid},
+    ).result_rows
+    if not rows:
+        return 409, {
+            "ok": False, "code": 409, "refused": "no_capability_report",
+            "error": (f"{sid} has not reported its scan capability yet, so the console does not "
+                      "know which package manager or privilege path applies"),
+        }
+    os_id = str(rows[0][0] or "")
+    os_version = str(rows[0][1] or "")
+    if bool(rows[0][2]):
+        return 409, {"ok": False, "code": 409, "refused": "already_installed",
+                     "error": f"{sid} already reports Nmap; there is nothing to install"}
+    mode = str(rows[0][3] or "unknown")
+    if mode == "none":
+        return 403, {
+            "ok": False, "code": 403, "refused": "no_privilege",
+            "error": (f"{sid}'s user is not in sudoers and is not root; run the command as root "
+                      "on the host instead"),
+        }
+    install = scanner_mod.nmap_install_command(os_id, os_version)
+    if not install.get("known"):
+        return 409, {
+            "ok": False, "code": 409, "refused": "unknown_distro",
+            "error": (f"no package manager was detected for {os_id or 'this OS'}; "
+                      f"copy the command instead: {install.get('command')}"),
+        }
+    password = str(sudo_password or "") if mode == "password" else ""
+    if mode == "password" and not password:
+        return 400, {
+            "ok": False, "code": 400, "refused": "sudo_password_required",
+            "error": (f"sudo on {sid} asks for a password; it is used once, over mTLS, and is "
+                      "never stored"),
+        }
+    try:
+        code, payload = gateway_call.install_create(
+            settings, host_id=sid, family=os_id, version=os_version, reason=why,
+            actor=actor, sudo_password=(password or None))
+    except gateway_call.GatewayUnavailable as exc:
+        return 503, {"ok": False, "code": 503, "refused": "install_service_unavailable",
+                     "error": str(exc)}
+    if code != 200:
+        return code, {"ok": False, "code": code,
+                      "error": str(payload.get("error") or "the install request was refused")}
+    # A WHITELIST, NOT THE GATEWAY'S WHOLE ANSWER. There is no password in it by construction;
+    # naming the fields keeps a future addition from accidentally riding into the browser.
+    return 200, {
+        "ok": True, "request_id": str(payload.get("request_id") or ""), "host_id": sid,
+        "command": str(payload.get("command") or ""), "state": str(payload.get("state") or ""),
+        "expires_at": str(payload.get("expires_at") or ""),
+        "password_used": mode == "password",
+    }
+
+
+def weirling_install_status(settings: Any, request_id: str) -> tuple[int, dict[str, Any]]:
+    """Poll one install request. The gateway's public shape never contains the password."""
+    from weirvern.admin import gateway_call  # noqa: PLC0415
+
+    try:
+        return gateway_call.install_status(settings, request_id)
+    except gateway_call.GatewayUnavailable as exc:
+        return 503, {"ok": False, "code": 503, "refused": "install_service_unavailable",
+                     "error": str(exc)}
+
+
 def sluice_block(client: Client, *, by: str, src_cidr: str, dst_cidr: str, domain: str,
                  mode: str, protocol: str, dst_port: int, direction: str, ttl_minutes: int,
                  reason: str, origin: str,

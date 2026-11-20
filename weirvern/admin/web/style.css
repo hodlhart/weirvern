@@ -2228,3 +2228,25 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   #ripples-table, #anomalies-table { display: none; }
   .rp-cards { display: block; }
 }
+
+/* ── The scan sheet's cancel reason, receipt, and the one-click installer (0.23.118) ──────────
+   THE REASON IS PART OF THE ACTION. A queued scan is DELETED (the row is gone; the audit row
+   survives), so the sheet asks for the sentence that outlives it and prints the server's own
+   receipt afterwards. The layout is one row that wraps on a phone, like every other inline form. */
+.scan-cancel-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.scan-cancel-form input { flex: 1 1 220px; min-width: 0; }
+.scan-receipt { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid var(--ok);
+  background: var(--wash-ok); color: var(--fg); }
+.scan-install { margin: 12px 0 4px; padding: 10px 0 2px; border-top: 1px solid var(--line); }
+.scan-install label { display: block; margin: 8px 0 4px; }
+.scan-install input { width: 100%; max-width: 460px; box-sizing: border-box; }
+.scan-install-done { color: var(--ok); }
+.scan-install-output { max-height: 220px; overflow: auto; white-space: pre-wrap;
+  word-break: break-word; font-size: var(--fs-1); background: rgba(0, 0, 0, .25);
+  padding: 8px; border-radius: 4px; }
+
+/* THE SCANNER TABLE IS WIDER THAN A 390px CARD (measured 415px inside 336px), and it had no
+ * scroller: the overflow widened the PAGE, so a phone opened every view scrolled sideways with
+ * the left edge of each card off-screen. The card keeps its width; the table scrolls inside it. */
+.scanner-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }

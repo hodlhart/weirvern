@@ -832,6 +832,12 @@
             aria-label="close this panel (Escape also closes)">Close</button></h2>
   <p id="scan-state-line" class="scan-state-line" role="status" aria-live="polite">Reading the queue…</p>
   <div id="scan-body"></div>
+  <div id="scan-cancel-form" class="scan-cancel-form hidden">
+    <label class="muted" for="scan-cancel-reason">reason (kept in the audit trail)</label>
+    <input id="scan-cancel-reason" type="text" autocomplete="off"
+           value="cancelled by the operator">
+    <button id="scan-cancel-confirm" class="quiet" type="button">Confirm cancel</button>
+  </div>
   <div class="controls sheet-actions">
     <button id="scan-retry" class="quiet hidden" type="button">Retry this scan</button>
     <button id="scan-cancel-job" class="quiet hidden" type="button">Cancel this job</button>

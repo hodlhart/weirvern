@@ -25,8 +25,9 @@ const SCAN_STATE = {
   tickTimer: null,
   inFlight: false,
   renderedKey: "",
-  cancelling: false,
   renderNote: "",
+  receipt: "",
+  cancelling: false,
 };
 
 /* THE FLEET'S CAPABILITY, NOT A SETTING. Who can scan is measured by each weirling's own agent
@@ -181,6 +182,22 @@ async function scanGet(url) {
   return body || {};
 }
 
+/** DELETE with a JSON body. A 202 is a SUCCESS here (the running job was asked to stop), so
+ *  only a non-2xx throws; the caller reads `removed` to tell the two successes apart. */
+async function scanDelete(url, body) {
+  const res = await window.fetch(url, {
+    method: "DELETE",
+    headers: Object.assign({}, requestHeaders(), { "Content-Type": "application/json" }),
+    body: JSON.stringify(body || {}),
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error((data && data.error) || `the cancel was refused (${res.status})`);
+  }
+  return data || {};
+}
+
 function scanSheetEls() {
   return {
     card: document.getElementById("scan-sheet"),
@@ -190,6 +207,9 @@ function scanSheetEls() {
     retry: document.getElementById("scan-retry"),
     check: document.getElementById("scan-check"),
     cancelJob: document.getElementById("scan-cancel-job"),
+    cancelForm: document.getElementById("scan-cancel-form"),
+    cancelReason: document.getElementById("scan-cancel-reason"),
+    cancelConfirm: document.getElementById("scan-cancel-confirm"),
     close: document.getElementById("scan-close"),
     cancel: document.getElementById("scan-cancel"),
   };
@@ -214,6 +234,8 @@ function openScanSheet(jobId, opts = {}) {
   SCAN_STATE.timedOut = "";
   SCAN_STATE.renderedKey = "";
   SCAN_STATE.cancelling = false;
+  SCAN_STATE.receipt = "";
+  SCAN_STATE.renderNote = "";
   els.card.dataset.jobId = id;
   if (els.subject) els.subject.textContent = SCAN_STATE.ip || "";
   if (els.stateLine) els.stateLine.textContent = "Reading the queue…";
@@ -367,7 +389,7 @@ function scanRenderBody() {
     job && job.state_reason, job && job.finished_at, job && job.error,
     SCAN_STATE.timedOut, SCAN_STATE.missingPolls >= 6, SCAN_STATE.cancelling,
     SCAN_READY.loaded, SCAN_READY.enabled, SCAN_READY.reason_unavailable,
-    SCAN_STATE.renderNote,
+    SCAN_STATE.renderNote, SCAN_STATE.receipt,
   ]);
   if (key === SCAN_STATE.renderedKey) return;
   SCAN_STATE.renderedKey = key;
@@ -420,6 +442,9 @@ function scanRenderBody() {
       class: "warn", text: `The queue could not be read: ${SCAN_STATE.renderNote}.`,
     }));
   }
+  if (SCAN_STATE.receipt) {
+    els.body.appendChild(el("p", { class: "scan-receipt", text: SCAN_STATE.receipt }));
+  }
   if (missing) {
     els.body.appendChild(el("p", {
       class: "warn",
@@ -463,16 +488,52 @@ function scanRenderBody() {
   }
 }
 
-/** Cancel a queued job: one POST, and the sheet re-reads the row the server wrote. */
-async function scanCancelJob() {
+/** Reveal the reason field. The server REQUIRES a reason, so the button asks for one before
+ *  it can send anything -- the audit trail is the only surviving record of a deleted row. */
+function scanCancelJob() {
+  const els = scanSheetEls();
+  if (!els.cancelForm) return;
+  els.cancelForm.classList.remove("hidden");
+  if (els.cancelReason) { els.cancelReason.focus(); els.cancelReason.select(); }
+}
+
+/** DELETE the queued job, with its reason, and show the receipt the server wrote. */
+async function scanConfirmCancel() {
+  const els = scanSheetEls();
   const id = String(SCAN_STATE.jobId || "").trim();
+  const reason = String((els.cancelReason && els.cancelReason.value) || "").trim();
   if (!id || SCAN_STATE.cancelling) return;
+  if (!reason) {
+    SCAN_STATE.receipt = "A reason is required to cancel a scan; it is kept in the audit trail.";
+    scanRenderBody();
+    return;
+  }
   SCAN_STATE.cancelling = true;
+  SCAN_STATE.receipt = "";
   scanRenderBody();
   try {
-    await postJSON(`/api/scan-jobs/${encodeURIComponent(id)}/cancel`, {});
+    const data = await scanDelete(`/api/scan-jobs/${encodeURIComponent(id)}`, { reason });
     SCAN_STATE.cancelling = false;
-    await scanPollOnce();
+    if (data.removed) {
+      // THE ROW IS GONE; THE RECEIPT IS THE SERVER'S OWN SENTENCE, not a local claim.
+      SCAN_STATE.receipt = String(data.note
+        || `removed job ${id}; the cancellation is recorded in the audit trail`);
+      SCAN_STATE.job = Object.assign({}, SCAN_STATE.job || {}, {
+        state: "cancelled", derived_state: "cancelled", cancelled: true,
+      });
+      SCAN_STATE.jobId = "";
+      SCAN_STATE.missingPolls = 0;
+      scanStopTimers();
+      scanURLSync();
+      if (els.cancelForm) els.cancelForm.classList.add("hidden");
+      scanRenderBody();
+    } else {
+      // 202: the weirling was asked to stop and has not confirmed. The row STAYS.
+      SCAN_STATE.receipt = String(data.error
+        || "cancellation requested; the weirling has not confirmed");
+      scanRenderBody();
+      scanScheduleNext();
+    }
   } catch (err) {
     SCAN_STATE.cancelling = false;
     SCAN_STATE.renderNote = err && err.message ? err.message : String(err);
@@ -599,6 +660,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   if (els.cancel) els.cancel.addEventListener("click", () => closeScanSheet());
+  if (els.cancelConfirm) els.cancelConfirm.addEventListener("click", () => { scanConfirmCancel(); });
+  if (els.cancelReason) els.cancelReason.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); scanConfirmCancel(); }
+  });
   if (els.retry) els.retry.addEventListener("click", () => { scanRetry(); });
   if (els.check) els.check.addEventListener("click", () => { scanPollOnce(); });
 });

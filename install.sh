@@ -630,12 +630,18 @@ else
     # token identically (writes disabled), so an unset variable is safe by default -- the door is
     # shut rather than open. That is the right default; it just has to be possible to open it.
     GUI_TOKEN=$(openssl rand -base64 24)
+    # THE INSTALLER'S SERVICE CREDENTIAL IS A SEPARATE, SINGLE-SCOPE VALUE. It is not the
+    # operator token: it opens exactly the two install routes on the gateway, so a copy of it
+    # cannot read flows, write a heartbeat or claim a scan. Both the console and the gateway
+    # mount it; nothing else does.
+    INSTALL_TOKEN=$(openssl rand -base64 24)
     kubectl -n "$NAMESPACE" create secret generic weirvern-secrets \
         --from-literal=CLICKHOUSE_PASSWORD="$CH_PASSWORD" \
         --from-literal=WEIRVERN_GUI_TOKEN="$GUI_TOKEN" \
+        --from-literal=WEIRVERN_SCAN_INSTALL_TOKEN="$INSTALL_TOKEN" \
         --from-literal=PUSHOVER_USER_KEY='' \
         --from-literal=PUSHOVER_API_TOKEN='' >/dev/null
-    ok "created weirvern-secrets (ClickHouse password and break-glass operator token generated; Pushover left empty = log-only)"
+    ok "created weirvern-secrets (ClickHouse password, break-glass operator token and scan-install service credential generated; Pushover left empty = log-only)"
 fi
 
 # ── THE FLASK SIGNING KEY ──────────────────────────────────────────────────────────────────────
@@ -655,6 +661,18 @@ else
     kubectl -n "$NAMESPACE" patch secret weirvern-secrets --type merge \
         -p "{\"data\":{\"WEIRVERN_FLASK_SECRET\":\"$(openssl rand -base64 32 | base64 -w0)\"}}" >/dev/null
     ok "generated WEIRVERN_FLASK_SECRET (signs the dashboard's session cookie)"
+fi
+
+# THE INSTALL CREDENTIAL IS BACKFILLED THE SAME WAY, for a deployment installed before this
+# release: the GUI and the gateway read it from the Secret, and an absent key closes the
+# one-click path (503) without breaking anything else.
+if kubectl -n "$NAMESPACE" get secret weirvern-secrets \
+        -o jsonpath='{.data.WEIRVERN_SCAN_INSTALL_TOKEN}' 2>/dev/null | grep -q .; then
+    ok "WEIRVERN_SCAN_INSTALL_TOKEN already set -- left untouched"
+else
+    kubectl -n "$NAMESPACE" patch secret weirvern-secrets --type merge \
+        -p "{\"data\":{\"WEIRVERN_SCAN_INSTALL_TOKEN\":\"$(openssl rand -base64 24 | base64 -w0)\"}}" >/dev/null
+    ok "generated WEIRVERN_SCAN_INSTALL_TOKEN (the console's single-scope install credential)"
 fi
 
 # The schema Job and the pods that mount the Secret were applied before it existed,

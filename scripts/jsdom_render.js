@@ -195,7 +195,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                   openModal, closeModal, markFilterCells,
                    emptyState, emptyStateCell, activeFilterLabels,
                    openScanSheet, closeScanSheet, loadScanQueue, scanPollOnce, SCAN_STATE,
-                   SCAN_READY, loadScanReadiness, scanGate, scanCancelJob,
+                   SCAN_READY, loadScanReadiness, scanGate, scanCancelJob, scanConfirmCancel,
                    openSheet, closeSheet, sheetIsOpen, requestScan,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    showSessionNote, refreshAccountCard,
@@ -10713,9 +10713,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
                              sentence: "1 of 1 weirling can scan 192.0.2.10 (nmap 7.95)",
                              reason_unavailable: "" };
     let scanPosts = [];
+    let scanDeletes = [];
     fetchOverride = (u, o) => {
       const method = String((o || {}).method || "GET").toUpperCase();
       if (method === "POST") { scanPosts.push(String(u)); return null; }
+      if (method === "DELETE") {
+        scanDeletes.push({ url: String(u), body: String((o || {}).body || "") });
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          ok: true, removed: true, job_id: "job-scan-1", ip: "192.0.2.10",
+          reason: "duplicate request",
+          note: "removed job job-scan-1 for 192.0.2.10; the cancellation is recorded in the "
+            + "audit trail",
+        }) };
+      }
       let reply = null;
       if (String(u).includes("/api/scan-readiness")) reply = SCAN_READY_REPLY;
       else if (String(u).includes("/api/scan-jobs")) {
@@ -10816,11 +10826,23 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !needEl("scan-cancel-job").classList.contains("hidden"),
           needEl("scan-cancel-job").className);
     scanPosts = [];
-    await H.scanCancelJob();
-    await new Promise((r) => setTimeout(r, 60));
-    check("...and cancelling talks to that job's cancel route",
-          scanPosts.some((u) => u.includes("/api/scan-jobs/job-scan-1/cancel")),
-          scanPosts.join(" | "));
+    scanDeletes = [];
+    H.scanCancelJob();
+    await new Promise((r) => setTimeout(r, 20));
+    check("...and cancelling asks for the reason the audit needs",
+          !needEl("scan-cancel-form").classList.contains("hidden")
+          && !!needEl("scan-cancel-reason"),
+          needEl("scan-cancel-form").className);
+    needEl("scan-cancel-reason").value = "duplicate request";
+    await H.scanConfirmCancel();
+    await new Promise((r) => setTimeout(r, 80));
+    check("...and cancelling DELETEs that job's route with its reason",
+          scanDeletes.some((d) => d.url.includes("/api/scan-jobs/job-scan-1")
+            && /duplicate request/.test(d.body)),
+          JSON.stringify(scanDeletes));
+    check("...and the sheet shows the server's receipt after the row is gone",
+          /recorded in the audit trail/.test(needEl("scan-body").textContent),
+          needEl("scan-body").textContent.slice(0, 200));
 
     H.closeScanSheet();
     await new Promise((r) => setTimeout(r, 260));

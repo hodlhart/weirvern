@@ -40,23 +40,35 @@ Add the network to a weirling's registration first.
 
 ## Installing Nmap on a weirling
 
-The agent container is not root and has no privileged channel, so the hub **cannot** install
-anything on a sensor — and it deliberately has no shell channel. Two supported paths:
+The agent container is not root and has no privileged channel by default. Three supported paths,
+in the order to prefer them:
 
-**1. Use the scan image (recommended).** `install.sh` builds `weirvern-scan:<tag>` from
-`Containerfile.scanner` (Nmap + safe NSE scripts, no Nuclei). `scripts/deploy-weirling.sh`
-resolves that image from the running worker's tag and uses it for the agent container, so the
-unit can scan as soon as it starts. If the hub does not have it, the script says so and the unit
-reports `nmap missing` until it is built:
+**1. Use the scan image (recommended for the fleet).** `install.sh` builds `weirvern-scan:<tag>`
+from `Containerfile.scanner` (Nmap + safe NSE scripts, no Nuclei).
+`scripts/deploy-weirling.sh` resolves that image from the running worker's tag and uses it for
+the agent container, so the unit can scan as soon as it starts. If the hub does not have it, the
+script says so and the unit reports `nmap missing` until it is built:
 
 ```bash
 docker build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
 docker save weirvern-scan:sha-<commit> | k3s ctr images import -
 ```
 
-**2. Install it on the host yourself.** If you run the agent outside the provided image, install
-Nmap with the package manager for that host. The console's Scanner readiness card renders the
-exact command from the OS the agent reported:
+**2. Scoped sudoers: one command, no password (recommended when the unit is not on the scan
+image).** Give the agent's user one sudoers entry that permits exactly the install command for
+that host's distro. The agent reports `sudo_state=passwordless`, the console's **Install nmap**
+button appears with no password field, and one click runs it. The grant is the allow-listed
+package-manager command, not root.
+
+**3. One-click prompt: the fallback, with a sudo password.** When the agent reports
+`sudo_state=password`, the card shows *sudo password for &lt;host&gt;*. The password goes to the
+console in a POST body, then over the cluster network to the ingest gateway, which holds it in
+memory for at most five minutes; the weirling picks the request up on its own mTLS poll and
+pipes the password to `sudo -S`. It is never stored in ClickHouse, never an environment variable,
+never logged and never written to the audit row — which records the actor, host, command, exit
+code and the FACT that a password was used. Three attempts per host per ten minutes.
+
+The console renders the exact command from the OS the agent reported, for every path:
 
 | distro (`/etc/os-release` ID) | command |
 | --- | --- |
@@ -68,16 +80,16 @@ exact command from the OS the agent reported:
 | opensuse-leap, opensuse-tumbleweed, sles | `sudo zypper install -y nmap` |
 | **anything else** | the card says the OS is unknown and shows the generic instruction — it never guesses a package manager |
 
-The **Prepare this weirling** button on the card copies that command for the operator to run. It
-cannot send it: the hub has no shell channel to a weirling, and an install inside the agent
-container would not survive a restart.
+When neither a package manager nor a privilege path can be established, the **Prepare this
+weirling** button copies the command for the operator to run by hand — never a password prompt
+that cannot work. The full two-path tradeoff is in
+[deployment.md](deployment.md#installing-nmap-on-a-weirling-two-paths).
 
 ## Install-time provisioning (privileged once, never at runtime)
 
-**Can Weirvern install nmap on a weirling?** Only if the operator runs a privileged setup step
-once. The agent itself stays unprivileged: it has no sudoers rule by default, no setuid helper and
-no privileged container, and the hub has no shell channel to it. A unit that has not been
-provisioned reports `nmap missing` and claims nothing.
+**Can Weirvern install nmap on a weirling?** Yes, through one of the three paths above. The agent
+itself stays unprivileged by default: no sudoers rule, no setuid helper and no privileged
+container. A unit that has not been provisioned reports `nmap missing` and claims nothing.
 
 The setup step does exactly three things, as root (or through an installer that runs as root):
 
