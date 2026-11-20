@@ -79,9 +79,16 @@ def test_the_tab_markup_exists_and_is_wired():
     assert 'data-view="normalize"' in html
     assert 'id="view-normalize"' in html
     assert '<script src="/normalize.js"></script>' in html
-    for control in ("nz-hours", "nz-source", "nz-segment", "nz-port", "nz-minbytes", "nz-find",
+    for control in ("nz-source", "nz-segment", "nz-port", "nz-minbytes", "nz-find",
                     "nz-feed", "nz-entries", "nz-apply"):
         assert f'id="{control}"' in html, f"the feed lost its {control} control"
+    # THE FEED HAS NO PRIVATE TIME CONTROL. The header owns the range (2026-10-16); a per-view
+    # `nz-hours` select survived here and silently answered its own 24h default regardless of the
+    # global choice. The loader must read `trHours()` like every other view.
+    assert 'id="nz-hours"' not in html, (
+        "the Normalize feed still declares its own window selector; the header owns the range")
+    assert "getElementById(\"nz-hours\")" not in js
+    assert "trHours()" in js, "normalize.js does not answer the header's window"
     assert "loadNormalize" in js and "postJSON(\"/api/normalize\"" in js
 
 

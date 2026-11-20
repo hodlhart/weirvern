@@ -175,6 +175,10 @@
     "verb": "POST",
     "path": "/api/networks/delete"
   },
+  "network_host": {
+    "verb": "GET",
+    "path": "/api/network/host"
+  },
   "_networks_save": {
     "verb": "POST",
     "path": "/api/networks/save"

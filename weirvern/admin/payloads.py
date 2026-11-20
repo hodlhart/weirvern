@@ -985,15 +985,15 @@ def _annotate_ripple_signals(payload: dict[str, Any], rows: list[dict[str, Any]]
             item["worst"] = band
         item["families"].update(str(f) for f in (row.get("families") or []))
     for node in payload.get("nodes") or []:
-        item = summary.get(str(node.get("id") or ""))
-        node["ripple_count"] = int(item["count"]) if item else 0
-        node["ripple_worst"] = item["worst"] if item else ""
-        node["ripple_families"] = sorted(item["families"]) if item else []
+        hit: dict[str, Any] | None = summary.get(str(node.get("id") or ""))
+        node["ripple_count"] = int(hit["count"]) if hit else 0
+        node["ripple_worst"] = hit["worst"] if hit else ""
+        node["ripple_families"] = sorted(hit["families"]) if hit else []
     for edge in payload.get("edges") or []:
         for side in ("source", "target"):
-            item = summary.get(str(edge.get(side) or ""))
-            edge[f"{side}_ripple_count"] = int(item["count"]) if item else 0
-            edge[f"{side}_ripple_worst"] = item["worst"] if item else ""
+            hit = summary.get(str(edge.get(side) or ""))
+            edge[f"{side}_ripple_count"] = int(hit["count"]) if hit else 0
+            edge[f"{side}_ripple_worst"] = hit["worst"] if hit else ""
 
 
 def _attach_ripples(client: Client, payload: dict[str, Any], *, hours: int) -> dict[str, Any]:

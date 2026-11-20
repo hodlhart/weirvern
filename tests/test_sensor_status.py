@@ -342,6 +342,11 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     code shows or hides, and whose contents (#st-account-note, the users
               #     table's tbody, #st-user-result) carry the data
               "st-account-card", "st-users-card", "st-user-add",
+              #   nw-filters: the Network map's filter bar wrapper. Its CHILDREN
+              #     (#nw-ripple/#nw-family chips, #nw-subnet, #nw-find, #nw-sort) are the
+              #     controls the scripts wire and re-press; the wrapper is layout and is
+              #     never written to.
+              "nw-filters",
               #   as-scope-note: static copy for the Assets inventory's monitored-only rule. The
               #     server enforces the scope; the span states it, so there is deliberately no
               #     client writer and the id is a test anchor, not an empty placeholder.

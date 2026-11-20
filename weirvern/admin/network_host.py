@@ -311,7 +311,7 @@ def host_sheet(client: Any, addr: str, *, hours: int = 24) -> dict[str, Any]:
     )
     # WHAT THE HOST OFFERS vs WHAT IT USES. A destination port on this host is a service it
     # listens on; a destination port it dialled is a service it consumed. Mixing the two made a
-    # workstation's reply ports read as listening services (measured: 192.168.2.153's "inbound
+    # workstation's reply ports read as listening services (measured: 192.0.2.153's "inbound
     # ports" were its own ephemeral 34k-58k sockets).
     listening = reads.rows(
         "listening_ports",

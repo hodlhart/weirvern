@@ -71,6 +71,9 @@ def test_the_pointer_sweep_no_dead_pointers():
         ".setting-auto-label",
         # A native disclosure is interactive: its own summary opens it (US-A2).
         "summary",
+        # The Network host sheet's ripple rows are role="button" + tabindex="0" with an
+        # Enter/Space handler (assets.js), so the pointer states a real interaction.
+        ".nw-host-ripple",
     )
     offenders = []
     for sel, body in _rules(_css()):

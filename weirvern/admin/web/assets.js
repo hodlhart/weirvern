@@ -21,6 +21,8 @@ const ASSET_API = {
   graph: (hours, hosts) =>
     `/api/graph?hours=${hours}` +
     (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : ""),
+  networkHost: (addr, hours) =>
+    `/api/network/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
   zeeklog: (log, hours, filters = "") => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}${filters}`,
   flows: (params, hours) => `/api/flows?hours=${hours}` +
     (params.port !== undefined ? `&port=${params.port}` : "") +
@@ -46,6 +48,10 @@ const ASSETS_STATE = {
   trackedOnly: false,  // US-7: the graph filter -- only the hosts the operator tracks
   status: "all",      // All / Blocked / Alerted -- a real filter over the graph payload
   rippleFilter: "all",  // All / Any ripple / High+ -- narrows the graph and both tables together
+  family: "all",     // the ripple FAMILY filter; composes with rippleFilter
+  subnet: "",        // subnet/CIDR filter over host addresses
+  query: "",         // free-text host/name filter
+  sortHosts: "interest",  // "interest" (band then bytes) or "busy" (bytes)
   minEdges: 1,
   showNames: false,
   // Pagination for the inventory. 15 per page by default (the user's number): a segment with
@@ -736,6 +742,219 @@ function renderNetworkRippleLine(nodes, d, baseNodes) {
   line.append(el("span", { text }), el("span", { text: " " }), btn);
 }
 
+const NW_FAMILIES = ["flow", "conn", "dns", "tls", "http", "ssh", "notice"];
+
+function nwFamilyMode() {
+  const mode = String(ASSETS_STATE.family || "all").toLowerCase();
+  return NW_FAMILIES.includes(mode) ? mode : "all";
+}
+
+function nwSetFamilyFilter(mode) {
+  ASSETS_STATE.family = NW_FAMILIES.includes(mode) ? mode : "all";
+  for (const btn of document.querySelectorAll("#nw-family [data-nw-family]")) {
+    btn.setAttribute("aria-pressed", btn.dataset.nwFamily === ASSETS_STATE.family
+      ? "true" : "false");
+  }
+  nwClearDetail();
+  renderNetwork();
+}
+
+/* ── SUBNET AND TEXT FILTERS ────────────────────────────────────────────────────────────────
+ * Both are filters over the graph payload (the map's drawn population). They compose with the
+ * ripple and family filters: a host must pass every active reading. An INVALID subnet is not
+ * applied and is NAMED in the caption -- a typo must not empty the map and blame the network.
+ */
+function nwSubnetMatcher(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { active: false, test: () => true, note: "" };
+  const m = text.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?:\/(\d{1,2}))?$/);
+  if (m) {
+    const parts = m[1].split(".").map(Number);
+    const bits = m[2] === undefined ? 32 : Number(m[2]);
+    if (parts.some((p) => p < 0 || p > 255) || bits < 0 || bits > 32) {
+      return { active: false, test: () => true,
+               note: `subnet "${text}" is not a valid CIDR — not applied` };
+    }
+    const ipv4ToInt = (ip) => ip.split(".").reduce((n, p) => ((n << 8) + Number(p)) >>> 0, 0) >>> 0;
+    const base = ipv4ToInt(m[1]);
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    const test = (addr) => {
+      if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(addr || ""))) return false;
+      return ((ipv4ToInt(String(addr)) & mask) >>> 0) === ((base & mask) >>> 0);
+    };
+    return { active: true, test, note: "" };
+  }
+  if (text.includes(":")) {
+    // IPv6: a plain prefix is supported; a CIDR is matched as its address prefix and SAID SO.
+    const prefix = text.replace(/\/.*$/, "").toLowerCase();
+    return {
+      active: true,
+      test: (addr) => String(addr || "").toLowerCase().startsWith(prefix),
+      note: text.includes("/") ? `IPv6 CIDR "${text}" is matched as a prefix` : "",
+    };
+  }
+  return { active: false, test: () => true,
+           note: `subnet "${text}" is not a CIDR — not applied` };
+}
+
+function nwExtraMatch(node, matcher) {
+  if (!node) return false;
+  const family = nwFamilyMode();
+  if (family !== "all" && !(node.ripple_families || []).includes(family)) return false;
+  if (matcher && matcher.active && !matcher.test(node.id)) return false;
+  const q = String(ASSETS_STATE.query || "").trim().toLowerCase();
+  if (q) {
+    const hay = `${node.id || ""} ${node.name || ""}`.toLowerCase();
+    if (hay.indexOf(q) === -1) return false;
+  }
+  return true;
+}
+
+function nwExtraActive(matcher) {
+  return nwFamilyMode() !== "all" || Boolean(matcher && matcher.active)
+    || Boolean(String(ASSETS_STATE.query || "").trim());
+}
+
+function nwExtraNames(matcher) {
+  const out = [];
+  if (nwFamilyMode() !== "all") out.push(`family ${nwFamilyMode()}`);
+  if (matcher && matcher.active) out.push(`subnet ${String(ASSETS_STATE.subnet || "").trim()}`);
+  const q = String(ASSETS_STATE.query || "").trim();
+  if (q) out.push(`text "${q}"`);
+  return out;
+}
+
+const NW_BAND_RANK = { low: 1, medium: 2, high: 3, critical: 4 };
+
+function nwWorstBand(node) {
+  const a = String((node && node.ripple_worst) || "").toLowerCase();
+  const b = String((node && node.model_worst) || "").toLowerCase();
+  return (NW_BAND_RANK[b] || 0) > (NW_BAND_RANK[a] || 0) ? b : a;
+}
+
+/* ── HOST-TABLE ORDER: intelligence first, volume second ───────────────────────────────────
+ * The operator asked for a "most interesting" order, not another busiest list. The arithmetic
+ * is one line and it is printed under the table: sort by the worst band the host carries
+ * (critical > high > medium > low > none), then by bytes in the window. Band DOMINATES; bytes
+ * only break ties inside a band. A critical host with 1 MB therefore outranks a quiet host
+ * with 10 GB, which is the whole point of a worklist.
+ */
+function nwInterestKey(node) {
+  return [NW_BAND_RANK[nwWorstBand(node)] || 0, Number(node.bytes || 0),
+          Number(node.degree || 0)];
+}
+
+function nwSortHosts(nodes) {
+  const list = nodes.slice();
+  if (String(ASSETS_STATE.sortHosts || "interest") === "busy") {
+    list.sort((a, b) => (Number(b.bytes || 0) - Number(a.bytes || 0)) ||
+      (Number(b.degree || 0) - Number(a.degree || 0)) || String(a.id).localeCompare(String(b.id)));
+    return list;
+  }
+  list.sort((a, b) => {
+    const ka = nwInterestKey(a), kb = nwInterestKey(b);
+    return (kb[0] - ka[0]) || (kb[1] - ka[1]) || (kb[2] - ka[2])
+      || String(a.id).localeCompare(String(b.id));
+  });
+  return list;
+}
+
+/** One host's signal counts as a compact chip, or a dash when the source is unavailable.
+ *
+ * `blank` is for the EDGE table: an edge has two cells side by side, and a dash in each of them
+ * on every quiet conversation is noise that reads as a value. There, "nothing" is an empty cell;
+ * in the host table a dash distinguishes "measured, nothing found" from an empty column.
+ */
+function nwSignalChip(node, d, opts) {
+  const cell = el("td", { class: "nw-sig-cell" });
+  const blank = Boolean(opts && opts.blank);
+  if (!node) return cell;
+  const rippleAvailable = d && d.ripple_available !== false;
+  const modelAvailable = d && d.status_available !== false;
+  const rn = Number(node.ripple_count || 0);
+  const mn = Number(node.anomaly_count || 0);
+  const band = nwWorstBand(node);
+  if (!rippleAvailable && !modelAvailable) {
+    if (!blank) cell.appendChild(el("span", { class: "muted", text: "—" }));
+    cell.setAttribute("title", "ripple and model reads are unavailable for this window");
+    return cell;
+  }
+  if (!rn && !mn) {
+    if (!blank) cell.appendChild(el("span", { class: "muted", text: "—" }));
+    cell.setAttribute("title", "no ripple and no model detection on this host in this window");
+    return cell;
+  }
+  const text = `${rippleAvailable ? rn : "?"}r · ${modelAvailable ? mn : "?"}m`;
+  const chip = el("span", {
+    class: "chip nw-sig" + (band ? " sev-" + band : ""),
+    text,
+    attrs: { "aria-label": `${node.id}: ${rn} ripple windows, ${mn} model detections` },
+  });
+  chip.setAttribute("title", `${node.id}: ${rn} ripple window(s), ${mn} model detection(s)` +
+    (band ? ` — worst band ${band}` : ""));
+  // A CHIP IS A DOOR: it opens the host sheet, where the ripple sentences and the model rows
+  // live. stopPropagation keeps the edge row's own tracking click out of it.
+  chip.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (typeof openNetworkHost === "function") openNetworkHost(node);
+  });
+  cell.appendChild(chip);
+  return cell;
+}
+
+function nwWorstCell(node) {
+  const cell = el("td", { class: "nw-worst-cell" });
+  const band = nwWorstBand(node);
+  if (!band) {
+    cell.appendChild(el("span", { class: "muted", text: "—" }));
+    return cell;
+  }
+  const chip = el("span", { class: "rp-sev-chip sev-" + band, text: sevText(band) });
+  chip.setAttribute("title", `worst band on ${node.id} in this window: ${band}`);
+  cell.appendChild(chip);
+  return cell;
+}
+
+function renderNetworkHosts(nodes, d) {
+  const table = document.querySelector("#nw-hosts-table tbody");
+  const caption = document.getElementById("nw-hosts-caption");
+  const note = document.getElementById("nw-hosts-note");
+  if (!table) return;
+  table.replaceChildren();
+  const hours = Number(d && (d.hours || ASSETS_STATE.hours)) || 24;
+  const ordered = nwSortHosts(nodes || []);
+  if (caption) {
+    caption.textContent = `${ordered.length} host${ordered.length === 1 ? "" : "s"} · ${hours}h window`;
+  }
+  if (note) {
+    note.textContent = ASSETS_STATE.sortHosts === "busy"
+      ? `Ordered by bytes in this ${hours}h window; peers are distinct hosts in the loaded map.`
+      : `Ordered by worst band first (critical → high → medium → low → none), then bytes in this ` +
+        `${hours}h window — band dominates, traffic breaks ties.`;
+  }
+  if (!ordered.length) {
+    emptyRow(table, 7, `No host matches the active filters in this ${hours}h window. ` +
+      "Clear a filter to widen the map.");
+    return;
+  }
+  for (const n of ordered) {
+    const row = el("tr", { class: "clickable" }, [
+      el("td", { class: "mono link", text: n.id }),
+      el("td", { class: "nw-h-name", text: n.name || "—" }),
+      el("td", { class: "mono", text: d.ripple_available === false ? "—"
+        : String(Number(n.ripple_count || 0)) }),
+      el("td", { class: "mono", text: d.status_available === false ? "—"
+        : String(Number(n.anomaly_count || 0)) }),
+      nwWorstCell(n),
+      el("td", { class: "mono nw-h-bytes", text: fmtBytes(n.bytes || 0) }),
+      el("td", { class: "mono nw-h-peers", text: String(Number(n.degree || 0)) }),
+    ]);
+    row.setAttribute("title", `open why ${n.id} is interesting`);
+    row.addEventListener("click", () => openNetworkHost(n));
+    table.appendChild(row);
+  }
+}
+
 function renderNetwork() {
   const host = document.getElementById("nw-graph");
   const caption = document.getElementById("nw-caption");
@@ -754,7 +973,8 @@ function renderNetwork() {
     caption.textContent = `The connection graph could not be read: ${d.reason || "no reason was reported"}.`;
     host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`));
     renderNetworkRippleLine([], d);
-    emptyRow(table, 6, "The graph read failed — no edges were read.");
+    renderNetworkHosts([], d);
+    emptyRow(table, 7, "The graph read failed — no edges were read.");
     return;
   }
 
@@ -797,7 +1017,8 @@ function renderNetwork() {
       caption.textContent = `Host status is unavailable: ${d.status_reason || "the source could not be read"}.`;
       host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed."));
       renderNetworkRippleLine(nodes, d);
-      emptyRow(table, 6, "Host status is unavailable; no edges are listed under this filter.");
+      renderNetworkHosts([], d);
+      emptyRow(table, 7, "Host status is unavailable; no edges are listed under this filter.");
       return;
     }
     statusMatches = nodes.filter((n) => n.status === status);
@@ -807,7 +1028,8 @@ function renderNetwork() {
       host.appendChild(chartEmpty(`No host has a live block rule` +
         (status === "alerted" ? " or an anomaly window" : "") + ` in this range. Use All to see the map.`));
       renderNetworkRippleLine(statusMatches, d);
-      emptyRow(table, 6, `No ${label} hosts to draw.`);
+      renderNetworkHosts([], d);
+      emptyRow(table, 7, `No ${label} hosts to draw.`);
       return;
     }
     const matchIds = new Set(statusMatches.map((n) => n.id));
@@ -840,7 +1062,32 @@ function renderNetwork() {
     nodes = nodes.filter((n) => context.has(String(n.id)));
     edgesPool = edgesPool.filter((e) => nwEdgeMatches(e, rippleMatched));
   }
+  // ── THE COMPOSABLE FILTERS: FAMILY, SUBNET, TEXT ──────────────────────────────────────────
+  // Applied after the ripple filter so a host must pass EVERY active reading. `matched` starts
+  // from the ripple filter's matched set (or every host when it is off) and narrows further.
+  // Peers of a matched host stay as context, exactly like the status/ripple filters, so a
+  // flagged host is never drawn alone.
+  const subnetMatcher = nwSubnetMatcher(ASSETS_STATE.subnet);
+  const extraActive = nwExtraActive(subnetMatcher);
+  let matched = rippleMatched;
+  if (extraActive) {
+    matched = new Set([...matched].filter((id) => {
+      const node = rippleBase.find((n) => String(n.id) === String(id));
+      return node ? nwExtraMatch(node, subnetMatcher) : false;
+    }));
+    const context = new Set(matched);
+    for (const e of edgesPool) {
+      if (matched.has(String(e.source)) || matched.has(String(e.target))) {
+        context.add(String(e.source));
+        context.add(String(e.target));
+      }
+    }
+    nodes = nodes.filter((n) => context.has(String(n.id)));
+    edgesPool = edgesPool.filter((e) => matched.has(String(e.source))
+      || matched.has(String(e.target)));
+  }
   const edges = edgesPool.filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  const matchedNodes = rippleBase.filter((n) => matched.has(String(n.id)));
   // A FILTER THAT MATCHES NOTHING NAMES ITSELF AND THE WAY OUT. This is not "No edges to show":
   // the network may be busy; the active filter is what emptied the view.
   if (rippleMode !== "all" && !rippleMatched.size) {
@@ -851,7 +1098,8 @@ function renderNetwork() {
     host.appendChild(chartEmpty(`The "${label}" ripple filter matches no host in this window. `
       + `Choose All to restore the full map.`));
     renderNetworkRippleLine([], d, rippleBase);
-    emptyRow(table, 6, `No connections under the "${label}" ripple filter. Choose All to clear it.`);
+    renderNetworkHosts([], d);
+    emptyRow(table, 7, `No connections under the "${label}" ripple filter. Choose All to clear it.`);
     return;
   }
   if (rippleMode !== "all" && rippleMatched.size && !edges.length) {
@@ -863,7 +1111,23 @@ function renderNetwork() {
       + `${rippleMatched.size === 1 ? "" : "s"}, but none has a drawn connection above the flows `
       + `filter. Lower it or choose All.`));
     renderNetworkRippleLine(nodes, d, rippleBase);
-    emptyRow(table, 6, `No connections among the hosts matched by the "${label}" filter.`);
+    renderNetworkHosts(rippleBase.filter((n) => rippleMatched.has(String(n.id))), d);
+    emptyRow(table, 7, `No connections among the hosts matched by the "${label}" filter.`);
+    return;
+  }
+  // THE COMPOSABLE FILTERS EMPTY STATE NAMES THEM AND THE WAY OUT. A family that no host
+  // carries, a subnet that holds nothing, a text fragment that matches nothing -- each is a
+  // fact about the FILTER, not about the network, and says so with the count it started from.
+  if (extraActive && !matched.size) {
+    const names = nwExtraNames(subnetMatcher);
+    caption.textContent = `No host matches ${names.join(" + ")} in this `
+      + `${d.hours || ASSETS_STATE.hours}h window. The map holds `
+      + `${rippleBase.length} host${rippleBase.length === 1 ? "" : "s"} before this filter.`;
+    host.appendChild(chartEmpty(`No host matches ${names.join(" + ")} in this window. `
+      + `Clear the filter to see ${rippleBase.length} host${rippleBase.length === 1 ? "" : "s"}.`));
+    renderNetworkRippleLine([], d, rippleBase);
+    emptyRow(table, 7, `No connections under ${names.join(" + ")}.`);
+    renderNetworkHosts([], d);
     return;
   }
   // A status host with no drawn connection is still a finding: show the filter's own count
@@ -875,7 +1139,8 @@ function renderNetwork() {
     host.appendChild(chartEmpty(`The ${label} host${statusMatches.length === 1 ? " has" : "s have"} no drawn ` +
       `connection above the flows filter. Lower the filter or use All.`));
     renderNetworkRippleLine(nodes, d);
-    emptyRow(table, 6, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
+    renderNetworkHosts(statusMatches, d);
+    emptyRow(table, 7, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
     return;
   }
   // A filter that hides everything must say so -- the tracked-only chip with nothing tracked is
@@ -886,7 +1151,8 @@ function renderNetwork() {
       + "click a dot or a row to track one.";
     host.appendChild(chartEmpty("The tracked-only filter is on and no host is tracked."));
     renderNetworkRippleLine(nodes, d);
-    emptyRow(table, 6, "No tracked hosts to draw.");
+    renderNetworkHosts([], d);
+    emptyRow(table, 7, "No tracked hosts to draw.");
     return;
   }
   if (!nodes.length || !edges.length) {
@@ -896,7 +1162,8 @@ function renderNetwork() {
       host.appendChild(chartEmpty("The tracked hosts did not talk to each other in this "
         + "window. Track more hosts, widen the window, or turn the filter off."));
       renderNetworkRippleLine(nodes, d);
-      emptyRow(table, 6, "No connections among the tracked hosts.");
+      renderNetworkHosts(nodes, d);
+      emptyRow(table, 7, "No connections among the tracked hosts.");
       return;
     }
     // THREE states, not two (review round 2026-10-15). This branch used to collapse "the
@@ -916,36 +1183,48 @@ function renderNetwork() {
         : ASSETS_STATE.tracked.length
           ? "These hosts did not talk to each other in this window. Widen the window or clear the selection."
           : "No host-to-host traffic was recorded. Broadcast and self-directed traffic is excluded."));
-    emptyRow(table, 6, hidden ? "No edges above the flows filter." : "No edges to show.");
+    emptyRow(table, 7, hidden ? "No edges above the flows filter." : "No edges to show.");
     renderNetworkRippleLine(nodes, d);
+    renderNetworkHosts(nodes.length ? matchedNodes : [], d);
     return;
   }
 
   // The caption reports what was actually drawn, and says so when the edge cap truncated the
-  // set -- a graph silently missing hosts looks complete.
-  // US-7: "showing X of Y" whenever the tracked-only filter is narrowing the map.
-  const bits = [];
+  // set -- a graph silently missing hosts looks complete. EVERY COUNT NAMES ITS WINDOW.
+  const bits = [`${d.hours || ASSETS_STATE.hours}h window`];
   if (status !== "all") {
     const label = status === "blocked" ? "blocked" : "alerted";
     const peers = Math.max(0, nodes.length - statusMatches.length);
     bits.push(`showing ${statusMatches.length} ${label} host${statusMatches.length === 1 ? "" : "s"}` +
       (peers ? ` and ${peers} peer${peers === 1 ? "" : "s"}` : ""));
-  } else {
-    bits.push(ASSETS_STATE.trackedOnly
-      ? `showing ${nodes.length} of ${nodes0.length} hosts`
-      : `${nodes.length} hosts`);
   }
+  // THE DENOMINATOR IS THE POPULATION THE FILTER CHOSE FROM. With tracked-only on, `nodes` (and
+  // therefore `rippleBase`) has already been narrowed, and "2 of 2" would hide the host the chip
+  // removed. The operator's question is how much is NOT shown.
+  const population = ASSETS_STATE.trackedOnly ? nodes0.length : rippleBase.length;
+  bits.push(`showing ${matched.size} of ${population} hosts`);
   if (rippleMode !== "all") {
-    const peers = Math.max(0, nodes.length - rippleMatched.size);
-    bits.push(`showing ${rippleMatched.size} of ${rippleBase.length} hosts with `
-      + `${rippleMode === "high" ? "high-band " : ""}ripples`
-      + (peers ? ` and ${peers} peer${peers === 1 ? "" : "s"}` : ""));
+    bits.push(`ripples: ${nwRippleModeLabel(rippleMode)}`);
   }
+  if (extraActive) bits.push(nwExtraNames(subnetMatcher).join(" + "));
+  if (subnetMatcher.note) bits.push(subnetMatcher.note);
   bits.push(`${edges.length} connections`);
   if (ASSETS_STATE.tracked.length) bits.push(`filtered to ${ASSETS_STATE.tracked.length} tracked`);
-  if (d.truncated) bits.push(`of ${d.total_edges} total connections (capped)`);
+  if (d.truncated) bits.push(`of ${d.total_edges} total connections (capped at ${allEdges.length})`);
   if (status === "all" && d.status_available === false) {
     bits.push(`host status unavailable: ${d.status_reason || "source could not be read"}`);
+  }
+  // THE RETENTION IS PART OF THE WINDOW. A 7d request against 3.3 days of raw flows is a 3.3d
+  // map labelled 7d unless the coverage is printed; this is the sentence that stops that.
+  const cov = d.coverage || {};
+  if (cov.available && cov.from) {
+    const heldH = (new Date(cov.to) - new Date(cov.from)) / 36e5;
+    const askedH = Number(d.hours || ASSETS_STATE.hours) || 24;
+    if (Number.isFinite(heldH) && heldH + 0.5 < askedH) {
+      bits.push(`flows held from ${fmtTime(cov.from)} (${Math.max(1, Math.round(heldH))}h of ${askedH}h)`);
+    }
+  } else if (cov.available === false) {
+    bits.push(`flows coverage unknown: ${cov.reason || "not read"}`);
   }
   caption.textContent = bits.join(" · ");
 
@@ -966,7 +1245,7 @@ function renderNetwork() {
 
   // Most connected hosts, clickable to track.
   renderBars("nw-nodes", {
-    available: true, points: nodes.slice(0, 12).map((n) => ({
+    available: true, points: matchedNodes.slice(0, 12).map((n) => ({
       label: n.name || n.id, value: n.degree, node: n,
     })),
   }, {
@@ -977,11 +1256,17 @@ function renderNetwork() {
       ? `stop tracking ${r.node.id}` : `track ${r.node.id}`),
   });
 
+  // THE HOST TABLE: the map's population as a worklist. It shows the MATCHED hosts, never the
+  // context peers the map keeps so a flagged host is not drawn alone.
+  renderNetworkHosts(matchedNodes, d);
+
+  const nodeById = new Map((d.nodes || []).map((n) => [String(n.id), n]));
   for (const e of edges.slice(0, 200)) {
     const tr = el("tr", {}, [
       el("td", { class: "link mono", text: e.source }),
       el("td", { class: "link mono", text: e.target }),
-      networkRippleCell(networkEdgeRipple(e)),
+      nwSignalChip(nodeById.get(String(e.source)), d, { blank: true }),
+      nwSignalChip(nodeById.get(String(e.target)), d, { blank: true }),
       el("td", { class: "mono", text: fmtBytes(e.bytes) }),
       el("td", { class: "mono", text: String(e.flows) }),
       el("td", {}, [el("span", { class: "muted", text: "track →" })]),
@@ -2118,6 +2403,17 @@ function nwRenderHostSheet(data, node) {
         ]),
         el("p", { class: "nw-host-ripple-sentence", text: r.explanation || "No sentence was carried." }),
       ]);
+      // A ROW THAT OPENS IS A CONTROL. The CSS gives it a pointer and a 44px target; without a
+      // role and a key handler the ripple sentence would be mouse-only, which the row-opener
+      // audit counts as looks-clickable-but-is-not.
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      row.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+          ev.preventDefault();
+          row.click();
+        }
+      });
       row.addEventListener("click", () => {
         closeSheet(document.getElementById("nw-host-card"));
         openRippleSheet(r, row);

@@ -45,8 +45,11 @@
   }
 
   function hours() {
-    const sel = document.getElementById("nz-hours");
-    return sel ? String(sel.value || "24") : "24";
+    // THE GLOBAL RANGE, like every other view. This module used to own a `#nz-hours` select and
+    // read it here; the per-view time boxes were removed on 2026-10-16, so the selector was gone
+    // from the header-owned surface but this reader defaulted to 24 and silently ignored a 7d
+    // choice. `trHours()` is the one header state every loader answers to.
+    return String(typeof trHours === "function" ? trHours() : 24);
   }
 
   function sumBy(members, field) {
@@ -581,7 +584,7 @@ window.openNormalizeSheet = openNormalizeSheet;
     const view = document.getElementById("view-normalize");
     if (!view || view.dataset.wired === "1") return;
     view.dataset.wired = "1";
-    for (const id of ["nz-hours", "nz-source"]) {
+    for (const id of ["nz-source"]) {
       const n = document.getElementById(id);
       if (n) n.addEventListener("change", () => loadNormalize());
     }

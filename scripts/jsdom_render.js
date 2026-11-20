@@ -2146,10 +2146,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           explanation: "ripple on 192.0.2.40", evidence: [] },
       ],
       nodes: [
-        { id: "203.0.113.42", name: "workstation.lan", degree: 2, bytes: 700, hops: 0, ttl: 64 },
-        { id: "192.0.2.40", name: "vault", degree: 2, bytes: 500 },
-        { id: "203.0.113.1", name: "gateway", degree: 1, bytes: 200 },
-        { id: "198.51.100.9", name: "quiet", degree: 1, bytes: 100 },
+        { id: "203.0.113.42", name: "workstation.lan", degree: 2, bytes: 700, hops: 0, ttl: 64,
+          ripple_count: 1, ripple_worst: "high", ripple_families: ["conn", "dns", "tls"],
+          anomaly_count: 3, model_worst: "high" },
+        { id: "192.0.2.40", name: "vault", degree: 2, bytes: 500,
+          ripple_count: 1, ripple_worst: "low", ripple_families: ["flow"],
+          anomaly_count: 0, model_worst: "" },
+        { id: "203.0.113.1", name: "gateway", degree: 1, bytes: 200,
+          ripple_count: 0, ripple_worst: "", ripple_families: [],
+          anomaly_count: 0, model_worst: "" },
+        { id: "198.51.100.9", name: "quiet", degree: 1, bytes: 100,
+          ripple_count: 0, ripple_worst: "", ripple_families: [],
+          anomaly_count: 0, model_worst: "" },
       ],
       edges: [
         { source: "203.0.113.42", target: "203.0.113.1", bytes: 500, flows: 9, ports: [443] },
@@ -2163,32 +2171,43 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     H.renderNetwork();
 
     const nwRows = [...doc.querySelectorAll("#nw-table tbody tr")];
-    check("the Network edge table has a Ripple column with a chip for a ripple endpoint",
+    check("the Network edge table carries a signals cell for EACH endpoint",
           nwRows.length === 3
-          && !!nwRows[0].querySelector(".nw-ripple-chip.sev-high")
-          && nwRows[0].children.length === 6,
+          && !!nwRows[0].querySelectorAll(".nw-sig-cell")[0].querySelector(".nw-sig.sev-high")
+          && nwRows[0].children.length === 7,
           `${nwRows.length} rows; ${nwRows[0] ? nwRows[0].textContent : "none"}`);
-    check("a non-ripple edge leaves the Ripple cell blank, never a zero chip",
-          !!nwRows[2] && !nwRows[2].querySelector(".nw-ripple-chip")
-          && nwRows[2].children[2].textContent.trim() === "",
+    check("the signals cell states ripples and model detections, not a bare dot",
+          !!nwRows[0] && nwRows[0].children[2].textContent.trim() === "1r · 3m",
+          nwRows[0] ? `|${nwRows[0].children[2].textContent}|` : "no row");
+    check("a quiet edge leaves both signals cells blank, never a zero chip",
+          !!nwRows[2] && !nwRows[2].querySelector(".nw-sig")
+          && nwRows[2].children[2].textContent.trim() === ""
+          && nwRows[2].children[3].textContent.trim() === "",
           nwRows[2] ? `|${nwRows[2].children[2].textContent}|` : "no row");
-    check("an edge with ripples on BOTH ends takes the higher band",
-          !!nwRows[1] && !!nwRows[1].querySelector(".nw-ripple-chip.sev-high")
-          && nwRows[1].querySelector(".nw-ripple-chip").getAttribute("title")
-            .includes("203.0.113.42"),
-          nwRows[1] ? nwRows[1].children[2].textContent : "no row");
+    check("an edge with ripples on BOTH ends shows each endpoint's own band",
+          !!nwRows[1]
+          && !!nwRows[1].children[2].querySelector(".nw-sig.sev-low")
+          && !!nwRows[1].children[3].querySelector(".nw-sig.sev-high"),
+          nwRows[1] ? `${nwRows[1].children[2].textContent} / ${nwRows[1].children[3].textContent}` : "no row");
 
     // THE INBOUND HALF. An edge whose ONLY rippling endpoint is its TARGET must still carry the
     // chip: that host's evidence comes from the inbound flow channels, and before schema 061 it
-    // had none. A source-only lookup would draw this edge as quiet.
-    H.ASSETS_STATE.graph = { ...RIPPLE_GRAPH, ripples: [RIPPLE_GRAPH.ripples[1]] };
+    // had none. A source-only lookup would draw this edge as quiet. The edge is stated so the
+    // target is the ONLY rippling end (the old fixture used 192.0.2.40 -> .42, where the SOURCE
+    // also ripples, so it could not tell source attribution from target attribution).
+    H.ASSETS_STATE.graph = {
+      ...RIPPLE_GRAPH,
+      edges: [{ source: "203.0.113.1", target: "192.0.2.40", bytes: 90, flows: 2, ports: [445] }],
+      ripples: [RIPPLE_GRAPH.ripples[1]],
+    };
     H.renderNetwork();
     const targetRows = [...doc.querySelectorAll("#nw-table tbody tr")];
     check("an edge is attributed to its DESTINATION endpoint when only the target ripples",
-          !!targetRows[1] && !!targetRows[1].querySelector(".nw-ripple-chip.sev-low")
-          && targetRows[1].querySelector(".nw-ripple-chip").getAttribute("title")
+          !!targetRows[0] && !!targetRows[0].children[3].querySelector(".nw-sig.sev-low")
+          && targetRows[0].children[2].textContent.trim() === ""
+          && targetRows[0].children[3].querySelector(".nw-sig").getAttribute("title")
             .includes("192.0.2.40"),
-          targetRows[1] ? targetRows[1].children[2].textContent : "no row");
+          targetRows[0] ? `${targetRows[0].children[2].textContent}|${targetRows[0].children[3].textContent}` : "no row");
     H.ASSETS_STATE.graph = RIPPLE_GRAPH;
     H.renderNetwork();
 
@@ -2211,19 +2230,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           /ripple ring on this host/.test(needEl("nw-legend").textContent),
           needEl("nw-legend").textContent.slice(0, 240));
 
-    // A CHIP IS A DOOR TO THE SAME HOUSE SHEET, and it must not trigger the row's own click.
+    // A CHIP IS A DOOR TO THE HOST SHEET, and it must not trigger the row's own click.
     const beforeTracked = JSON.stringify(H.ASSETS_STATE.tracked);
-    nwRows[0].querySelector(".nw-ripple-chip").dispatchEvent(
+    nwRows[0].children[2].querySelector(".nw-sig").dispatchEvent(
       new window.MouseEvent("click", { bubbles: true }));
-    const rpSheet = needEl("rp-detail-card");
-    check("clicking a Network ripple chip opens that host's ripple sheet",
-          !rpSheet.classList.contains("hidden")
-          && needEl("rp-detail-title").textContent.includes("203.0.113.42"),
-          needEl("rp-detail-title").textContent);
+    const hostSheet = needEl("nw-host-card");
+    check("clicking a Network signals chip opens that host's sheet",
+          !hostSheet.classList.contains("hidden")
+          && (needEl("nw-host-title").textContent + needEl("nw-host-addr").textContent)
+            .includes("203.0.113.42"),
+          needEl("nw-host-title").textContent + needEl("nw-host-addr").textContent);
     check("...and the chip click does not trigger the row's tracking handler",
           JSON.stringify(H.ASSETS_STATE.tracked) === beforeTracked,
           JSON.stringify(H.ASSETS_STATE.tracked));
-    needEl("rp-detail-close").click();
+    needEl("nw-host-close").click();
 
     H.showEdgeDetail(RIPPLE_GRAPH.edges[1]);
     check("the connection detail table also carries the Ripple column",
@@ -2251,7 +2271,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             needEl("nw-ripple-line").textContent.replace(/\s+/g, " ")),
           needEl("nw-ripple-line").textContent.replace(/\s+/g, " ").slice(0, 200));
     check("...and the caption says the filter is on",
-          /showing 2 of 4 hosts with ripples/.test(needEl("nw-caption").textContent),
+          /24h window/.test(needEl("nw-caption").textContent)
+          && /showing 2 of 4 hosts/.test(needEl("nw-caption").textContent)
+          && /ripples: hosts with ripples/.test(needEl("nw-caption").textContent),
           needEl("nw-caption").textContent);
 
     H.showNodeDetail(RIPPLE_GRAPH.nodes[2]);
@@ -2296,6 +2318,201 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     H.ASSETS_STATE.status = "all";
     H.ASSETS_STATE.rippleFilter = "all";
+    H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
+  }
+
+  // ── THE COMPOSABLE FILTERS, THE HOST TABLE, AND THE HOST SHEET (2026-11-20) ──────────────
+  // Family, subnet and text all narrow the SAME cached payload; a host must pass every active
+  // reading. The count line's denominator is the population before tracked-only. A host row opens
+  // the sheet, and the sheet must render real identity/traffic/ripple/model sections with the
+  // window's honest coverage — not a loading state and not a zero for an unread source.
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const FILTER_GRAPH = {
+      available: true, hours: 24, total_edges: 2, status_available: true,
+      ripple_available: true, ripple_window_hours: 24, severity_bands: {},
+      coverage: { available: true, from: "2026-11-17T05:30:00", to: "2026-11-20T09:00:00" },
+      nodes: [
+        { id: "203.0.113.42", name: "workstation.lan", degree: 2, bytes: 700,
+          ripple_count: 2, ripple_worst: "high", ripple_families: ["conn", "dns", "tls"],
+          anomaly_count: 3, model_worst: "high" },
+        { id: "192.0.2.40", name: "vault", degree: 2, bytes: 500,
+          ripple_count: 1, ripple_worst: "low", ripple_families: ["flow"],
+          anomaly_count: 0, model_worst: "" },
+        { id: "203.0.113.1", name: "gateway", degree: 1, bytes: 200,
+          ripple_count: 0, ripple_worst: "", ripple_families: [], anomaly_count: 0, model_worst: "" },
+      ],
+      edges: [
+        { source: "203.0.113.42", target: "203.0.113.1", bytes: 700, flows: 5, ports: [443] },
+        { source: "203.0.113.42", target: "192.0.2.40", bytes: 500, flows: 4, ports: [22] },
+      ],
+    };
+    const HOST_SHEET = {
+      available: true, addr: "192.0.2.40", hours: 24,
+      window: { hours: 24, since: "2026-11-19T09:00:00", until: "2026-11-20T09:00:00" },
+      identity: { available: true, ptr: "vault.example", hostnames: ["vault.example", "vault"],
+                  ja4: ["t13d1516"], mac: "aa:bb:cc:dd:ee:ff", os: "Linux 6", confidence: 0.9,
+                  updated_at: "", netbios: [{ name: "VAULT", domain: "CORP", count: 4 }],
+                  dhcp_names: [{ name: "vault-dhcp", count: 2 }], role: "", first_seen: "",
+                  last_seen: "", first_seen_basis: "not measured" },
+      traffic: { available: true, reason: "",
+                 in: { flows: 12, bytes: 4096, packets: 30, peers: 3,
+                       first: "2026-11-19T12:00:00", last: "2026-11-20T08:00:00" },
+                 out: { flows: 8, bytes: 2048, packets: 20, peers: 2,
+                        first: "2026-11-19T12:00:00", last: "2026-11-20T08:00:00" },
+                 outbound_flows: null },
+      peers: { available: true, reason: "",
+               rows: [{ peer: "203.0.113.9", out_bytes: 1000, in_bytes: 2000,
+                        out_conns: 3, in_conns: 4 }] },
+      services: { available: true, reason: "", services: [{ service: "ssl", conns: 5 }],
+                  listening_ports: [{ port: 443, proto: "tcp", conns: 4 }],
+                  used_ports: [{ port: 53, proto: "udp", conns: 2 }] },
+      dns: { available: true, reason: "", queries: [{ name: "example.test", qtype: 1, asks: 7 }] },
+      tls: { available: true, reason: "", names: [{ name: "vault.example", sessions: 3 }],
+             ja4_count: 2 },
+      models: { available: true, reason: "", count: 3, worst: "high",
+                by_severity: { high: 2, low: 1 },
+                rows: [{ window_start: "2026-11-20T08:00:00", severity: "high", score: 0.91,
+                         models: "LOF,IF", attack: "beacon" }] },
+      ripples: { available: true, reason: "", count: 1, worst: "high", window_hours: 24,
+                 rows: [{ host: "192.0.2.40", severity: "high", score: 7.11,
+                          window_start: "2026-11-20T08:00:00", families: ["conn", "dns"],
+                          explanation: "a ripple on 192.0.2.40", evidence: [] }] },
+      normalized: { available: true, reason: "", count: 0, rows: [] },
+      coverage: {
+        flows_window: { from: "2026-11-12T13:50:00", to: "2026-11-20T09:00:00" },
+        flows_window_endpoint: { from: "2026-11-19T14:00:00", to: "2026-11-20T09:00:00" },
+        ripple_evidence: { from: "2026-11-19T14:00:00", to: "2026-11-20T09:00:00" },
+        netflow_anomalies: { from: "2026-11-10T00:00:00", to: "2026-11-20T09:00:00" },
+      },
+      errors: {},
+    };
+    H.ASSETS_STATE.tracked = [];
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.rippleFilter = "all";
+    H.ASSETS_STATE.family = "all";
+    H.ASSETS_STATE.subnet = "";
+    H.ASSETS_STATE.query = "";
+    H.ASSETS_STATE.sortHosts = "interest";
+    H.ASSETS_STATE.graph = FILTER_GRAPH;
+    H.renderNetwork();
+
+    const hostRows = () => [...doc.querySelectorAll("#nw-hosts-table tbody tr")]
+      .filter((r) => r.querySelector("td.link"));
+    check("the host table lists the map's matched population",
+          hostRows().length === 3, `${hostRows().length} host rows`);
+    check("the host table orders by band first, bytes second",
+          hostRows()[0].textContent.includes("203.0.113.42")
+          && hostRows()[1].textContent.includes("192.0.2.40"),
+          hostRows().map((r) => r.textContent.replace(/\s+/g, " ").trim()).join(" | ").slice(0, 200));
+
+    doc.querySelector('#nw-family [data-nw-family="dns"]').click();
+    check("the family chip narrows the host table to the host carrying that family",
+          hostRows().length === 1 && hostRows()[0].textContent.includes("203.0.113.42"),
+          `${hostRows().length} rows: ${hostRows().map((r) => r.textContent.trim()).join(" | ")}`);
+
+    const subnetInput = needEl("nw-subnet");
+    subnetInput.value = "192.0.2.0/24";
+    subnetInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("family and subnet COMPOSE: a host must pass every active reading",
+          hostRows().length === 0
+          && /family dns/.test(needEl("nw-caption").textContent)
+          && /subnet 192\.0\.2\.0\/24/.test(needEl("nw-caption").textContent),
+          needEl("nw-caption").textContent);
+
+    doc.querySelector('#nw-family [data-nw-family="all"]').click();
+    check("clearing the family leaves the subnet reading in place",
+          hostRows().length === 1 && hostRows()[0].textContent.includes("192.0.2.40"),
+          hostRows().map((r) => r.textContent.replace(/\s+/g, " ").trim()).join(" | "));
+
+    const findInput = needEl("nw-find");
+    findInput.value = "gateway";
+    findInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("the text filter composes with the subnet (no host passes both)",
+          hostRows().length === 0, `${hostRows().length} rows`);
+    findInput.value = "vault";
+    findInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("the text filter searches the NAME as well as the address",
+          hostRows().length === 1 && hostRows()[0].textContent.includes("vault"),
+          hostRows().map((r) => r.textContent.replace(/\s+/g, " ").trim()).join(" | "));
+
+    findInput.value = "";
+    findInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    subnetInput.value = "";
+    subnetInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    const sortSelect = needEl("nw-sort");
+    sortSelect.value = "busy";
+    sortSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+    check("busy order leads with bytes, and the note states the arithmetic",
+          hostRows()[0].textContent.includes("203.0.113.42")
+          && /Ordered by bytes/.test(needEl("nw-hosts-note").textContent),
+          needEl("nw-hosts-note").textContent);
+
+    H.syncURL();
+    check("the new filters ride the URL",
+          /nw\.sort=busy/.test(window.location.hash), window.location.hash.slice(0, 140));
+    H.ASSETS_STATE.family = "all";
+    H.ASSETS_STATE.sortHosts = "interest";
+    window.location.hash = "#v=network&nw.family=tls&nw.subnet=203.0.113.0%2F24&nw.q=work&nw.sort=busy";
+    H.applyURLState();
+    check("...and a cold load restores all four, controls included",
+          H.ASSETS_STATE.family === "tls" && H.ASSETS_STATE.subnet === "203.0.113.0/24"
+          && H.ASSETS_STATE.query === "work" && H.ASSETS_STATE.sortHosts === "busy"
+          && needEl("nw-subnet").value === "203.0.113.0/24"
+          && needEl("nw-find").value === "work" && needEl("nw-sort").value === "busy"
+          && doc.querySelector('#nw-family [data-nw-family="tls"]').getAttribute("aria-pressed") === "true",
+          `family=${H.ASSETS_STATE.family} subnet=${H.ASSETS_STATE.subnet} q=${H.ASSETS_STATE.query} sort=${H.ASSETS_STATE.sortHosts}`);
+
+    // THE URL ROUND TRIP LEAVES THE HASH LOADED. The app re-applies it on hashchange, so clear
+    // it BEFORE resetting the state — otherwise the event restores the filters just cleared, and
+    // every later Network section inherits them.
+    window.location.hash = "#v=network";
+    H.applyURLState();
+    await sleep(20);
+    H.ASSETS_STATE.family = "all";
+    H.ASSETS_STATE.subnet = "";
+    H.ASSETS_STATE.query = "";
+    H.ASSETS_STATE.sortHosts = "interest";
+    needEl("nw-subnet").value = "";
+    needEl("nw-find").value = "";
+    needEl("nw-sort").value = "interest";
+    H.ASSETS_STATE.graph = FILTER_GRAPH;
+    H.renderNetwork();
+
+    fetchOverride = (u) => (String(u).includes("/api/network/host")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => HOST_SHEET })
+      : null);
+    H.clearGetCache();
+    const vaultRow = hostRows().find((r) => r.textContent.includes("192.0.2.40"));
+    if (vaultRow) { vaultRow.click(); }
+    await sleep(80);
+    const sheetBody = needEl("nw-host-body");
+    check("clicking a host row opens the host sheet for that address",
+          !needEl("nw-host-card").classList.contains("hidden")
+          && /192\.0\.2\.40/.test(needEl("nw-host-title").textContent
+            + needEl("nw-host-addr").textContent),
+          needEl("nw-host-title").textContent + needEl("nw-host-addr").textContent);
+    check("...with identity, traffic, peers, services, DNS/TLS, ripples, models and normalization",
+          ["Identity and names", "Traffic in this 24h window", "Top peers",
+           "Services and ports", "DNS and TLS", "Ripples", "Model detections",
+           "Normalized patterns"].every((h) => sheetBody.textContent.includes(h)),
+          sheetBody.textContent.replace(/\s+/g, " ").slice(0, 220));
+    check("...rendering real identity and traffic, not a loading placeholder",
+          sheetBody.textContent.includes("vault.example")
+          && sheetBody.textContent.includes("4.1 KB")
+          && sheetBody.textContent.includes("0.91")
+          && /0 patterns normalized/.test(sheetBody.textContent),
+          sheetBody.textContent.replace(/\s+/g, " ").slice(0, 300));
+    check("...and the sheet states the global window and its owner",
+          /24h window/.test(needEl("nw-host-note").textContent)
+          && /owned by the header time control/.test(needEl("nw-host-note").textContent),
+          needEl("nw-host-note").textContent);
+    check("...and names the shorter in/out retention instead of drawing it as the full window",
+          /measured only from/.test(sheetBody.textContent),
+          sheetBody.textContent.replace(/\s+/g, " ").slice(0, 300));
+    needEl("nw-host-close").click();
+    fetchOverride = null;
+    H.clearGetCache();
     H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
   }
 
