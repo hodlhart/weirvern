@@ -57,9 +57,14 @@ TAP=$(kubectl -n "$NS" get ds zeek \
 # tag was in the manifest when the DaemonSet was last applied. That is how capture died for two
 # hours on 2026-11-19: the tap was current, the init containers still named a tag that had been
 # pruned, and the pod sat in Init:ImagePullBackOff while every drift check said "present".
-kubectl -n "$NS" get ds zeek \
-  -o jsonpath='{range .spec.template.spec.initContainers[*]}zeek-init/{.name} {.image}{"\n"}{end}' \
-  >> "$TMP" 2>/dev/null || true
+# The labels are kept short because the table's first column is 24 characters wide.
+TRUNK_IMAGE=$(kubectl -n "$NS" get ds zeek \
+  -o jsonpath='{.spec.template.spec.initContainers[?(@.name=="trunk-init")].image}' 2>/dev/null || true)
+SIPHON_IMAGE=$(kubectl -n "$NS" get ds zeek \
+  -o jsonpath='{.spec.template.spec.initContainers[?(@.name=="siphon-forwarding-init")].image}' \
+  2>/dev/null || true)
+[ -n "$TRUNK_IMAGE" ] && echo "zeek-init.trunk $TRUNK_IMAGE" >> "$TMP"
+[ -n "$SIPHON_IMAGE" ] && echo "zeek-init.siphon $SIPHON_IMAGE" >> "$TMP"
 
 printf '%-24s %-46s %s\n' WORKLOAD IMAGE VERDICT
 printf '%-24s %-46s %s\n' "------------------------" "----------------------------------------------" "-------"
