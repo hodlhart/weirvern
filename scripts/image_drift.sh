@@ -53,6 +53,14 @@ TAP=$(kubectl -n "$NS" get ds zeek \
   -o jsonpath='{.spec.template.spec.containers[?(@.name=="tap")].image}' 2>/dev/null || true)
 [ -n "$TAP" ] && echo "zeek-tap $TAP" >> "$TMP"
 
+# Init containers are NOT touched by `set image` on the named containers, so they stay on whatever
+# tag was in the manifest when the DaemonSet was last applied. That is how capture died for two
+# hours on 2026-11-19: the tap was current, the init containers still named a tag that had been
+# pruned, and the pod sat in Init:ImagePullBackOff while every drift check said "present".
+kubectl -n "$NS" get ds zeek \
+  -o jsonpath='{range .spec.template.spec.initContainers[*]}zeek-init/{.name} {.image}{"\n"}{end}' \
+  >> "$TMP" 2>/dev/null || true
+
 printf '%-24s %-46s %s\n' WORKLOAD IMAGE VERDICT
 printf '%-24s %-46s %s\n' "------------------------" "----------------------------------------------" "-------"
 
@@ -95,7 +103,7 @@ _ctr_images() {
 }
 if _ctr_images >/dev/null 2>&1 && kubectl version --request-timeout=3s >/dev/null 2>&1; then
   images=$(kubectl -n "${NS:-weirvern}" get deploy,ds \
-    -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' \
+    -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{end}' \
     2>/dev/null || true)
   # containerd reports fully-qualified names (docker.io/library/weirvern-zeek:0.5.0); a manifest
   # says weirvern-zeek:0.5.0. Compare the last path component, or every local image looks missing.
