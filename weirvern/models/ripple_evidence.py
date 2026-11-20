@@ -123,6 +123,7 @@ from typing import Any
 
 from weirvern import monitored as monitored_mod
 from weirvern import retention as retention_mod
+from weirvern import ripple_signatures
 from weirvern.models.generic_channels import ChannelSpec
 from weirvern.models.ripple import (
     DEFAULT_FAMILY_MAX_P,
@@ -351,6 +352,12 @@ SPECS: tuple[ChannelSpec, ...] = (
     FLOW_SPECS + CONN_SPECS + DNS_SPECS + IDENTITY_SPECS
     + TLS_SPECS + HTTP_SPECS + SSH_SPECS + NOTICE_SPECS
 )
+
+#: channel -> family for the channels a signature can name a value on. Derived from the specs,
+#: never maintained as a second list: a channel becomes signable by declaring a value column and
+#: a value-bearing kind, and stops being signable if it is moved to a pre-aggregated source.
+#: `ripple_signatures.supports()` is the one definition; the console and the API both read this.
+SIGNATURE_CHANNELS: dict[str, str] = ripple_signatures.channels_for(SPECS)
 
 #: Kinds whose value is a SET per bucket, not a number that can be summed or averaged. They
 #: need `sql_values` (which values?) rather than `sql_anchored` (how many?), and are therefore
@@ -679,6 +686,7 @@ def _fold(rows: list[Any], *, factor: int) -> dict[str, dict[int, tuple[float, f
 def _buckets(
     client: Any, spec: ChannelSpec, *, scale: str, moment: datetime, lookback_days: int,
     scope_cidrs: tuple[str, ...] | None,
+    signatures: ripple_signatures.SignatureFilter | None = None,
 ) -> dict[str, dict[int, tuple[float, float, float]]]:
     """One channel's per-bucket values for one scale, including the current bucket at k=0."""
     seconds = EVIDENCE_SCALE_SECONDS[scale]
@@ -689,6 +697,7 @@ def _buckets(
         since=moment - timedelta(days=int(lookback_days)),
         until=moment,
         scope_cidrs=scope_cidrs,
+        signatures=signatures,
     )
     rows = list(client.query(sql).result_rows)
     return _fold(rows, factor=max(1, seconds // step))
@@ -697,11 +706,13 @@ def _buckets(
 def _value_sets(
     client: Any, spec: ChannelSpec, *, scale: str, moment: datetime, lookback_days: int,
     scope_cidrs: tuple[str, ...] | None,
+    signatures: ripple_signatures.SignatureFilter | None = None,
 ) -> dict[str, dict[int, set[str]]]:
     """One channel's per-bucket VALUE SETS for one scale, including the current bucket at k=0.
 
     Only for `SET_KINDS`: a novelty or change channel asks WHICH values a window held, and the
-    server returns them deduplicated rather than one row per event.
+    server returns them deduplicated rather than one row per event. A normalized signature is
+    absent from every bucket the query returns, so it cannot be new in the current one.
     """
     seconds = EVIDENCE_SCALE_SECONDS[scale]
     sql = spec.sql_values(
@@ -710,6 +721,7 @@ def _value_sets(
         since=moment - timedelta(days=int(lookback_days)),
         until=moment,
         scope_cidrs=scope_cidrs,
+        signatures=signatures,
     )
     rows = list(client.query(sql).result_rows)
     out: dict[str, dict[int, set[str]]] = {}
@@ -881,8 +893,17 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
             lookback_days: int | None = None,
             retention_days: int | None = None,
             specs: tuple[ChannelSpec, ...] = SPECS,
-            monitored_nets: list[Any] | None = None) -> list[ChannelEvidence]:
+            monitored_nets: list[Any] | None = None,
+            signatures: ripple_signatures.SignatureFilter | None = None) -> list[ChannelEvidence]:
     """Every channel's evidence for every host it can be measured for, at every usable scale.
+
+    THE OPERATOR'S SIGNATURES ARE A FILTER, NOT A SILENCE. When `signatures` is not supplied the
+    live, unexpired ones are read once and handed to every value-bearing channel query, which
+    excludes exactly those (host, channel, value) pairs from the distinct/novelty computation.
+    The raw rows are not read differently, written or deleted; the statistic simply no longer
+    counts the value the operator has said is expected. An unreadable signature store leaves the
+    measurement UNFILTERED and says so in `run()`'s receipt -- a table problem must not turn into
+    a quiet network.
 
     THE LOOKBACK IS DERIVED, PER SCALE, FROM RETENTION. With no explicit `lookback_days` each
     scale reads `scale_lookback_days(scale, retention)` days, where retention is read from the
@@ -905,6 +926,8 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
         return []
     cidrs = tuple(str(net) for net in nets)
     moment = _aware(now or datetime.now(UTC)).replace(microsecond=0)
+    if signatures is None:
+        signatures = ripple_signatures.load_filter(client, today=moment.date(), hosts=hosts)
     if retention_days is not None:
         retention = max(0, int(retention_days))
     elif lookback_days is not None:
@@ -932,7 +955,8 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
                 # the 1h baseline. The per-scale cap is what keeps one pass from reading retention.
                 widest = max(scales, key=lambda name: lookbacks[name])
                 base = _buckets(client, spec, scale="1h", moment=moment,
-                                lookback_days=lookbacks[widest], scope_cidrs=cidrs)
+                                lookback_days=lookbacks[widest], scope_cidrs=cidrs,
+                                signatures=signatures)
                 for scale in scales:
                     factor = EVIDENCE_SCALE_SECONDS[scale] // STEP_SECONDS
                     folded = _fold_from_buckets(base, factor)
@@ -945,14 +969,16 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
                 # question about the whole window, so each scale is queried at its own length.
                 for scale in scales:
                     value_sets = _value_sets(client, spec, scale=scale, moment=moment,
-                                             lookback_days=lookbacks[scale], scope_cidrs=cidrs)
+                                             lookback_days=lookbacks[scale], scope_cidrs=cidrs,
+                                             signatures=signatures)
                     out.extend(_series_evidence(
                         spec, scale=scale, buckets=value_sets, moment=moment,
                         wanted=wanted, lookback_days=lookbacks[scale]))
             else:
                 for scale in scales:
                     buckets = _buckets(client, spec, scale=scale, moment=moment,
-                                       lookback_days=lookbacks[scale], scope_cidrs=cidrs)
+                                       lookback_days=lookbacks[scale], scope_cidrs=cidrs,
+                                       signatures=signatures)
                     out.extend(_evidence_for_scale(
                         spec, scale=scale, buckets=buckets, moment=moment,
                         wanted=wanted, lookback_days=lookbacks[scale]))
@@ -1071,8 +1097,13 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
                 "tables": {}, "unknown": [], "reason": ""}
     else:
         info = retention_in_force(client)
+    # ONE READ, AND THE RECEIPT NAMES IT. A filter that could not be read leaves the measurement
+    # unfiltered (the safe direction for a table problem) but must not be invisible: the worker
+    # log prints `signatures=unavailable:<reason>` rather than quietly ignoring the operator's
+    # normalizations.
+    signatures = ripple_signatures.load_filter(client, today=_aware(now or datetime.now(UTC)).date())
     items = compute(client, now=now, hosts=hosts, lookback_days=lookback_days,
-                    retention_days=info["days"])
+                    retention_days=info["days"], signatures=signatures)
     stored = store(client, items)
     unavailable = [{"channel": row["channel"], "reason": row["reason"]}
                    for row in availability(client) if not row["available"]]
@@ -1087,6 +1118,12 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
         "retention_days": info["days"],
         "retention_source": info["source"],
         "lookbacks": lookbacks_for(info["days"], lookback_days),
+        "signatures": {
+            "available": signatures.available,
+            "live": signatures.count,
+            "reason": signatures.reason,
+            "channels": len(SIGNATURE_CHANNELS),
+        },
         "model_version": MODEL_VERSION,
     }
 
@@ -1127,13 +1164,23 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
     # ONE READ FOR EVERY SCALE. The TTLs are read once and each scale derives its own lookback
     # from the same number; the block below is what makes that derivation inspectable.
     retention = retention_in_force(client)
+    # WHICH EVIDENCE LINES CAN BECOME A SIGNATURE. The sheet puts the verb on every row, and a
+    # row that measures a rate (volume, ratio, sum) has no single value to name. The capability
+    # is computed HERE, from the specs, so the browser never keeps a second copy of the list.
+    payload_ripples: list[dict[str, Any]] = []
+    for ripple in ripples:
+        data = ripple.as_dict()
+        for event in data.get("evidence", []):
+            event["signature_capable"] = event.get("channel") in SIGNATURE_CHANNELS
+        payload_ripples.append(data)
     return {
         "available": True,
         "reason": "",
         "window_hours": window_hours,
         "model_version": MODEL_VERSION,
         "count": len(ripples),
-        "ripples": [ripple.as_dict() for ripple in ripples],
+        "ripples": payload_ripples,
+        "signature_channels": sorted(SIGNATURE_CHANNELS),
         # THE CRITICALITY TABLE TRAVELS WITH THE ROWS. The page's legend and its fallback
         # banding read these numbers; none of them is restated in JavaScript.
         "severity_bands": severity_bands(),
@@ -1157,7 +1204,8 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
 
 
 __all__ = ["COLUMNS", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
-           "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SET_KINDS", "SPECS",
+           "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SET_KINDS",
+           "SIGNATURE_CHANNELS", "SPECS",
            "availability", "baseline_windows", "compute", "effective_lookback_days", "inventory",
            "lookbacks_for", "overview", "read", "required_lookback_days", "retention_in_force",
            "run", "scale_lookback_days", "scale_report", "statistic", "store",

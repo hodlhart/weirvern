@@ -170,13 +170,19 @@ class ChannelSpec:
 
     def sql_values(self, *, bucket_s: int, anchor: datetime, since: datetime,
                    until: datetime,
-                   scope_cidrs: tuple[str, ...] | None = None) -> str:
+                   scope_cidrs: tuple[str, ...] | None = None,
+                   signatures: Any = None) -> str:
         """One row per DISTINCT VALUE per subject per bucket, for novelty/change channels.
 
         `sql_anchored` can only say HOW MANY distinct values a bucket held. A novelty channel
         needs to know WHICH values: "a user-agent this host has never sent" is a fact about
         set difference across buckets, and no count can be re-derived into it afterwards.
-        The server deduplicates, so the caller never sees one row per event.
+        The server deduplicates, so the caller never sees one per event.
+
+        A normalized signature is dropped in the WHERE, not after the fact: the value never
+        enters the current set OR the history, so "new for this host" is asked of the values
+        that are still the host's own. The raw rows are untouched -- this query only stops
+        SELECTING that value for the computation.
 
         Returns `(host, k, v)` with the same anchored bucket arithmetic and the same subject
         attribution as `sql_anchored`.
@@ -184,6 +190,7 @@ class ChannelSpec:
         if not self.value_column:
             raise ValueError(f"{self.channel}: a novelty channel needs a value column")
         host_expr, _peer_expr, scope_where = self._attribution(scope_cidrs)
+        excluded = self._signature_predicate(signatures, host_expr, self.value_column)
         anchor_ts = int(anchor.timestamp())
         return (
             f"SELECT {host_expr} AS host, "
@@ -192,13 +199,55 @@ class ChannelSpec:
             f"FROM {self.table} "
             f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
             f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where}"
-            f"{self._direction_clause()} "
+            f"{self._direction_clause()}"
+            f"{' AND ' + excluded if excluded else ''} "
             "GROUP BY host, k, v"
+        )
+
+    def _signature_predicate(self, signatures: Any, host_expr: str, value_expr: str) -> str:
+        """The exclusion predicate for this channel, or ''.
+
+        THE CHANNEL DOES NOT KNOW WHAT A SIGNATURE IS. It hands its own host and value
+        expressions to the filter object it was given, so every channel that can name a value
+        gets the behaviour from the same two lines; a channel with no value expression simply
+        never receives a predicate. `signatures=None` is the old call shape and changes nothing.
+        """
+        if signatures is None or not value_expr:
+            return ""
+        try:
+            return str(signatures.predicate(self.channel, host_expr, value_expr) or "")
+        except AttributeError:
+            return ""
+
+    def sql_patterns(self, *, host: str, since: datetime, until: datetime,
+                     scope_cidrs: tuple[str, ...] | None = None, limit: int = 25) -> str:
+        """The exact values this channel saw for one host in a window, with counts.
+
+        This is the sheet's PREVIEW: the evidence row carries a statistic, so the console asks
+        the same table the measurement read and shows the operator the values a signature would
+        make expected. It reads raw rows, so it only exists for channels whose kind names a
+        value (a pre-aggregated source has no values left to show).
+        """
+        if not self.value_column:
+            raise ValueError(f"{self.channel}: this channel has no value to list")
+        host_expr, _peer_expr, scope_where = self._attribution(scope_cidrs)
+        conditions = [f"{self.value_column} != ''"]
+        if self.value_filter:
+            conditions.append(f"({self.value_filter})")
+        escaped = str(host).replace("\\", "\\\\").replace("'", "\\'")
+        return (
+            "SELECT v, count() AS n FROM ("
+            f"SELECT {self.value_column} AS v, {host_expr} AS host FROM {self.table} "
+            f"WHERE {self.time_column} >= '{since:%Y-%m-%d %H:%M:%S}' "
+            f"AND {self.time_column} < '{until:%Y-%m-%d %H:%M:%S}'{scope_where}"
+            f"{self._direction_clause()} AND {' AND '.join(conditions)}"
+            f") WHERE host = '{escaped}' GROUP BY v ORDER BY n DESC, v LIMIT {max(1, int(limit))}"
         )
 
     def sql_anchored(self, *, bucket_s: int, anchor: datetime, since: datetime,
                      until: datetime,
-                     scope_cidrs: tuple[str, ...] | None = None) -> str:
+                     scope_cidrs: tuple[str, ...] | None = None,
+                     signatures: Any = None) -> str:
         """One bucket-per-host query whose buckets end exactly at `anchor`.
 
         WHY NOT `toStartOfInterval`. Calendar-aligned buckets make the CURRENT bucket partial:
@@ -248,10 +297,25 @@ class ChannelSpec:
         # A diversity channel whose value IS the peer column (flow_dst_diversity,
         # conn_dst_diversity) must count the peer FROM THE SUBJECT'S SIDE. Counting
         # dst_addr when the subject is the destination would measure the subject itself
-        # and read as a constant one.
+        # and read as a constant one. This is also the expression a signature names, so it is
+        # resolved BEFORE the exclusion predicate is built.
+        value_expr = self.value_column or ""
         if (scope_cidrs is not None and self.kind == "diversity"
                 and self.value_column == self.peer_column):
-            u_expr = f"uniqExact({peer_expr})"
+            value_expr = peer_expr
+        excluded = self._signature_predicate(signatures, host_expr, value_expr)
+        if excluded and self.kind == "diversity":
+            # `uniqExactIf` with BOTH conditions: the channel's own value_filter (if any) still
+            # decides which rows carry a meaningful value, and the signature excludes one exact
+            # value for one host inside the same aggregate. Nothing is filtered after the fact,
+            # so the count is a true distinct count of what remains.
+            condition = f"({self.value_filter}) AND {excluded}" if self.value_filter else excluded
+            u_expr = f"uniqExactIf({value_expr}, {condition})"
+        elif excluded and self.count_state:
+            # A pre-aggregated source cannot exclude a value: the states no longer contain the
+            # values. `supports()` does not offer signatures for these channels; this branch is
+            # the honest no-op if a caller passes a filter anyway.
+            pass
 
         anchor_ts = int(anchor.timestamp())
         return (

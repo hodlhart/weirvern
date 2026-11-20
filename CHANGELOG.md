@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.23.106 — 2026-11-20
+
+A PERMANENT CHANGE SHOULD NOT RIPPLE EVERY DAY UNTIL THE BASELINE CATCHES UP.
+
+- **A signature is one host, one channel, one exact value.** A new appliance, a new TLS
+  fingerprint or a replaced SSH banner is a real change the per-host empirical baseline needs days
+  to absorb, so the same host fires the same ripple every hour in the meantime. The Normalize tab
+  taught this to the FLOW/DNS baseline (`normal_traffic`); the ripple channels never read it,
+  because their question is "is this VALUE new for this host", not "how much traffic". Schema
+  `062` adds `normal_ripple_signatures` for that question.
+- **The channel queries consult it, generically.** `ChannelSpec.sql_anchored` and `sql_values`
+  take a `SignatureFilter`; a diversity channel composes the exclusion into `uniqExactIf`, and a
+  novelty/change channel adds it to the `WHERE` before the bucket set is built. A new
+  value-bearing channel gets the behaviour by declaring its value column — there is no per-channel
+  special case. The raw traffic is not read differently, written or deleted: a live test asserts
+  the event population and the row counts are identical with and without a signature.
+- **Scope is the safety property, and it is enforced where the claim is made.** `host_addr` must
+  parse as ONE address (a CIDR or hostname is refused); `channel` must be a deployed channel (a
+  family such as `tls` is refused); `value` must be one non-empty exact string; the family is
+  derived from the spec, never supplied; `review_after` defaults to 90 days and may not exceed
+  365. There is no shape in the store or the API that can say "this whole channel" or "this host
+  forever". Tests drive each refusal through the API.
+- **The claim expires on its own.** A signature stops applying when `review_after` passes, with
+  no operator action: last year's expected is this year's anomaly. Removal is a superseding row
+  (`ReplacingMergeTree(updated_at)`) so `created_at`/`created_by` survive it — the record is the
+  audit, not a cache.
+- **The sheet can normalize one evidence line, with a preview and a reason.** Every evidence row
+  in the ripple sheet carries **Normalize this pattern**; a channel that measures a rate says why
+  it has no single value to name. The preview reads the same table the measurement read, for the
+  same hour, and shows the exact values that occurred — the evidence row only carried a count.
+  The write requires a reason, names host/channel/value/until, and offers **Undo — remove this
+  normalization** in one click. The Normalize tab lists every signature with its reason, review
+  date and one-click Remove. Admin-only write, viewer read-only, same gate and CSRF posture as
+  `/api/normalize`.
+- **Measured.** `tests/test_ripple_signatures.py` (23 tests) proves: the normalized value stops
+  contributing significant evidence for that host; the same value on ANOTHER host still ripples;
+  a DIFFERENT value on the same host/channel still ripples; removal and expiry bring the evidence
+  back; the raw population is unchanged; a family/CIDR/empty value is refused through the API;
+  a viewer cannot write; the actor and reason are recorded. jsdom `1045 passed, 0 failed` adds the
+  preview, the required reason and the one-click undo.
+
 ## 0.23.105 — 2026-11-20
 
 THE OTHER HALF OF THE NETWORK WAS INVISIBLE: A HOST THAT ONLY RECEIVES TRAFFIC HAD NO FLOW EVIDENCE.

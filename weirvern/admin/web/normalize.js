@@ -12,8 +12,17 @@
   const SELECTED = new Map();   // key -> the row object it came from
   let ROWS = [];
   let ENTRIES = [];
+  let SIGS = [];                // ripple-pattern signatures: one exact value per host/channel
   let WINDOW = { offset: 0, hours: 24, older: false };   // where the feed is looking             // the active entries, so a row can find its own claim
   let LOADED = false;
+
+  /* A VIEWER READS EVERY LIST AND CHANGES NOTHING (the server refuses the write anyway; this is
+   * the visible half of the same rule). Accounts off means the pre-accounts posture, which has
+   * always allowed writes through the operator token. */
+  function canWrite() {
+    if (!AUTH.accounts) return true;
+    return AUTH.authenticated && AUTH.role === "admin";
+  }
 
   // THE THREE LANES, NAMED THE WAY THE OPERATOR NAMES THEM (2026-11-19: "For source do DNS,
   // Zeek, Netflow"). The stored value for Netflow is still `flow`; only the label changed.
@@ -204,6 +213,70 @@
     }
   }
 
+  /* RIPPLE PATTERNS ARE A DIFFERENT CLAIM FROM A BASELINE ENTRY, and the list says so in its own
+   * columns: one exact value, one host, one channel, a review date. There is no "all values" row
+   * here because the store cannot contain one — the columns to express it do not exist. */
+  function renderSignatures(signatures, summary) {
+    SIGS = signatures || [];
+    const body = document.querySelector("#nz-sigs tbody");
+    const note = document.getElementById("nz-sig-note");
+    if (!body) return;
+    body.replaceChildren();
+    const counts = summary || {};
+    if (note) {
+      const active = Number(counts.active || 0);
+      const expired = Number(counts.expired || 0);
+      note.textContent = SIGS.length
+        ? `${active} in force${expired ? ` · ${expired} expired` : ""}`
+        : "none yet";
+    }
+    if (!SIGS.length) {
+      body.appendChild(el("tr", {}, [el("td", {
+        class: "muted", attrs: { colspan: 8 },
+        text: "No ripple patterns are normalized. Open a ripple on the Ripples tab and use "
+          + "\"Normalize this pattern\" on an evidence line." })]));
+      return;
+    }
+    for (const s of SIGS) {
+      const until = String(s.review_after || "").slice(0, 10);
+      const expired = until && until < new Date().toISOString().slice(0, 10);
+      const state = expired ? `expired ${until}` : `until ${until}`;
+      const button = el("button", {
+        class: "quiet nz-sig-remove", text: expired ? "Remove record" : "Remove",
+        attrs: { type: "button", "data-signature": s.id,
+                 "aria-label": `remove the ripple signature for ${s.value} on ${s.host_addr}` },
+        on: { click: () => removeSignature(s.id) },
+      });
+      if (!canWrite()) {
+        button.disabled = true;
+        button.title = "a viewer can read every view but cannot change a normalization";
+      }
+      body.appendChild(el("tr", { class: expired ? "nz-expired" : "" }, [
+        el("td", { class: "mono", text: (s.created_at || "").replace("T", " ").slice(0, 19) }),
+        el("td", { text: s.created_by || "operator" }),
+        el("td", { class: "mono", text: s.host_addr }),
+        el("td", { class: "mono", text: s.channel }),
+        el("td", { class: "mono nz-sig-value", text: s.value || "" }),
+        el("td", { class: "muted", text: s.reason || "" }),
+        el("td", { class: expired ? "bad" : "mono", text: state }),
+        el("td", {}, [button]),
+      ]));
+    }
+  }
+
+  async function removeSignature(id) {
+    if (!canWrite() || !id) return;
+    try {
+      const data = await postJSON("/api/ripple-signatures/remove", { id });
+      if (!data || data.ok === false) throw new Error((data && data.error) || "refused");
+      await loadNormalize();
+      setNote("Removed. That value is no longer expected, and the evidence for it returns on the "
+        + "next ripple pass. The record is kept.");
+    } catch (e) {
+      setNote("Could not remove the pattern: " + (e && e.message ? e.message : e));
+    }
+  }
+
   /* THE HOUSE PAGER, pointed at time. Every long list in this console carries `.pager` with the
    * same ‹ › arrows and the same range line (operator, 2026-11-19: "some of our other tabs have
    * that and all long lists should do this and look the same"). Here a page IS one window: ‹ walks
@@ -253,11 +326,12 @@
       const data = await getJSON(`/api/normalize?${q.toString()}`);
       if (!data || data.available === false) {
         setNote("Unavailable: " + ((data && data.reason) || "no data"));
-        renderFeed([]); renderEntries([]);
+        renderFeed([]); renderEntries([]); renderSignatures([], {});
         return;
       }
       renderFeed(data.rows || []);
       renderEntries(data.entries || []);
+      renderSignatures(data.signatures || [], data.signature_summary || {});
       renderTimePager(data.window || { offset: page, hours: Number(hours()) });
       const c = document.getElementById("nz-count");
       if (c) {

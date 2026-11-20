@@ -769,6 +769,21 @@
       <tbody></tbody>
     </table>
   </div>
+  <!-- RIPPLE SIGNATURES: the other half of "normal" (2026-11-20). A flow normalization widens a
+       baseline; a signature teaches one EXACT value on one host and one channel. It is listed on
+       this tab because both are operator knowledge, not because they share a storage shape. -->
+  <div class="card">
+    <h2>Normalized ripple patterns <span class="muted" id="nz-sig-note"></span></h2>
+    <p class="muted">One exact value, on one host and one channel. It is expected until its
+      review date, then the evidence returns by itself.</p>
+    <p class="muted">Raw traffic and alerting are untouched. Remove brings it back on the next
+      pass.</p>
+    <table id="nz-sigs">
+      <thead><tr><th>Since</th><th>By</th><th>Host</th><th>Channel</th><th>Value</th><th>Reason</th>
+        <th>Review after</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </section>
 <!-- THE NORMALIZE SHEET (operator, 2026-11-19): "clicking a normalize row should have the same
      type of slide out from the right settings piece as weirlings, allowing you do broaden or
@@ -799,6 +814,11 @@
      the feed marks them green so you can see what you have claimed.</p>
   <p><strong>Undo.</strong> Remove an entry below. The pattern leaves the baseline at the next
      retrain and the decision is kept in the record.</p>
+  <p><strong>Ripple patterns.</strong> A ripple signature is narrower than a baseline entry: one
+     exact value (a TLS name/fingerprint pair, a user-agent, an SSH banner pair), on one host and
+     one channel. It does not hide the host or the channel — the same value from another host, or a
+     different value from this one, still ripples. It expires on its review date (90 days by
+     default), and removing it brings the evidence back on the next pass.</p>
 </div>
 
 

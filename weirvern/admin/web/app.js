@@ -2923,11 +2923,12 @@ function rippleEvidenceTable(ripple) {
     el("th", { text: "Channel" }), el("th", { text: "Family" }), el("th", { text: "Scale" }),
     el("th", { text: "Value" }), el("th", { text: "Baseline median" }),
     el("th", { text: "p-value" }), el("th", { text: "Baseline" }), el("th", { text: "Direction" }),
+    el("th", { text: "Signature" }),
   ])]));
   const tbody = el("tbody");
   const rows = ripple.evidence || [];
   if (!rows.length) {
-    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 8 },
+    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 9 },
       text: "This ripple carries no evidence rows. That is a payload defect, not a quiet reading." })]));
   }
   for (const e of rows) {
@@ -2942,10 +2943,218 @@ function rippleEvidenceTable(ripple) {
       el("td", { class: "num", text: rippleP(e.p_value, e.at_floor) }),
       el("td", { text: baseline }),
       el("td", { class: "muted", text: e.direction || "—" }),
+      rippleSignatureCell(ripple, e),
     ]));
   }
   table.appendChild(tbody);
   return table;
+}
+
+/* ── ONE EVIDENCE LINE -> ONE EXACT SIGNATURE ──────────────────────────────────────────────
+ * The verb is on every line because the operator's question is about a line, not about the
+ * ripple: "this TLS pair is our new appliance, stop calling it new". A channel that measures a
+ * number (volume, ratio, sum) has no single value to name, and its button says so instead of
+ * opening a form that could only widen into something the store cannot express. */
+function rippleSignatureCell(ripple, event) {
+  if (!event.signature_capable) {
+    return el("td", {}, [el("button", {
+      class: "quiet", text: "Normalize this pattern",
+      title: "This channel measures a number, not one named value. There is no single pattern "
+        + "to normalize; a signature names one exact value on one channel.",
+      attrs: { type: "button", disabled: "disabled" },
+    })]);
+  }
+  return el("td", {}, [el("button", {
+    class: "quiet rp-sig-open", text: "Normalize this pattern",
+    attrs: { type: "button",
+             "aria-label": `normalize one ${event.channel} pattern on ${ripple.host}` },
+    on: { click: () => openSignaturePreview(ripple, event) },
+  })]);
+}
+
+function signatureValueText(value) {
+  const text = String(value === undefined || value === null ? "" : value);
+  return text.length > 160 ? text.slice(0, 157) + "…" : text;
+}
+
+function openSignaturePreview(ripple, event) {
+  const body = document.getElementById("rp-detail-body");
+  if (!body) return;
+  const old = document.getElementById("rp-signature-panel");
+  if (old) old.remove();
+  const panel = el("div", { class: "rp-sig-panel", attrs: { id: "rp-signature-panel" } });
+  panel.appendChild(el("h3", { text: "Normalize one exact pattern" }));
+  panel.appendChild(el("p", { class: "mono rp-sig-scope", text:
+    `${ripple.host} · ${event.channel} (${event.family || "—"}) · ${event.scale || "this window"}` }));
+  panel.appendChild(el("p", { class: "muted", text:
+    "This makes ONE exact value expected for this host on this channel. The same value on another "
+    + "host still ripples, and a different value on this host still ripples. It is not a mute: "
+    + "the traffic is untouched, and it expires on the review date. Reversible in one click "
+    + "afterwards." }));
+  const values = el("div", { class: "rp-sig-values", attrs: { id: "rp-sig-values" },
+                             text: "Reading this window's values…" });
+  panel.appendChild(values);
+  panel.appendChild(el("label", { class: "nz-field" }, [
+    el("span", { class: "nz-field-label", text: "Reason (required — the next reader has only this)" }),
+    el("textarea", { class: "rp-sig-reason",
+      attrs: { id: "rp-sig-reason", rows: "2",
+               placeholder: "e.g. the new backup appliance, enrolled 2026-11-20" } }),
+  ]));
+  const review = el("input", { class: "rp-sig-review",
+                               attrs: { type: "date", id: "rp-sig-review" } });
+  panel.appendChild(el("label", { class: "nz-field" }, [
+    el("span", { class: "nz-field-label", text: "Review after" }),
+    review,
+    el("span", { class: "muted nz-field-hint", text:
+      "The evidence returns by itself when this date passes. 90 days by default; one year at most." }),
+  ]));
+  const error = el("p", { class: "rp-sig-error", attrs: { id: "rp-sig-error" } });
+  panel.appendChild(error);
+  const confirm = el("button", { class: "primary rp-sig-confirm", text: "Normalize this pattern",
+    attrs: { type: "button", id: "rp-sig-confirm" },
+    on: { click: () => submitSignature(ripple, event, panel) } });
+  // RUNTIME NODES ARE HELD, NOT SEARCHED FOR: a `querySelector("#...")` on markup that is built
+  // here is invisible to the static selector audit and returns null silently if the id drifts.
+  panel._sigError = error;
+  panel._sigReason = panel.querySelector("textarea");
+  panel._sigReview = review;
+  panel._sigConfirm = confirm;
+  const cancel = el("button", { class: "quiet", text: "Cancel", attrs: { type: "button" },
+    on: { click: () => panel.remove() } });
+  if (!canWriteSignature()) {
+    confirm.disabled = true;
+    confirm.title = "a viewer can read every view but cannot change a normalization";
+  }
+  panel.appendChild(el("div", { class: "rp-sig-actions" }, [confirm, cancel]));
+  body.appendChild(panel);
+  if (typeof panel.scrollIntoView === "function") panel.scrollIntoView({ block: "nearest" });
+
+  const query = new URLSearchParams({
+    host: ripple.host || "", channel: event.channel || "",
+    start: ripple.window_start || "", end: ripple.window_end || "",
+  });
+  getJSON(`/api/ripple-signatures/patterns?${query.toString()}`).then((data) => {
+    if (!data || data.ok === false || data.capable === false) {
+      values.textContent = (data && (data.reason || data.error)) || "the values could not be read";
+      return;
+    }
+    if (review && data.review_after_default) {
+      review.value = data.review_after_default;
+      review.max = data.max_review_after || "";
+    }
+    renderSignatureValues(values, data);
+  }).catch((e) => {
+    values.textContent = "Could not read this window's values: "
+      + (e && e.message ? e.message : e);
+  });
+}
+
+function canWriteSignature() {
+  if (typeof AUTH === "undefined" || !AUTH.accounts) return true;
+  return Boolean(AUTH.authenticated && AUTH.role === "admin");
+}
+
+function renderSignatureValues(slot, data) {
+  slot.replaceChildren();
+  const values = data.values || [];
+  if (!values.length) {
+    slot.appendChild(el("p", { class: "muted", text:
+      "No values were found in this window. It may have aged out of retention; the pattern can "
+      + "still be recorded from the Normalize tab only if you have its exact value." }));
+    return;
+  }
+  let checked = false;
+  for (const item of values) {
+    const radio = el("input", { attrs: { type: "radio", name: "rp-sig-value",
+                                         value: item.value } });
+    const already = Boolean(item.normalized_until);
+    if (!already && !checked) { radio.checked = true; checked = true; }
+    if (already) radio.disabled = true;
+    const row = el("label", { class: "rp-sig-value" }, [
+      radio,
+      el("code", { text: signatureValueText(item.value), title: item.value }),
+      el("span", { class: "muted", text: `${Number(item.count || 0)} in this window` }),
+    ]);
+    if (already) {
+      row.appendChild(el("span", { class: "bad", text:
+        `already expected until ${item.normalized_until}` }));
+      row.appendChild(el("button", { class: "quiet", text: "Undo this one",
+        attrs: { type: "button" },
+        on: { click: () => removeSignatureFromSheet(item.normalized_id) } }));
+    }
+    slot.appendChild(row);
+  }
+  if (!checked) {
+    slot.appendChild(el("p", { class: "muted", text:
+      "Every value in this window is already expected. Remove one above to bring its evidence back." }));
+  }
+}
+
+async function submitSignature(ripple, event, panel) {
+  const error = panel._sigError;
+  const picked = panel.querySelector('input[name="rp-sig-value"]:checked');
+  const reason = (panel._sigReason || {}).value || "";
+  const review = (panel._sigReview || {}).value || "";
+  const say = (text) => { if (error) error.textContent = text; };
+  if (!picked) { say("Choose the exact value that should become expected."); return; }
+  if (!reason.trim()) { say("A reason is required: it records why this value is expected."); return; }
+  const button = panel._sigConfirm;
+  if (button) button.disabled = true;
+  try {
+    const data = await postJSON("/api/ripple-signatures", {
+      host: ripple.host, channel: event.channel, value: picked.value,
+      reason: reason.trim(), review_after: review,
+    });
+    if (!data || data.ok === false) throw new Error((data && data.error) || "refused");
+    signatureDone(panel, data.entry || {}, Boolean(data.duplicate));
+  } catch (e) {
+    say("Could not normalize this pattern: " + (e && e.message ? e.message : e));
+    if (button) button.disabled = false;
+  }
+}
+
+/* AFTER the write, the panel says EXACTLY what changed and offers the one-click way back. The
+ * evidence table above still shows the stored measurement this hour; the next pass is the one
+ * that stops counting this value, and saying so is more honest than implying the row vanishes. */
+function signatureDone(panel, entry, duplicate) {
+  panel.replaceChildren();
+  panel.appendChild(el("h3", { text: duplicate ? "Already expected" : "Expected from now on" }));
+  panel.appendChild(el("p", { class: "mono rp-sig-scope", text:
+    `${entry.host_addr || ""} · ${entry.channel || ""} · ${signatureValueText(entry.value)}` }));
+  panel.appendChild(el("p", { text:
+    `This exact value is now expected for this host until ${entry.review_after || "its review date"}. ` +
+    "The next ripple pass stops counting it as new; the raw traffic and the alert path are untouched." }));
+  panel.appendChild(el("p", { class: "muted", text:
+    "Everything else still ripples: the same value on another host, and any other value on this "
+    + "host. Removable in one click — the evidence returns on the next pass." }));
+  const undo = el("button", { class: "primary", text: "Undo — remove this normalization",
+    attrs: { type: "button" },
+    on: { click: () => removeSignatureFromSheet(entry.id, panel) } });
+  if (!canWriteSignature()) {
+    undo.disabled = true;
+    undo.title = "a viewer can read every view but cannot change a normalization";
+  }
+  panel.appendChild(el("div", { class: "rp-sig-actions" }, [undo]));
+}
+
+async function removeSignatureFromSheet(id, panel) {
+  if (!id || !canWriteSignature()) return;
+  try {
+    const data = await postJSON("/api/ripple-signatures/remove", { id });
+    if (!data || data.ok === false) throw new Error((data && data.error) || "refused");
+    const target = panel || document.getElementById("rp-signature-panel");
+    if (target) {
+      target.replaceChildren();
+      target.appendChild(el("h3", { text: "No longer expected" }));
+      target.appendChild(el("p", { text:
+        "The signature is removed and the record is kept. The evidence for this value returns on "
+        + "the next ripple pass." }));
+    }
+  } catch (e) {
+    const error = document.getElementById("rp-sig-error");
+    if (error) error.textContent = "Could not remove the pattern: "
+      + (e && e.message ? e.message : e);
+  }
 }
 
 function rippleCorroborationTable(hits) {

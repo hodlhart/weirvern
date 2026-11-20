@@ -2506,13 +2506,17 @@ def main() -> None:
                             from weirvern.models import ripple_evidence as _rev  # noqa: PLC0415
 
                             ev = _rev.run(client)
+                            sig = ev.get("signatures") or {}
                             logger.info(
                                 "ML ripple evidence: %s row(s), %s host(s), %s channel(s), "
-                                "scales %s; retention %s day(s) (%s), lookback %s",
+                                "scales %s; retention %s day(s) (%s), lookback %s; "
+                                "signatures %s",
                                 ev["rows"], ev["hosts"], ev["channels"],
                                 ",".join(ev["scales"]) or "none", ev["retention_days"],
                                 ev["retention_source"],
-                                ",".join(f"{s}={d}d" for s, d in sorted(ev["lookbacks"].items())))
+                                ",".join(f"{s}={d}d" for s, d in sorted(ev["lookbacks"].items())),
+                                f"{sig.get('live', 0)} live" if sig.get("available", True)
+                                else f"unavailable: {sig.get('reason', '')}")
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(
                                 "ML ripple evidence pass failed (detection continues): %s", exc)

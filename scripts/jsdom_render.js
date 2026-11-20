@@ -177,7 +177,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange, renderStageMirror,
                      syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, ZEEK_FILTERS, zkRenderChips, toggleAllHelp,
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
-                     loadModels, loadWeirlings, loadBlocked,
+                     loadModels, loadWeirlings, loadBlocked, loadNormalize,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      wlNicFacts, wlNicRows, wlPlans, wlShowNicSettings, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
@@ -2681,27 +2681,52 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // fixture's 203.0.113.42 row is 09:10-09:15, inside this ripple's 09:00-10:00 hour.
   {
     const seen = [];
-    fetchOverride = (u) => {
+    fetchOverride = (u, opts) => {
       seen.push(String(u));
+      if (String(u).includes("/api/ripple-signatures/patterns")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          ok: true, capable: true, reason: "", host: "203.0.113.42",
+          channel: "tls_fingerprint_diversity", family: "tls",
+          values: [{ value: "example.test|ja4abc", count: 7,
+                     normalized_until: "", normalized_id: "" }],
+          review_after_default: "2027-02-18", review_days: 90, max_review_days: 365,
+        }) };
+      }
+      if (String(u).includes("/api/ripple-signatures") && opts && opts.method === "POST") {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          ok: true, duplicate: false,
+          entry: { id: "sig-1", host_addr: "203.0.113.42",
+                   channel: "tls_fingerprint_diversity",
+                   value: "example.test|ja4abc", review_after: "2027-02-18" },
+        }) };
+      }
       if (!String(u).includes("/api/ripples")) return null;
       return { ok: true, status: 200, statusText: "OK", json: async () => ({
         available: true, reason: "", window_hours: 12, count: 1,
+        signature_channels: ["tls_fingerprint_diversity"],
         ripples: [{
           host: "203.0.113.42", window_start: "2026-01-02T09:00:00",
           window_end: "2026-01-02T10:00:00", score: 3.42, combined_p: 0.0021,
-          channels: ["conn_volume", "dns_volume"], families: ["conn", "dns"],
-          single_family: false,
-          explanation: "ripple on 203.0.113.42 at 2026-01-02 09:00 UTC — 2 independent " +
-            "families: conn, dns: conn family: conn_volume 41 vs median 5 (rose at 1h; " +
+          channels: ["conn_volume", "dns_volume", "tls_fingerprint_diversity"],
+          families: ["conn", "dns", "tls"], single_family: false,
+          explanation: "ripple on 203.0.113.42 at 2026-01-02 09:00 UTC — 3 independent " +
+            "families: conn, dns, tls: conn family: conn_volume 41 vs median 5 (rose at 1h; " +
             "p=0.004 over 500 baseline windows); dns family: dns_volume 60 vs median 6 " +
-            "(rose at 1h; p=0.006 over 500 baseline windows).",
+            "(rose at 1h; p=0.006 over 500 baseline windows); tls family: " +
+            "tls_fingerprint_diversity 7 vs median 2 (rose at 1h; p=0.002 over 500 windows).",
           evidence: [
             { channel: "conn_volume", family: "conn", scale: "1h", value: 41,
               baseline_median: 5, p_value: 0.004, p_floor: 0.001996, at_floor: false,
-              baseline_short: false, sample_count: 500, direction: "rose" },
+              baseline_short: false, sample_count: 500, direction: "rose",
+              signature_capable: false },
             { channel: "dns_volume", family: "dns", scale: "1h", value: 60,
               baseline_median: 6, p_value: 0.006, p_floor: 0.001996, at_floor: false,
-              baseline_short: false, sample_count: 500, direction: "rose" },
+              baseline_short: false, sample_count: 500, direction: "rose",
+              signature_capable: false },
+            { channel: "tls_fingerprint_diversity", family: "tls", scale: "1h", value: 7,
+              baseline_median: 2, p_value: 0.002, p_floor: 0.001996, at_floor: false,
+              baseline_short: false, sample_count: 500, direction: "rose",
+              signature_capable: true },
           ],
         }],
       }) };
@@ -2732,6 +2757,49 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("...and it sits after the evidence, never above it",
           sheetText.indexOf("Evidence") >= 0 && sheetText.indexOf("Evidence")
             < sheetText.indexOf("Model anomalies in this window"));
+    // ── NORMALIZE ONE EVIDENCE LINE (2026-11-20) ───────────────────────────────────────────
+    // The verb is per evidence line, the preview names the exact value, and the write says what
+    // changed and offers the one-click way back. The rate-only lines must say why they cannot.
+    const sigButtons = [...doc.querySelectorAll("#rp-evidence .rp-sig-open")];
+    const allSigButtons = [...doc.querySelectorAll("#rp-evidence tbody tr td:last-child button")];
+    check("every evidence line carries the Normalize this pattern verb, and a rate-only line is refused",
+          sigButtons.length === 1 && allSigButtons.length === 3
+          && allSigButtons.filter((b) => b.disabled).length === 2,
+          `${sigButtons.length} live / ${allSigButtons.length} total`);
+    if (sigButtons[0]) sigButtons[0].click();
+    await new Promise((r) => setTimeout(r, 120));
+    const sigPanel = doc.getElementById("rp-signature-panel");
+    const sigText = sigPanel ? sigPanel.textContent.replace(/\s+/g, " ") : "";
+    check("the pattern preview names the host, the channel and the exact value that becomes expected",
+          /203\.0\.113\.42/.test(sigText) && /tls_fingerprint_diversity/.test(sigText)
+          && /example\.test\|ja4abc/.test(sigText) && /in this window/.test(sigText),
+          sigText.slice(0, 260));
+    check("the preview requires a reason and says the claim is reversible in one click",
+          !!doc.getElementById("rp-sig-reason") && /reversible in one click/i.test(sigText),
+          sigText.slice(0, 260));
+    needEl("rp-sig-confirm").click();
+    await new Promise((r) => setTimeout(r, 40));
+    check("...and confirming without a reason is refused in the sheet",
+          /reason is required/i.test(needEl("rp-sig-error").textContent));
+    needEl("rp-sig-reason").value = "the new backup appliance";
+    needEl("rp-sig-confirm").click();
+    await new Promise((r) => setTimeout(r, 120));
+    const doneText = sigPanel.textContent.replace(/\s+/g, " ");
+    check("confirming names what is expected, until when, and offers one-click undo",
+          /Expected from now on/.test(doneText) && /2027-02-18/.test(doneText)
+          && /Undo — remove this normalization/.test(doneText) && /next ripple pass/.test(doneText),
+          doneText.slice(0, 300));
+    const undo = [...sigPanel.querySelectorAll("button")].find((b) => /Undo/.test(b.textContent));
+    if (undo) undo.click();
+    await new Promise((r) => setTimeout(r, 120));
+    check("undo removes the signature and says the evidence returns on the next pass",
+          /No longer expected/.test(sigPanel.textContent)
+          && /next ripple pass/.test(sigPanel.textContent),
+          sigPanel.textContent.replace(/\s+/g, " ").slice(0, 220));
+    const sigReqs = seen.filter((u) => u.includes("/api/ripple-signatures"));
+    check("the sheet action uses the signature route, never the alert path",
+          sigReqs.some((u) => u.includes("/patterns"))
+          && sigReqs.some((u) => !u.includes("/patterns")), sigReqs.join(" | ") || "none");
     const anReqs = seen.filter((u) => u.includes("/api/anomalies"));
     check("the page and the payload agree on the window (12h, never 24h)",
           anReqs.length > 0
@@ -9715,6 +9783,53 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (cell) cell.addEventListener("click", () => { clicked += 1; });
     if (cell) cell.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     check("and Enter performs the click a mouse would", clicked === 1, `clicks=${clicked}`);
+  }
+  // ── THE NORMALIZE TAB LISTS RIPPLE SIGNATURES (2026-11-20) ────────────────────────────────
+  // The list lives on the surface the flow normalizations already use: one exact value per row,
+  // its reason and its review date, and one-click Remove (no confirm step -- the action is the
+  // reversible one, and the row itself is the record).
+  {
+    const seen = [];
+    fetchOverride = (u, opts) => {
+      const url = String(u);
+      seen.push(url);
+      if (url.includes("/api/ripple-signatures/remove") && opts && opts.method === "POST") {
+        return { ok: true, status: 200, statusText: "OK",
+                 json: async () => ({ ok: true, entries: [], summary: {} }) };
+      }
+      if (url.includes("/api/normalize")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, reason: "", rows: [], entries: [], summary: {},
+          window: { offset: 0, hours: 24, older: false },
+          signatures: [{ id: "sig-9", host_addr: "198.51.100.5",
+                         channel: "tls_fingerprint_diversity",
+                         value: "example.test|ja4abc", created_at: "2026-11-20T09:00:00",
+                         created_by: "admin", reason: "the new backup appliance",
+                         review_after: "2027-02-18" }],
+          signature_summary: { active: 1, expired: 0 },
+        }) };
+      }
+      return null;
+    };
+    H.clearGetCache();
+    await H.loadNormalize();
+    await new Promise((r) => setTimeout(r, 160));
+    const rows = [...doc.querySelectorAll("#nz-sigs tbody tr")];
+    check("the Normalize tab lists a ripple signature with its exact value, reason and review date",
+          rows.length === 1 && /example\.test\|ja4abc/.test(rows[0].textContent)
+          && /tls_fingerprint_diversity/.test(rows[0].textContent)
+          && /the new backup appliance/.test(rows[0].textContent)
+          && /2027-02-18/.test(rows[0].textContent),
+          rows.map((r) => r.textContent).join(" | ").slice(0, 240));
+    const remove = rows[0] ? rows[0].querySelector("button.nz-sig-remove") : null;
+    check("...and removing it is one click on the row's own button",
+          !!remove && /Remove/.test(remove.textContent), remove ? remove.textContent : "no button");
+    if (remove) remove.click();
+    await new Promise((r) => setTimeout(r, 120));
+    check("...which talks to the signature remove route, never the alert path",
+          seen.some((u) => u.includes("/api/ripple-signatures/remove")), seen.join(" | "));
+    fetchOverride = null;
+    H.clearGetCache();
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

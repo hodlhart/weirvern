@@ -43,7 +43,7 @@ import json
 import logging
 import os
 import secrets
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1142,9 +1142,17 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                     client, hours=hours, source=request.args.get("source", ""),
                     segment=request.args.get("segment", ""), port=port,
                     min_bytes=min_bytes, query=request.args.get("q", ""), offset=offset)
+                # THE SIGNATURE LIST LIVES ON THE SAME SURFACE as the flow normalizations: an
+                # operator reading "what has this network been taught" should not have to know
+                # which module stores which half. One read fills both cards.
+                from weirvern import ripple_signatures  # noqa: PLC0415
+
+                payload["signatures"] = ripple_signatures.entries(client)
+                payload["signature_summary"] = ripple_signatures.summary(payload["signatures"])
+                payload["signature_review_days"] = ripple_signatures.REVIEW_DAYS
         except Exception as exc:  # noqa: BLE001
             payload = {"available": False, "reason": str(exc), "rows": [], "entries": [],
-                       "summary": {}}
+                       "summary": {}, "signatures": [], "signature_summary": {}}
         return jsonify(payload)
 
     @app.post("/api/normalize")
@@ -1203,6 +1211,167 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return _json_error(503, f"could not remove the normalization: {exc}")
         return jsonify({"ok": True, "entries": entries,
                         "summary": normalize.summarise(entries)})
+
+    @app.get("/api/ripple-signatures")
+    @gated
+    def ripple_signatures_list():
+        """Every signature the operator has recorded: what is expected, until when, and by whom."""
+        from weirvern import ripple_signatures  # noqa: PLC0415
+
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                entries = ripple_signatures.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "available": False, "error": str(exc),
+                            "entries": [], "summary": {}})
+        return jsonify({"ok": True, "available": True, "error": "", "entries": entries,
+                        "summary": ripple_signatures.summary(entries),
+                        "review_days": ripple_signatures.REVIEW_DAYS,
+                        "max_review_days": ripple_signatures.MAX_REVIEW_DAYS})
+
+    @app.get("/api/ripple-signatures/patterns")
+    @gated
+    def ripple_signatures_patterns():
+        """The exact values a channel saw for one host in one window -- the sheet's preview.
+
+        The evidence row carries a statistic (a diversity count), so the console cannot invent
+        the value that produced it. This route asks the SAME table the measurement read, for the
+        same hour, and returns only the values that actually occurred. It is read-only: a viewer
+        may open the preview, and still cannot write.
+        """
+        from weirvern import monitored as monitored_mod  # noqa: PLC0415
+        from weirvern import ripple_signatures  # noqa: PLC0415
+        from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+        host = str(request.args.get("host") or "").strip()
+        channel = str(request.args.get("channel") or "").strip()
+        spec = ripple_signatures.find_spec(ripple_evidence.SPECS, channel)
+        if spec is None:
+            return jsonify({"ok": True, "capable": False, "values": [],
+                            "reason": "no such channel on this deployment"})
+        if not ripple_signatures.supports(spec):
+            return jsonify({"ok": True, "capable": False, "values": [],
+                            "reason": f"{channel} measures a number, not a named value; "
+                                      "there is no one pattern to normalize"})
+        try:
+            end = _moment_arg(request.args.get("end"), datetime.now(UTC))
+            start = _moment_arg(request.args.get("start"), end - timedelta(hours=1))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        if end <= start:
+            return _json_error(400, "the window must end after it starts")
+        if end - start > timedelta(days=2):
+            return _json_error(400, "the preview window is one ripple, not a history scan")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                nets = [str(net) for net in monitored_mod.networks(client)]
+                values = ripple_signatures.candidates(
+                    client, spec, host=host, start=start, end=end,
+                    scope_cidrs=tuple(nets) or None)
+                entries = ripple_signatures.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "capable": True, "values": [], "error": str(exc)})
+        live = {str(row.get("value")): (str(row.get("review_after") or ""), str(row.get("id") or ""))
+                for row in entries if str(row.get("host_addr")) == host
+                and str(row.get("channel")) == channel and not row.get("removed_at")}
+        today = datetime.now(UTC).date()
+        for row in values:
+            until, signature_id = live.get(row["value"], ("", ""))
+            row["normalized_until"] = until
+            row["normalized_id"] = signature_id
+        return jsonify({
+            "ok": True, "capable": True, "reason": "", "host": host, "channel": channel,
+            "family": spec.family, "values": values,
+            "review_after_default": (today + timedelta(days=ripple_signatures.REVIEW_DAYS))
+                                    .isoformat(),
+            "review_days": ripple_signatures.REVIEW_DAYS,
+            "max_review_days": ripple_signatures.MAX_REVIEW_DAYS,
+        })
+
+    @app.post("/api/ripple-signatures")
+    def ripple_signatures_add():
+        """Record ONE exact value as expected for ONE host on ONE channel.
+
+        The body is read as a narrow set: host, channel, value, reason, review_after. A `family`
+        or any other key is refused rather than ignored, because ignoring it would let a caller
+        believe it had widened the claim. `new_signature()` refuses a CIDR, a family name, an
+        empty value and any horizon past a year.
+        """
+        from weirvern import ripple_signatures  # noqa: PLC0415
+        from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, error = _body_or_refusal()
+        if error is not None:
+            return error
+        if not isinstance(body, dict):
+            return _json_error(400, "the request must be one JSON object")
+        allowed = {"host", "host_addr", "channel", "value", "reason", "review_after"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            return _json_error(400, "a signature names one host, one channel and one exact value; "
+                                    f"these fields are not part of that claim: {', '.join(unknown)}")
+        try:
+            row = ripple_signatures.new_signature(
+                host=str(body.get("host") or body.get("host_addr") or ""),
+                channel=str(body.get("channel") or ""),
+                value=str(body.get("value") or ""),
+                reason=str(body.get("reason") or ""),
+                review_after=body.get("review_after"),
+                channels=ripple_evidence.SIGNATURE_CHANNELS,
+                actor=_actor_name(),
+            )
+        except (TypeError, ValueError) as exc:
+            return _json_error(400, str(exc))
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                existing = next(
+                    (entry for entry in ripple_signatures.entries(client)
+                     if entry.get("host_addr") == row["host_addr"]
+                     and entry.get("channel") == row["channel"]
+                     and entry.get("value") == row["value"]
+                     and not entry.get("removed_at")), None)
+                if existing is None:
+                    ripple_signatures.write(client, [row])
+                    entry = row
+                else:
+                    entry = existing
+                entries = ripple_signatures.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, f"could not record the signature: {exc}")
+        return jsonify({"ok": True, "entry": entry, "duplicate": existing is not None,
+                        "entries": entries, "summary": ripple_signatures.summary(entries)})
+
+    @app.post("/api/ripple-signatures/remove")
+    def ripple_signatures_remove():
+        """Stop expecting a value. The evidence returns on the next pass; the row is superseded."""
+        from weirvern import ripple_signatures  # noqa: PLC0415
+
+        refused = _gate_write()
+        if refused is not None:
+            return refused
+        body, error = _body_or_refusal()
+        if error is not None:
+            return error
+        signature_id = str((body or {}).get("id") or "")
+        if not signature_id:
+            return _json_error(400, "id is required")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                current = next((entry for entry in ripple_signatures.entries(client)
+                                if entry.get("id") == signature_id
+                                and not entry.get("removed_at")), None)
+                if current is None:
+                    return _json_error(404, "no such signature")
+                ripple_signatures.write(client, [ripple_signatures.removal(
+                    current, actor=_actor_name(), reason=str((body or {}).get("reason") or ""))])
+                entries = ripple_signatures.entries(client)
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, f"could not remove the signature: {exc}")
+        return jsonify({"ok": True, "entries": entries,
+                        "summary": ripple_signatures.summary(entries)})
 
     @app.get("/api/settings")
     @gated
@@ -1754,6 +1923,37 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return str(ident or via or role or "operator")
         except Exception:  # noqa: BLE001
             return "operator"
+
+    def _actor_name():
+        """The ACTUAL person or credential behind a write, for provenance.
+
+        `_caller_name` reports the credential's kind ("session"), which is enough to explain a
+        write but not to review one. A session knows its username; `identity()` is the shared
+        lookup, so this does not invent a second session reader.
+        """
+        try:
+            _role, via = _caller_role()
+            if via == "session":
+                from weirvern.admin import requestauth  # noqa: PLC0415
+
+                ident = requestauth.identity(ctx, _auth_headers())
+                if ident is not None and getattr(ident, "username", ""):
+                    return str(ident.username)
+            return str(getattr(_auth_headers(), "get", lambda _k: None)("X-Weirvern-User")
+                       or via or "operator")
+        except Exception:  # noqa: BLE001
+            return "operator"
+
+    def _moment_arg(raw: str | None, fallback: datetime) -> datetime:
+        """An ISO instant from the query string, as aware UTC. A bad value is a 400, not a guess."""
+        if not raw:
+            return fallback
+        text = str(raw).strip().replace("Z", "+00:00")
+        try:
+            value = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError(f"not an ISO timestamp: {raw!r}") from exc
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
     def normalize_selection(sel: dict) -> dict:
         """One feed row -> the arguments `normalize.new_entry` accepts. Validation is its job."""

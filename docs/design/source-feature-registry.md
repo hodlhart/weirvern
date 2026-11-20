@@ -60,6 +60,7 @@ ml_ripple_evidence | output
 ml_temporal_scores | output
 model_actions | excluded
 near_misses | output
+normal_ripple_signatures | feature-now
 normal_traffic | feature-now
 netflow_anomalies | output
 network_scopes | join-only
@@ -146,6 +147,21 @@ Read it with `-Merge` combinators and the window predicate in the same select;
 | `window_start`, `src_addr` | join-only | host-window key |
 | `activity_regularity`, `burstiness` | feature-now | DBSCAN/IF/GB |
 | `minute_activity`, `inter_flow_avg`, `inter_flow_stddev` | feature-planned | periodicity, burst shape, beacon work |
+
+### `normal_ripple_signatures`
+
+Operator judgement about ONE exact value on ONE host and ONE channel. The ripple channels consult
+it when they ask "is this value new for this host": a live, unexpired signature is excluded from
+the distinct/novelty computation, so a permanent change stops producing evidence without hiding
+the host or the channel. It is deliberately NOT a suppression list -- the traffic is untouched,
+the same value on another host still ripples, a different value on this host still ripples, and
+`review_after` retires the claim on its own.
+
+| fields | status | use |
+|---|---|---|
+| `id`, `created_at`, `created_by`, `reason`, `removed_at`, `removed_by`, `removed_reason` | audit | who claimed what, why, and what was undone |
+| `host_addr`, `channel`, `value` | feature-now | the exact (host, channel, value) excluded from the ripple computation |
+| `family`, `review_after`, `updated_at` | feature-now | derived family, the horizon that retires it, and the replacement clock |
 
 ### `normal_traffic`
 

@@ -522,6 +522,27 @@ tr.rp-sev-low { box-shadow: inset 3px 0 0 var(--muted); }
 .rp-evidence td:nth-child(1), .rp-evidence td:nth-child(2) { overflow-wrap: anywhere; }
 .rp-corroboration { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
 .rp-corroboration-table { margin-top: 4px; }
+/* ONE EVIDENCE LINE -> ONE EXACT SIGNATURE. The panel is inline in the ripple sheet (the sheet is
+   already the object's surface; a second sheet would stack scrims). The value list scrolls so a
+   busy TLS host cannot push the reason field off the sheet. */
+.rp-sig-panel { margin: 14px 0 4px; padding: 12px; border: 1px solid var(--border-solid);
+  border-left: 3px solid var(--accent); border-radius: var(--r-md); background: var(--surface-2); }
+.rp-sig-panel h3 { margin: 0 0 4px; }
+.rp-sig-scope { margin: 2px 0 8px; overflow-wrap: anywhere; }
+.rp-sig-values { display: grid; gap: 6px; margin: 8px 0; max-height: 220px; overflow-y: auto; }
+.rp-sig-value { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--r-md); min-width: 0; }
+.rp-sig-value code { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.rp-sig-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.rp-sig-open { white-space: nowrap; }
+.rp-sig-confirm { white-space: nowrap; }
+.rp-sig-reason, .rp-sig-review { width: 100%; }
+.nz-sig-remove { white-space: nowrap; }
+.rp-sig-error { color: var(--bad); margin: 4px 0; }
+.rp-sig-error:empty { display: none; }
+/* An expired signature is still listed (the record survives) but reads as not applying. */
+#nz-sigs td:nth-child(5) { max-width: 340px; overflow-wrap: anywhere; white-space: normal; }
+#nz-entries tr.nz-expired, #nz-sigs tr.nz-expired { opacity: 0.66; }
 #anomalies-table { table-layout: fixed; }
 #anomalies-table td { vertical-align: top; }
 /* The Host cell carries a name AND an address; an ellipsis here hid the address with no
