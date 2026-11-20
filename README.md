@@ -201,9 +201,9 @@ weirvern demo-seed --dry-run        # print the row counts, write nothing
 weirvern demo-seed --hours 6        # a quick fill, for a console that only needs traffic
 ```
 
-That writes `zeek_conn` (116,397 rows), `zeek_dns` (23,323), `zeek_ssl` (22,549), `zeek_http`
-(22,900) and `flows` (116,397) for 22 simulated hosts, 301,566 rows in all. Two properties are
-deliberate.
+That writes `zeek_conn` (117,325 rows), `zeek_dns` (23,325), `zeek_ssl` (22,988), `zeek_weird`
+(5,427), `zeek_http` (23,377) and `flows` (117,325) for 22 simulated hosts, 309,767 rows in all.
+Two properties are deliberate.
 
 **The records go through the real mappers.** Every generated record is built in Zeek's own
 field shape and pushed through `ingester.map_zeek_*`, the same functions the tailer calls. A
@@ -241,6 +241,41 @@ capture from last week lands outside every `now()` window and renders an empty d
 you shift it with `tcprewrite`. Replay needs capture privileges on the interface, which a
 container usually does not have. And `--topspeed` can outrun Zeek, which shows up as
 `capture_loss` rather than as a clean demo.
+
+### What a seeded install contains
+
+The point of the command is a console someone can take for a test drive, so it fills the surfaces a
+reader opens first rather than only the traffic tables.
+
+| Surface | What is there after one run |
+| --- | --- |
+| Ripples | Two incidents of different shapes, both high severity, four families each |
+| Sluice | One traffic block on a host, one DNS block on a name, each with the hits it caught |
+| Gate | Armed, reporting the two live rules and the packets those hits blocked |
+| Approvals | One block proposal waiting for a decision, with its reason and evidence |
+| Blocklists | Five sources and the blocked name on the custom list |
+| Network and Assets | All 22 hosts classified, with MAC, vendor and an operating system guess |
+| Normalized | One value marked expected, with a reason and a review date |
+
+Both kinds of block matter. Blocking a host and blocking a name are different products: the first
+stops traffic to an address, the second removes the rendezvous, and a seed with only one of them
+leaves half the Sluice page empty.
+
+**The normalized entry is a reading, not an invention.** Detection's other half is teaching the
+console what is ordinary: a backup job, a vendor's update service, a printer that speaks one ancient
+protocol. Left alone those fire on every pass and teach the operator to ignore the page. The seeder
+asks each signature-capable channel for the exact values this host actually sent and marks the
+busiest one expected, so the row names something real. Measured on a seeded database: with the
+signature the host's destination diversity is 3 distinct values, and removing it makes the same
+measurement read 4.
+
+**The gate is armed in the record only.** Nothing here touches nftables or the kernel, so a seeded
+laptop cannot accidentally block its own network. What the gate row says is what the console reads.
+
+**What it does not fill, and why.** The asset-posture bands and the detector calibrations are
+produced by the worker's shadow passes, so they stay empty until the worker has run over the seeded
+data. That is the honest state of a fresh install and the panels say so; a seeded score would be a
+number no model produced.
 
 ### Why the default is six days
 

@@ -42,6 +42,8 @@ COLUMNS: dict[str, list[str]] = {
                  "rcode", "answers", "query_len", "query_entropy"],
     "zeek_ssl": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "version", "cipher",
                  "server_name", "ja4", "ja4_orig", "validation_status", "established"],
+    "zeek_weird": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "name", "noticed",
+                   "peer"],
     "zeek_http": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "method", "host",
                   "uri", "referrer", "user_agent", "status_code", "resp_mime", "resp_bytes",
                   "uri_len", "uri_entropy"],
@@ -66,9 +68,26 @@ DEFAULT_HOURS = 144
 RIPPLE_WINDOWS = 12            # one hour of the five-minute windows
 RIPPLE_CONNS_PER_WINDOW = 60
 RIPPLE_LOOKUPS_PER_WINDOW = 40
+RIPPLE_WEIRD_PER_WINDOW = 25
+#: A CHANNEL NEEDS A PAST BEFORE A BURST MEANS ANYTHING. The evidence builds a baseline only from
+#: windows that HAVE rows, so a channel that never spoke is skipped as unmeasurable rather than
+#: reported as a spike from zero. The live site's weird log runs continuously (median 109 an hour),
+#: so the seed carries a small background and only the final hour is extreme.
+WEIRD_BACKGROUND_PER_WINDOW = (2, 4)
+
+#: The name the beacon resolves. It exists so the DNS block has a rule AND a query that refers to
+#: real seeded traffic; a blocked name nothing ever looked up is a rule with no story.
+BEACON_DOMAIN = "updates.example.net"
+
+#: Every rule this seeder creates carries this origin, which is how a second run tells that the
+#: enforcement picture is already there instead of stacking a duplicate block on top of it.
+DEMO_ORIGIN = "demo-seed"
+RIPPLE_HTTP_HOSTS_PER_WINDOW = 40
 EXTERNAL = ["198.51.100.10", "198.51.100.23", "203.0.113.66", "203.0.113.90"]
 BEACON_TARGET = "203.0.113.66"
 SERVICES = [(443, "ssl"), (80, "http"), (53, "dns"), (22, "ssh"), (8080, "http")]
+WEIRD_NAMES = ["bad_TCP_checksum", "truncated_IP", "data_before_established",
+              "window_recision", "possible_split_routing"]
 DOMAINS = ["example.com", "updates.example.net", "mail.example.org", "cdn.example.com"]
 SNI = ["example.com", "cdn.example.com", "updates.example.net"]
 WINDOW = timedelta(minutes=5)
@@ -221,7 +240,8 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
     # odd-looking but honest, and it beats refusing to build a small demo at all.
     beacon = segment[0]
     scanner = segment[1 % len(segment)]
-    rippled = segment[2 % len(segment)]  # whose final hour is extreme enough to be an incident
+    rippled = segment[2 % len(segment)]  # the volume-shaped incident
+    broad = segment[3 % len(segment)]    # the diversity-shaped incident
 
     out: dict[str, list[list[Any]]] = {name: [] for name in COLUMNS}
 
@@ -260,6 +280,20 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
                     http = ingester.map_zeek_http(_http(ts, host, dst, rng.choice(DOMAINS), rng))
                     if http:
                         out["zeek_http"].append([http[c] for c in COLUMNS["zeek_http"]])
+
+        # The weird background runs for one host only, and it is not an anomaly: it is what makes
+        # the notice family measurable at all for that host, so the final-hour burst has a baseline
+        # to be extreme against.
+        for _ in range(rng.randint(*WEIRD_BACKGROUND_PER_WINDOW)):
+            ts = w_epoch + rng.uniform(0, 290)
+            weird = ingester.map_zeek_weird({
+                "ts": str(ts), "uid": _uid(rng), "id.orig_h": rippled,
+                "id.orig_p": str(rng.randint(1024, 65535)),
+                "id.resp_h": rng.choice(EXTERNAL), "id.resp_p": "443",
+                "name": rng.choice(WEIRD_NAMES), "notice": "F", "peer": "zeek",
+            })
+            if weird:
+                out["zeek_weird"].append([weird[c] for c in COLUMNS["zeek_weird"]])
 
         # ANOMALY 1: a host beaconing to one external address every window, small and steady. This is
         # the shape a per-host volume baseline will not flag on size, which is what makes it useful.
@@ -320,6 +354,43 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
                 lookup = ingester.map_zeek_dns(_dns(ts, rippled, rng.choice(DOMAINS), rng))
                 if lookup:
                     out["zeek_dns"].append([lookup[c] for c in COLUMNS["zeek_dns"]])
+            # ZEEK'S OWN FINDINGS, because the notice family is the one the live deployment leans on
+            # for its highest-severity ripples. Without weird rows this family is simply absent from
+            # the demo, and a family that never speaks looks the same as one that had nothing to say.
+            for _ in range(RIPPLE_WEIRD_PER_WINDOW):
+                ts = w_epoch + rng.uniform(0, 290)
+                weird = ingester.map_zeek_weird({
+                    "ts": str(ts), "uid": _uid(rng), "id.orig_h": rippled,
+                    "id.orig_p": str(rng.randint(1024, 65535)),
+                    "id.resp_h": rng.choice(EXTERNAL), "id.resp_p": "443",
+                    "name": rng.choice(WEIRD_NAMES), "notice": "T" if rng.random() < 0.2 else "F",
+                    "peer": "zeek",
+                })
+                if weird:
+                    out["zeek_weird"].append([weird[c] for c in COLUMNS["zeek_weird"]])
+
+            # A SECOND INCIDENT WITH A DIFFERENT SHAPE. The first host is a volume burst; this one is
+            # diversity, reaching many distinct destinations and Host headers that it has never used
+            # before. Two ripples of different shapes are what shows the grouping is reading the
+            # evidence rather than matching one template.
+            for _ in range(RIPPLE_HTTP_HOSTS_PER_WINDOW):
+                ts = w_epoch + rng.uniform(0, 290)
+                dst = rng.choice(EXTERNAL)
+                port = rng.choice((80, 8080, 8000))
+                orig, resp = rng.randint(120, 900), rng.randint(200, 5000)
+                brow_conn = ingester.map_zeek_conn(
+                    _conn(ts, broad, dst, port, "http", rng, orig_bytes=orig, resp_bytes=resp))
+                if brow_conn:
+                    out["zeek_conn"].append([brow_conn[c] for c in COLUMNS["zeek_conn"]])
+                flow = _flows_row(ts, broad, dst, port, orig, resp)
+                flow["time_flow_start"] = w_start
+                flow["time_flow_end"] = w_start + timedelta(seconds=rng.uniform(1, 240))
+                flow["timestamp"] = w_start
+                out["flows"].append(_flow_values(flow))
+                req = ingester.map_zeek_http(_http(
+                    ts, broad, dst, f"node-{rng.randint(1, 9999)}.example.com", rng))
+                if req:
+                    out["zeek_http"].append([req[c] for c in COLUMNS["zeek_http"]])
 
     return out
 
@@ -456,10 +527,260 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scope", action="store_true",
                         help=f"declare {INTERNAL_PREFIX}0/24 as a monitored network, so seeded "
                              "hosts are attributed; without it the seeder only reports the gap")
+    parser.add_argument("--no-enforcement", action="store_true",
+                        help="skip the traffic block, the name block, their hits and the pending "
+                             "proposal, leaving the Sluice and Approvals surfaces empty")
     parser.add_argument("--no-evidence", action="store_true",
                         help="skip the ripple evidence pass, leaving the Ripples card empty until "
                              "the worker's next shadow tick")
     parser.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+
+
+#: Device archetypes, so a seeded inventory looks like a household rather than 22 copies of one
+#: machine. The User-Agent is what the classifier actually reads; the MAC vendor and the hostname are
+#: what an operator recognises on the page.
+ARCHETYPES: list[dict[str, str]] = [
+    {"os": "windows", "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/141.0 Safari/537.36",
+     "oui": "3c:52:82", "name": "desk-laptop"},
+    {"os": "macos", "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+                          "(KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+     "oui": "00:1b:63", "name": "studio-mac"},
+    {"os": "ios", "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 "
+                        "(KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+     "oui": "a4:83:e7", "name": "phone"},
+    {"os": "android", "ua": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36",
+     "oui": "f4:f5:d8", "name": "tablet"},
+    {"os": "linux", "ua": "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0",
+     "oui": "00:1a:2b", "name": "nas"},
+    {"os": "linux", "ua": "curl/8.11.0", "oui": "3c:d9:2b", "name": "print-server"},
+]
+
+
+def _seed_normalization(client, *, hosts: int = 22, seed: int = 1337) -> dict[str, Any]:
+    """Teach the console that one observed pattern is expected, which is a feature in its own right.
+
+    NORMALIZING IS THE OTHER HALF OF DETECTION. Every deployment accumulates values that are strange
+    once and ordinary forever: a backup job, a vendor's update service, a printer that only speaks one
+    ancient protocol. Left alone they fire on every pass and train the operator to ignore the page.
+    The console lets a value be marked expected, with a reason and a review date, and stops counting
+    it -- so a test drive without one never shows the mechanism at all.
+
+    THE VALUE IS READ FROM THE SEEDED TRAFFIC, not invented: `candidates` asks the source table the
+    same question the measurement asks, so the row names something this host actually sent. A made-up
+    value would be a signature that filters nothing while looking like it works.
+    """
+    from datetime import timedelta as _timedelta
+
+    from weirvern import ripple_signatures  # noqa: PLC0415
+    from weirvern.models import ripple_evidence as rev  # noqa: PLC0415
+
+    segment = _hosts(random.Random(seed), hosts)
+    host = segment[4 % len(segment)]
+    channels = ripple_signatures.channels_for(rev.SPECS)
+    now = utcnow()
+    start = now - _timedelta(hours=24)
+
+    for channel in sorted(channels):
+        spec = ripple_signatures.find_spec(rev.SPECS, channel)
+        if spec is None:
+            continue
+        try:
+            seen = ripple_signatures.candidates(client, spec, host=host, start=start, end=now)
+        except Exception:  # noqa: BLE001 - one unreadable source must not stop the seed
+            continue
+        if not seen:
+            continue
+        top = max(seen, key=lambda row: row["count"])
+        entry = ripple_signatures.new_signature(
+            host=host,
+            channel=channel,
+            value=top["value"],
+            reason=(
+                f"demo seed: {top['value']} is this host's routine pattern ({top['count']} times "
+                "in 24h), so it is expected here rather than novel"
+            ),
+            channels=channels,
+            actor="demo-seed",
+        )
+        if ripple_signatures.write(client, [entry]):
+            return {"host": host, "channel": channel, "value": top["value"],
+                    "review_after": str(entry["review_after"])}
+    return {}
+
+
+def _seed_identity(client, *, hosts: int = 22, seed: int = 1337) -> int:
+    """Give the inventory something to inventory.
+
+    THE NETWORK AND ASSETS SURFACES READ A CLASSIFICATION, NOT THE TRAFFIC TABLES. Without observations
+    every seeded host renders as an address the console knows nothing about, which is the emptiest
+    possible version of a product whose front page is a host list. The observations go through
+    `host_identity.record_observation`, the same writer the ingest path calls, and the classification
+    through `build_identity`, so the seeded inventory is produced the way a real one is.
+    """
+    from weirvern import host_identity  # noqa: PLC0415
+
+    rng = random.Random(seed + 1)
+    moment = utcnow()
+    segment = _hosts(random.Random(seed), hosts)
+    for index, host in enumerate(segment):
+        shape = ARCHETYPES[index % len(ARCHETYPES)]
+        mac = f"{shape['oui']}:{rng.randrange(256):02x}:{rng.randrange(256):02x}:{index:02x}"
+        host_identity.record_observation(client, moment, host, mac, "oui", shape["oui"])
+        host_identity.record_observation(
+            client, moment, host, mac, "dhcp_hostname",
+            f"{shape['name']}-{index:02d}")
+        # Two user agents per host where the archetype allows it, because one banner is one signal and
+        # the classifier is explicit about what it can say from a single observation.
+        host_identity.record_observation(client, moment, host, mac, "software", shape["ua"])
+
+    verdicts = host_identity.build_identity(client, days=7)
+    host_identity.persist(client, verdicts)
+    return len(verdicts)
+
+
+def _enforcement_exists(client) -> int:
+    """How many demo rules are already stored, so a second run does not stack duplicates.
+
+    A demo that leaves two identical blocks behind after someone runs the command twice is worse than
+    one that reports it already did this: the second rule has no hits, so it reads as a rule that
+    matched nothing rather than as a rerun.
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+
+    try:
+        rules = sluice_store.load_all_rules(client)
+    except Exception:  # noqa: BLE001 - an unreadable rule table must not stop the seed itself
+        return 0
+    return sum(1 for rule in rules if getattr(rule, "origin", "") == DEMO_ORIGIN)
+
+
+def _seed_enforcement(client, *, hosts: int = 22, seed: int = 1337) -> dict[str, Any]:
+    """Create the two blocks the product exists to perform, and the evidence that they fired.
+
+    A TEST DRIVE IS NOT A TOUR OF THE DETECTORS. Someone who runs this command and clicks through
+    the console should find the Sluice gate holding rules, the blocklist holding a name, those rules
+    carrying the hits they caught, and a proposal waiting for a decision. Empty enforcement panels in
+    a product whose point is enforcement reads as unfinished rather than quiet, and the same is true
+    in a class demo where nobody can tell an empty table from a broken one.
+
+    EVERY WRITE GOES THROUGH THE PRODUCT'S OWN STORE, not a hand-built row: `sluice_store.create_rule`
+    validates the address, `blocklists.add_custom_domain` runs the same validator as a manual entry,
+    and `proposals.create_proposal` refuses an unexplained target. A seeder that wrote finished rows
+    would let a validation bug live through the demo and appear on the day someone tries it for real.
+
+    THE GATE IS ARMED IN THE RECORD ONLY. Nothing here touches the kernel or nftables: this writes
+    what the console reads, which is what a demo needs, and it cannot block real traffic.
+    """
+    from datetime import timedelta as _timedelta
+
+    from weirvern import blocklists, proposals, sluice, sluice_store  # noqa: PLC0415
+
+    segment = _hosts(random.Random(seed), hosts)
+    beacon = segment[0]
+    scanner = segment[1 % len(segment)]
+
+    traffic_rule = sluice_store.create_rule(
+        client,
+        src_cidr=f"{beacon}/32",
+        mode="block",
+        ttl_minutes=60,
+        created_by="demo-seed",
+        reason=(
+            f"beacons to {BEACON_TARGET} every five minutes at a constant size; a per-host volume "
+            "baseline will never flag it on size"
+        ),
+        origin=DEMO_ORIGIN,
+        severity="high",
+    )
+    dns_rule = sluice_store.create_rule(
+        client,
+        domain=BEACON_DOMAIN,
+        mode="block",
+        ttl_minutes=240,
+        created_by="demo-seed",
+        reason=(
+            f"{BEACON_DOMAIN} is what {beacon} resolves before it beacons; blocking the name "
+            "removes the rendezvous rather than one address"
+        ),
+        origin=DEMO_ORIGIN,
+        severity="medium",
+    )
+    blocklists.add_custom_domain(client, BEACON_DOMAIN)
+    # The source list is part of the pane, not decoration: a test drive that shows an empty Blocklists
+    # tab teaches a new user the feature does not exist. These rows carry no domains until a sync
+    # fetches one, so the pane honestly shows "configured, not yet synced" rather than fake counts.
+    blocklists.ensure_default_sources(client)
+
+    # THE HITS. A rule with no events is indistinguishable from a rule that never matched, which is
+    # the difference an operator is usually asking about.
+    now = utcnow()
+    events: list[dict[str, Any]] = []
+    packets = 0
+    octets = 0
+    for step in range(12):
+        ts = now - _timedelta(minutes=55 - step * 5)
+        pkt, byt = 4 + step % 3, 2400 + step * 96
+        packets += pkt
+        octets += byt
+        events.append({
+            "ts": ts, "rule_id": traffic_rule.rule_id, "kind": "flow",
+            "src_addr": beacon, "dst_addr": BEACON_TARGET, "dst_port": 443,
+            "protocol": "tcp", "packets": pkt, "bytes": byt, "direction": "forward",
+        })
+    dns_packets = 0
+    for step in range(10):
+        dns_packets += 1
+        events.append({
+            "ts": now - _timedelta(minutes=50 - step * 5), "rule_id": dns_rule.rule_id,
+            "kind": "dns", "domain": BEACON_DOMAIN, "query": BEACON_DOMAIN, "src_addr": beacon,
+            "dst_addr": "203.0.113.90", "dst_port": 53, "protocol": "udp",
+            "packets": 1, "bytes": 88, "direction": "forward",
+        })
+    written = sluice_store.write_events(client, events)
+
+    # The gate says ARMED because the rules are live, and it reports the same counts the events
+    # carry. It is the state a reader gets from the console, not a claim about the kernel.
+    from weirvern.config import get_settings  # noqa: PLC0415
+    from weirvern.worker import _sensor_name  # noqa: PLC0415
+
+    state = sluice.GateState(
+        state=sluice.GATE_STATE_ARMED,
+        iface="demo0",
+        mgmt_iface="",
+        rules_active=2,
+        rules_total=2,
+        packets_blocked=packets + dns_packets,
+        bytes_blocked=octets + 88 * dns_packets,
+        detail="demo seed: one traffic block and one name block armed; no kernel changes",
+        backend="nft",
+        backend_expected="nft",
+        enforcement="nft",
+    )
+    sluice_store.write_gate_state(client, _sensor_name(get_settings()), state)
+
+    # A PROPOSAL LEFT UNDECIDED, because the approval path is part of the product and an empty
+    # Approvals surface teaches a new user that the feature is missing.
+    proposal = proposals.create_proposal(client, {
+        "host": scanner,
+        "proposed_by": "demo-seed",
+        "reason": (
+            f"{scanner} opened 40 ports on 198.51.100.10 in one window with almost no bytes back: "
+            "a sweep, and worth a decision rather than an automatic block"
+        ),
+        "evidence": f"40 connections, 0 bytes returned, all refused, window ending {now:%H:%M} UTC",
+        "ttl_minutes": 60,
+    })
+
+    return {
+        "traffic_rule": traffic_rule.rule_id,
+        "dns_rule": dns_rule.rule_id,
+        "flows": written,
+        "packets": packets + dns_packets,
+        "domain": BEACON_DOMAIN,
+        "proposal": proposal.get("proposal_id", ""),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -506,6 +827,26 @@ def main(argv: list[str] | None = None) -> int:
         # whether anything measurable came of them. Both print below the row counts, so the output
         # reads as a sequence instead of interleaving with what the seed just wrote.
         _report_scope(client, declare=args.scope)
+        if not args.no_enforcement:
+            existing = _enforcement_exists(client)
+            if existing:
+                print(f"  blocks:   {existing} demo rule(s) already present, left alone")
+            else:
+                made = _seed_enforcement(client, hosts=args.hosts, seed=args.seed)
+                print(
+                    f"  blocks:   traffic rule {made['traffic_rule']}, name rule "
+                    f"{made['dns_rule']} for {made['domain']}, "
+                    f"{made['flows']} hit(s) recorded, gate armed"
+                )
+                print(f"  proposal: {made['proposal']} waiting for a decision")
+        if not args.no_enforcement:
+            classified = _seed_identity(client, hosts=args.hosts, seed=args.seed)
+            print(f"  inventory: {classified} host(s) classified for the Network and Assets views")
+        if not args.no_enforcement:
+            normalized = _seed_normalization(client, hosts=args.hosts, seed=args.seed)
+            if normalized:
+                print(f"  normalized: {normalized['channel']} on {normalized['host']}, "
+                      f"expected until {normalized['review_after']}")
         if not args.no_evidence:
             _run_evidence(client, hours=args.hours)
     return 0
