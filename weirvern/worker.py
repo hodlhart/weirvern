@@ -29,13 +29,7 @@ from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
 from weirvern.ingester import tail_forever
 from weirvern.models import readiness as readiness_mod
-from weirvern.models.detectors import (
-    AdaptiveBaselineDetector,
-    GradientBoostingDetector,
-    IsolationForestDetector,
-    KNNDistanceDetector,
-    LOFDetector,
-)
+from weirvern.models.detectors import DETECTOR_CLASSES, AdaptiveBaselineDetector
 from weirvern.zeek_features import zeek_window_sql
 
 from .clock import as_aware, utcnow
@@ -610,22 +604,15 @@ def build_detectors(settings, cfg: ModelConfig, model_dir: str | None = None):
     positionally (the student must train on the teacher's matrix), so a reordering here is a
     behavioural change, not a tidy-up.
 
-    DBSCAN IS NOT HERE ANY MORE (retired 2026-11-20). It was removed from this list and from the
-    fused ensemble after its stored score measured 97.89% at 0.99 or above (p50 = p99 = max). Its
-    class is kept in `detectors.py` for one release; nothing constructs it.
+    THE ROSTER IS `detectors.DETECTOR_NAMES`; this function is the one place that constructs it,
+    and a removed detector has no class, no entry here and no row in the Detectors table.
 
     The override exists for the FORCED RETRAIN: the candidate must train through these same
     classes with these same arguments, or the rehearsal proves nothing about the scheduled path
     -- but it must write its artifacts somewhere that is not scoring traffic.
     """
     model_dir = model_dir or settings.model_dir
-    return [
-        IsolationForestDetector(model_dir, cfg),
-        GradientBoostingDetector(model_dir, cfg),
-        KNNDistanceDetector(model_dir, cfg),
-        LOFDetector(model_dir, cfg),
-        AdaptiveBaselineDetector(model_dir, cfg),
-    ]
+    return [cls(model_dir, cfg) for cls in DETECTOR_CLASSES]
 
 
 def load_or_train(client: Client, detectors, settings,
@@ -643,8 +630,8 @@ def load_or_train(client: Client, detectors, settings,
     now for models whose artifacts could be hours old, and `train_if_due` then correctly
     declined to retrain for another `retrain_every_h`.
 
-    MEASURED on the deployment: Isolation Forest, Gradient Boosting and DBSCAN were loaded from
-    disk on each restart and had not retrained in 16 hours despite a 6-hour interval, while the
+    MEASURED on the deployment: the original detectors were loaded from disk on each restart and
+    had not retrained in 16 hours despite a 6-hour interval, while the
     Adaptive Baseline -- which has its own fast-refresh path -- trained every few minutes. The
     stale models raised nothing, looked healthy on the status page, and kept scoring against a
     baseline trained on an older traffic mix.
@@ -975,7 +962,7 @@ def _record_model_metadata(client: Client, detectors) -> None:
 _ANOMALY_COLUMNS: tuple[str, ...] = (
     "detected_at", "window_start", "window_end", "src_addr", "anomaly_score",
     "confidence", "isolation_forest_score", "gradient_boosting_score",
-    "dbscan_score", "baseline_score", "model_agreement",
+    "baseline_score", "model_agreement",
     "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
     "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
     "attack_techniques", "attack_label", "strong_families", "severity_basis",
@@ -1464,8 +1451,8 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # the MAIN table order-independently, but the side tables below are indexed by key with
         # "last row wins", so WHICH copy a host-window got was ClickHouse's arbitrary choice. The
         # seeded-attack harness caught the cost: two scorings of the same window in one process gave
-        # DBSCAN 0.7178 in one and 0.6487 in the other for the same host -- a detection flipped out
-        # by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
+        # the same detector 0.7178 in one and 0.6487 in the other for the same host -- a detection
+        # flipped out by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
         # below still does the arithmetic.
         "SELECT window_start, window_start + INTERVAL 5 MINUTE AS window_end, src_addr, "
         "countMerge(flow_count) AS flow_count, sumMerge(total_bytes) AS total_bytes, "
@@ -1762,12 +1749,12 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
                 [[m["window_start"], m["window_end"], m["src_addr"], m["anomaly_score"],
                   m["threshold_used"], m["reason"], m["model_agreement"],
                   m["isolation_forest_score"], m["gradient_boosting_score"],
-                  m["dbscan_score"], m["baseline_score"], m["detected_by_models"],
+                  m["baseline_score"], m["detected_by_models"],
                   utcnow()] for m in near_misses],
                 column_names=["window_start", "window_end", "src_addr", "anomaly_score",
                               "threshold_used", "reason", "model_agreement",
                               "isolation_forest_score", "gradient_boosting_score",
-                              "dbscan_score", "baseline_score", "detected_by_models",
+                              "baseline_score", "detected_by_models",
                               "replaced_at"],
             )
             logger.info("Recorded %d near miss(es)", len(near_misses))
@@ -1870,7 +1857,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         rows.append([
             utcnow(), v["window_start"], f.get("window_end"), v["src_addr"],
             v["anomaly_score"], v["confidence"], v["isolation_forest_score"],
-            v["gradient_boosting_score"], v["dbscan_score"], v["baseline_score"],
+            v["gradient_boosting_score"], v["baseline_score"],
             v["model_agreement"], exp["primary_deviation_feature"],
             exp["primary_deviation_zscore"], exp["deviation_magnitude"],
             exp["feature_contributions"], exp["baseline_comparison"],
@@ -2059,7 +2046,8 @@ def main() -> None:
     if cfg.missing_features:
         logger.info(
             "Missing-data handling is ON: absent sources stay NULL, IF/GB impute the training "
-            "median with __missing indicators, DBSCAN masks unobserved dimensions, and windows "
+            "median with __missing indicators, the distance detectors mask unobserved "
+            "dimensions, and windows "
             "below %.2f coverage are excluded from calibration.",
             cfg.min_feature_coverage,
         )
@@ -2327,7 +2315,7 @@ def main() -> None:
                 # `last_full_train` COMES FROM THE ARTIFACTS, NOT FROM now(). A warm start is
                 # usable without anything having been trained, so stamping now() here reset the
                 # retrain clock on every restart: measured on the deployment, Isolation Forest,
-                # Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour
+                # the original detectors went 16 hours without a retrain against a 6-hour
                 # interval, while the Adaptive Baseline refreshed every few minutes because it has
                 # its own path. The stale models raised nothing and kept scoring.
                 usable, trained_at = load_or_train(client, detectors, settings, cfg)

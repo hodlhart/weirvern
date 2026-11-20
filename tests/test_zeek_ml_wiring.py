@@ -149,19 +149,19 @@ def test_the_scoring_path_is_wrapped_so_zeek_failure_does_not_stop_detection():
 
 @pytest.mark.parametrize("detector", ["IsolationForestDetector", "GradientBoostingDetector",
                                       "KNNDistanceDetector", "LOFDetector",
-                                      "AdaptiveBaselineDetector", "DBSCANDetector"])
+                                      "AdaptiveBaselineDetector"])
 def test_every_detector_is_covered(detector):
     """A guard on this file itself: if a detector is added, the list above must be extended
     deliberately rather than the new one going unwired.
 
-    DBSCANDetector is in the list because the CLASS still exists (retired, kept for one release);
-    the two cross-sectional detectors are the live pair that replaced it.
+    The class list is the engine roster now, and a removed detector is in NEITHER: the density
+    detector has no class to test, which is what "removed" means.
     """
     assert f"class {detector}" in DETECTORS, f"{detector} no longer exists; update this test"
     others = set(re.findall(r"^class (\w+Detector)", DETECTORS, re.M))
-    assert others <= set(["IsolationForestDetector", "GradientBoostingDetector",
+    assert others == set(["IsolationForestDetector", "GradientBoostingDetector",
                           "KNNDistanceDetector", "LOFDetector",
-                          "AdaptiveBaselineDetector", "DBSCANDetector"]), (
+                          "AdaptiveBaselineDetector"]), (
         f"a detector exists that this test does not cover: {others}"
     )
 
@@ -176,18 +176,18 @@ def test_isolation_forest_trains_on_zeek_features():
     )
 
 
-def test_dbscan_trains_on_zeek_features_and_declares_the_smaller_set():
-    """DBSCAN gets a REDUCED Zeek set by design -- clustering degrades with dimensionality
-    on few samples -- so its select list must match ZEEK_DBSCAN_FEATURES, not ZEEK_FEATURES.
-    A mismatch produces a vector of the right length holding the wrong columns."""
-    assert "ZEEK_DBSCAN_FEATURES" in DETECTORS, (
-        "DBSCAN does not use its own smaller Zeek set"
+def test_the_cross_sectional_pair_declares_the_smaller_zeek_set():
+    """KNN and LOF get a REDUCED Zeek set by design -- a distance degrades with dimensionality on
+    few samples -- so the shared query builder must pass ZEEK_CROSS_SECTIONAL_FEATURES, not
+    ZEEK_FEATURES. A mismatch produces a vector of the right length holding the wrong columns."""
+    assert "ZEEK_CROSS_SECTIONAL_FEATURES" in DETECTORS, (
+        "the cross-sectional training query lost its smaller Zeek set"
     )
-    assert "feature_columns=DBSCAN_FEATURES" in DETECTORS
-    body = DETECTORS[DETECTORS.index("class DBSCANDetector"):]
-    body = body[:body.index("\nclass ")]
-    assert "_zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)" in body, (
-        "the DBSCAN query does not pass its own column subset to the join helper"
+    assert "feature_columns=CROSS_SECTIONAL_FEATURES" in DETECTORS
+    body = DETECTORS[DETECTORS.index("def cross_sectional_training_sql"):
+                     DETECTORS.index("def kth_neighbour_distances")]
+    assert "_zeek_clause(s, e, ZEEK_CROSS_SECTIONAL_FEATURES)" in body, (
+        "the cross-sectional query does not pass its own column subset to the join helper"
     )
 
 

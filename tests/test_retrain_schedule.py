@@ -5,7 +5,8 @@ were *usable* -- and a warm start is usable with no training having happened at 
 worker restart restarted the retrain clock, and the full-retrain branch correctly declined to
 fire for another `retrain_every_h`.
 
-MEASURED on the deployment before the fix: Isolation Forest, Gradient Boosting and DBSCAN had
+MEASURED on the deployment before the fix: Isolation Forest, Gradient Boosting and the
+density detector had
 not retrained in 16 hours against a 6-hour interval, while the Adaptive Baseline trained 321
 times in the same period because it has its own fast-refresh path. Nothing raised, the status
 page showed all four detectors loaded, and the three stale models kept scoring against a baseline
@@ -35,9 +36,9 @@ import pytest
 from weirvern.config import ModelConfig
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
-    DBSCANDetector,
     GradientBoostingDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
 )
 from weirvern.worker import _oldest_trained_at, load_or_train
 
@@ -49,7 +50,7 @@ def detectors():
     return [
         IsolationForestDetector(d, cfg),
         GradientBoostingDetector(d, cfg),
-        DBSCANDetector(d, cfg),
+        KNNDistanceDetector(d, cfg),
         AdaptiveBaselineDetector(d, cfg),
     ]
 

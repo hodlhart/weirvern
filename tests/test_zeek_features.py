@@ -20,7 +20,7 @@ import pytest
 
 from weirvern.features import IF_FEATURES, extract_features
 from weirvern.zeek_features import (
-    ZEEK_DBSCAN_FEATURES,
+    ZEEK_CROSS_SECTIONAL_FEATURES,
     ZEEK_FEATURES,
     ZEEK_PRESENCE_FEATURE,
     extract_zeek_features,
@@ -205,7 +205,7 @@ def test_extract_features_merges_both_sources():
 
 def test_the_presence_flag_reaches_both_vectors():
     assert ZEEK_PRESENCE_FEATURE in IF_FEATURES
-    assert ZEEK_PRESENCE_FEATURE in ZEEK_DBSCAN_FEATURES
+    assert ZEEK_PRESENCE_FEATURE in ZEEK_CROSS_SECTIONAL_FEATURES
 
 
 def test_zeek_features_are_the_tail_of_each_vector():
@@ -213,10 +213,10 @@ def test_zeek_features_are_the_tail_of_each_vector():
     `feature_columns`, so an interleaved feature would silently reinterpret every column
     after it for any model trained earlier."""
     assert IF_FEATURES[-len(ZEEK_FEATURES):] == ZEEK_FEATURES
-    assert ZEEK_DBSCAN_FEATURES[-len(ZEEK_DBSCAN_FEATURES):] == ZEEK_DBSCAN_FEATURES
+    assert ZEEK_CROSS_SECTIONAL_FEATURES[-len(ZEEK_CROSS_SECTIONAL_FEATURES):] == ZEEK_CROSS_SECTIONAL_FEATURES
     # The DBSCAN subset must actually be a subset of the full set, or the query helper and
     # the declared columns disagree.
-    assert set(ZEEK_DBSCAN_FEATURES) <= set(ZEEK_FEATURES)
+    assert set(ZEEK_CROSS_SECTIONAL_FEATURES) <= set(ZEEK_FEATURES)
 
 
 # ── the coverage check ──────────────────────────────────────────────────────────

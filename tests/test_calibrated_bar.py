@@ -207,9 +207,15 @@ def test_no_usable_row_means_no_bar_rather_than_a_guess():
 
 
 def test_the_fused_score_is_never_treated_as_a_detector_for_eligibility():
-    """It is the decision's own number; barring it from the fused score would be circular."""
-    out = calibration.eligibility_from_rows(
-        [(FUSED_MODEL, 0.99, 0.01), ("Isolation Forest", 0.008, 0.01)], target_far=0.01,
-        multiple=1.0)
-    assert FUSED_MODEL not in out
-    assert out["Isolation Forest"] is True
+    """It is the decision's own number; judging it would make the promotion gate circular."""
+    from weirvern.models.eligibility import evaluate
+
+    class _Client:
+        def query(self, sql, parameters=None):  # noqa: ANN001, ANN201
+            if "ml_calibration" in sql and "dateDiff" in sql:
+                return type("R", (), {"result_rows": [
+                    (FUSED_MODEL, 0.99, 0.01, 0.9, 17, 19, "2026-11-19 08:21:17", 60)]})()
+            return type("R", (), {"result_rows": []})()
+
+    report = evaluate(_Client(), Settings(model_dir=""))
+    assert FUSED_MODEL not in report.decisions

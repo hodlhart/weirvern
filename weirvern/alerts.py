@@ -77,7 +77,6 @@ def format_message(verdict: dict) -> str:
     model_scores = (
         f"IF:{verdict['isolation_forest_score']:.2f} "
         f"GB:{verdict['gradient_boosting_score']:.2f} "
-        f"DB:{verdict['dbscan_score']:.2f} "
         f"BL:{verdict['baseline_score']:.2f}"
     )
     lines = [

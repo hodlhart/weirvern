@@ -17,16 +17,18 @@ DISPOSITIONS = ("promote", "merge", "retire")
 INVENTORY: tuple[dict[str, Any], ...] = (
     {"channel": "HDBSCAN", "unique_signal": "density-based novelty at a different resolution",
      "source": "ml_candidate_scores", "consumer": "", "disposition": "retire",
-     "reason": "duplicate decision with DBSCAN; no fixed-budget win, so it adds cost without a "
+     "reason": "duplicate decision with the density detector it replaced; no fixed-budget win, "
+     "so it adds cost without a "
                "distinct decision"},
     {"channel": "FlowSpecialist", "unique_signal": "flow-shape specialist",
-     "source": "flows_aggregated", "consumer": "DBSCAN_FEATURES", "disposition": "merge",
-     "reason": "its flow-shape columns already feed the production DBSCAN vector"},
+     "source": "flows_aggregated", "consumer": "CROSS_SECTIONAL_FEATURES", "disposition": "merge",
+     "reason": "its flow-shape columns already feed the production cross-sectional vector"},
     {"channel": "DNSSpecialist", "unique_signal": "DNS query shape and tunnel cadence",
-     "source": "zeek_dns", "consumer": "ZEEK_DBSCAN_FEATURES (dns triple)", "disposition": "merge",
+     "source": "zeek_dns", "consumer": "ZEEK_CROSS_SECTIONAL_FEATURES (dns triple)",
+     "disposition": "merge",
      "reason": "the DNS triple is already in the production vector; a second scorer duplicates it"},
     {"channel": "TLSSpecialist", "unique_signal": "JA4/JA3 handshake families",
-     "source": "zeek_ssl", "consumer": "ZEEK_DBSCAN_FEATURES", "disposition": "merge",
+     "source": "zeek_ssl", "consumer": "ZEEK_CROSS_SECTIONAL_FEATURES", "disposition": "merge",
      "reason": "JA4 integrity and family features feed the shared vector; keep one scorer"},
     {"channel": "BeaconSpecialist", "unique_signal": "periodicity and low-jitter callbacks",
      "source": "flows_aggregated_temporal", "consumer": "activity_regularity / burstiness",

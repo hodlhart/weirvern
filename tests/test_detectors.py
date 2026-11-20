@@ -8,12 +8,13 @@ import numpy as np
 import pytest
 
 from weirvern.config import ModelConfig
-from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, ZEEK_FEATURES
+from weirvern.features import IF_FEATURES, ZEEK_FEATURES
 from weirvern.models.base import ModelMetadata
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
-    DBSCANDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
+    LOFDetector,
 )
 from weirvern.zeek_features import extract_zeek_features
 
@@ -24,7 +25,7 @@ class _TrainRows:
 
 
 class _TrainClient:
-    """Just enough Client for DBSCANDetector.train: .query(...).result_rows."""
+    """Just enough Client for train(): .query(...).result_rows."""
 
     def __init__(self, rows):
         self._rows = rows
@@ -141,7 +142,8 @@ def test_both_training_queries_order_the_sample_before_the_limit(tmp_path):
     """
     start, end = datetime(2026, 1, 1), datetime(2026, 1, 2)
     for det in (IsolationForestDetector(tmp_path, ModelConfig()),
-                DBSCANDetector(tmp_path, ModelConfig())):
+                KNNDistanceDetector(tmp_path, ModelConfig()),
+                LOFDetector(tmp_path, ModelConfig())):
         client = _TrainClient([])
         det.train(start, end, client)
         assert re.search(
@@ -178,81 +180,16 @@ def test_a_failed_service_history_leaves_rarity_at_zero_and_trains_volume(tmp_pa
     assert rarity["zeek_service_rarity"] == 0.0
 
 
-def test_dbscan_says_so_when_it_finds_no_clusters(tmp_path, caplog):
-    """A trained-but-centreless DBSCAN must be LOUD, not a silent zero-scorer.
+def test_the_removed_density_detector_is_not_in_the_engine():
+    """REMOVED MEANS ABSENT, NOT RETIRED.
 
-    Measured, review round 2026-10-15: on the eval seed, DBSCAN formed 2 cluster
-    centres at 146 sampled training rows and 0 at 124 -- same code, same seed shape,
-    different volume. With no centres every score is the "no opinion" 0.0 and
-    is_ready() is False, so the scan-family specialist is effectively off -- and the
-    old log line ("trained: 0 clusters") said nothing about any of that."""
-    rng = np.random.default_rng(0)
-    rows = [tuple(rng.normal(10.0, 1.0, len(DBSCAN_FEATURES))) for _ in range(120)]
-    det = DBSCANDetector(tmp_path, ModelConfig())
+    The density detector was taken out on 2026-11-20 -- 97.89% of its 27,454 stored scores sat at
+    0.99 or above (p50 = p99 = max), so no threshold could separate anything from anything. It has
+    no class, no roster entry, no artifact name and no family: a name that still resolved would let
+    a log line or an old artifact resurrect it.
+    """
+    from weirvern.models import detectors as det_mod
 
-    with caplog.at_level("WARNING"):
-        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows)), (
-            "a centreless DBSCAN claimed it could score")
-
-    assert not det.cluster_centers, "uniform noise should not form 0.6-eps clusters"
-    assert det.metadata.metrics["clusters"] == 0
-    assert not det.is_ready(), "a detector that can never score must not claim readiness"
-    assert det.predict({}, dict.fromkeys(DBSCAN_FEATURES, 0.0)) == 0.0
-    assert any("NO CLUSTER CENTRES" in m for m in caplog.messages), (
-        "the centreless state must be a WARNING -- it disables the scan-family escalation"
-    )
-
-
-# ── A FAILURE MUST SAY WHICH FAILURE IT IS (WV1-22) ─────────────────────────────────────────────
-#
-# train() returns a bare bool and returns False for two unrelated reasons: too few rows, or enough
-# rows with no dense region. Callers could not tell them apart, so the detection-quality gate
-# explained a 195-row failure with "DBSCAN needs >=100 rows" -- a cause its own log line
-# contradicted, sending the operator after a remedy that does not address what was reported.
-
-
-def test_TOO_FEW_ROWS_is_recorded_as_a_row_shortfall(tmp_path, caplog):
-    rows = [(1.0,) * len(DBSCAN_FEATURES)] * 40   # below the 100 floor
-    det = DBSCANDetector(tmp_path, ModelConfig())
-
-    with caplog.at_level("WARNING"):
-        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
-
-    assert det.train_outcome == "insufficient-rows", (
-        f"a row shortfall was recorded as {det.train_outcome!r}; the caller cannot tell it from "
-        f"the opposite case and will explain it with the wrong cause"
-    )
-    assert any("floor 100" in m for m in caplog.messages), (
-        f"the floor must be in the message, or 12 rows and 99 read the same: {caplog.messages}"
-    )
-
-
-def test_ENOUGH_ROWS_WITH_NO_DENSE_REGION_is_a_DIFFERENT_failure(tmp_path, caplog):
-    """The measured case: 195 rows, above the floor, no centres. The remedy is eps/min_samples,
-    not a longer seed."""
-    rng = np.random.default_rng(0)
-    rows = [tuple(rng.normal(10.0, 1.0, len(DBSCAN_FEATURES))) for _ in range(195)]
-    det = DBSCANDetector(tmp_path, ModelConfig())
-
-    with caplog.at_level("WARNING"):
-        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
-
-    assert det.train_outcome == "no-dense-structure", (
-        f"195 rows above the floor was recorded as {det.train_outcome!r}, which is the state that "
-        f"made the gate blame the row count"
-    )
-    assert not any("Not enough data" in m for m in caplog.messages), (
-        "a row-shortfall warning was emitted for a row count above the floor"
-    )
-
-
-def test_a_HEALTHY_train_is_recorded_as_ok(tmp_path):
-    rng = np.random.default_rng(7)
-    # Three tight, well-separated blobs: DBSCAN finds them at eps=0.6.
-    rows = [tuple(rng.normal(c, 0.01, len(DBSCAN_FEATURES))) for c in (2.0, 20.0, 60.0)
-            for _ in range(60)]
-    det = DBSCANDetector(tmp_path, ModelConfig())
-
-    assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
-    assert det.train_outcome == "ok", det.train_outcome
-    assert det.cluster_centers, "the fixture should have produced centres"
+    assert not hasattr(det_mod, "DBSCANDetector"), "the removed detector's class is back"
+    assert "DBSCAN" not in det_mod.DETECTOR_NAMES
+    assert len(det_mod.DETECTOR_NAMES) == 5, det_mod.DETECTOR_NAMES

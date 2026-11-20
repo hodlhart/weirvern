@@ -10,7 +10,8 @@ can we just log it as null until it comes in?" These tests pin that sentence:
     indicator is set;
   * a window below the coverage floor is excluded from the calibration fit and the FAR
     measurement, and the detector row says "insufficient telemetry" instead of quoting a rate;
-  * DBSCAN abstains below the floor and otherwise measures distance over observed dimensions.
+  * the cross-sectional pair abstains below the floor and otherwise measures distance over
+    observed dimensions.
 
 The flag is OFF by default, and one of these tests exists only to keep it that way.
 """
@@ -25,7 +26,7 @@ import pytest
 from weirvern.config import ModelConfig, Settings
 from weirvern.ensemble import detect_flows
 from weirvern.features import (
-    DBSCAN_FEATURES,
+    CROSS_SECTIONAL_FEATURES,
     IF_FEATURES,
     TELEMETRY_FEATURES,
     extract_features,
@@ -38,8 +39,8 @@ from weirvern.models.detector_status import (
     detector_rows,
 )
 from weirvern.models.detectors import (
-    DBSCANDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
     RobustPreprocessor,
 )
 from weirvern.models.missing import (
@@ -229,7 +230,8 @@ def test_the_flag_defaults_to_off_everywhere(tmp_path):
     # Every vector-based detector is on the legacy preprocessor unless the flag says otherwise.
     assert isinstance(IsolationForestDetector(tmp_path, ModelConfig()).preprocessor,
                       RobustPreprocessor)
-    assert isinstance(DBSCANDetector(tmp_path, ModelConfig()).preprocessor, RobustPreprocessor)
+    assert isinstance(KNNDistanceDetector(tmp_path, ModelConfig()).preprocessor,
+                      RobustPreprocessor)
     with pytest.raises(ValueError):
         Settings(ml_min_feature_coverage=1.5).validate()
 
@@ -267,19 +269,18 @@ def test_an_artifact_from_the_other_mode_is_refused(tmp_path):
     assert same_mode.load() is True
 
 
-# ── DBSCAN: abstain, or mask the unobserved dimensions ──────────────────────────────────────
+# ── the cross-sectional pair: abstain, or mask the unobserved dimensions ────────────────────
 
-def test_dbscan_abstains_below_the_floor_and_scores_above_it(tmp_path):
-    det = DBSCANDetector(tmp_path, ModelConfig(missing_features=True))
-    det.preprocessor.fit_transform(np.tile(np.linspace(0.0, 1.0, len(DBSCAN_FEATURES)), (4, 1)))
-    det.cluster_centers = [np.zeros(len(DBSCAN_FEATURES))]
-    det.calibration = {"p50": 0.5, "p95": 1.0, "p99": 2.0}
+def test_the_cross_sectional_pair_abstains_below_the_floor(tmp_path):
+    """Below the coverage floor a distance would be taken over almost nothing: abstain."""
+    det = KNNDistanceDetector(tmp_path, ModelConfig(missing_features=True))
+    det.preprocessor.fit_transform(
+        np.tile(np.linspace(0.0, 1.0, len(CROSS_SECTIONAL_FEATURES)), (4, 1)))
+    det.reference_ = np.zeros((4, len(CROSS_SECTIONAL_FEATURES)))
+    det.neighbours = None  # is_ready() is False without a fitted index
 
-    all_missing = {name: None for name in DBSCAN_FEATURES}
-    assert det.predict({}, all_missing) == 0.0, "DBSCAN must abstain, not cluster a guess"
-
-    measured = {name: 0.0 for name in DBSCAN_FEATURES}
-    assert math.isfinite(det.predict({}, measured))
+    all_missing = {name: None for name in CROSS_SECTIONAL_FEATURES}
+    assert det.predict({}, all_missing) == 0.0, "it must abstain, not score a guess"
 
 
 def test_masked_distance_uses_only_observed_dimensions_and_rescales():
@@ -354,8 +355,9 @@ def _detector_row(*, coverage_value, observed=0.0, target=0.01):
         {"KNN distance": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
         {"KNN distance": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
         {"KNN distance": {"observed_far": observed, "target_far": target,
-                          "coverage": coverage_value}},
-        {"KNN distance": "production"},
+                          "coverage": coverage_value,
+                          "coverage_observed": int(round(coverage_value * 19)),
+                          "coverage_expected": 19, "age_hours": 0.5}},
         min_coverage=DEFAULT_MIN_COVERAGE,
     )[0]
 
@@ -372,7 +374,7 @@ def test_the_detector_row_says_insufficient_telemetry_rather_than_a_score():
 
 def test_a_detector_with_measured_coverage_still_reports_its_budget():
     row = _detector_row(coverage_value=0.80)
-    assert row["status"] == "contributing"
+    assert row["status"] == "eligible"
     assert row["insufficient_telemetry"] is False
 
 

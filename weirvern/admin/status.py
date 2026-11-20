@@ -1801,8 +1801,8 @@ def _staleness(newest: dict[str, str], interval_h: float,
             "model": name,
             "last_trained": stamp or "",
             # THE LAST TIME THIS DETECTOR COULD ACTUALLY SCORE (GitHub #60). A training run
-            # that completed into an unusable state (DBSCAN with zero centres) is still a
-            # training date; it is not a usable one, and the panel must not call it current.
+            # that completed into an artifact it cannot score with is still a training date; it is
+            # not a usable one, and the panel must not call it current.
             "last_usable": last_usable.get(name, ""),
             "usable": is_usable,
             "age_h": round(age_h, 2) if age_h is not None else None,
@@ -1962,7 +1962,7 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
 
     # 1b. PER-DETECTOR STALENESS, because the training history alone could not show it.
     #
-    # WHY THIS EXISTS. Isolation Forest, Gradient Boosting and DBSCAN went 16 hours without a
+    # WHY THIS EXISTS. The original detectors went 16 hours without a
     # retrain against a 6-hour interval, and this view rendered that as three tidy lines with
     # plenty of points -- because it plotted run COUNT, not RECENCY. A model whose last retrain
     # was 16 hours ago looks identical to one retrained a minute ago if you only count runs.
@@ -1986,16 +1986,13 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         stamps = [run["t"] for run in (runs or []) if run["t"]]
         if stamps:
             newest[mtype] = max(stamps)
-    # WHICH RUNS WERE USABLE. The metrics are the only durable record of whether a run
-    # produced something that can score; DBSCAN's `clusters` is the one that can be zero
-    # while the run itself completed. Other detectors' successful rows are usable by
-    # construction (a failed GB train no longer writes a row after GitHub #60).
+    # WHICH RUNS WERE USABLE. Every detector that writes a row has produced something that can
+    # score: a refused fit writes no row at all (cross-sectional train() returns False before
+    # save()), and the Adaptive Baseline always produces a snapshot. The panel therefore reads the
+    # run log directly rather than special-casing a model name.
     usable: dict[str, str] = {}
     for mtype, runs in hist.items():
         for run in runs or []:
-            metrics = run.get("metrics") or {}
-            if mtype == "DBSCAN" and int(metrics.get("clusters", 0) or 0) <= 0:
-                continue
             if run.get("t"):
                 usable[mtype] = max(usable.get(mtype, ""), run["t"])
     out["retrain_interval_h"] = interval_h
@@ -2006,7 +2003,7 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
     try:
         rows = client.query(
             "SELECT anomaly_score, isolation_forest_score, gradient_boosting_score, "
-            "dbscan_score, baseline_score, model_agreement, detected_by_models, "
+            "baseline_score, model_agreement, detected_by_models, "
             "severity, primary_deviation_feature, deviation_magnitude, "
             "window_start, src_addr, feature_contributions "
             "FROM weirvern.netflow_anomalies "
@@ -2024,11 +2021,10 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         ("gradient_boosting_score", "Gradient Boosting"),
         ("baseline_score", "Adaptive Baseline"),
     ]
-    # DBSCAN'S BAR IS GONE (2026-11-20). The column is still written as 0.0 for historical rows
-    # because the schema keeps it, but the detector is retired: plotting a bar that is zero by
-    # construction would be a chart of nothing under a name that no longer scores. The two
-    # cross-sectional detectors have no netflow_anomalies column yet either, so the honest chart
-    # is the three live per-model scores plus the ensemble.
+    # THE CHART IS THE ANOMALY TABLE'S COLUMNS. The removed density detector's column is gone from
+    # the row (and is no longer written), and the cross-sectional pair has no netflow_anomalies
+    # column at all, so the honest chart is the three per-model scores the table stores plus the
+    # ensemble -- named from the payload, never from a list that could drift.
     scores: dict[str, list[float]] = {label: [] for _col, label in MODELS}
     scores["Ensemble"] = []
     points: list[dict] = []
@@ -2036,7 +2032,7 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
     agreement: dict[str, int] = {}
 
     for r in rows:
-        (score, ifs, gb, db, bl, agree, by_models, severity, primary,
+        (score, ifs, gb, bl, agree, by_models, severity, primary,
          devmag, window, src, contrib) = r
         scores["Isolation Forest"].append(float(ifs or 0))
         scores["Gradient Boosting"].append(float(gb or 0))
@@ -2123,7 +2119,7 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         nm_rows = client.query(
             "SELECT window_start, window_end, src_addr, anomaly_score, threshold_used, "
             "reason, model_agreement, isolation_forest_score, gradient_boosting_score, "
-            "dbscan_score, baseline_score, detected_by_models "
+            "baseline_score, detected_by_models "
             "FROM weirvern.near_misses FINAL "
             "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             "ORDER BY anomaly_score DESC LIMIT 100",
@@ -2446,7 +2442,7 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
     res = client.query(
         "SELECT detected_at, window_start, src_addr, anomaly_score, confidence, "
         "severity, detected_by_models, model_agreement, "
-        "isolation_forest_score, gradient_boosting_score, dbscan_score, baseline_score, "
+        "isolation_forest_score, gradient_boosting_score, baseline_score, "
         "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
         "feature_contributions, baseline_comparison, "
         "strong_families, severity_basis, network_scope "
@@ -2457,8 +2453,8 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
         + ("AND src_addr = %(host)s " if host else "")
         + ("AND severity = %(sev)s " if severity else "")
         # THE DETECTOR FILTER (US-5, the quiet-a-noisy-detector job): exact per-name match
-        # against the comma-joined list -- `involved()`'s own semantics, so "DBSCAN" can
-        # never be shadowed by a longer name that contains it.
+        # against the comma-joined list -- `involved()`'s own semantics, so no detector name can
+        # be shadowed by a longer name that contains it.
         + ("AND arrayExists(m -> trimBoth(m) = %(model)s, "
            "splitByChar(',', detected_by_models)) " if model else "")
         + ("AND primary_deviation_feature = %(feature)s " if feature else "")
@@ -2475,8 +2471,8 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
 def reason_code(detected_by_models: str, feature: str = "") -> str:
     """A STABLE code for one verdict: the detectors' initials plus the measurement that moved.
 
-    "IF+DBSCAN:bytes_z" -- stable for identical inputs, short enough for a table row, and
-    greppable in a ticket. Detector names become initials (an all-caps name like DBSCAN stays
+    "IF+AB:bytes_z" -- stable for identical inputs, short enough for a table row, and
+    greppable in a ticket. Detector names become initials (an all-caps name stays
     whole); an unnamed feature reads "score". Deduped, order preserved (the ensemble's order).
     """
     parts: list[str] = []
@@ -2684,7 +2680,7 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         "max(confidence) AS confidence, severity, detected_by_models, "
         "max(model_agreement) AS model_agreement, max(isolation_forest_score) AS isolation_forest_score, "
         "max(gradient_boosting_score) AS gradient_boosting_score, "
-        "max(dbscan_score) AS dbscan_score, max(baseline_score) AS baseline_score, "
+        "max(baseline_score) AS baseline_score, "
         "primary_deviation_feature, max(primary_deviation_zscore) AS primary_deviation_zscore, "
         "max(deviation_magnitude) AS deviation_magnitude, "
         "any(feature_contributions) AS feature_contributions, baseline_comparison, "
@@ -4005,6 +4001,7 @@ def calibration_overview(client, settings=None) -> dict:
                 "SELECT model_name, scope, subject, statistic, target_far, threshold, "
                 "p50, p95, p99, sample_count, validation_count, observed_far, "
                 "reference_source, model_version, computed_at "
+                "dateDiff('second', computed_at, now()) AS age_s "
                 "FROM weirvern.ml_calibration FINAL "
                 "ORDER BY model_name, scope, subject"
             )
@@ -4026,18 +4023,31 @@ def calibration_overview(client, settings=None) -> dict:
                               else str(computed or ""))
         rows.append(row)
     try:
-        from weirvern.models.calibration import eligibility_from_rows  # noqa: PLC0415
+        from weirvern.config import FUSED_MODEL as _FUSED  # noqa: PLC0415
+        from weirvern.models.eligibility import evidence_from_row  # noqa: PLC0415
 
         multiple = float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0)
-        eligible = eligibility_from_rows(
-            [(row["model_name"], row["observed_far"], row["target_far"]) for row in rows],
-            float(getattr(settings, "ml_target_far", 0.01) or 0.01), multiple,
-        )
+        target = float(getattr(settings, "ml_target_far", 0.01) or 0.01)
+        retrain_h = float(getattr(settings, "retrain_every_h", 6) or 6)
+        grace_h = float(getattr(settings, "ml_calibration_grace_h", 1.0) or 0.0)
+        floor = float(getattr(settings, "ml_min_feature_coverage", 0.15) or 0.15)
         for row in rows:
-            decision = eligible.get(row["model_name"])
-            row["eligible"] = decision
-            row["eligibility"] = ("eligible" if decision else
-                                  "quarantined" if decision is False else "unknown")
+            age_s = row.pop("age_s", None)
+            if str(row.get("model_name")) == _FUSED:
+                # The fused score is the decision's own number; it is not a detector and cannot be
+                # judged against a detector's tolerance.
+                row["eligible"] = None
+                row["eligibility"] = "the fused score itself"
+                continue
+            evidence = evidence_from_row(
+                str(row.get("model_name") or ""), {**row, "age_hours":
+                                                   (float(age_s) / 3600.0)
+                                                   if age_s is not None else None},
+                target_far=target, multiple=multiple, retrain_every_h=retrain_h,
+                grace_h=grace_h, min_coverage=floor)
+            row["eligible"] = evidence.calibrated
+            row["eligibility"] = ("eligible" if evidence.calibrated
+                                  else f"not contributing: {evidence.reason}")
     except Exception as exc:  # noqa: BLE001
         logger.warning("calibration eligibility words unavailable: %s", exc)
         for row in rows:

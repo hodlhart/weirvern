@@ -418,28 +418,29 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
     payload as `model_cards_available: false` with its own reason instead of taking the route down.
 
     THE DETECTORS TABLE IS DERIVED, NOT CURATED. Its status comes from the engine's own
-    training log, the artifacts on disk and the measured false-alarm rate; the card registry keeps
-    only its existing veto and is never quoted. Each source is read independently, so a card table
-    that cannot be read bars the detectors (fail closed, as the engine's gate does) without also
-    hiding what the engine trained.
+    training log, the artifacts on disk, the measured false-alarm rate with its coverage, and the
+    promotion guard's measured budget decision. A model card is documentation of intent and is
+    never consulted for a verdict. Each source is read independently, so a card table that cannot
+    be read no longer changes any detector's status -- and the table says which panel is missing
+    rather than converting a read failure into a veto.
     """
     from weirvern.models import cards as cards_mod  # noqa: PLC0415
+    from weirvern.models import eligibility as eligibility_mod  # noqa: PLC0415
     from weirvern.models.detector_status import detector_rows, detector_summary  # noqa: PLC0415
+    from weirvern.models.detectors import DETECTOR_NAMES  # noqa: PLC0415
 
     data = status_mod.model_overview(client, hours=hours, settings=settings)
     # WHAT THE ENGINE ACTUALLY DID, not only what an operator approved (2026-11-19: "in models
-    # this still looks wrong. dbscan says retired and the retraining says october 14"). The
+    # this still looks wrong: the card says retired and the retraining says october 14"). The
     # registry is a curation snapshot; ml_models is the engine's own log, one row per training.
     data["model_training"] = model_training(client)
     # WHAT IS INSTALLED is a file read, so a broken card query cannot hide it either.
     data["model_artifacts"] = cards_mod.artifact_inventory(getattr(settings, "model_dir", ""))
     data["normalized"] = normalized_seeds(client)
 
-    card_statuses: dict[str, str] = {}
     try:
         data["model_cards"] = cards_mod.current_cards(client)
         data["model_cards_available"] = True
-        card_statuses = cards_mod.status_map(data["model_cards"])
         data["model_cards_behind"] = [
             c["model_name"] for c in data["model_cards"]
             if str(c.get("version") or "") !=
@@ -452,11 +453,33 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         data["model_cards_behind"] = []
 
     calibration = calibration_latest(client)
+    # THE PROMOTION GUARD IS MEASURED, NOT STORED. Asking it here keeps the table honest between
+    # worker sweeps (a held detector is held because its rate is over budget NOW, not because a
+    # file says so yesterday); the worker's recorded state is what keeps the SET stable. A failed
+    # measurement falls back to the evidence-only row and says so in `detector_budget.reason`.
+    report = None
+    budget_error = ""
+    try:
+        report = eligibility_mod.evaluate(client, settings, names=DETECTOR_NAMES, persist=False)
+    except Exception as exc:  # noqa: BLE001 - a measurement failure must not hide the table
+        budget_error = f"the promotion budget could not be measured: {exc}"
+        logger.warning("models: %s", budget_error)
+    data["detector_budget"] = {
+        "budget": float(getattr(report, "budget", 0.0) or 0.0),
+        "bar": float(getattr(report, "bar", 0.0) or 0.0),
+        "windows": int(getattr(report, "windows", 0) or 0),
+        "reason": budget_error,
+    }
     data["detectors"] = detector_rows(
-        data["model_training"], data["model_artifacts"], calibration, card_statuses,
+        data["model_training"], data["model_artifacts"], calibration,
         target_far=float(getattr(settings, "ml_target_far", 0.01) or 0.01),
         multiple=float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0),
         min_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)),
+        retrain_every_h=float(getattr(settings, "retrain_every_h", 6) or 6),
+        grace_h=float(getattr(settings, "ml_calibration_grace_h", 1.0) or 0.0),
+        # The engine's roster: a name that is no longer built has no row at all.
+        known_names=DETECTOR_NAMES,
+        decisions=(report.decisions if report is not None else None),
         # The last training OUTCOME per model, so a REFUSED fit renders as
         # "not trained: degenerate reference" instead of as an ordinary absence.
         outcomes={name: str((row or {}).get("outcome") or "")

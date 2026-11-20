@@ -4,16 +4,17 @@ Consolidates the v14 FeatureEngineer (host aggregates) with the v19 Phase 2
 features (diversity + temporal). Pure functions — no DB access, unit-testable.
 
 Feature sets (order matters — must match the training queries in models/):
-  HOST_FEATURES        — 10 features, always available
-  IF_FEATURES          — 14 features: host + diversity (isolation forest)
-  DBSCAN_FEATURES      — 8 features: host + diversity + temporal (DBSCAN)
+  HOST_FEATURES            — 10 features, always available
+  IF_FEATURES              — 14 features: host + diversity (isolation forest)
+  CROSS_SECTIONAL_FEATURES — 19 features: host + diversity + temporal + the Zeek subset
+                             (kNN distance and LOF, which share the vector -- and nothing else)
 """
 from __future__ import annotations
 
 import math
 from typing import Any
 
-from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES, ZEEK_FEATURES
+from weirvern.zeek_features import ZEEK_CROSS_SECTIONAL_FEATURES, ZEEK_FEATURES
 
 HOST_FEATURES = [
     "log_bytes",
@@ -48,7 +49,7 @@ IF_FEATURES = HOST_FEATURES + [
     "connection_density",
 ] + ZEEK_FEATURES
 
-DBSCAN_FEATURES = [
+CROSS_SECTIONAL_FEATURES = [
     "log_bytes",
     "log_packets",
     "log_unique_dsts",
@@ -57,15 +58,15 @@ DBSCAN_FEATURES = [
     "port_entropy",
     "activity_regularity",
     "burstiness",
-] + ZEEK_DBSCAN_FEATURES
+] + ZEEK_CROSS_SECTIONAL_FEATURES
 
-# EVERY COLUMN THE ENSEMBLE CAN CONSUME, once each: the wide vector plus the two temporal
-# features only DBSCAN uses. This is the denominator for a window's telemetry coverage (see
-# models/missing.py) — the question it answers is "how much of what the models look at was
-# actually measured for this host-window", so it must span all four detectors, not just the
-# wide pair. 79 columns today; the number is not written down anywhere that can drift.
+# EVERY COLUMN THE ENSEMBLE CAN CONSUME, once each: the wide vector plus the two temporal features
+# only the cross-sectional pair uses. This is the denominator for a window's telemetry coverage (see
+# models/missing.py) — the question it answers is "how much of what the models look at was actually
+# measured for this host-window", so it must span every detector, not just the wide pair. 79 columns
+# today; the number is not written down anywhere that can drift.
 TELEMETRY_FEATURES = IF_FEATURES + [
-    name for name in DBSCAN_FEATURES if name not in IF_FEATURES
+    name for name in CROSS_SECTIONAL_FEATURES if name not in IF_FEATURES
 ]
 
 # ── THE FEATURE SCHEMA VERSION (review round 2026-10-15) ─────────────────────────────────────
@@ -78,12 +79,12 @@ TELEMETRY_FEATURES = IF_FEATURES + [
 # into its normal retrain path. Before this, `_v1` was a literal while the code comment
 # claimed versioning, and a feature-set change could keep loading an incompatible artifact
 # that scored 0.0 for hours (or, same width, silently reinterpreted every column).
-# BUMPED TO 2 (2026-10-16): DBSCAN\'s Zeek subset gained the JA4 pair (zeek_ja4_count,
-# zeek_ja4_novelty), so the DBSCAN vector changed SHAPE from 14 to 16 columns. v1 artifacts are
+# BUMPED TO 2 (2026-10-16): the cross-sectional Zeek subset gained the JA4 pair (zeek_ja4_count,
+# zeek_ja4_novelty), so that vector changed SHAPE from 14 to 16 columns. v1 artifacts are
 # refused at load and the detectors retrain into `_v2.pkl` files; the v1 files stay on disk, and
 # a rollback reverts this bump rather than deleting them.
 # BUMPED TO 3 (2026-10-16): the same subset gained the DNS triple (count, mean query entropy,
-# rcode error ratio) -- "make sure dns is added to all ml as well". DBSCAN\'s vector changed
+# rcode error ratio) -- "make sure dns is added to all ml as well". That vector changed
 # shape from 16 to 19 columns; v2 artifacts are refused at load and the detector retrains into
 # `_v3.pkl` on its normal cadence (or immediately from Models -> force a retrain). The v2
 # files stay on disk.

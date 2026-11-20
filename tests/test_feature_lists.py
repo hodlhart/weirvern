@@ -8,11 +8,11 @@ adds the DNS block, and the schema version moved when the shape did (artifacts a
 it, so a silent shape change would reinterpret every column).
 """
 
-from weirvern.features import DBSCAN_FEATURES, FEATURE_SCHEMA_VERSION, IF_FEATURES
+from weirvern.features import CROSS_SECTIONAL_FEATURES, FEATURE_SCHEMA_VERSION, IF_FEATURES
 
 
 def test_every_model_feature_list_that_uses_zeek_uses_dns():
-    for name, features in (("IF_FEATURES", IF_FEATURES), ("DBSCAN_FEATURES", DBSCAN_FEATURES)):
+    for name, features in (("IF_FEATURES", IF_FEATURES), ("CROSS_SECTIONAL_FEATURES", CROSS_SECTIONAL_FEATURES)):
         zeek = [f for f in features if f.startswith("zeek_")]
         dns = [f for f in features if f.startswith("zeek_dns")]
         assert zeek, f"{name} does not use Zeek at all"
@@ -24,7 +24,7 @@ def test_every_model_feature_list_that_uses_zeek_uses_dns():
 
 def test_the_dbscan_vector_carries_the_dns_triple():
     for name in ("zeek_dns_count", "zeek_dns_mean_query_entropy", "zeek_dns_rcode_error_ratio"):
-        assert name in DBSCAN_FEATURES, f"{name} missing from the DBSCAN subset"
+        assert name in CROSS_SECTIONAL_FEATURES, f"{name} missing from the DBSCAN subset"
 
 
 def test_the_schema_version_says_three():

@@ -50,15 +50,27 @@ def test_the_registry_migration_is_additive_and_seeds_every_live_family():
         "out_of_scope", "known_limitations",
     ):
         assert column in src, column
-    for family in ("Adaptive Baseline", "Isolation Forest", "Gradient Boosting", "DBSCAN"):
+    # THE SEED IS THE THREE LIVE FAMILIES AT MIGRATION TIME. The removed density detector's card
+    # was deleted with the detector (schema 059), so a fresh install cannot seed a name that has no
+    # model behind it.
+    for family in ("Adaptive Baseline", "Isolation Forest", "Gradient Boosting"):
         assert family in src, family
-    assert "'retired'" in src
+    assert "DBSCAN" not in src
 
 
-def test_eligibility_is_card_gated_not_just_calibrated():
+def test_eligibility_is_not_card_gated_any_more():
+    """A card is documentation of intent. It cannot measure a false-alarm rate, so it cannot veto.
+
+    The one place it is still READ is the promotion guard's one-time migration seed -- the set the
+    old gate was admitting, used when no promotion record exists. It is never a live gate: `evaluate`
+    replaces it with the recorded state on the first run.
+    """
     src = (ROOT / "weirvern" / "models" / "calibration.py").read_text()
-    assert "cards.registration(client)" in src or "_cards.registration(client)" in src
-    assert "barred by model card" in src
+    assert "cards.registration" not in src
+    assert "barred by model card" not in src
+    guard = (ROOT / "weirvern" / "models" / "eligibility.py").read_text()
+    assert "production_allowed" in guard
+    assert "one-time migration seed" in guard or "READ ONCE" in guard
 
 
 def test_the_cards_panel_is_gone_but_the_payload_still_carries_the_registry():

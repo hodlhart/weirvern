@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Offline bake-off of cross-sectional host-window anomaly candidates.
 
-WHY THIS EXISTS. DBSCAN is being retired as the fourth detector: it retrains on every cycle,
-is barred by its model card, and its stored output is near-binary membership. Its replacement
-must answer a CROSS-SECTIONAL question -- "does this host-window look unlike the population of
-host-windows?" -- and produce a score fine-grained enough to conformalise at a 0.01 target.
+WHY THIS EXISTS. The density detector the ensemble used to carry produced near-binary membership
+and was removed on 2026-11-20 (97.89% of 27,454 stored scores at 0.99 or above; p50 = p99 = max).
+Its replacement had to answer a CROSS-SECTIONAL question -- "does this host-window look unlike the
+population of host-windows?" -- and produce a score fine-grained enough to conformalise at a 0.01
+target.
 
-This script compares six candidates on the SAME 19-feature vector (``DBSCAN_FEATURES``) and the
-SAME walk-forward split:
+This script compares the candidates on the SAME 19-feature vector (``CROSS_SECTIONAL_FEATURES``)
+and the SAME walk-forward split:
 
     kNN distance (k=10), LOF (k=20, novelty), Gaussian Mixture (diagonal, BIC),
-    EllipticEnvelope (Mahalanobis), Isolation Forest on the 19 features (control),
-    and DBSCAN exactly as production ships it (the baseline to beat).
+    EllipticEnvelope (Mahalanobis), Isolation Forest on the 19 features (control).
+
+The removed detector's measured row is kept in the published report
+(`docs/research/cross-sectional-detector-2026-11-20.md`), not in this harness: it is no longer a
+candidate, and re-running a deleted model would be a second implementation of it.
 
 PROTOCOL. Fit on normal host-windows only (the same high/critical exclusion the training
 queries use), calibrate a conformal threshold on a held-out slice of that same reference, then
@@ -48,30 +52,26 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sklearn.cluster import DBSCAN  # noqa: E402
 from sklearn.covariance import EllipticEnvelope  # noqa: E402
 from sklearn.ensemble import IsolationForest  # noqa: E402
 from sklearn.mixture import GaussianMixture  # noqa: E402
 from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors  # noqa: E402
 from sklearn.preprocessing import RobustScaler  # noqa: E402
 
-from weirvern.features import DBSCAN_FEATURES  # noqa: E402
+from weirvern.features import CROSS_SECTIONAL_FEATURES  # noqa: E402
 from weirvern.models.calibration import conformal_threshold  # noqa: E402
 from weirvern.models.candidates import _BASE_SQL  # noqa: E402
 from weirvern.models.missing import (  # noqa: E402
-    MissingAwarePreprocessor,
     column_neutrals,
-    masked_distance,
     null_absent_zeek,
 )
-from weirvern.models.scoring import calibrate_distance  # noqa: E402
-from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES, ZEEK_JOIN_ON, zeek_join_cte  # noqa: E402
+from weirvern.zeek_features import ZEEK_CROSS_SECTIONAL_FEATURES, ZEEK_JOIN_ON, zeek_join_cte  # noqa: E402
 
 SENSOR_VAR = "WEIRVERN_SENSOR_HOST"
 NAMESPACE = os.environ.get("WEIRVERN_NAMESPACE", "weirvern")
 TARGET_FAR = 0.01
-PROD_MODELS = ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")
-META_COLUMNS = ("window_start", "src_addr", *DBSCAN_FEATURES, "flagged",
+PROD_MODELS = ("Isolation Forest", "Gradient Boosting", "Adaptive Baseline")
+META_COLUMNS = ("window_start", "src_addr", *CROSS_SECTIONAL_FEATURES, "flagged",
                 *(f"prod_{m.split()[0].lower()}" for m in PROD_MODELS))
 
 
@@ -100,10 +100,10 @@ FOLDS: tuple[Fold, ...] = (
 
 # ── extraction ──────────────────────────────────────────────────────────────────────────────
 def matrix_sql(start: str, end: str, scopes: list[str]) -> str:
-    """The 19-feature matrix for [start, end), in the production DBSCAN vector order.
+    """The 19-feature matrix for [start, end), in the production cross-sectional order.
 
     Rebuilt from the repository's own constants -- ``_BASE_SQL`` (which asserts it matches
-    ``DBSCAN_FEATURES[:8]``), ``ZEEK_DBSCAN_FEATURES`` and ``zeek_join_cte`` -- so this cannot
+    ``CROSS_SECTIONAL_FEATURES[:8]``), ``ZEEK_CROSS_SECTIONAL_FEATURES`` and ``zeek_join_cte`` -- so this cannot
     drift into a different feature set than the detector it is evaluating.
 
     The ``flagged`` column is the same predicate ``_flagged_exclusion_clause`` splices into
@@ -111,8 +111,8 @@ def matrix_sql(start: str, end: str, scopes: list[str]) -> str:
     bucket), carried as a marker instead of a filter so the caller can train without it and
     still measure a clean-held-out FAR.
     """
-    selects = [_BASE_SQL[name] for name in DBSCAN_FEATURES[:8]]
-    selects += [f"z.{name}" for name in ZEEK_DBSCAN_FEATURES]
+    selects = [_BASE_SQL[name] for name in CROSS_SECTIONAL_FEATURES[:8]]
+    selects += [f"z.{name}" for name in ZEEK_CROSS_SECTIONAL_FEATURES]
     terms = " OR ".join(f"isIPAddressInRange(a.src_addr, '{cidr}')" for cidr in scopes)
     prod_inner = ", ".join(
         f"maxIf(score, model_name = '{m}') AS prod_{m.split()[0].lower()}" for m in PROD_MODELS
@@ -195,7 +195,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         fh.write("\t".join(META_COLUMNS) + "\n")
         fh.write(body)
     rows = sum(1 for _ in body.splitlines())
-    print(json.dumps({"out": str(out), "rows": rows, "features": len(DBSCAN_FEATURES),
+    print(json.dumps({"out": str(out), "rows": rows, "features": len(CROSS_SECTIONAL_FEATURES),
                       "start": args.start, "end": args.end, "scopes": args.scope}, indent=2))
     return 0
 
@@ -239,10 +239,10 @@ def load_dataset(path: str) -> Dataset:
     missing = [c for c in META_COLUMNS if c not in index]
     if missing:
         raise SystemExit(f"{path} is missing column(s) {missing}; re-run `extract`")
-    raw = np.asarray([[float(r[index[c]]) for c in DBSCAN_FEATURES] for r in rows], dtype=float)
+    raw = np.asarray([[float(r[index[c]]) for c in CROSS_SECTIONAL_FEATURES] for r in rows], dtype=float)
     # The training queries coalesce absent sources to 0; recover "we never read this" as NaN,
-    # exactly as DBSCANDetector.train does when ML_MISSING_FEATURES is on.
-    X = null_absent_zeek(raw, DBSCAN_FEATURES)
+    # exactly as the shipped cross-sectional detectors train when ML_MISSING_FEATURES is on.
+    X = null_absent_zeek(raw, CROSS_SECTIONAL_FEATURES)
     prod: dict[str, np.ndarray] = {}
     for model in PROD_MODELS:
         key = f"prod_{model.split()[0].lower()}"
@@ -286,8 +286,8 @@ class StandardPrep:
     """Median impute (training-time neutral) + standardise, the production default.
 
     `indicators=True` appends one unscaled 0/1 column per feature saying "this value was not
-    measured", which is `MissingAwarePreprocessor`'s rule applied to a model that is not
-    DBSCAN. Without it, a row with 11 absent Zeek columns sits at the population median on
+    measured", which is `MissingAwarePreprocessor`'s rule applied to a model that is not the
+    masked-distance one. Without it, a row with 11 absent Zeek columns sits at the median on
     those axes and reads as the most normal point in the space -- measured in this bake-off as
     an alert rate of ~0 on partially observed windows while they are 24-50% of the population.
     """
@@ -477,43 +477,6 @@ class Forest19(Candidate):
         return np.asarray(-self.model.score_samples(self.prep.transform(X)), dtype=float)
 
 
-class DbscanShipped(Candidate):
-    """DBSCAN exactly as DBSCANDetector trains and predicts it, ML_MISSING_FEATURES on."""
-
-    name = "DBSCAN-shipped"
-    missing_policy = ("median impute for the dense fit (indicators off, as shipped); at score "
-                      "time the distance is taken over OBSERVED dimensions only and rescaled "
-                      "(masked_distance), so absence cannot read as similarity")
-
-    def __init__(self, eps: float = 0.6, min_samples: int = 5) -> None:
-        self.eps = eps
-        self.min_samples = min_samples
-        self.prep = MissingAwarePreprocessor(indicators=False)
-        self.centres: list[np.ndarray] = []
-        self.calibration: dict[str, float] = {}
-
-    def fit(self, X: np.ndarray) -> DbscanShipped:
-        Xs = self.prep.fit_transform(X)
-        labels = DBSCAN(eps=self.eps, min_samples=self.min_samples).fit_predict(Xs)
-        self.centres = [np.mean(Xs[labels == c], axis=0) for c in set(labels) if c != -1]
-        if self.centres:
-            dist = np.array([min(float(np.linalg.norm(x - c)) for c in self.centres) for x in Xs])
-            self.calibration = {"p50": float(np.percentile(dist, 50)),
-                                "p95": float(np.percentile(dist, 95)),
-                                "p99": float(np.percentile(dist, 99))}
-        return self
-
-    def score(self, X: np.ndarray) -> np.ndarray:
-        if not self.centres:
-            return np.zeros(len(X), dtype=float)
-        Xp, observed = self.prep.transform_with_mask(X)
-        out = np.empty(len(Xp), dtype=float)
-        for i, row in enumerate(Xp):
-            d = min(masked_distance(row, c, observed[i]) for c in self.centres)
-            out[i] = calibrate_distance(d, self.calibration)
-        return out
-
-
 def candidate_factories() -> dict[str, Any]:
     """The six required candidates, plus the sensitivity variants reported in the appendix."""
     return {
@@ -522,7 +485,6 @@ def candidate_factories() -> dict[str, Any]:
         "GMM-BIC": Gmm,
         "EllipticEnvelope": Envelope,
         "IForest-19": Forest19,
-        "DBSCAN-shipped": DbscanShipped,
         "kNN-10-robust": lambda: KnnDistance(robust=True),
         "kNN-10-masked": lambda: KnnDistance(mask_missing=True),
         "LOF-20-dedup": lambda: Lof(dedup=True),
@@ -715,7 +677,7 @@ def evaluate_candidate(cand: Candidate, fit: Dataset, cal: Dataset, test: Datase
         "score_p50_cal": float(np.median(s_cal)) if s_cal.size else float("nan"),
         "score_p99_cal": float(np.percentile(s_cal, 99)) if s_cal.size else float("nan"),
     }
-    for model in ("Isolation Forest", "Gradient Boosting", "DBSCAN"):
+    for model in ("Isolation Forest", "Gradient Boosting"):
         rho, n = spearman(s_test, test.prod.get(model, np.full(len(s_test), np.nan)))
         out["correlation"][model] = {"rho": rho, "n": n}
     out["per_host"].pop("per_host")
@@ -791,7 +753,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             r = fold_out["candidates"][name]
             p = pooled.setdefault(name, {"alerts": 0, "n": 0, "alerts_clean": 0, "n_clean": 0,
                                          "fit_s": 0.0, "us_per_window": [], "rho_if": [],
-                                         "rho_gb": [], "rho_db": [], "folds_worse_than_2x": 0})
+                                         "rho_gb": [], "folds_worse_than_2x": 0})
             p["alerts"] += r["alerts"]
             p["n"] += r["n_test"]
             p["alerts_clean"] += r["alerts_clean"]
@@ -800,7 +762,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             p["us_per_window"].append(r["us_per_window"])
             p["rho_if"].append(r["correlation"]["Isolation Forest"]["rho"])
             p["rho_gb"].append(r["correlation"]["Gradient Boosting"]["rho"])
-            p["rho_db"].append(r["correlation"]["DBSCAN"]["rho"])
             if r["far_test"] > 2 * TARGET_FAR:
                 p["folds_worse_than_2x"] += 1
         results["folds"][fold.name] = fold_out
@@ -818,7 +779,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             "us_per_window_median": float(np.median(p["us_per_window"])) if p["us_per_window"] else 0.0,
             "rho_isolation_forest": float(np.nanmedian(p["rho_if"])) if p["rho_if"] else float("nan"),
             "rho_gradient_boosting": float(np.nanmedian(p["rho_gb"])) if p["rho_gb"] else float("nan"),
-            "rho_dbscan": float(np.nanmedian(p["rho_db"])) if p["rho_db"] else float("nan"),
             "folds_worse_than_2x": p["folds_worse_than_2x"],
         }
     out = Path(args.out)
@@ -854,7 +814,7 @@ def main() -> int:
     rn.add_argument("--complete-case", action="store_true",
                     help="score only rows with all 19 columns measured (reference and test)")
     rn.add_argument("--train-limit", type=int, default=5000,
-                    help="production's dbscan_n_samples; 0 keeps every normal window")
+                    help="the production row cap on the reference; 0 keeps every normal window")
     rn.add_argument("--candidates", nargs="*", default=list(candidate_factories()),
                     help="candidate names to run (default: all)")
     rn.set_defaults(func=cmd_run)

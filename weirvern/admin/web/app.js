@@ -6387,13 +6387,13 @@ function renderBaselines(bl) {
 }
 
 /* ── the Detectors table ──────────────────────────────────────────────────
- * STATUS COMES FROM THE SERVER, WHICH DERIVES IT FROM EVIDENCE. The stored card status is not
- * rendered -- not even when it literally says `retired` -- because the engine training a detector
- * is a stronger fact than a curation snapshot somebody edited months ago. This function only lays
- * out the row; it never decides what "contributing" means, so the console and the payload cannot
+ * STATUS COMES FROM THE SERVER, WHICH DERIVES IT FROM EVIDENCE. A model card is documentation,
+ * not a gate: the row says `eligible`, `not contributing: <the missing measurement>`, or
+ * `calibrated, held for budget (fused X% with it vs Y% without; budget Z%)`. This function only
+ * lays out the row; it never decides what "eligible" means, so the console and the payload cannot
  * drift on it.
  */
-function renderDetectors(detectors, summary, cardsAvailable) {
+function renderDetectors(detectors, summary, budget) {
   const body = document.querySelector("#md-table tbody");
   const line = document.getElementById("md-summary");
   const note = document.getElementById("md-note");
@@ -6401,10 +6401,19 @@ function renderDetectors(detectors, summary, cardsAvailable) {
   body.replaceChildren();
   if (line) line.textContent = summary || "nothing measured yet";
   if (note) {
-    // A registry that could not be READ is not a registry that said no, and the difference is
-    // shown rather than buried in a log line.
-    note.textContent = cardsAvailable === false
-      ? "the model-card registry could not be read, so every detector is barred" : "";
+    // THE BUDGET IS STATED WITH THE ROWS IT JUDGED. A `held for budget` sentence is unreadable
+    // without the number and the population behind it, and a failed measurement is a named
+    // failure -- never an empty note that reads as "nothing to say".
+    const b = budget || {};
+    const parts = [];
+    if (Number(b.budget) > 0) {
+      const bar = Number(b.bar);
+      parts.push(`alert budget: ${(Number(b.budget) * 100).toFixed(0)}% of scored windows at or `
+        + `above ${Number.isFinite(bar) ? bar.toFixed(2) : "the bar"}`
+        + (Number(b.windows) > 0 ? ` (${Number(b.windows).toLocaleString()} windows measured)` : ""));
+    }
+    if (b.reason) parts.push(String(b.reason));
+    note.textContent = parts.join(" \u00b7 ");
   }
   if (!detectors.length) {
     body.appendChild(el("tr", {}, [
@@ -6418,9 +6427,13 @@ function renderDetectors(detectors, summary, cardsAvailable) {
   // colour as "not contributing (FAR 1.00 vs 0.01)" would send an operator to tune a model that
   // has nothing to tune; muted says "look at the sensors".
   const statusClass = (status) => (
-    status === "contributing" ? "sev-low"
+    status === "eligible" ? "sev-low"
       : status === "not trained" ? "muted"
-        : String(status || "").startsWith("insufficient telemetry") ? "muted" : "sev-medium");
+        : String(status || "").startsWith("insufficient telemetry") ? "muted"
+          // A HELD DETECTOR IS NOT BROKEN. It is calibrated and waiting for the budget to fit, so
+          // it reads as a warning to act on later, not as a failure to debug now.
+          : String(status || "").startsWith("calibrated, held for budget") ? "sev-medium"
+            : "sev-medium");
   for (const d of detectors) {
     const target = (d.target_far === null || d.target_far === undefined)
       ? null : Number(d.target_far);
@@ -6475,9 +6488,9 @@ function renderStaleness(rows, intervalH) {
     body.appendChild(el("tr", { class: r.stale ? "stale-row" : "" }, [
       el("td", { text: r.model }),
       el("td", { class: "mono muted", text: r.last_trained ? fmtTime(r.last_trained) : "—" }),
-      // LAST USABLE IS NOT LAST RETRAINED (GitHub #60): a DBSCAN run with zero clusters
-      // completes and saves an artifact, but it cannot score. Saying "current" beside that
-      // date was the lie this column exists to stop.
+      // LAST USABLE IS NOT LAST RETRAINED (GitHub #60): a run that completes into an artifact
+      // the detector cannot score with is still a retrain. Saying "current" beside that date was
+      // the lie this column exists to stop.
       el("td", { class: "mono muted", text: r.last_usable ? fmtTime(r.last_usable) : "—" }),
       el("td", {}, [age]),
       el("td", {}, [
@@ -7249,7 +7262,7 @@ async function loadModels() {
   renderReview(data.review || {});
   renderVerification(data.verification || {});
   renderDetectors(data.detectors || [], data.detector_summary || "",
-                  data.model_cards_available);
+                  data.detector_budget || {});
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});

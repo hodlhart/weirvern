@@ -82,17 +82,6 @@ SELECT * FROM
         'Supervised student of the Isolation Forest family in the fused score.',
         'Inherits its training labels, so it is not a standalone ground truth.',
         'Label quality is the limit, and the fixed-budget report is not attached to this artifact.'
-    UNION ALL
-    SELECT
-        'dbscan', 'DBSCAN', 'v4',
-        '9c528d3a400e620ecf6e2cfe1ab0fde5f1e346961d14ed4fa2ca165c0de1092d',
-        toDateTime('2026-11-08 06:47:02', 'UTC'), toDateTime('2026-11-11 06:47:02', 'UTC'),
-        '4', '2026-11-11T08:32:27Z', 'not_measured', 'retired', 'operator', 'operator',
-        toDateTime('2026-11-11 08:32:27', 'UTC'),
-        'models/DBSCAN_v3.pkl + weirvern-worker:0.23.17',
-        'Historical density detector, retained for comparison only.',
-        'Must not contribute to the fused production score.',
-        'Measured observed FAR 0.9735 against target 0.01, so it is ineligible.'
 ) AS seed
 WHERE (SELECT count() FROM weirvern.ml_model_cards) = 0;
 

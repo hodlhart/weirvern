@@ -92,10 +92,11 @@ def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = Non
     RATIONALE (empirically established against live ClickHouse data):
     Each detector covers a different attack family — Isolation Forest finds
     novel traffic shapes, Gradient Boosting finds learned behavior patterns,
-    DBSCAN finds density/port-diversity outliers (e.g. port scans), Adaptive
-    Baseline finds per-host volume deviations. A confident specialist often
-    fires ALONE: DBSCAN scored a seeded port scan at 0.99 while the
-    volume-oriented models scored ~0.0 (correctly — a scan moves no bytes).
+    KNN distance finds windows far from the population, LOF finds local
+    density outliers, Adaptive Baseline finds per-host volume deviations. A
+    confident specialist often fires ALONE: the density detector this ensemble
+    used to carry scored a seeded port scan at 0.99 while the volume-oriented
+    models scored ~0.0 (correctly — a scan moves no bytes).
 
     The legacy mean-fusion averaged that 0.99 down to 0.405, BELOW benign
     hosts (0.543), so the scan went unalerted. Averaging silently means "no
@@ -104,9 +105,8 @@ def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = Non
 
     mode="max" (default): the reported score is the strongest detector signal.
       Per-detector weights are NOT applied here — scaling a confident detector
-      down by weight (e.g. DBSCAN 0.65) re-introduces exactly the dilution this
-      replaced. False-positive control lives in the agreement gate and severity
-      tiers instead.
+      down by weight re-introduces exactly the dilution this replaced.
+      False-positive control lives in the agreement gate and severity tiers instead.
     mode="mean": legacy weighted average, retained for A/B comparison only.
     """
     if not scores:
@@ -218,7 +218,7 @@ def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dic
     """Is a lone strong detector corroborated by a direct structural signature?
 
     MEASURED PROBLEM: a pure SYN port scan (305 flows, 0 bytes, 300 ports) was
-    scored strongly by DBSCAN (0.99) but weakly by the volume/shape models
+    scored strongly by the density detector (0.99) but weakly by the volume/shape models
     (IF 0.48, GB 0.01) — because a scan moves no bytes, so there is nothing for
     them to be anomalous about. Requiring two strong detectors therefore left the
     scan at 'medium'. Those models are not disagreeing; they have no opinion.
@@ -431,8 +431,8 @@ def detect_flows(
         )
         # HOW MUCH OF THE VECTOR WAS MEASURED, once per window over the union of everything
         # the four detectors consume (`None` with the flag off: not measured is not zero), and
-        # once per detector over its OWN vector, because DBSCAN's 19 columns and the wide
-        # pair's 77 are covered differently. Both feed calibration; the per-detector number is
+        # once per detector over its OWN vector, because the cross-sectional pair's 19 columns and
+        # the wide pair's 77 are covered differently. Both feed calibration; the per-detector number is
         # what a detector's row reports. THE COUNTS RIDE WITH THE RATIO: calibration stores
         # '10 of 77' so a false-alarm rate can never be read without knowing what it was
         # measured on. They come from `coverage_counts`, the same count `coverage` divides.
@@ -538,7 +538,6 @@ def detect_flows(
                             / max(1, len(detectors)), 4),
                         "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
                         "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
-                        "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
                         "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
                         "detected_by_models": ", ".join(
                             n for n, s in scores.items() if s > DETECTED_BY_SCORE),
@@ -554,8 +553,8 @@ def detect_flows(
         # same scores, varying only readiness:
         #
         #     all 4 ready (healthy)   score=0.550  agreement=0.25  -> SUPPRESSED
-        #     DBSCAN failed to train  score=0.550  agreement=0.33  -> ALERT
-        #     GB and DBSCAN failed    score=0.550  agreement=0.50  -> ALERT
+        #     one detector failed    score=0.550  agreement=0.33  -> ALERT
+        #     two detectors failed   score=0.550  agreement=0.50  -> ALERT
         #     only IF ready           score=0.550  agreement=1.00  -> ALERT, confidence 0.550
         #
         # So a broken model turned a window the ensemble had DELIBERATELY SUPPRESSED into an alert
@@ -624,7 +623,6 @@ def detect_flows(
                     "model_agreement": round(agreement, 4),
                     "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
                     "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
-                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
                     "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
                     "detected_by_models": ",".join(detected_by),
                 })
@@ -638,7 +636,6 @@ def detect_flows(
             "confidence": round(final_score * agreement, 4),
             "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
             "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
-            "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
             "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
             "model_agreement": round(agreement, 4),
             "detected_by_models": ",".join(detected_by),

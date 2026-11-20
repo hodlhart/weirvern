@@ -2,13 +2,13 @@ from datetime import datetime
 from pathlib import Path
 
 from weirvern.features import (
-    DBSCAN_FEATURES,
+    CROSS_SECTIONAL_FEATURES,
     HOST_FEATURES,
     IF_FEATURES,
     extract_features,
     feature_vector,
 )
-from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES, ZEEK_FEATURES
+from weirvern.zeek_features import ZEEK_CROSS_SECTIONAL_FEATURES, ZEEK_FEATURES
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,7 +77,7 @@ def test_feature_vectors_match_train_order():
     # actually matters: `feature_vector` rebuilds a model's input BY POSITION, so a vector
     # whose length disagrees with its column list is silently misaligned.
     assert len(feature_vector(feats, IF_FEATURES)) == len(IF_FEATURES)
-    assert len(feature_vector(feats, DBSCAN_FEATURES)) == len(DBSCAN_FEATURES)
+    assert len(feature_vector(feats, CROSS_SECTIONAL_FEATURES)) == len(CROSS_SECTIONAL_FEATURES)
     # The Zeek features must actually be in those lists, or the wiring did nothing.
     assert "zeek_present" in IF_FEATURES, "the Zeek presence flag is not in the IF vector"
     assert ZEEK_FEATURES[0] in IF_FEATURES
@@ -86,7 +86,7 @@ def test_feature_vectors_match_train_order():
     # records its feature_columns and rebuilds its vector by name, so an order mismatch
     # produces a vector of the right length holding the wrong values -- nothing raises.
     assert IF_FEATURES[-len(ZEEK_FEATURES):] == ZEEK_FEATURES
-    assert DBSCAN_FEATURES[-len(ZEEK_DBSCAN_FEATURES):] == ZEEK_DBSCAN_FEATURES
+    assert CROSS_SECTIONAL_FEATURES[-len(ZEEK_CROSS_SECTIONAL_FEATURES):] == ZEEK_CROSS_SECTIONAL_FEATURES
 
 
 # ── TRAIN AND SCORE ENCODED THE DAY OF WEEK DIFFERENTLY (the train/score scale mismatch) ─────

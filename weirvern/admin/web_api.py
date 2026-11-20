@@ -708,11 +708,14 @@ def models_payload(data: dict) -> dict:
         "model_training": data.get("model_training", {}),
         "normalized": data.get("normalized", {}),
         # THE DETECTORS TABLE. Derived rows and one derived sentence, computed in
-        # payloads.models from training + artifacts + calibration + the card veto. Named here because
-        # this whitelist is a wall: an unnamed field dies silently at it, which is how the training
-        # log and the artifact inventory went missing before.
+        # payloads.models from training + artifacts + calibration + the promotion guard's measured
+        # budget. Named here because this whitelist is a wall: an unnamed field dies silently at
+        # it, which is how the training log and the artifact inventory went missing before.
         "detectors": data.get("detectors", []),
         "detector_summary": data.get("detector_summary", ""),
+        # THE BUDGET THE PROMOTIONS WERE JUDGED AGAINST, stated with the bar and the population so
+        # a `held for budget` row can never be read without knowing which number held it.
+        "detector_budget": data.get("detector_budget") or {},
         # CE-4: the fixed-budget report's verification fields. No live auto-label evidence is
         # wired into this read yet; say `not measured` rather than presenting a silent zero.
         "review": data.get("review") or _latest_review(),

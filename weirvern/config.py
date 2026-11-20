@@ -213,6 +213,40 @@ class Settings:
     ml_eligibility_multiple: float = field(
         default_factory=lambda: _env_float("ML_ELIGIBILITY_MULTIPLE", 3.0)
     )
+    # ── THE CALIBRATION WINDOW AND THE PROMOTION BUDGET ──────────────────────────────────────
+    #
+    # FRESHNESS. A calibration is evidence about the model serving NOW only while it is inside the
+    # retrain interval. `ml_calibration_grace_h` is the pass that runs AFTER a retrain: the retrain
+    # writes a model, the calibration sweep then measures it, so a calibration is always at least
+    # one pass older than the artifact it describes. Without the grace, every detector reads
+    # "stale" for the minutes between the interval elapsing and the new calibration landing -- an
+    # eligibility gate that blinks the whole ensemble off once per cycle.
+    ml_calibration_grace_h: float = field(
+        default_factory=lambda: _env_float("ML_CALIBRATION_GRACE_H", 1.0)
+    )
+    # THE FUSED ALERT-RATE BUDGET, AND WHERE THE NUMBER COMES FROM.
+    #
+    # A detector can pass every evidence check and still be unsafe to ADD: measured on the live
+    # 24-hour population, admitting both cross-sectional detectors moved the share of host-windows
+    # at or above BASE_THRESHOLD from 25.6% to 42.8% -- the page load doubles, from an automatic
+    # decision nobody made. So a promotion must keep that share inside this ceiling. The default
+    # 0.30 is the measured 25.6% baseline plus a few points of headroom, and it is BELOW the
+    # measured 42.8%, so the doubling is held; it is a policy number and belongs to the operator,
+    # not to the distribution. A held detector says so with both rates and is promoted by itself
+    # once the ensemble's measured rate fits.
+    ml_fused_alert_budget: float = field(
+        default_factory=lambda: _env_float("ML_FUSED_ALERT_BUDGET", 0.30)
+    )
+    # A promotion is a claim, so it needs a population behind it. A HOLD does not: a small sample
+    # that already shows an overrun is enough to wait.
+    ml_fused_budget_min_windows: int = field(
+        default_factory=lambda: _env_int("ML_FUSED_BUDGET_MIN_WINDOWS", 200)
+    )
+    # The lookback the budget is measured over: one day, so the rate is the one an operator reads
+    # as "today", and long enough to contain both busy and quiet hours.
+    ml_fused_budget_hours: int = field(
+        default_factory=lambda: _env_int("ML_FUSED_BUDGET_HOURS", 24)
+    )
     # Episode/budget layer: consecutive windows for the same host are one incident. Only
     # high/critical episodes may page, and only `episode_page_budget` per host per 24h.
     episode_gap_minutes: int = field(default_factory=lambda: _env_int("EPISODE_GAP_MINUTES", 30))
@@ -229,7 +263,8 @@ class Settings:
     #
     # ON: a feature whose source was not measured is None (NULL) rather than 0, Isolation
     # Forest and Gradient Boosting impute the TRAINING-TIME median per feature and add one
-    # `<feature>__missing` indicator, DBSCAN takes its distance over observed dimensions only
+    # `<feature>__missing` indicator, the distance detectors take theirs over observed
+    # dimensions only
     # (or abstains below the coverage floor), and calibration excludes windows below the floor.
     #
     # OFF: every behaviour above is skipped and the score path is exactly the one that
@@ -583,6 +618,22 @@ class Settings:
             raise ValueError(
                 f"ML_ELIGIBILITY_MULTIPLE must be > 0, got {self.ml_eligibility_multiple}"
             )
+        if not 0.0 < self.ml_fused_alert_budget <= 1.0:
+            raise ValueError(
+                f"ML_FUSED_ALERT_BUDGET must be in (0, 1], got {self.ml_fused_alert_budget}"
+            )
+        if self.ml_fused_budget_min_windows < 1:
+            raise ValueError(
+                f"ML_FUSED_BUDGET_MIN_WINDOWS must be >= 1, got {self.ml_fused_budget_min_windows}"
+            )
+        if self.ml_fused_budget_hours < 1:
+            raise ValueError(
+                f"ML_FUSED_BUDGET_HOURS must be >= 1, got {self.ml_fused_budget_hours}"
+            )
+        if self.ml_calibration_grace_h < 0:
+            raise ValueError(
+                f"ML_CALIBRATION_GRACE_H must be >= 0, got {self.ml_calibration_grace_h}"
+            )
         if self.episode_gap_minutes < 1:
             raise ValueError(
                 f"EPISODE_GAP_MINUTES must be >= 1, got {self.episode_gap_minutes}"
@@ -651,9 +702,6 @@ class ModelConfig:
     contamination: float = 0.06
     if_n_samples: int = 80_000
     if_extremes: int = 5_000  # top-N extremes per metric to force into training
-    dbscan_eps: float = 0.6
-    dbscan_min_samples: int = 5
-    dbscan_n_samples: int = 5_000
     # ── CROSS-SECTIONAL DETECTORS (kNN distance and LOF) ────────────────────────────────────────
     #
     # Both ask the same question of the same 19-column vector: does this host-window look unlike
@@ -662,7 +710,7 @@ class ModelConfig:
     # not values searched here (`docs/research/cross-sectional-detector-2026-11-20.md` §3.4).
     #
     # `knn_k` = 10 and `lof_neighbors` = 20 are the report's values. `*_n_samples` is the ROW cap
-    # on the reference (production's old dbscan_n_samples), applied with a deterministic
+    # on the reference, applied with a deterministic
     # `ORDER BY sipHash64(src_addr, window_start) LIMIT n`; there is NO host sampling, because a
     # 1-in-5 host cut left 5 of 24 hosts and a cross-sectional model cannot work from five.
     knn_k: int = 10
@@ -678,7 +726,6 @@ class ModelConfig:
     # "max" (default) ignores them; see fuse_scores() for why.
     weight_if: float = 1.0
     weight_gb: float = 0.75
-    weight_dbscan: float = 0.65
     # THE TWO CROSS-SECTIONAL DETECTORS CARRY THE NEUTRAL WEIGHT, EXPLICITLY.
     #
     # The shipped fusion mode is "max", which does not read weights at all (see fuse_scores); these
@@ -801,7 +848,6 @@ class ModelConfig:
         return {
             "isolation_forest": self.weight_if,
             "gradient_boosting": self.weight_gb,
-            "dbscan": self.weight_dbscan,
             "knn": self.weight_knn,
             "lof": self.weight_lof,
             "adaptive_baseline": self.weight_baseline,

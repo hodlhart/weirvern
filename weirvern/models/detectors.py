@@ -5,13 +5,14 @@
 2. GradientBoostingDetector — semi-supervised student of the Isolation Forest,
    class-imbalance weighted, F1-evaluated on a held-out split.
 3. KNNDistanceDetector — cross-sectional distance to the k-th nearest reference window (k=10)
-   on the 19-feature DBSCAN_FEATURES vector. Replaces DBSCAN in the ensemble.
+   on the 19-feature CROSS_SECTIONAL_FEATURES vector.
 4. LOFDetector — local outlier factor (k=20, novelty=True) on the SAME 19-feature vector, as an
    INDEPENDENT detector: its own reference set, artifact, calibration and eligibility row.
 5. AdaptiveBaselineDetector — per-host percentile/σ baselines from ClickHouse.
 
-DBSCANDetector is RETIRED (2026-11-20) and is no longer constructed by `build_detectors`; the
-class is kept for one release with its measurement in the class docstring.
+`DETECTOR_NAMES` is the engine's roster, and it is what the Detectors table renders: a name outside
+it has no row, because a detector that is no longer built no longer exists (it is not "retired" --
+there is nothing to retire).
 
 Changes vs legacy: SQL is parameterized and lives close to the models; all
 magic numbers come from weirvern.config.ModelConfig; training always
@@ -27,7 +28,6 @@ from typing import Any
 
 import numpy as np
 from clickhouse_connect.driver.client import Client
-from sklearn.cluster import DBSCAN
 from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import f1_score
@@ -37,26 +37,24 @@ from sklearn.preprocessing import StandardScaler
 
 from weirvern import flow_windows, networks
 from weirvern.config import ModelConfig
-from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
+from weirvern.features import CROSS_SECTIONAL_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
 from weirvern.models.calibration import COVERAGE_CONTRACT, register_model_contract
 from weirvern.models.missing import (
     DEFAULT_MIN_COVERAGE,
     MissingAwarePreprocessor,
     below_floor,
-    masked_distance,
     model_input_columns,
     null_absent_zeek,
 )
 from weirvern.models.scoring import (
-    calibrate_distance,
     calibrate_isolation_forest,
     calibrate_probability,
     normalize_zscore,
     score_by_percentile,
 )
 from weirvern.zeek_features import (
-    ZEEK_DBSCAN_FEATURES,
+    ZEEK_CROSS_SECTIONAL_FEATURES,
     ZEEK_FEATURES,
     ZEEK_JOIN_ON,
     zeek_baseline_ja4_sql,
@@ -73,14 +71,14 @@ QUERY_SETTINGS = {"max_memory_usage": 4_000_000_000, "max_execution_time": 120}
 def _zeek_clause(start: str, end: str, columns: list[str] | None = None) -> tuple[str, str, str]:
     """(with-clause, select-list, join-clause) for the Zeek side of a training query.
 
-    One helper for all four detectors. Duplicating the join per detector is how the models
+    One helper for every detector. Duplicating the join per detector is how the models
     drift apart: three training on one window and the fourth on a slightly different key,
     which no metric would show and which would appear only as one detector disagreeing with
     the others for no stated reason.
 
     `columns` selects which Zeek features to include. The DEFAULT is all of them, matching
-    IF_FEATURES; DBSCAN passes its smaller set, because clustering degrades with
-    dimensionality when samples are few.
+    IF_FEATURES; the cross-sectional pair passes its smaller set, because a distance in a
+    high-dimensional space stops separating anything when samples are few.
     """
     if columns is None:
         columns = ZEEK_FEATURES
@@ -423,12 +421,12 @@ class GradientBoostingDetector(BaseDetector):
 # ============================================================================
 # ── CROSS-SECTIONAL DETECTORS: THE SAME VECTOR, TWO INDEPENDENT SCORES ─────────────────────────
 #
-# WHY THIS EXISTS. The retired DBSCAN asked "is this window inside a dense cluster?" and answered
-# with a step function: 97.89% of 27,454 stored scores sat at 0.99 or above (p50 = p99 = max =
-# 0.99), so no threshold could separate anything from anything. The question the slot should ask
-# is CROSS-SECTIONAL -- "does this host-window look unlike the population of host-windows?" -- and
-# `scripts/cross_sectional_bakeoff.py` measured six answers to it on this deployment
-# (`docs/research/cross-sectional-detector-2026-11-20.md`).
+# WHY THIS EXISTS. The density detector this slot replaced asked "is this window inside a dense
+# cluster?" and answered with a step function: 97.89% of 27,454 stored scores sat at 0.99 or above
+# (p50 = p99 = max = 0.99), so no threshold could separate anything from anything. The question the
+# slot should ask is CROSS-SECTIONAL -- "does this host-window look unlike the population of
+# host-windows?" -- and `scripts/cross_sectional_bakeoff.py` measured six answers to it on this
+# deployment (`docs/research/cross-sectional-detector-2026-11-20.md`).
 #
 # Two of them ship here, as SEPARATE detectors with separate artifacts, reference sets,
 # calibrations and eligibility rows:
@@ -486,7 +484,7 @@ def cross_sectional_training_sql(start: str, end: str, cfg: ModelConfig,
     ClickHouse client.
     """
     s, e = start, end
-    zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)
+    zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_CROSS_SECTIONAL_FEATURES)
     excl = _flagged_exclusion_clause(s, e, cfg)
     n_rows = int(limit if limit is not None else cfg.knn_n_samples)
     return f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
@@ -535,7 +533,7 @@ def kth_neighbour_distances(X: np.ndarray, k: int) -> np.ndarray:
 def reference_degeneracy(distances: np.ndarray) -> str:
     """Why a reference cannot produce a usable score, or "" when it can.
 
-    THE CHECK IS THE POINT. DBSCAN shipped for months with a score that was constant on 98% of
+    THE CHECK IS THE POINT. A detector shipped for months with a score that was constant on 98% of
     windows because nothing refused a reference that could not be separated. Here a fit whose
     k-th-neighbour distances do not vary is REFUSED -- no artifact is written, `is_ready()` stays
     False, and the Detectors row says `not trained: degenerate reference` rather than showing a
@@ -604,7 +602,7 @@ def coverage_stratum_of_row(row: np.ndarray, expected: int) -> str:
 def _fit_reference(Xraw: np.ndarray, cfg: ModelConfig) -> tuple[Any, np.ndarray]:
     """Fit the shared preprocessor and return (preprocessor, scaled matrix).
 
-    The SAME path DBSCAN used: median impute with the training-time neutral, then StandardScaler.
+    Median impute with the training-time neutral, then StandardScaler.
     With `missing_features` ON the neutrals come from `column_neutrals` over observed values and
     the absent Zeek families are NaN (see `null_absent_zeek`); with it OFF the historical
     `RobustPreprocessor` is used unchanged.
@@ -664,7 +662,7 @@ class KNNDistanceDetector(BaseDetector):
         return self.neighbours is not None and self.reference_ is not None
 
     def expected_feature_columns(self) -> list[str]:
-        return list(DBSCAN_FEATURES)
+        return list(CROSS_SECTIONAL_FEATURES)
 
     def score(self, X: np.ndarray) -> np.ndarray:
         """The raw statistic: distance to the k-th nearest reference window."""
@@ -690,7 +688,7 @@ class KNNDistanceDetector(BaseDetector):
             return False
         Xraw = np.asarray(data, dtype=float)
         if self.cfg.missing_features:
-            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
+            Xraw = null_absent_zeek(Xraw, CROSS_SECTIONAL_FEATURES)
         prep, scaled = _fit_reference(Xraw, self.cfg)
         distances = kth_neighbour_distances(scaled, self.k)
         reason = reference_degeneracy(distances)
@@ -707,14 +705,14 @@ class KNNDistanceDetector(BaseDetector):
             return False
         self.preprocessor = prep
         self.reference_ = scaled
-        strata = [coverage_stratum_of_row(row, len(DBSCAN_FEATURES)) for row in Xraw]
+        strata = [coverage_stratum_of_row(row, len(CROSS_SECTIONAL_FEATURES)) for row in Xraw]
         self.strata_ = strata
         self.grades_ = _grade_by_stratum(distances, strata)
         self.neighbours = NearestNeighbors(
             n_neighbors=int(max(1, min(self.k, len(scaled))))).fit(scaled)
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
-            feature_columns=DBSCAN_FEATURES,
+            feature_columns=CROSS_SECTIONAL_FEATURES,
             params={"model": "knn-distance", "k": self.k, "n_samples": len(scaled),
                     "reference_rows": len(scaled),
                     "reference_bytes": int(scaled.nbytes),
@@ -741,14 +739,14 @@ class KNNDistanceDetector(BaseDetector):
             return 0.0
         try:
             if self.cfg.missing_features:
-                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
+                if below_floor(features, CROSS_SECTIONAL_FEATURES, _floor(self.cfg)):
                     return 0.0
-                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
+                vec = feature_vector(features or {}, CROSS_SECTIONAL_FEATURES, preserve_missing=True)
             else:
-                vec = feature_vector(features or {}, DBSCAN_FEATURES)
+                vec = feature_vector(features or {}, CROSS_SECTIONAL_FEATURES)
             row = np.asarray([vec], dtype=float)
             distance = float(self.score(row)[0])
-            stratum = coverage_stratum_of_row(row[0], len(DBSCAN_FEATURES))
+            stratum = coverage_stratum_of_row(row[0], len(CROSS_SECTIONAL_FEATURES))
             quantiles = self.grades_.get(stratum, self.grades_.get("", {}))
             return float(grade_distance(distance, quantiles))
         except Exception as exc:  # noqa: BLE001
@@ -792,7 +790,7 @@ class LOFDetector(BaseDetector):
         return self.model is not None and self.reference_ is not None
 
     def expected_feature_columns(self) -> list[str]:
-        return list(DBSCAN_FEATURES)
+        return list(CROSS_SECTIONAL_FEATURES)
 
     def score(self, X: np.ndarray) -> np.ndarray:
         """The raw statistic: log1p(LOF). Higher = less like its local neighbourhood."""
@@ -820,7 +818,7 @@ class LOFDetector(BaseDetector):
             return False
         Xraw = np.asarray(data, dtype=float)
         if self.cfg.missing_features:
-            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
+            Xraw = null_absent_zeek(Xraw, CROSS_SECTIONAL_FEATURES)
         prep, scaled = _fit_reference(Xraw, self.cfg)
         distances = kth_neighbour_distances(scaled, self.k)
         reason = reference_degeneracy(distances)
@@ -854,13 +852,13 @@ class LOFDetector(BaseDetector):
             return False
         self.preprocessor = prep
         self.reference_ = scaled
-        strata = [coverage_stratum_of_row(row, len(DBSCAN_FEATURES)) for row in Xraw]
+        strata = [coverage_stratum_of_row(row, len(CROSS_SECTIONAL_FEATURES)) for row in Xraw]
         self.strata_ = strata
         self.grades_ = _grade_by_stratum(statistic, strata)
         self.model = model
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
-            feature_columns=DBSCAN_FEATURES,
+            feature_columns=CROSS_SECTIONAL_FEATURES,
             params={"model": "lof", "k": self.k, "novelty": True, "n_samples": len(scaled),
                     "reference_rows": len(scaled),
                     "reference_bytes": int(scaled.nbytes),
@@ -890,14 +888,14 @@ class LOFDetector(BaseDetector):
             return 0.0
         try:
             if self.cfg.missing_features:
-                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
+                if below_floor(features, CROSS_SECTIONAL_FEATURES, _floor(self.cfg)):
                     return 0.0
-                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
+                vec = feature_vector(features or {}, CROSS_SECTIONAL_FEATURES, preserve_missing=True)
             else:
-                vec = feature_vector(features or {}, DBSCAN_FEATURES)
+                vec = feature_vector(features or {}, CROSS_SECTIONAL_FEATURES)
             row = np.asarray([vec], dtype=float)
             statistic = float(self.score(row)[0])
-            stratum = coverage_stratum_of_row(row[0], len(DBSCAN_FEATURES))
+            stratum = coverage_stratum_of_row(row[0], len(CROSS_SECTIONAL_FEATURES))
             return float(grade_distance(statistic,
                                         self.grades_.get(stratum, self.grades_.get("", {}))))
         except Exception as exc:  # noqa: BLE001
@@ -910,193 +908,6 @@ class LOFDetector(BaseDetector):
 # model name, it asks the registry how to read a row.
 register_model_contract(KNNDistanceDetector.name, COVERAGE_CONTRACT)
 register_model_contract(LOFDetector.name, COVERAGE_CONTRACT)
-
-
-# ============================================================================
-class DBSCANDetector(BaseDetector):
-    """RETIRED 2026-11-20 — kept in the tree for one release, not constructed or scored.
-
-    WHY IT IS RETIRED. Removed from `build_detectors` and from the fused ensemble by operator
-    decision on 2026-11-20, after the measurement in
-    `docs/research/cross-sectional-detector-2026-11-20.md`: of 27,454 stored DBSCAN scores,
-    97.89% sat at 0.99 or above with p50 = p99 = max = 0.99. A detector whose score is at its
-    ceiling on 98% of windows cannot be given a threshold -- any cut below the ceiling fires on
-    essentially everything, which is the FAR ~= 1.0 the retirement is about.
-
-    It also trained on five hosts in production (`sipHash64(src_addr) % 5 == 1` cut 24 hosts to
-    5), which is not a population for a density estimate. That cut is removed from this query as
-    well, so a future resurrection does not inherit the bug.
-
-    NOTHING CONSTRUCTS THIS CLASS. `weirvern.worker.build_detectors` returns the five live
-    detectors; `ensemble.MODEL_FAMILIES` no longer knows this name. The class exists so the
-    artifact/format history stays readable for one release.
-    """
-
-    name = "DBSCAN"
-
-    def __init__(self, model_dir, cfg: ModelConfig | None = None):
-        super().__init__(model_dir)
-        self.cfg = cfg or ModelConfig()
-        self.cluster_centers: list[np.ndarray] = []
-        # WHY the last train() returned what it did (WV1-22). train() returns a bare bool, and it
-        # returns False for two unrelated reasons -- too few rows, or enough rows with no dense
-        # region. Callers could not tell them apart, so the detection-quality gate explained a
-        # 195-row failure with "DBSCAN needs >=100 rows", a cause its own log line contradicted.
-        # "" = never trained, "ok", "insufficient-rows", "no-dense-structure".
-        self.train_outcome = ""
-        # No missing indicators: clustering degrades with dimensionality, and the masked
-        # distance already carries the "was this dimension observed" information. The
-        # preprocessor still imputes the median so DBSCAN has a dense space to fit.
-        self.preprocessor: Preprocessor = _preprocessor_for(self.cfg, indicators=False)
-        # Percentile calibration of training distances to the nearest centre (set at
-        # train time). See calibrate_distance for why the old fixed /5.0 had to go.
-        self.calibration: dict[str, float] = {}
-
-    def is_ready(self) -> bool:
-        return len(self.cluster_centers) > 0
-
-    def expected_feature_columns(self) -> list[str]:
-        return list(DBSCAN_FEATURES)
-
-    def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
-        st = time.time()
-        s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
-        zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)
-        # Training hygiene: do not learn from windows the system already flagged (see
-        # _flagged_exclusion_clause). Empty string when disabled.
-        excl = _flagged_exclusion_clause(s, e, self.cfg)
-        scope_filter = networks.training_filter(client)
-        q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
-            WITH {zeek_cte}
-            SELECT
-                log(a.total_bytes + 1),
-                log(a.total_packets + 1),
-                log(a.unique_dst_ips + 1),
-                log(a.flow_count + 1),
-                log(coalesce(d.unique_dst_ports, 0) + 1),
-                coalesce(d.port_entropy, 0),
-                coalesce(t.activity_regularity, 1.0),
-                coalesce(t.burstiness, 1.0),
-{zeek_cols}
-            FROM {flow_windows.folded(flow_windows.between(s, e))}
-            LEFT JOIN weirvern.flows_aggregated_diversity d
-                ON a.window_start = d.window_start AND a.src_addr = d.src_addr
-            LEFT JOIN weirvern.flows_aggregated_temporal t
-                ON a.window_start = t.window_start AND a.src_addr = t.src_addr
-            {zeek_join}
-            WHERE a.window_start BETWEEN '{s}' AND '{e}'
-              AND a.total_bytes > 0{excl}{scope_filter}
-            -- Same deterministic cut as the Isolation Forest query (GitHub #61). Hash order
-            -- keeps the surviving sample uniform instead of biasing it to one end of the window.
-            -- NO host sampling: the `sipHash64(src_addr) % 5 == 1` cut that used to sit above
-            -- this line kept 5 of 24 hosts (measured 2026-11-20) and is removed for every
-            -- cross-sectional fit; it is left out here too so a resurrection cannot inherit it.
-            ORDER BY sipHash64(a.src_addr, a.window_start)
-            LIMIT {int(self.cfg.dbscan_n_samples)}
-        """
-        data = client.query(q, settings=QUERY_SETTINGS).result_rows
-        if len(data) < 100:
-            self.train_outcome = "insufficient-rows"
-            # The floor belongs in the message: a reader who sees only "not enough data" cannot
-            # tell 12 rows from 99, and the remedy (a longer seed) depends on the gap.
-            logger.warning(
-                "Not enough data for %s: %d rows after the monitored-scope filter, floor 100. A "
-                "longer seed window is what adds them.", self.name, len(data),
-            )
-            return False
-        Xraw = np.asarray(data, dtype=float)
-        if self.cfg.missing_features:
-            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
-        Xs = self.preprocessor.fit_transform(Xraw)
-        labels = DBSCAN(eps=self.cfg.dbscan_eps, min_samples=self.cfg.dbscan_min_samples).fit_predict(Xs)
-        self.cluster_centers = [np.mean(Xs[labels == cid], axis=0) for cid in set(labels) if cid != -1]
-        n_clusters, n_outliers = len(self.cluster_centers), int((labels == -1).sum())
-
-        # CALIBRATE THE DISTANCE MAPPING against the training distribution.
-        #
-        # The predict() score was `distance / 5.0` -- a fixed divisor unrelated to the
-        # data's scale, which made the detector un-corroborable on tight clusters and
-        # saturated on loose ones. Every training sample's distance to its NEAREST
-        # cluster centre is recorded here by percentile, so predict() can grade a new
-        # distance against what normal looked like for THIS deployment.
-        if self.cluster_centers:
-            dists = np.array([
-                min(float(np.linalg.norm(x - c)) for c in self.cluster_centers)
-                for x in Xs
-            ])
-            self.calibration = {
-                "p50": float(np.percentile(dists, 50)),
-                "p95": float(np.percentile(dists, 95)),
-                "p99": float(np.percentile(dists, 99)),
-            }
-
-        self.metadata = ModelMetadata(
-            model_type=self.name, duration_seconds=time.time() - st,
-            feature_columns=DBSCAN_FEATURES,
-            params={"eps": self.cfg.dbscan_eps, "min_samples": self.cfg.dbscan_min_samples,
-                    "n_samples": len(Xs),
-                    "missing_features": bool(self.cfg.missing_features),
-                    "min_feature_coverage": _floor(self.cfg),
-                    "calibration": {k: round(v, 6) for k, v in self.calibration.items()}},
-            metrics={"clusters": n_clusters, "outliers": n_outliers},
-            window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
-        )
-        if not self.cluster_centers:
-            # A detector that will answer "no opinion" to every window must SAY SO here.
-            # This spot used to be an INFO line reading "trained: 0 clusters", so the
-            # degradation -- the scan-family specialist is OFF until a retrain finds
-            # dense structure -- was invisible outside the metrics dict. Measured,
-            # review round 2026-10-15: 2 centres at 146 sampled training rows, 0 at 124
-            # on the same seed, so this is a live state, not a corner case.
-            logger.warning(
-                "%s trained on %d rows but found NO CLUSTER CENTRES (eps=%s, "
-                "min_samples=%s): every score will be 'no opinion' (0.0) and is_ready() "
-                "stays False until a retrain finds dense structure -- the scan-family "
-                "specialist is OFF.",
-                self.name, len(Xs), self.cfg.dbscan_eps, self.cfg.dbscan_min_samples,
-            )
-        logger.info("✅ %s trained: %d clusters, %d outliers", self.name, n_clusters, n_outliers)
-        self.save()
-        # A RUN WITH NO CENTRES IS NOT A USABLE MODEL (GitHub #60). It saves the diagnostic
-        # artifact -- the metrics retain clusters=0 -- but every score is "no opinion", so
-        # returning True made reports and ml_models history count a detector that cannot
-        # score. This is the same "trained" lie F023 fixed for the other detectors.
-        self.train_outcome = "ok" if self.cluster_centers else "no-dense-structure"
-        return bool(self.cluster_centers)
-
-    def predict(self, flow: dict[str, Any],
-                features: dict[str, float | None] | None = None) -> float:
-        if not self.cluster_centers:
-            return 0.0
-        try:
-            if self.cfg.missing_features:
-                # ABSTAIN RATHER THAN CLUSTER A GUESS. Below the floor the window has too
-                # little measured data for a distance to mean anything; above it, the
-                # distance is taken over the observed dimensions only and rescaled, so a
-                # half-observed window is not "closer" merely for having fewer terms.
-                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
-                    return 0.0
-                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
-                pre = self.preprocessor
-                if not isinstance(pre, MissingAwarePreprocessor):
-                    raise RuntimeError(
-                        "missing-data scoring needs the missing-aware preprocessor; "
-                        "this detector was built with the legacy one"
-                    )
-                Xp, observed = pre.transform_with_mask(np.asarray([vec], dtype=float))
-                dist = min(masked_distance(Xp[0], c, observed[0]) for c in self.cluster_centers)
-            else:
-                legacy_vec = np.asarray(feature_vector(features or {}, DBSCAN_FEATURES),
-                                        dtype=float)
-                Xp = self.preprocessor.transform(np.asarray([legacy_vec], dtype=float))[0]
-                dist = min(float(np.linalg.norm(Xp - c)) for c in self.cluster_centers)
-            # Graded against the training distribution (see calibrate_distance), not a
-            # fixed divisor; falls back to the old shape for artifacts trained before
-            # the calibration existed, so a stale artifact keeps its behaviour until
-            # the next retrain replaces it.
-            return calibrate_distance(dist, self.calibration)
-        except Exception as exc:  # noqa: BLE001
-            return self.note_predict_error(exc)
 
 
 # ============================================================================
@@ -1589,3 +1400,21 @@ class AdaptiveBaselineDetector(BaseDetector):
             "p95_packets", "p99_packets", "p999_packets",
         ])
         logger.info("💾 Persisted %d baselines to baseline_history", len(rows))
+
+
+# ============================================================================
+# THE ENGINE'S ROSTER
+#
+# THE ONE LIST OF DETECTORS THAT EXIST. `build_detectors` constructs exactly these, the Detectors
+# table renders exactly these, and a name outside it has no row -- because a detector that is no
+# longer built no longer exists. That is different from the training log: `ml_models` keeps history
+# for every name that ever trained, and reading the table off that log is how a removed detector
+# stayed on screen as a row about a model nobody could retrain.
+DETECTOR_CLASSES: tuple[type[Any], ...] = (
+    IsolationForestDetector,
+    GradientBoostingDetector,
+    KNNDistanceDetector,
+    LOFDetector,
+    AdaptiveBaselineDetector,
+)
+DETECTOR_NAMES: tuple[str, ...] = tuple(cls.name for cls in DETECTOR_CLASSES)

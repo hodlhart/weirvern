@@ -19,7 +19,7 @@ WHAT IS HERE:
   * `MissingAwarePreprocessor` — median-imputes the training-time neutral and appends one
     `<feature>__missing` indicator per column, so the model sees both the imputed value and
     the fact that it was imputed. This is used only when the flag is ON.
-  * `masked_distance()` — DBSCAN's distance over observed dimensions only, rescaled to the
+  * `masked_distance()` — a distance over observed dimensions only, rescaled to the
     full vector's dimension so a partially observed window is not systematically closer.
 
 NOTHING HERE IS ON BY DEFAULT. `ModelConfig.missing_features` is False, `Settings.
@@ -206,7 +206,7 @@ class MissingAwarePreprocessor:
     def transform_with_mask(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Transformed matrix plus the observed mask over the ORIGINAL feature columns.
 
-        The mask is what DBSCAN's masked distance consumes; the indicators (when enabled)
+        The mask is what the masked distance consumes; the indicators (when enabled)
         are part of the transformed matrix but never part of the mask.
         """
         if not self.fitted or self.scaler is None:

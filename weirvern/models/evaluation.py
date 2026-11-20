@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-# The production models in the fused ensemble today. DBSCAN is intentionally absent: it is
+# The production models in the fused ensemble today. The removed density detector is absent: it is
 # ineligible under the live calibration (observed FAR 1.0 against a 0.01 target) and must not
 # be treated as a baseline vote.
 DEFAULT_BASELINE_MODELS = ("Adaptive Baseline", "Isolation Forest", "Gradient Boosting")

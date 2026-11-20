@@ -1,12 +1,13 @@
 """Shadow candidate detectors: score, record, never alert.
 
-The first candidate is HDBSCAN on the same feature vector DBSCAN uses. It is NOT a production
+The first candidate is HDBSCAN on the same feature vector the cross-sectional pair uses. It is
+NOT a production
 model: it writes `ml_candidate_scores` and returns a report. A candidate must beat the live model
 at the same alerts/day on the seeded-attack harness before replacing it (see the ML-05 card).
 
-THE FEATURE VECTOR IS THE PRODUCTION DBSCAN VECTOR, INCLUDING ZEEK AND DNS. The first version
+THE FEATURE VECTOR IS THE PRODUCTION CROSS-SECTIONAL VECTOR, INCLUDING ZEEK AND DNS. The first version
 selected only the eight NetFlow columns; that made the challenger a different model wearing the
-same name. It is now `DBSCAN_FEATURES`: eight flow aggregates plus the eleven Zeek columns,
+same name. It is now `CROSS_SECTIONAL_FEATURES`: eight flow aggregates plus the eleven Zeek columns,
 including the DNS triple. The vector order comes from `features.py`, not from a second list here.
 
 THE MATRIX IS SCOPE-FILTERED. `flows_aggregated.src_addr` includes internet peers; only monitored
@@ -26,14 +27,14 @@ from sklearn.preprocessing import StandardScaler
 
 from weirvern import __version__, networks
 from weirvern.clock import utcnow
-from weirvern.features import DBSCAN_FEATURES
+from weirvern.features import CROSS_SECTIONAL_FEATURES
 from weirvern.zeek_features import (
-    ZEEK_DBSCAN_FEATURES,
+    ZEEK_CROSS_SECTIONAL_FEATURES,
     ZEEK_JOIN_ON,
     zeek_join_cte,
 )
 
-# The eight NetFlow expressions, named by their DBSCAN_FEATURES column. Keeping the mapping
+# The eight NetFlow expressions, named by their CROSS_SECTIONAL_FEATURES column. Keeping the mapping
 # keyed by the feature name makes a missing column a startup assertion rather than a silent
 # positional shift.
 _BASE_SQL = {
@@ -46,14 +47,14 @@ _BASE_SQL = {
     "activity_regularity": "coalesce(t.activity_regularity, 1.0)",
     "burstiness": "coalesce(t.burstiness, 1.0)",
 }
-assert set(DBSCAN_FEATURES[:8]) == set(_BASE_SQL), (
-    "DBSCAN_FEATURES base shape changed; update _BASE_SQL and the training query together"
+assert set(CROSS_SECTIONAL_FEATURES[:8]) == set(_BASE_SQL), (
+    "CROSS_SECTIONAL_FEATURES base shape changed; update _BASE_SQL and the training query together"
 )
 
 
 def matrix_sql(limit: int, *, scope_filter: str = "", start: str | None = None,
                 end: str | None = None) -> str:
-    """The 5,000-row candidate matrix, in the production DBSCAN feature order.
+    """The 5,000-row candidate matrix, in the production cross-sectional feature order.
 
     `scope_filter` must be a predicate beginning with AND, as returned by
     `networks.training_filter_sql`; empty means legacy/no declarations. `start`/`end` bound the
@@ -63,8 +64,8 @@ def matrix_sql(limit: int, *, scope_filter: str = "", start: str | None = None,
         end = utcnow().strftime("%Y-%m-%d %H:%M:%S")
     if start is None:
         start = (utcnow() - timedelta(hours=72)).strftime("%Y-%m-%d %H:%M:%S")
-    selects = [_BASE_SQL[name] for name in DBSCAN_FEATURES[:8]]
-    selects += [f"z.{name}" for name in ZEEK_DBSCAN_FEATURES]
+    selects = [_BASE_SQL[name] for name in CROSS_SECTIONAL_FEATURES[:8]]
+    selects += [f"z.{name}" for name in ZEEK_CROSS_SECTIONAL_FEATURES]
     # The aggregate side tables are fragmented by insert block, not one row per host-window.
     # Collapse each side table before joining; additive columns sum, estimates take the largest
     # available block. This mirrors the production sweep's `_collapse_partial_aggregates`.
@@ -184,9 +185,9 @@ def run(client: Client, *, limit: int = 5000, min_cluster_size: int = 40) -> dic
         "score_p50": float(np.percentile(score, 50)),
         "score_p99": float(np.percentile(score, 99)),
         "model_version": __version__,
-        "feature_columns": len(DBSCAN_FEATURES),
+        "feature_columns": len(CROSS_SECTIONAL_FEATURES),
         "scope_filtered": bool(scope_filter),
     }
 
 
-__all__ = ["DBSCAN_FEATURES", "ZEEK_DBSCAN_FEATURES", "matrix_sql", "run"]
+__all__ = ["CROSS_SECTIONAL_FEATURES", "ZEEK_CROSS_SECTIONAL_FEATURES", "matrix_sql", "run"]

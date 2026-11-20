@@ -532,8 +532,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     { detected_at: "2026-01-02T09:12:00", window_start: "2026-01-02T09:10:00",
       window_end: "2026-01-02T09:15:00", src_addr: "203.0.113.42", hostname: "workstation.lan",
       anomaly_score: 0.91, confidence: 0.8, severity: "high",
-      detected_by_models: "Isolation Forest, DBSCAN", model_agreement: 0.7,
-      isolation_forest_score: 0.9, gradient_boosting_score: 0.4, dbscan_score: 0.8,
+      detected_by_models: "Isolation Forest, LOF", model_agreement: 0.7,
+      isolation_forest_score: 0.9, gradient_boosting_score: 0.4, lof_score: 0.8,
       baseline_score: 0.2, primary_deviation_feature: "unique_dst_ports",
       primary_deviation_zscore: 5.2, deviation_magnitude: 3.1,
       feature_contributions: { unique_dst_ports: { z: 5.2 }, total_bytes: { z: 1.1 } },
@@ -545,7 +545,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       window_end: "2026-01-02T08:00:00", src_addr: "192.0.2.40", hostname: "vault",
       anomaly_score: 0.72, confidence: 0.6, severity: "medium",
       detected_by_models: "Adaptive Baseline", model_agreement: 0.5,
-      isolation_forest_score: 0.4, gradient_boosting_score: 0.3, dbscan_score: 0.2,
+      isolation_forest_score: 0.4, gradient_boosting_score: 0.3, lof_score: 0.2,
       baseline_score: 0.7, primary_deviation_feature: "total_bytes",
       primary_deviation_zscore: 3.4, deviation_magnitude: 2.0,
       feature_contributions: {}, baseline_comparison: "total_bytes is 3.4 sigma above baseline",
@@ -560,8 +560,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     { detected_at: "2026-01-02T07:30:00", window_start: "2026-01-02T07:25:00",
       window_end: "2026-01-02T07:30:00", src_addr: "198.51.100.77", hostname: "build-agent.lan",
       anomaly_score: 0.85, confidence: 0.7, severity: "high",
-      detected_by_models: "Isolation Forest, Gradient Boosting, DBSCAN", model_agreement: 0.6,
-      isolation_forest_score: 0.8, gradient_boosting_score: 0.6, dbscan_score: 0.7,
+      detected_by_models: "Isolation Forest, Gradient Boosting, LOF", model_agreement: 0.6,
+      isolation_forest_score: 0.8, gradient_boosting_score: 0.6, lof_score: 0.7,
       baseline_score: 0.3, primary_deviation_feature: "unique_dst_ports",
       primary_deviation_zscore: 4.4, deviation_magnitude: 2.6,
       feature_contributions: { unique_dst_ports: { z: 4.4 } },
@@ -831,7 +831,7 @@ const IDENTITY_PAYLOAD = {
       detectors: [
         { name: "Isolation Forest", trained: true, sample_count: 800 },
         { name: "Gradient Boosting", trained: true, sample_count: 434 },
-        { name: "DBSCAN", trained: false, sample_count: 0 },
+        { name: "LOF", trained: false, sample_count: 0 },
         { name: "Adaptive Baseline", trained: false, sample_count: 0 },
       ],
     },
@@ -1599,8 +1599,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       { name: "Isolation Forest", owner: "ops", runbook: "read the evidence first",
         rule: "IsolationForest scored this window above the strong-signal floor",
         loud: true, known: true, fired: 3, acted: 1 },
-      { name: "DBSCAN", owner: "ops", runbook: "check first-seen before acting",
-        rule: "DBSCAN found the window outside every dense behavioural cluster",
+      { name: "LOF", owner: "ops", runbook: "check first-seen before acting",
+        rule: "LOF found the window in a sparser local neighbourhood than its peers",
         loud: true, known: true, fired: 2, acted: 0 },
       { name: "Mystery Net", owner: "", runbook: "", rule: "", loud: false, known: false,
         fired: 1, acted: 0 },
@@ -2566,7 +2566,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           /corroboration, not the finding/.test(sheetText), sheetText.slice(0, 260));
     const corrText = needEl("rp-corroboration").textContent.replace(/\s+/g, " ");
     check("a model anomaly in the same window is shown as secondary corroboration",
-          /0\.910/.test(corrText) && /Isolation Forest, DBSCAN/.test(corrText),
+          /0\.910/.test(corrText) && /Isolation Forest, LOF/.test(corrText),
           corrText.slice(0, 260));
     check("...and it sits after the evidence, never above it",
           sheetText.indexOf("Evidence") >= 0 && sheetText.indexOf("Evidence")
@@ -2592,7 +2592,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   //
   // Measured on the live Models tab: the chart said "samples per retrain" for four lines, and one
   // of them was not samples. `training_sample_count` is rows drawn for Isolation Forest (80k cap),
-  // Gradient Boosting (40k) and DBSCAN (5k), but for the Adaptive Baseline it is the number of
+  // Gradient Boosting (40k) and LOF (5k), but for the Adaptive Baseline it is the number of
   // PER-HOST baselines it just rebuilt -- 23 hosts against 80,000 rows on one log axis -- and that
   // model refreshes every detection cycle over 24h instead of every 6h over 72h, so it carried 191
   // points where the others had 4. A reader comparing the lines was comparing nothing.
@@ -2688,25 +2688,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   }
 
   // ── the Detectors table ─────────────────────────────────────────────────────────
-  // The operator's ruling: "DBSCAN trains, therefore it is not retired." The status is derived on
-  // the server from training rows, artifacts and the measured FAR; the browser renders it verbatim
-  // and must never show a stored card word instead.
+  // The operator's ruling: "a detector the engine trains is not retired by a card." The status is
+  // derived on the server from training rows, artifacts, the measured FAR and the promotion
+  // budget; the browser renders it verbatim and must never show a stored card word instead.
   H.renderDetectors([
-    { name: "DBSCAN", trained: true, trained_at: "2026-11-19T08:21:17", samples: 5000,
+    { name: "LOF", trained: true, trained_at: "2026-11-19T08:21:17", samples: 5000,
       artifact_version: "v5", observed_far: 1.0, target_far: 0.01,
       coverage: 0.1299, coverage_detail: "10/77",
       coverage_note: "10 of 77 inputs (67 imputed)", missing_mode: "on",
-      eligible: false, barred: true, contributing: false,
-      status: "trained, not contributing (FAR 1.00 vs 0.01)" },
+      eligible: false, contributing: false,
+      status: "not contributing: FAR 1.000 above the 0.030 tolerance (3 x 0.010 target)" },
     { name: "Isolation Forest", trained: true, trained_at: "2026-11-19T08:21:17", samples: 11900,
       artifact_version: "v5", observed_far: 0.0, target_far: 0.01,
-      eligible: true, barred: false, contributing: true, status: "contributing" },
-  ], "2 detectors: 1 contributing. Fused false-alarm rate 0.04 against a 0.01 target.", true);
+      eligible: true, contributing: true, status: "eligible" },
+  ], "2 detectors: 1 eligible. Fused false-alarm rate 0.04 against a 0.01 target.",
+     { budget: 0.30, bar: 0.35, windows: 25 });
   check("the Detectors table renders one row per detector",
         doc.querySelectorAll("#md-table tbody tr").length === 2,
         `${doc.querySelectorAll("#md-table tbody tr").length} row(s)`);
   check("a detector over its FAR budget states both numbers and does not contribute",
-        /trained, not contributing \(FAR 1\.00 vs 0\.01\)/.test(needEl("md-table").textContent));
+        /not contributing: FAR 1\.000 above the 0\.030 tolerance/.test(
+          needEl("md-table").textContent));
   // A FAR is not readable without what it was measured on. The count is the whole point of the
   // missing-data work: 0.0097 against 0.01 is a different claim on 10 of 77 than on 77 of 77.
   check("a detector row states how many inputs its FAR was measured on",
@@ -2716,6 +2718,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("an unrecorded coverage reads as unrecorded, never as complete",
         /coverage not recorded/.test(needEl("md-table").textContent)
         && !/77 of 77/.test(needEl("md-table").textContent));
+  check("the budget the promotions were judged against is stated with its population",
+        /alert budget: 30% of scored windows at or above 0\.35/.test(needEl("md-note").textContent)
+        && /25 windows measured/.test(needEl("md-note").textContent));
   check("the summary carries the fused rate AND its target",
         /0\.04/.test(needEl("md-summary").textContent)
         && /0\.01 target/.test(needEl("md-summary").textContent));
@@ -2728,7 +2733,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderStaleness([
     { model: "Isolation Forest", last_trained: "2026-01-01T00:00:00", age_h: 16.0,
       stale: true, never_trained: false },
-    { model: "DBSCAN", last_trained: "", age_h: null, stale: true, never_trained: true },
+    { model: "LOF", last_trained: "", age_h: null, stale: true, never_trained: true },
     { model: "Gradient Boosting", last_trained: "2026-01-02T00:00:00", age_h: 0.4,
       stale: false, never_trained: false },
   ], 6);
@@ -2760,7 +2765,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     near_misses: [
       { window_start: "2026-01-03T10:00:00", src_addr: "198.51.100.44", score: 0.66,
         threshold: 0.70, reason: "below-threshold", agreement: 0.5,
-        models: ["Isolation Forest", "DBSCAN"] },
+        models: ["Isolation Forest", "LOF"] },
       { window_start: "2026-01-03T10:05:00", src_addr: "198.51.100.45", score: 0.81,
         threshold: 0.70, reason: "agreement-gate", agreement: 0.2,
         models: ["Gradient Boosting"] },
@@ -2794,7 +2799,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderScoreDistribution({
     "Isolation Forest": [0.95, 0.95, 0.95, 0.95],
     "Gradient Boosting": [0.95, 0.95, 0.95, 0.95],
-    "DBSCAN": [0.95, 0.95, 0.25],
+    "LOF": [0.95, 0.95, 0.25],
   });
   const PLOT_TOP = 10;
   const distSvg = doc.querySelector("#m-scores svg");
@@ -8284,9 +8289,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
             { class: "stuck_rule", severity: "warn", subject: "r1",
               detail: "firing without a quiet week", elapsed_s: 460,
               fix: { view: "blocked", rule_id: "r1", label: "read the hits on Blocked" } },
-            { class: "unowned_detector", severity: "warn", subject: "DBSCAN",
+            { class: "unowned_detector", severity: "warn", subject: "LOF",
               detail: "console-only: no owner", elapsed_s: null,
-              fix: { view: "anomalies", detector: "DBSCAN", label: "register it (registry strip)" } },
+              fix: { view: "anomalies", detector: "LOF", label: "register it (registry strip)" } },
           ],
           counts: { expired_rule: 1, stuck_rule: 1, unowned_detector: 1 }, errors: {} }) })
       : null);
@@ -8349,7 +8354,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       detFix.click();
       await sleep(250);
       const detRow = [...doc.querySelectorAll("#detectors-table tbody tr")]
-        .find((r) => r.getAttribute("data-detector") === "DBSCAN");
+        .find((r) => r.getAttribute("data-detector") === "LOF");
       check("a registry fix lands ON the detector's row",
             needEl("view-anomalies").classList.contains("active")
             && !!detRow && detRow.classList.contains("flash-hit"),
@@ -8432,7 +8437,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
                 { window: "2026-10-17T10:55:00", review_state: "", review_note: "", reviewed_at: null }] },
             { detected_at: "2026-10-17T11:05:00", window_start: "2026-10-17T11:00:00",
               window_end: "2026-10-17T11:05:00", src_addr: "198.51.100.9", hostname: "peer.example",
-              anomaly_score: 0.8, severity: "medium", detected_by_models: "DBSCAN", n: 3,
+              anomaly_score: 0.8, severity: "medium", detected_by_models: "LOF", n: 3,
               review_state: "", reviewed_at: null, windows: [
                 { window: "2026-10-17T11:00:00", review_state: "", review_note: "", reviewed_at: null }] },
           ],
@@ -8489,7 +8494,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const AN_ONE = { available: true, reason: "", rows: [
       { detected_at: "2026-10-17T11:00:00", window_start: "2026-10-17T10:55:00",
         window_end: "2026-10-17T11:00:00", src_addr: "198.51.100.5", hostname: "host.example",
-        anomaly_score: 0.91, severity: "high", detected_by_models: "Isolation Forest, DBSCAN",
+        anomaly_score: 0.91, severity: "high", detected_by_models: "Isolation Forest, LOF",
         n: 1, review_state: "", reviewed_at: null, windows: [
           { window: "2026-10-17T10:55:00", review_state: "", review_note: "", reviewed_at: null }],
         owner: "ops", matched_rule: "x", primary_deviation_feature: "bytes_z", baseline_comparison: "" },
@@ -8631,7 +8636,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await H.loadAnomalies();
     await sleep(300);
     const regCell = [...doc.querySelectorAll("#detectors-table tbody .dcell")]
-      .find((el2) => /DBSCAN/.test(el2.textContent));
+      .find((el2) => /LOF/.test(el2.textContent));
     check("JOB quiet-detector: the registry row offers its verb", !!regCell);
     clicks = 0;
     if (regCell) {
@@ -8640,8 +8645,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
     const uq3 = clicks;
     check("JOB quiet-detector: understanding is ONE click (registry row -> its alerts)",
-          uq3 === 1 && H.AN_FILTERS.model === "DBSCAN"
-          && AN_REQS.some((u) => u.includes("model=DBSCAN")),
+          uq3 === 1 && H.AN_FILTERS.model === "LOF"
+          && AN_REQS.some((u) => u.includes("model=LOF")),
           `clicks=${uq3} model=${H.AN_FILTERS.model} asked=${AN_REQS.length ? AN_REQS[AN_REQS.length - 1] : "none"}`);
     note("quiet-detector", "understand", uq3);
     const ackBtn = [...doc.querySelectorAll("#anomalies-table .review-act")]
@@ -8702,12 +8707,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const AN_ARRIVAL = { available: true, reason: "", total_unfiltered: 40, rows: [
       { detected_at: "2026-10-17T11:00:00", window_start: "2026-10-17T10:55:00",
         window_end: "2026-10-17T11:00:00", src_addr: "198.51.100.5", hostname: "host.example",
-        anomaly_score: 0.91, severity: "high", detected_by_models: "DBSCAN", n: 1,
+        anomaly_score: 0.91, severity: "high", detected_by_models: "LOF", n: 1,
         review_state: "", reviewed_at: null, owner: "ops",
         windows: [{ window: "2026-10-17T10:55:00", review_state: "", reviewed_at: null }] },
       { detected_at: "2026-10-17T11:05:00", window_start: "2026-10-17T11:00:00",
         window_end: "2026-10-17T11:05:00", src_addr: "198.51.100.5", hostname: "host.example",
-        anomaly_score: 0.80, severity: "medium", detected_by_models: "DBSCAN", n: 3,
+        anomaly_score: 0.80, severity: "medium", detected_by_models: "LOF", n: 3,
         review_state: "", reviewed_at: null, owner: "ops",
         windows: [{ window: "2026-10-17T11:00:00", review_state: "", reviewed_at: null }] },
     ], severity_counts: {}, discipline: null, watch_error: null };
@@ -8734,14 +8739,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
       }
       return null;
     };
-    window.location.hash = "#v=anomalies&tr=6&an.host=198.51.100.5&an.model=DBSCAN";
+    window.location.hash = "#v=anomalies&tr=6&an.host=198.51.100.5&an.model=LOF";
     H.applyURLState();
     H.showView("anomalies");
     H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(300);
     check("ARRIVAL: the link's filters and range land active",
-          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN"
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "LOF"
           && Number(H.trHours()) === 6,
           `host=${H.AN_FILTERS.host} model=${H.AN_FILTERS.model} h=${H.trHours()}`);
     check("ARRIVAL: a removable chip explains the link's filters",
@@ -8765,7 +8770,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (evBack) { evBack.click(); }
     await sleep(1250);
     check("RETURN: the origin's filters survive the round trip",
-          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN",
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "LOF",
           `${H.AN_FILTERS.host} / ${H.AN_FILTERS.model}`);
     check("RETURN: the time window is unchanged", Number(H.trHours()) === 6, String(H.trHours()));
     check("RETURN: the scroll is restored after the view re-renders",
@@ -8815,7 +8820,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView(qp.get("v") || "health");
     await sleep(250);
     check("COPY: a cold boot from that URL reproduces the exact state",
-          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN"
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "LOF"
           && Number(H.trHours()) === 6
           && needEl("view-anomalies").classList.contains("active"),
           `${H.AN_FILTERS.host} / ${H.AN_FILTERS.model} / ${H.trHours()} / active=` +

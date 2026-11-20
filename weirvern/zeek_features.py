@@ -263,18 +263,18 @@ ZEEK_FAMILY_FEATURES = {
     "graph": ZEEK_GRAPH_FEATURES,
 }
 
-# Subset for DBSCAN, which uses a smaller set by design (clustering degrades with
-# dimensionality on few samples). These are the ones that separate clusters most: how much
+# Subset for the cross-sectional pair, which uses a smaller set by design (a distance degrades
+# with dimensionality on few samples). These are the ones that separate populations most: how much
 # the host talked, how varied it was, and how wrong the traffic looked.
 #
 # AND THE JA4 PAIR, at the operator\'s direction: a host presenting a TLS stack it has never
 # used before is worth seeing, and a model that cannot see it cannot say so. The cost is stated
 # rather than hidden -- two more dimensions on a space kept small on purpose, and most
 # host-windows carry a zero there (a host with no TLS is 0 for both, exactly as it is for the
-# logs it never speaks). DBSCAN already answers sparse density honestly -- "no opinion", not a
-# fabricated one -- so a wider vector cannot make it lie; it can only make it quieter, and its
-# own warning says when that happened.
-ZEEK_DBSCAN_FEATURES = [
+# logs it never speaks). A cross-sectional detector answers sparse density honestly -- "no
+# opinion", not a fabricated one -- so a wider vector cannot make it lie; it can only make it
+# quieter, and its own coverage floor says when that happened.
+ZEEK_CROSS_SECTIONAL_FEATURES = [
     "zeek_conn_count",
     "zeek_service_count",
     "zeek_rej_ratio",
@@ -286,9 +286,9 @@ ZEEK_DBSCAN_FEATURES = [
     "zeek_ja4_count",
     "zeek_ja4_novelty",
     # DNS (2026-10-16 -- the operator: "make sure dns is added to all ml as well"). The DNS
-    # block was in the isolation forest's set but NOT in this clustering subset, so the DBSCAN
-    # detector could not see a tunnel's query entropy or a resolver's error ratio AT ALL. The
-    # three most separable signals, not all five: clustering degrades in high dimensions, and
+    # block was in the isolation forest's set but NOT in this distance subset, so the
+    # cross-sectional pair could not see a tunnel's query entropy or a resolver's error ratio AT
+    # ALL. The three most separable signals, not all five: distance degrades in high dimensions, and
     # count (activity), entropy (tunnelling shape) and the error ratio (failure bursts) cover
     # the space the other two would mostly echo.
     "zeek_dns_count",
@@ -1343,7 +1343,7 @@ def zeek_select_columns() -> str:
     """The Zeek columns a training query must SELECT, in the vector's tail order.
 
     ORDER IS LOAD-BEARING. These are appended to the NetFlow columns and must appear in the
-    same order as ZEEK_FEATURES / ZEEK_DBSCAN_FEATURES, because the model rebuilds its
+    same order as ZEEK_FEATURES / ZEEK_CROSS_SECTIONAL_FEATURES, because the model rebuilds its
     input by position. A mismatch here produces a vector of the right LENGTH holding the
     wrong values -- nothing raises, and the model is quietly wrong.
     """

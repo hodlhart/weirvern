@@ -77,12 +77,13 @@ def test_the_switch_defaults_to_on():
 
 # ── the wiring: every training query must carry it ─────────────────────────────────────────
 #
-# IF, DBSCAN and Adaptive Baseline each run their own query. Gradient Boosting inherits the
-# IF matrix, so covering IF covers it. A helper that three queries must remember to call is
-# exactly the shape that drifts -- so the wiring is asserted per query.
+# IF and Adaptive Baseline run their own query; the cross-sectional pair shares one builder
+# (`cross_sectional_training_sql`), and Gradient Boosting inherits the IF matrix. A helper that
+# several queries must remember to call is exactly the shape that drifts -- so the wiring is
+# asserted per query.
 
-def test_all_three_training_queries_splice_the_exclusion():
-    for cls in ("IsolationForestDetector", "DBSCANDetector", "AdaptiveBaselineDetector"):
+def test_every_training_query_splices_the_exclusion():
+    for cls in ("IsolationForestDetector", "AdaptiveBaselineDetector"):
         start = DETECTORS_SRC.index(f"class {cls}")
         # Slice to the NEXT class declaration, not a fixed width: the classes differ in
         # size, and a fixed window silently truncates the longest one mid-method.
@@ -95,6 +96,12 @@ def test_all_three_training_queries_splice_the_exclusion():
         assert "{excl}" in body, (
             f"{cls}'s query does not splice {{excl}}, so the clause is computed and unused"
         )
+    # ONE BUILDER FOR BOTH CROSS-SECTIONAL DETECTORS: the clause is spliced there, once, which is
+    # what keeps KNN and LOF training on the same population definition.
+    builder = DETECTORS_SRC[DETECTORS_SRC.index("def cross_sectional_training_sql"):
+                            DETECTORS_SRC.index("def kth_neighbour_distances")]
+    assert "_flagged_exclusion_clause(" in builder and "{excl}" in builder, (
+        "the cross-sectional training query dropped the flagged-window exclusion")
 
 
 def test_the_clause_is_computed_where_the_datetimes_are_in_scope():

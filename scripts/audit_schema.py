@@ -229,7 +229,7 @@ def main() -> int:
     # row-like variable names), so a key cannot be produced by one convention and read by another.
     produced |= set(re.findall(r'(?<![\w.])(?:row|r|f|flow)\[\s*"([^"]+)"\s*\]\s*=', blob))
     # Feature-list literals are produced by construction.
-    for fn in ("FEATURES", "ZEEK_FEATURES", "ZEEK_DBSCAN_FEATURES", "EXPLAINED_MEASUREMENTS"):
+    for fn in ("FEATURES", "ZEEK_FEATURES", "ZEEK_CROSS_SECTIONAL_FEATURES", "EXPLAINED_MEASUREMENTS"):
         m = re.search(rf"^{fn}\s*=\s*[\[\(](.*?)[\]\)]", blob, re.S | re.M)
         if m:
             produced |= set(re.findall(r'"(\w+)"', m.group(1)))

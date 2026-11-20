@@ -131,8 +131,12 @@ def test_every_schema_file_parses_into_complete_statements():
         assert statements, f"{name} contains no statements"
         for stmt in statements:
             head = stmt.split()[0].upper()
+            # DELETE is a lightweight row delete (schema 059 removes a removed detector's
+            # registry rows). It is data, not DDL: there is no schema effect to make idempotent,
+            # and a second run matches nothing.
             assert head in {
                 "CREATE", "ALTER", "INSERT", "DROP", "SET", "SELECT", "OPTIMIZE", "RENAME",
+                "DELETE",
             }, f"{name} has an unexpected statement head {head!r}"
 
 

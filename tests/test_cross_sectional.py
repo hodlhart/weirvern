@@ -1,18 +1,19 @@
 """The cross-sectional detectors and the coverage-stratified calibration they need.
 
-WHY THIS FILE EXISTS. Replacing DBSCAN is not "add a model". Three separate claims have to hold,
+WHY THIS FILE EXISTS. Replacing a removed detector is not "add a model". Three separate claims have to hold,
 and each one is a test here:
 
   1. the new scores are CONTINUOUS and a reference that cannot produce one is REFUSED, not
-     shipped (DBSCAN's failure was a score constant on 98% of windows);
+     shipped (the removed density detector's failure was a score constant on 98% of windows);
   2. a threshold is chosen PER COVERAGE STRATUM, because a partially observed window scores
      systematically lower and a single pooled bar silenced 35% of the population (0.00% alert rate
      on partial rows against 2.3-2.5% on full ones -- the measurement this change exists to fix);
   3. the new detectors are actually IN the fused score when eligible, are EXCLUDED when not, and
-     DBSCAN is out of the ensemble with a payload that says why.
+     the removed detector has no row at all -- removal is not a status.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -26,7 +27,7 @@ from weirvern.ensemble import (
     detect_flows,
     strong_model_families,
 )
-from weirvern.features import DBSCAN_FEATURES
+from weirvern.features import CROSS_SECTIONAL_FEATURES
 from weirvern.models.calibration import (
     MIN_STRATUM_SAMPLES,
     coverage_stratum,
@@ -34,13 +35,14 @@ from weirvern.models.calibration import (
 )
 from weirvern.models.detector_status import REFUSED, detector_rows
 from weirvern.models.detectors import (
+    DETECTOR_NAMES,
     KNNDistanceDetector,
     LOFDetector,
     cross_sectional_training_sql,
 )
 from weirvern.worker import build_detectors
 
-DIM = len(DBSCAN_FEATURES)
+DIM = len(CROSS_SECTIONAL_FEATURES)
 
 
 # ── fixtures: a synthetic 19-feature population, and a client that serves it ──────────────────
@@ -107,7 +109,7 @@ def test_a_constant_reference_is_refused_rather_than_shipped(tmp_path):
     assert det.is_ready() is False
     assert not det.artifact_path().exists(), "a refused fit must not leave an artifact on disk"
     # ... and it says "no opinion" rather than a number that would read as normal.
-    assert det.predict({}, dict.fromkeys(DBSCAN_FEATURES, 1.0)) == 0.0
+    assert det.predict({}, dict.fromkeys(CROSS_SECTIONAL_FEATURES, 1.0)) == 0.0
 
 
 def test_the_reference_travels_with_the_artifact(tmp_path):
@@ -228,6 +230,7 @@ def test_build_detectors_returns_the_five_live_models_and_no_dbscan(tmp_path):
     assert names == ["Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
                      "Adaptive Baseline"]
     assert "DBSCAN" not in names
+    assert names == list(DETECTOR_NAMES)
 
 
 def test_dbscan_is_not_a_family_in_the_ensemble():
@@ -237,24 +240,28 @@ def test_dbscan_is_not_a_family_in_the_ensemble():
     assert strong_model_families({"KNN distance": 0.9, "LOF": 0.9}, 0.85) == 2
 
 
-def test_the_detectors_payload_says_dbscan_is_retired():
-    """A retired detector has training rows and an artifact in history -- absence cannot say it."""
+def test_the_detectors_payload_has_no_row_for_a_detector_that_no_longer_exists():
+    """REMOVED IS ABSENT. It has history -- training rows, an artifact -- and still no row.
+
+    "No artifact and no training rows" is not the shape to look for: a removed detector leaves
+    both behind. The roster is what decides, so history cannot resurrect a row.
+    """
     rows = detector_rows(
         {"DBSCAN": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
         {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
-        {"DBSCAN": {"observed_far": 1.0, "target_far": 0.01}}, {},
+        {"DBSCAN": {"observed_far": 1.0, "target_far": 0.01, "coverage": 0.9,
+                    "coverage_observed": 17, "coverage_expected": 19, "age_hours": 0.5}},
+        known_names=DETECTOR_NAMES,
     )
-    dbscan = next(r for r in rows if r["name"] == "DBSCAN")
-    assert dbscan["status"].startswith("retired -- removed from the ensemble on 2026-11-20")
-    assert "scores were degenerate" in dbscan["status"]
-    assert dbscan["contributing"] is False
-    assert dbscan["eligible"] is False
+    assert rows == []
+    assert "DBSCAN" not in json.dumps(rows)
 
 
 def test_a_refused_fit_is_reported_as_a_degenerate_reference():
     rows = detector_rows(
         {"LOF": {"trained_at": "2026-11-20 10:00:00", "samples": 0}},
-        {}, {"LOF": {"observed_far": 0.0, "target_far": 0.01}}, {"LOF": "production"},
+        {}, {"LOF": {"observed_far": 0.0, "target_far": 0.01, "coverage": 0.83,
+                     "coverage_observed": 16, "coverage_expected": 19, "age_hours": 0.5}},
         outcomes={"LOF": "degenerate-reference"},
     )
     lof = next(r for r in rows if r["name"] == "LOF")

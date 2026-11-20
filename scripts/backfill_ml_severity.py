@@ -28,9 +28,13 @@ sys.path.insert(0, str(ROOT))
 from weirvern import db  # noqa: E402
 from weirvern.config import get_settings  # noqa: E402
 
+# THE FAMILIES THE ANOMALY TABLE CAN STILL PROVE. Isolation Forest and its Gradient Boosting
+# student are one family; the Adaptive Baseline is the other. The removed density detector's column
+# is dormant (no writer, no reader), and the cross-sectional pair never had a column here, so
+# counting anything else would recompute history from a score nobody produces.
 FAMILIES = (
     "(greatest(isolation_forest_score >= 0.85, gradient_boosting_score >= 0.85)"
-    " + (dbscan_score >= 0.85) + (baseline_score >= 0.85))"
+    " + (baseline_score >= 0.85))"
 )
 NEW_SEVERITY = (
     "multiIf("
@@ -73,7 +77,7 @@ def main() -> int:
         "after": after,
         "changed_rows": changed,
         "formula": (
-            "independent families (IF+GB=forest, DBSCAN=density, baseline=baseline) + "
+            "independent families (IF+GB=forest, baseline=baseline) + "
             "material deviation (critical >=3σ, high >=2σ); "
             "novelty cannot be recovered from history"
         ),

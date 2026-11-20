@@ -182,14 +182,14 @@ def test_candidate_matrix_carries_the_production_zeek_and_dns_tail():
     # The challenger used to select only the eight NetFlow columns. The production DBSCAN
     # vector also carries the Zeek tail, including the DNS triple; a challenger without it is
     # a different model wearing the same name.
-    from weirvern.features import DBSCAN_FEATURES
+    from weirvern.features import CROSS_SECTIONAL_FEATURES
     from weirvern.models.candidates import matrix_sql
-    from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES
+    from weirvern.zeek_features import ZEEK_CROSS_SECTIONAL_FEATURES
 
-    assert len(DBSCAN_FEATURES) == 19
+    assert len(CROSS_SECTIONAL_FEATURES) == 19
     sql = matrix_sql(5000)
     assert "zeek_w" in sql
-    for column in ZEEK_DBSCAN_FEATURES:
+    for column in ZEEK_CROSS_SECTIONAL_FEATURES:
         assert f"z.{column}" in sql, column
     assert "z.zeek_dns_count" in sql
     assert "z.zeek_dns_mean_query_entropy" in sql

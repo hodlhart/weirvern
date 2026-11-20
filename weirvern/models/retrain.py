@@ -65,7 +65,8 @@ def _json_window(value):
 
 def _detector_report(det, *, trained: bool) -> dict[str, Any]:
     meta = getattr(det, "metadata", None)
-    # "TRAINED" AND "USABLE" ARE DIFFERENT FACTS (GitHub #60). A centreless DBSCAN completes
+    # "TRAINED" AND "USABLE" ARE DIFFERENT FACTS (GitHub #60). A detector that saves an artifact
+    # it cannot score with completes
     # a run, saves its diagnostic artifact and cannot score; a report that says only
     # "trained" makes that invisible. The cluster count is already in metrics; this word
     # states the consequence.
@@ -282,7 +283,8 @@ def report_summary(report: dict[str, Any]) -> str:
         except (TypeError, ValueError):
             return 0
 
-    # The unit belongs to the detector: a model trains on windows, DBSCAN on a sample of them,
+    # The unit belongs to the detector: a model trains on windows, a reference-set model on a
+    # sample of them,
     # the baseline on HOSts. Printing them in one list with no units is how they got summed.
     units = {"Gradient Boosting": "windows", "Isolation Forest": "windows",
              "KNN distance": "reference windows", "LOF": "reference windows",

@@ -26,9 +26,9 @@ SPEC.loader.exec_module(bakeoff)
 def test_matrix_sql_selects_the_production_vector_in_order() -> None:
     sql = bakeoff.matrix_sql("2026-11-12 00:00:00", "2026-11-13 00:00:00", ["203.0.113.0/24"])
     select = sql.split("SELECT a.window_start", 1)[1].split("FROM (", 1)[0]
-    positions = [select.index(f"z.{name}") for name in bakeoff.ZEEK_DBSCAN_FEATURES]
-    assert positions == sorted(positions), "Zeek columns must appear in DBSCAN_FEATURES order"
-    for name in bakeoff.DBSCAN_FEATURES[:8]:
+    positions = [select.index(f"z.{name}") for name in bakeoff.ZEEK_CROSS_SECTIONAL_FEATURES]
+    assert positions == sorted(positions), "Zeek columns must appear in CROSS_SECTIONAL_FEATURES order"
+    for name in bakeoff.CROSS_SECTIONAL_FEATURES[:8]:
         assert bakeoff._BASE_SQL[name] in select
     assert "flagged" in select and "prod_isolation" in select
     assert "LIMIT" not in sql.upper(), "the evaluation needs every window, not a sample"

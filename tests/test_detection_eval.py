@@ -221,15 +221,15 @@ def test_the_seed_start_is_anchored_to_the_aggregation_grid():
 def test_a_detector_that_cannot_train_on_the_seed_is_reported_and_does_not_decide(monkeypatch, capsys):
     """A GATE THAT DIES AT TRAINING MEASURES NOTHING (measured 2026-11-16).
 
-    The job went red on `detector(s) failed to train on the holdout window: DBSCAN` with the
-    detector's own log line saying it had 195 rows and found no dense region above eps=0.6. The
-    failure is a property of the SEED -- after 1-in-5 host sampling its fifth-nearest-neighbour
-    distance is wider than the configured radius -- and the gate died before scoring a single
-    attack. Whether the pipeline detects the seeded attacks went unmeasured for weeks.
+    The job once went red on `detector(s) failed to train on the holdout window` for a detector
+    whose own log line said it had 195 rows and found no usable reference. The failure is a
+    property of the SEED -- a cross-sectional fit refuses a reference that cannot produce distinct
+    distances -- and the gate died before scoring a single attack. Whether the pipeline detects the
+    seeded attacks went unmeasured for weeks.
 
-    So DBSCAN's inability to train is a SKIP: named on stdout, with the outcome and the radius it
-    tried, while the detectors that DO carry the verdict stay hard failures. A green job must never
-    read as "all four detectors were exercised".
+    So a cross-sectional detector that cannot train on this seed is a SKIP: named on stdout with
+    the outcome it recorded, while the detectors that DO carry the verdict stay hard failures. A
+    green job must never read as "every detector was exercised".
     """
     import importlib.util
     from datetime import datetime
@@ -246,31 +246,36 @@ def test_a_detector_that_cannot_train_on_the_seed_is_reported_and_does_not_decid
             self.X_train_unscaled = [[0.0]]
             self.cfg = SimpleNamespace(dbscan_eps=0.6, dbscan_min_samples=5)
 
+        @property
+        def name(self):
+            return "KNN distance"
+
         def train(self, *a, **k):
             return self.trains
 
-    def _settings_pair(db_trains=True, baseline_trains=True):
+    def _settings_pair(cross_sectional_trains=True, baseline_trains=True):
         models = [_Model(), _Model(),
-                  _Model(trains=db_trains, outcome="no-dense-structure"),
+                  _Model(trains=cross_sectional_trains, outcome="degenerate-reference"),
+                  _Model(trains=cross_sectional_trains, outcome="degenerate-reference"),
                   _Model(trains=baseline_trains)]
         monkeypatch.setattr("weirvern.db.fetch_rows",
                             lambda *a, **k: [(datetime(2026, 1, 1), datetime(2026, 1, 2))])
         monkeypatch.setattr("weirvern.worker.build_detectors", lambda *a, **k: tuple(models))
         return models
 
-    _settings_pair(db_trains=False)
+    _settings_pair(cross_sectional_trains=False)
     detectors, err = mod.train_detectors(object(), (object(), object()), attack_start_minute=200)
     out = capsys.readouterr().out
-    assert err is None, f"a sparse seed for DBSCAN failed the whole gate: {err}"
+    assert err is None, f"a sparse seed for the cross-sectional pair failed the whole gate: {err}"
     assert detectors is not None
-    assert "SKIP" in out and "DBSCAN" in out, f"the skip was not reported: {out!r}"
+    assert "SKIP" in out and "KNN distance" in out, f"the skip was not reported: {out!r}"
     assert "NOT measured" in out, "the skip must say what went unmeasured, not just that it skipped"
-    assert "eps=0.6" in out, "the skip must carry the radius it could not cluster at"
+    assert "degenerate-reference" in out, "the skip must carry the outcome it recorded"
 
     _settings_pair(baseline_trains=False)
     detectors, err = mod.train_detectors(object(), (object(), object()), attack_start_minute=200)
     assert detectors is None and err, "a detector that DOES carry the verdict may still fail the gate"
-    assert "Adaptive Baseline" in err and "DBSCAN" not in err, (
+    assert "Adaptive Baseline" in err and "KNN distance" not in err, (
         f"the error blames the skipped detector: {err}"
     )
 

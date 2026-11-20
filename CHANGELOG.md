@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.23.102 — 2026-11-20
+
+ELIGIBILITY IS MEASURED EVIDENCE, A PROMOTION MUST FIT THE ALERT BUDGET, AND DBSCAN IS GONE.
+
+- **The model card is no longer a gate.** `ml_model_cards` is hand-curated: it is written only when
+  somebody edits a card, so it was 8 days stale on 2026-11-20 and had **no row at all** for the two
+  cross-sectional detectors — which barred KNN distance and LOF from the fused score by ABSENCE,
+  not by any measurement. A card is documentation of intent (owner, approved version, rollback) and
+  is now readable by anything that wants it, but it cannot veto a detector.
+- **Eligibility is three measured facts**, each from the engine: (a) a calibration row no older
+  than `RETRAIN_EVERY_H` plus `ML_CALIBRATION_GRACE_H` (the calibration pass runs after the retrain
+  it measures), (b) recorded coverage on that row (`coverage_observed`/`coverage_expected`, never
+  NULL — an unmeasured vector is not evidence), and (c) a realised FAR inside
+  `ML_TARGET_FAR × ML_ELIGIBILITY_MULTIPLE` (0.01 × 3 = 0.03 by default). A missing fact is named
+  in the Detectors table (`not contributing: no calibration row`, `coverage not recorded`,
+  `calibration stale (9.0h old, 6h retrain interval)`, `FAR 0.083 above the 0.030 tolerance`).
+- **A promotion must fit the fused alert budget.** Measured on the live 24-hour population,
+  admitting both cross-sectional detectors moved the share of host-windows at or above
+  `BASE_THRESHOLD` from **25.6% to 42.8%** — a doubling of the page load from an automatic decision
+  nobody made. A calibrated detector is now promoted only when the fused rate WITH it stays inside
+  `ML_FUSED_ALERT_BUDGET` (default **0.30**: the measured 25.6% baseline plus headroom, below the
+  measured 42.8%). Otherwise it reads `calibrated, held for budget (fused 42.8% with it vs 25.6%
+  without; budget 30.0%)` and is promoted **automatically** on a later sweep once the rate fits.
+  The rate is paired — only windows where every compared detector scored — over
+  `ML_FUSED_BUDGET_HOURS` (24 h), and a promotion under budget also needs
+  `ML_FUSED_BUDGET_MIN_WINDOWS` (200) behind it. The guard never demotes an incumbent: dropping a
+  working detector is not a budget decision.
+- **DBSCAN IS COMPLETELY REMOVED, not retired (operator, 2026-11-20: "Completely remove dbscan").**
+  The measurement that decided it: **97.89% of 27,454 stored scores sat at 0.99 or above**
+  (p50 = p99 = max = 0.99), over 2026-11-12 → 2026-11-19 — a score at its ceiling on 98% of
+  windows cannot be given a threshold, and any cut below the ceiling fires on essentially
+  everything. Removed: the `DBSCANDetector` class and its train/predict/query paths, its
+  `calibrate_distance` scorer, the `dbscan_*` hyper-parameters and `weight_dbscan`, its
+  `MODEL_FAMILIES`/`NAME_TO_KEY`/weight entries, the `dbscan_score` keys in verdicts and near
+  misses, and its row in the Detectors payload — it has **no row**, because removal is not a
+  status. `DBSCAN_FEATURES`/`ZEEK_DBSCAN_FEATURES` are renamed
+  `CROSS_SECTIONAL_FEATURES`/`ZEEK_CROSS_SECTIONAL_FEATURES` with the same 19 columns in the same
+  order, because KNN distance and LOF still share that vector — and nothing else.
+  `DBSCAN_v3/v4/v5.pkl` were deleted from the models PVC, and schema `059_remove_dbscan.sql`
+  removes its card, training, calibration and score rows from an upgraded deployment. The
+  dormant `dbscan_score` columns in `netflow_anomalies`/`near_misses` are no longer written or
+  read; the columns themselves are left for a separate decision, because dropping them while an
+  older pod still inserts would fail that pod's writes during the rollout.
+- **KNN distance and LOF remain independent detectors**, unchanged in behaviour: separate classes,
+  reference sets, artifacts, calibrations and eligibility rows, and separate corroboration
+  families. LOF's partial-coverage blindness (0.00% alert rate on partial rows against 0.90% on
+  full ones) is a documented limitation, not a merge.
+- **The Detectors table reads `eligible` / `not contributing: <reason>` / `calibrated, held for
+  budget (…)`**, states the budget, the bar and the window count it was measured over, and derives
+  its rows from the engine roster — so a detector that is no longer built cannot appear as a row.
+
 ## 0.23.101 — 2026-11-20
 
 DBSCAN IS RETIRED; TWO CROSS-SECTIONAL DETECTORS TAKE ITS PLACE, AND THE THRESHOLD NOW KNOWS HOW

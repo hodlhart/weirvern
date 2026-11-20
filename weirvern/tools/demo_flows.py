@@ -67,7 +67,8 @@ def _anchored_start(now: float, grid_s: int = 300) -> int:
     (`toStartOfFiveMinute`) split it, so an unanchored start made that split a function of
     WHEN the run happened. Measured on the eval harness: two runs two minutes apart settled
     728 vs 732 aggregate rows, 158 vs 118 verdicts, benign hosts flipped in and out of the
-    high+ set, and DBSCAN's cluster centres appeared in one run and vanished in the other --
+    high+ set, and one detector's reference centres appeared in one run and vanished in the
+    other --
     one fixture, two different datasets. Anchored, the phase relative to the grid is a
     constant, so the same seed lands the same flows in the same buckets on every run.
 

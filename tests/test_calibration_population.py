@@ -22,7 +22,7 @@ class FakeClient:
         self.calibration_rows = calibration_rows or []
         self.trained_rows = trained_rows or []
         self.card_rows = card_rows if card_rows is not None else [
-            _card("Isolation Forest"), _card("DBSCAN"),
+            _card("Isolation Forest"), _card("LOF"),
         ]
         self.inserts = []
 
@@ -30,7 +30,10 @@ class FakeClient:
         if "FROM weirvern.ml_window_scores" in sql:
             return Result(["model_name", "score"], self.population_rows)
         if "FROM weirvern.ml_calibration" in sql:
-            return Result(["model_name", "observed_far", "target_far", "computed_at"],
+            # The eligibility read carries coverage and the AGE ClickHouse computed; a row without
+            # them is evidence of nothing (see models.eligibility.evidence_from_row).
+            return Result(["model_name", "observed_far", "target_far", "coverage",
+                           "coverage_observed", "coverage_expected", "computed_at", "age_s"],
                           self.calibration_rows)
         if "FROM weirvern.ml_models" in sql:
             return Result(["model_type", "max(trained_at)"], self.trained_rows)
@@ -91,14 +94,14 @@ def test_record_population_writes_one_row_per_model_and_window():
 def test_retrain_newer_than_calibration_forces_ineligible():
     client = FakeClient(
         calibration_rows=[
-            ["Isolation Forest", 0.01, 0.01, BASE],
-            ["DBSCAN", 0.01, 0.01, BASE],
+            ["Isolation Forest", 0.01, 0.01, 0.9, 17, 19, BASE, 300],
+            ["LOF", 0.01, 0.01, 0.9, 17, 19, BASE, 300],
         ],
         trained_rows=[
             ["Isolation Forest", BASE + timedelta(hours=1)],
-            ["DBSCAN", BASE - timedelta(hours=1)],
+            ["LOF", BASE - timedelta(hours=1)],
         ],
     )
-    result = eligibility(client, Settings())
-    assert result["Isolation Forest"] is False
-    assert result["DBSCAN"] is True
+    result = eligibility(client, Settings(model_dir=""))
+    assert result["Isolation Forest"] is False, "a retrain newer than the calibration locks it out"
+    assert result["LOF"] is True

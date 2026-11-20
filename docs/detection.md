@@ -19,11 +19,12 @@ Five detectors, each contributing a normalised 0–1 score:
 | LOF | A host-window whose local neighbourhood is sparser than its neighbours' — a *local* density outlier | Independent of kNN: `novelty=True`, k = 20, its own reference set and artifact. Scored as `log1p(LOF)` so the number is bounded |
 | Adaptive Baseline | Per-host percentile deviation (p95/p99/p999) | Learns each host's normal; needs ≥10 observations |
 
-**DBSCAN was retired on 2026-11-20.** Of 27,454 stored DBSCAN scores, **97.89% sat at 0.99 or
-above** (p50 = p99 = max = 0.99): a score that is at its ceiling on 98% of windows cannot be
-given a threshold, and any cut below the ceiling fires on essentially everything. The class is
-kept in the tree for one release; nothing constructs it. The Detectors table states the
-retirement with its measurement rather than inferring it from a missing artifact.
+**DBSCAN was removed on 2026-11-20, not retired.** Of 27,454 stored scores, **97.89% sat at 0.99
+or above** (p50 = p99 = max = 0.99): a score at its ceiling on 98% of windows cannot be given a
+threshold, and any cut below the ceiling fires on essentially everything. The class, its feature
+and query paths, its family, its registry row and its artifacts on the models PVC are gone; the
+Detectors table has **no row for it**, because removal is not a status. `CHANGELOG` 0.23.102 keeps
+the dated measurement.
 
 **The cross-sectional pair was measured, not guessed.** `docs/research/cross-sectional-detector-2026-11-20.md`
 contains the bake-off: six candidates on the same 19-feature vector, the same walk-forward folds
@@ -36,12 +37,52 @@ against kNN's +0.46). Both enter the ensemble at the neutral weight of 1.0, and 
 Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.
 
 **Fusion reads ELIGIBLE detectors only, and an ineligible one is *removed*, not zeroed.** A model
-with no calibration row, a stale calibration, an over-budget false-alarm rate or no `production`
-model card is excluded from the fused score; it is not counted as a zero (a zero still drags a
-mean fusion down, and in `max` fusion it would look identical to an opinion of "normal"). The
-two new detectors therefore contribute **nothing** on the cycle they first train: they have no
-card and no calibration measurement yet. That is the intended first state, and it is visible in
-the Detectors table rather than silent.
+is excluded when a measurement is missing; it is not counted as a zero (a zero still drags a mean
+fusion down, and in `max` fusion it would look identical to an opinion of "normal").
+
+**Eligibility is measured evidence, not a model card.** `ml_model_cards` is a hand-curated
+registry: it is written only when somebody edits a card, so it goes stale the moment the engine
+retrains, and on 2026-11-20 it had no row at all for the two cross-sectional detectors — which
+barred them by **absence**. A card is documentation of intent (owner, approved version, rollback)
+and cannot veto a working detector. A detector is eligible when all three hold, each measured by
+the engine:
+
+1. **fresh** — its newest calibration row is no older than `RETRAIN_EVERY_H` plus
+   `ML_CALIBRATION_GRACE_H` (the calibration pass runs after the retrain it measures);
+2. **covered** — that row recorded `coverage_observed` / `coverage_expected`; NULL means coverage
+   was never measured, and an unmeasured vector is not evidence;
+3. **in budget** — its realised false-alarm rate is within `ML_TARGET_FAR ×
+   ML_ELIGIBILITY_MULTIPLE` (0.01 × 3 = 0.03 by default).
+
+A failing check names itself in the Detectors table (`not contributing: coverage not recorded`,
+`not contributing: FAR 0.083 above the 0.030 tolerance`), so the operator is sent to the right
+remedy. A model with no calibration row is never eligible.
+
+### Promotion and the alert budget
+
+**Being calibrated is not the same as being safe to add.** Measured on the live 24-hour
+population, admitting both cross-sectional detectors moved the share of host-windows at or above
+`BASE_THRESHOLD` from **25.6% to 42.8%** — the page load doubles, from an automatic decision
+nobody made. So a calibrated detector is promoted only when the fused alert rate *with* it stays
+inside `ML_FUSED_ALERT_BUDGET`:
+
+- the budget is **30%** by default (`ML_FUSED_ALERT_BUDGET`), which is the measured 25.6%
+  baseline plus headroom and **below** the measured 42.8% doubling. It is a policy number and
+  belongs to the operator, not to the distribution.
+- the rate is measured on `ml_window_scores` over `ML_FUSED_BUDGET_HOURS` (24 h), paired: only
+  windows where every compared detector scored. It compares the max over the incumbent members
+  with the max including the candidate, at `BASE_THRESHOLD`.
+- a detector that would push the rate over budget reads `calibrated, held for budget (fused
+  42.8% with it vs 25.6% without; budget 30.0%)`. It is **promoted automatically** on a later
+  sweep once the rate fits — no approval, no stored flag.
+- a promotion under budget also needs `ML_FUSED_BUDGET_MIN_WINDOWS` (200) behind it: a hold is
+  safe on a small sample, a promotion is a claim.
+- the guard never demotes an incumbent. Dropping a working detector is not a budget decision; it
+  is a detection outage. A stale detector still falls out, because freshness is evidence, not
+  seniority.
+
+The Detectors panel states the budget, the bar and the number of windows it was measured over
+beside the rows it judged.
 
 **Severity escalation requires independent corroboration and material evidence**:
 at least two *families* must agree (Isolation Forest and its Gradient Boosting
@@ -94,7 +135,8 @@ read-only and cannot create or change an alert:
   not wired to the alert path.
 - **HDBSCAN** is a density challenger scored on the same host-window matrix; a
   candidate must beat the production model at the same alerts/day before it can be promoted. Its
-  slot is no longer "replace DBSCAN" — that detector is retired and its replacement is measured.
+  slot is no longer "replace the removed density detector" — that detector is gone and its
+  replacement is measured.
 - **Matrix Profile** records shape discords that the per-window tabular detectors
   cannot see, and **Page-Hinkley** records regime changes. Both are evidence
   channels, not alert sources.

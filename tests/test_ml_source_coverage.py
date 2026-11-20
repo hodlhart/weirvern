@@ -19,14 +19,14 @@ The four models, and what each one actually assesses (each pinned by a test belo
   * Adaptive Baseline   -- trains on every Zeek feature (its query aggregates each of
                           ZEEK_FEATURES) but SCORES three of them: zeek_conn_count,
                           zeek_s0_ratio, zeek_notice_count.
-  * DBSCAN              -- a deliberately SMALL Zeek subset (clustering degrades with
+  * KNN distance / LOF -- a deliberately SMALL Zeek subset (a distance degrades with
                           dimensionality on few samples): eight features covering conn, notice,
                           weird, the join flag, and -- appended at the operator\'s direction --
-                          the JA4 pair, so a brand-new TLS stack is visible to the clustering
-                          specialist too.
+                          the JA4 pair, so a brand-new TLS stack is visible to the
+                          cross-sectional pair too.
 
 So "every log is assessed by every model" is TRUE for the two wide models and, since the JA4
-pair was added to it, TRUE for DBSCAN as well. The Adaptive Baseline remains the one model that
+pair was added to it, TRUE for the cross-sectional pair as well. The Adaptive Baseline remains the one model that
 SCORES three named signals rather than the whole block (its training index still covers all
 fifty). The tests pin each fact so none of them can quietly change -- in either direction: a
 shrunken wide model fails just as an overstated claim would.
@@ -42,16 +42,16 @@ import re
 from pathlib import Path
 
 from weirvern.config import ModelConfig
-from weirvern.features import DBSCAN_FEATURES, IF_FEATURES
+from weirvern.features import CROSS_SECTIONAL_FEATURES, IF_FEATURES
 from weirvern.ingester import ZEEK_MAPPERS
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
-    DBSCANDetector,
     GradientBoostingDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
 )
 from weirvern.zeek_features import (
-    ZEEK_DBSCAN_FEATURES,
+    ZEEK_CROSS_SECTIONAL_FEATURES,
     ZEEK_FEATURES,
     zeek_protocol_records_sql,
     zeek_window_summary_sql,
@@ -224,11 +224,11 @@ def test_every_feature_bearing_log_reaches_both_wide_models(tmp_path):
         assert not missing, f"{log}.log's features are not in the wide models' matrix: {missing}"
 
 
-def test_ja4_reaches_every_model_including_the_dbscan_subset(tmp_path):
+def test_ja4_reaches_every_model_including_the_cross_sectional_subset(tmp_path):
     """THE FINGERPRINT QUESTION, answered per model. JA4 reaches the wide pair through BOTH
     features -- the count AND the novelty ratio -- at training and at scoring time, and since
-    the operator asked for it the DBSCAN subset carries the pair too, so the clustering
-    specialist can see a TLS stack a host has never presented. The Adaptive Baseline is the one
+    the operator asked for it the cross-sectional subset carries the pair too, so the distance
+    detectors can see a TLS stack a host has never presented. The Adaptive Baseline is the one
     that still does not SCORE it: its vocabulary is three named signals, pinned in its own test
     below."""
     for feature in JA4_FEATURES:
@@ -266,12 +266,12 @@ def test_ja4_reaches_every_model_including_the_dbscan_subset(tmp_path):
     assert 'f["_zeek"]' in WORKER_SRC, "the worker stopped attaching the Zeek window row"
     assert 'flow.get("_zeek")' in ENSEMBLE_SRC
     assert "baselines.get(src)" in ENSEMBLE_SRC, "scoring no longer supplies the host baseline"
-    # The DBSCAN subset carries the pair too -- added on purpose, and pinned in the same
+    # The cross-sectional subset carries the pair too -- added on purpose, and pinned in the same
     # direction as every other claim here: removing it again fails this proof.
-    db_cols = _detector(tmp_path, DBSCANDetector).expected_feature_columns()
+    db_cols = _detector(tmp_path, KNNDistanceDetector).expected_feature_columns()
     for feature in JA4_FEATURES:
-        assert feature in ZEEK_DBSCAN_FEATURES and feature in db_cols, (
-            f"{feature} is not in DBSCAN's declared subset -- it was added on purpose; if it "
+        assert feature in ZEEK_CROSS_SECTIONAL_FEATURES and feature in db_cols, (
+            f"{feature} is not in the cross-sectional subset -- it was added on purpose; if it "
             f"was removed on purpose, this proof and the docs change with it"
         )
     # The Adaptive Baseline is the remaining model that does not SCORE JA4: its scoring path
@@ -282,8 +282,9 @@ def test_ja4_reaches_every_model_including_the_dbscan_subset(tmp_path):
         f"the baseline's scoring vocabulary changed to include "
         f"{sorted(scoring_reads & set(JA4_FEATURES))} -- update its test, this proof and the docs"
     )
-    assert "clustering degrades with" in ZEEK_FEATURES_SRC, (
-        "the DBSCAN subset's justification comment is gone -- the narrowing is now unexplained"
+    assert "a distance degrades" in ZEEK_FEATURES_SRC, (
+        "the cross-sectional subset's justification comment is gone -- the narrowing is now "
+        "unexplained"
     )
     # JA4 only: no ja3 FEATURE exists anywhere in the vector.
     assert not [f for f in ZEEK_FEATURES if "ja3" in f], "a ja3 feature reappeared in ZEEK_FEATURES"
@@ -352,23 +353,24 @@ def test_the_adaptive_baseline_trains_on_every_feature_and_scores_three():
     )
 
 
-def test_dbscan_covers_the_logs_its_subset_names(tmp_path):
-    """The small model's coverage, derived rather than assumed: Zeek features spanning conn,
+def test_the_cross_sectional_subset_covers_the_logs_it_names(tmp_path):
+    """The small vector's coverage, derived rather than assumed: Zeek features spanning conn,
     notice, weird, the TLS fingerprints from the ssl log, and -- "make sure dns is added to all
     ml as well" (2026-10-16) -- the DNS triple. The presence flag spans the logs and is a join
     flag, not a signal, so it is counted separately."""
-    cols = _detector(tmp_path, DBSCANDetector).expected_feature_columns()
-    assert cols == list(DBSCAN_FEATURES)
-    assert set(ZEEK_DBSCAN_FEATURES) <= set(ZEEK_FEATURES)
+    cols = _detector(tmp_path, KNNDistanceDetector).expected_feature_columns()
+    assert cols == list(CROSS_SECTIONAL_FEATURES)
+    assert set(ZEEK_CROSS_SECTIONAL_FEATURES) <= set(ZEEK_FEATURES)
     mapping = _feature_to_aggs()
     signal_aggs: set[str] = set()
-    for feature in ZEEK_DBSCAN_FEATURES:
+    for feature in ZEEK_CROSS_SECTIONAL_FEATURES:
         if feature == "zeek_present":
             continue
         assert mapping[feature], f"{feature} no longer resolves to an aggregate"
         signal_aggs.update(mapping[feature])
     assert signal_aggs == {"conn_agg", "notice_agg", "weird_agg", "ssl_agg", "dns_agg"}, (
-        f"DBSCAN's signal coverage moved to {sorted(signal_aggs)} -- it is documented as "
+        f"the cross-sectional signal coverage moved to {sorted(signal_aggs)} -- it is "
+        f"documented as "
         f"conn/notice/weird plus the JA4 pair from ssl plus the DNS triple (2026-10-16); a "
         f"widened or shrunken subset needs the docs updated with it"
     )

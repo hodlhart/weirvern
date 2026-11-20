@@ -39,8 +39,8 @@ synthetic data):
 USAGE
     # against a throwaway ClickHouse on localhost (see the CI job for the exact image).
     # --minutes 300: the seed must cover the benign training window (the first two-thirds)
-    # AND leave every detector enough to train on -- DBSCAN refuses under 100 sampled rows,
-    # which a 90-minute seed cannot reach after its 1-in-5 host sampling.
+    # AND leave every detector enough to train on -- a cross-sectional reference refuses a fit
+    # under 100 rows, which a 90-minute seed cannot reach.
     CLICKHOUSE_HOST=127.0.0.1 CLICKHOUSE_PORT=8123 python scripts/eval_detection.py --minutes 300 --devices 12
 
     # against the live deployment's ClickHouse (READ-WRITE; seeds into the real tables):
@@ -307,7 +307,7 @@ def train_detectors(client, cfg_settings, attack_start_minute: int = 0):
         train_end_dt = lo + timedelta(minutes=attack_start_minute) - margin
 
     detectors = build_detectors(settings, cfg)
-    if_model, gb_model, db_model, bl_model = detectors
+    if_model, gb_model, knn_model, lof_model, bl_model = detectors
     if not if_model.train(start_dt, train_end_dt, client):
         return None, ("Isolation Forest could not train on the seeded window "
                       f"[{start_dt} .. {train_end_dt}]")
@@ -320,51 +320,33 @@ def train_detectors(client, cfg_settings, attack_start_minute: int = 0):
         failures.append("Gradient Boosting (Isolation Forest produced no teacher matrix)")
     # A DETECTOR THAT CANNOT TRAIN ON THIS SEED IS A SKIP, NOT A VERDICT (measured 2026-11-16).
     #
-    # The gate used to fail on any detector whose train() returned False. For DBSCAN that made the
-    # job red for a property of the FIXTURE: it scored 195 rows after its 1-in-5 host sampling, the
-    # fifth-nearest-neighbour distance in those rows was above the configured eps of 0.6, so it found
-    # no dense region and every score would have been "no opinion". The scan-family specialist was
-    # never measured -- the run died before the attacks were scored.
+    # The gate used to fail on any detector whose train() returned False. For the cross-sectional
+    # pair that makes the job red for a property of the FIXTURE: a reference built from a short seed
+    # can produce too few distinct distances, so the fit is refused and every score would have been
+    # "no opinion". The attack scenarios would then never be measured -- the run died before they
+    # were scored.
     #
     # Reporting it as SKIP is the same three-state rule the DOM harness uses: a check that cannot run
     # is not a check that passed, and it is not a failure of the thing it would have measured. The
     # gate still fails on the detectors that DO carry the verdict, and the SKIP line names what was
-    # not measured and why, so a green job never reads as "all four detectors were exercised".
+    # not measured and why, so a green job never reads as "every detector was exercised".
     skipped: list[str] = []
-    if not db_model.train(start_dt, train_end_dt, client):
-        outcome = getattr(db_model, "train_outcome", "") or "unknown"
-        skipped.append(
-            f"DBSCAN did not train on this seed ({outcome} at eps={db_model.cfg.dbscan_eps}, "
-            f"min_samples={db_model.cfg.dbscan_min_samples}): the scan-family specialist is NOT "
-            f"measured by this gate. It stays OFF in the run below, contributing 0.0 (no opinion), "
-            f"exactly as it would on a deployment whose training sample is this sparse."
-        )
+    for extra in (knn_model, lof_model):
+        if not extra.train(start_dt, train_end_dt, client):
+            outcome = getattr(extra, "train_outcome", "") or "unknown"
+            skipped.append(
+                f"{extra.name} did not train on this seed ({outcome}): its cross-sectional "
+                f"score is NOT measured by this gate. It stays OFF in the run below, "
+                f"contributing 0.0 (no opinion), exactly as it would on a deployment whose "
+                f"training sample is this sparse."
+            )
     if not bl_model.train(start_dt, train_end_dt, client):
         failures.append("Adaptive Baseline")
     for line in skipped:
         print(f"  SKIP  {line}", flush=True)
     if failures:
-        detail = ""
-        if "DBSCAN" in failures:
-            # WORDED FROM WHAT ACTUALLY HAPPENED (WV1-22). This sent every DBSCAN failure the same
-            # sentence about a row shortfall. Measured on 6d24697: the log said "DBSCAN trained on
-            # 195 rows but found NO CLUSTER CENTRES", and this line said the problem was a floor of
-            # 100 -- so the operator followed a remedy (a longer seed) that does not address what
-            # was reported. 195 rows is already above the floor.
-            outcome = getattr(db_model, "train_outcome", "")
-            if outcome == "insufficient-rows":
-                detail = (" (DBSCAN had fewer than 100 rows after its 1-in-5 host sampling; a "
-                          "longer --minutes seed is what adds them)")
-            elif outcome == "no-dense-structure":
-                detail = (f" (DBSCAN had enough rows but found NO DENSE REGION at "
-                          f"eps={db_model.cfg.dbscan_eps}, min_samples="
-                          f"{db_model.cfg.dbscan_min_samples}. More rows may not help: lower eps or "
-                          f"raise min_samples. The row count is not the problem -- the NO CLUSTER "
-                          f"CENTRES line above states the count it trained on)")
-            else:
-                detail = ""
         return None, ("detector(s) failed to train on the holdout window: "
-                      + ", ".join(failures) + detail)
+                      + ", ".join(failures))
     return detectors, None
 
 
@@ -659,8 +641,8 @@ def wait_for_aggregates(client, *, timeout_s: int = 180) -> tuple[int, str]:
         return agg, err
     # THE DETECTORS READ `flows_window`, NOT `flows_aggregated` (the branch moved them onto the
     # folded rollup). Settling only the table they no longer read let training start while the
-    # rollup was still short: the symptom was DBSCAN "trained on 195 rows but found NO CLUSTER
-    # CENTRES" on a dataset that has dense structure once the rollup has finished filling.
+    # rollup was still short: the symptom was a cross-sectional fit REFUSED on "only N distinct
+    # distances" on a dataset that has a population once the rollup has finished filling.
     _, win_err = _settle_table(client, "flows_window", timeout_s=timeout_s)
     if win_err:
         return agg, win_err
@@ -795,10 +777,6 @@ def main() -> int:
     if detectors is None:
         _fail(terr or "detector training failed")
         return 1
-    if not detectors[2].is_ready():
-        print("  note: DBSCAN found no cluster centres on this seed -- it reports "
-              "'no opinion' (0.0) this run, so the scan-family severity path is off; "
-              "the training warning above has the eps/min_samples it used)")
     verdicts, err = run_detection(client, (settings, cfg), args.minutes, attack_start_minute,
                                   detectors=detectors)
     if err:
@@ -829,13 +807,12 @@ def main() -> int:
     # 1. THE SCANNER. A 400-port sweep is the most legible attack there is.
     #
     #    medium+ IS THE BAR (measured, review round 2026-10-15): severity escalation needs
-    #    two strongly-agreeing detectors, and on synthetic data the DBSCAN specialist -- the
-    #    one that historically caught zero-byte scans -- forms cluster centres only at
-    #    larger seed volumes (measured: 2 centres at 146 sampled training rows, 0 at 124).
-    #    With no centres it correctly reports "no opinion", which leaves the scan at medium
-    #    (IF 0.71 + GB 0.69 on the seeded window). Requiring high/critical here would make
-    #    CI depend on clustering luck; requiring medium+ still fails loudly if the scan goes
-    #    unalerted -- the property this check exists for.
+    #    two strongly-agreeing detectors, and on synthetic data the cross-sectional pair forms
+    #    a usable reference only at larger seed volumes. When it refuses the fit it correctly
+    #    reports "no opinion", which leaves the scan at medium (IF 0.71 + GB 0.69 on the seeded
+    #    window). Requiring high/critical here would make CI depend on reference size; requiring
+    #    medium+ still fails loudly if the scan goes unalerted -- the property this check exists
+    #    for.
     sev = worst_severity(SCANNER)
     if sev in ("medium", "high", "critical"):
         _ok(f"port scanner detected ({sev})")
@@ -911,7 +888,8 @@ def main() -> int:
     #
     #    WHY THE FLOOR IS WHAT IT IS: occasional heavy-tail bursts -- a benign host's
     #    one-minute 2-40MB transfer against its own small-traffic baseline -- that IF+GB
-    #    (agreement is by construction: GB distils IF) and DBSCAN all score ~0.85-0.99 while
+    #    (agreement is by construction: GB distils IF) and the cross-sectional pair all score
+    #    ~0.85-0.99 while
     #    the adaptive baseline stays at 0 (it keys on volume history, which the burst does not
     #    move). The host set is DERIVED from the seed (see benign_hosts), which is what fixed
     #    the original silent miss.
@@ -1020,7 +998,7 @@ def main() -> int:
                                  {by_a[k][1] for k in same if by_a[k][2:] != by_b[k][2:]})
             def _by_key(rows, host: str, window: str):
                 """The scoring numbers this key carried in a given pass, by name."""
-                cols = ("if_score", "gb_score", "dbscan_score", "baseline_score", "anomaly_score",
+                cols = ("if_score", "gb_score", "baseline_score", "anomaly_score",
                         "model_agreement", "threshold_used")
                 for v in rows or []:
                     if str(v.get("src_addr")) == host and str(v.get("window_start")) == window:
@@ -1030,8 +1008,8 @@ def main() -> int:
             # WHAT DISAGREED, AND WHOSE FAULT IT WAS. A row that disappeared did not vanish: it fell
             # under the bar, so the second pass appended it to `near_misses`. Comparing pass A's
             # anomaly row against pass B's near-miss row for the SAME host and window names the
-            # component that moved -- measured this way: only the DBSCAN score differed (0.7178 vs
-            # 0.6487), which moved `model_agreement` and dropped the row out of the verdicts.
+            # component that moved -- measured this way: only one detector's score differed
+            # (0.7178 vs 0.6487), which moved `model_agreement` and dropped the row out.
             per = None
             for k in [k for k in a if k not in b][:1]:
                 host, window = k[0], k[1]

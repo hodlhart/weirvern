@@ -154,7 +154,7 @@ def test_anomalies_detailed_queries_real_columns():
                    "deviation_magnitude", "feature_contributions",
                    "baseline_comparison", "model_agreement", "confidence",
                    "isolation_forest_score", "gradient_boosting_score",
-                   "dbscan_score", "baseline_score"):
+                   "baseline_score"):
         assert column in sql, f"{column} missing from anomalies_detailed"
         assert column in cols, f"{column} is not a netflow_anomalies column"
 

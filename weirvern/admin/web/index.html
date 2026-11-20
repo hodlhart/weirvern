@@ -814,11 +814,10 @@
     -->
 
     <!--
-      STALENESS FIRST, because it is the question this view could not answer. Isolation Forest,
-      Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour interval and
-      this page showed three healthy-looking lines, because it plotted run COUNT rather than
-      RECENCY. A model overdue by 10 hours looks identical to one retrained a minute ago if all
-      you draw is how many times it ran.
+      STALENESS FIRST, because it is the question this view could not answer. The detectors went
+      16 hours without a retrain against a 6-hour interval and this page showed healthy-looking
+      lines, because it plotted run COUNT rather than RECENCY. A model overdue by 10 hours looks
+      identical to one retrained a minute ago if all you draw is how many times it ran.
     -->
 
 
@@ -861,11 +860,13 @@
          Both described paperwork, not the engine. What survives is the one control they contained,
          Force retrain, beside the table that says when each detector last trained. -->
     <!--
-      THE DETECTORS TABLE. The operator's question -- "is this detector contributing?" --
-      was answered from a hand-curated card status, which read `retired` for DBSCAN while DBSCAN
-      trained every six hours and wrote a fresh artifact. So the status here is DERIVED from
-      evidence: a training row in the engine's own log, an artifact on disk, a measured false-alarm
-      rate against its target, and the card's existing veto. No stored status word is rendered.
+      THE DETECTORS TABLE. The operator's question -- "is this detector contributing?" -- used to
+      be answered from a hand-curated card status, which went stale and barred two working
+      detectors by having no row for them at all. So the status here is DERIVED from evidence: a
+      training row in the engine's own log, an artifact on disk, a measured false-alarm rate with
+      the coverage it was measured on, and the promotion guard's measured alert budget. A model
+      card is documentation of intent and never decides this table. A detector the engine no
+      longer builds has no row -- removal is not a status.
     -->
     <div class="card">
       <h2>Detectors <span class="muted" id="md-note"></span></h2>

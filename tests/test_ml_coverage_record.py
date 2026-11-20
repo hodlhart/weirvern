@@ -26,9 +26,9 @@ from weirvern.models.calibration import MODEL_EXPECTED_FEATURES, run
 from weirvern.models.detector_status import coverage_note, detector_rows
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
-    DBSCANDetector,
     GradientBoostingDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
 )
 
 
@@ -183,12 +183,11 @@ def test_a_reference_without_coverage_writes_null_not_a_default():
 
 def _detector_row(coverage, detail="", observed=0.0, target=0.01):
     return detector_rows(
-        {"DBSCAN": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
-        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
-        {"DBSCAN": {"observed_far": observed, "target_far": target, "coverage": coverage,
+        {"KNN distance": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
+        {"KNN distance": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
+        {"KNN distance": {"observed_far": observed, "target_far": target, "coverage": coverage,
                     "coverage_detail": detail, "coverage_observed": 10,
                     "coverage_expected": 77, "missing_mode": "on"}},
-        {"DBSCAN": "production"},
     )[0]
 
 
@@ -231,7 +230,7 @@ def test_the_expected_feature_count_comes_from_one_source(tmp_path):
     detectors = [
         IsolationForestDetector(tmp_path),
         GradientBoostingDetector(tmp_path),
-        DBSCANDetector(tmp_path),
+        KNNDistanceDetector(tmp_path),
         AdaptiveBaselineDetector(tmp_path),
     ]
     for detector in detectors:

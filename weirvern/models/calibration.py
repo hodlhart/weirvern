@@ -2,7 +2,8 @@
 
 WHY THIS MODULE EXISTS. A detector score is a ranking, not a false-alarm rate. The console had a
 global BASE_THRESHOLD and adaptive multipliers, while the live score distributions saturated
-(DBSCAN at 0.99 on half of its stored detections). This module computes a conformal threshold
+(one detector sat at 0.99 on half of its stored detections). This module computes a conformal
+threshold
 against a reference distribution, so an operator can ask for a target alerts/day and then MEASURE
 whether the system met it.
 
@@ -27,7 +28,7 @@ from clickhouse_connect.driver.client import Client
 from weirvern import __version__
 from weirvern.clock import utcnow
 from weirvern.config import FUSED_MODEL, Settings
-from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, TELEMETRY_FEATURES
+from weirvern.features import CROSS_SECTIONAL_FEATURES, IF_FEATURES, TELEMETRY_FEATURES
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,9 @@ logger = logging.getLogger(__name__)
 # because their distributions differ; corroboration independence is an ENSEMBLE question, not a
 # calibration one.
 #
-# DBSCAN IS GONE FROM THIS LIST (retired 2026-11-20). Its stored score was degenerate -- 97.89%
-# of 27,454 rows at 0.99 or above, p50 = p99 = max = 0.99 -- so a calibration row for it measured
-# a step function, not a detector. Its historical rows stay in the table; nothing new is written.
+# THE REMOVED DENSITY DETECTOR IS NOT IN THIS LIST. Its stored score was degenerate -- 97.89% of
+# 27,454 rows at 0.99 or above, p50 = p99 = max = 0.99 -- so a calibration row for it measured a
+# step function, not a detector. It has no code left to write one.
 MODEL_COLUMNS = (
     ("Isolation Forest", "isolation_forest_score"),
     ("Gradient Boosting", "gradient_boosting_score"),
@@ -65,9 +66,8 @@ POPULATION_MODELS = (
 MODEL_EXPECTED_FEATURES = {
     "Isolation Forest": len(IF_FEATURES),
     "Gradient Boosting": len(IF_FEATURES),
-    "KNN distance": len(DBSCAN_FEATURES),
-    "LOF": len(DBSCAN_FEATURES),
-    "DBSCAN": len(DBSCAN_FEATURES),
+    "KNN distance": len(CROSS_SECTIONAL_FEATURES),
+    "LOF": len(CROSS_SECTIONAL_FEATURES),
     "Adaptive Baseline": len(TELEMETRY_FEATURES),
     FUSED_MODEL: len(TELEMETRY_FEATURES),
 }
@@ -345,83 +345,29 @@ def fit_stratified(rows: Iterable[tuple[float, str]], target_far: float, *,
                                  min_samples=int(min_samples))
 
 
-def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str, bool]:
-    """Map the latest calibration rows to an eligibility decision per model.
-
-    A model is eligible when its measured false-alarm rate is within `target_far * multiple`.
-    Missing/non-finite calibration is NOT a reason to quarantine every detector: it leaves the
-    model eligible, because the gate is an operator-enabled safety rail, not a second failure mode.
-    """
-    out: dict[str, bool] = {}
-    for model, observed, target in rows:
-        if str(model) == FUSED_MODEL:
-            # The fused score is the decision's own number, not a detector: it can never be
-            # "barred from the fused score" without making the gate circular.
-            continue
-        try:
-            obs = float(observed)
-            tgt = float(target if target is not None else target_far)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(obs) or not math.isfinite(tgt) or tgt <= 0:
-            continue
-        out[str(model)] = bool(obs <= tgt * float(multiple))
-    return out
-
-
 def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
-    """Read the latest calibration rows and return model name -> eligible.
+    """Read the evidence and return model name -> may contribute to the fused score.
 
-    A calibration older than the model's newest artifact is NOT evidence about the current
-    model. Such a model is returned ineligible until calibration is rerun against scores from
-    the retrained artifact; this is the holdout lock that keeps a retrain from silently
-    re-enabling a model on its old calibration.
+    THE CARD VETO IS GONE. `ml_model_cards` is a hand-curated registry: it is written only when
+    somebody edits a card, so it goes stale the moment the engine retrains, and a model that has
+    no card at all (the two cross-sectional detectors when they shipped) was barred by ABSENCE.
+    A card states intent; it cannot measure a false-alarm rate. Eligibility is derived from the
+    engine's own measurements -- freshness, recorded coverage, realised FAR -- and then from the
+    measured alert budget, in `weirvern.models.eligibility`, which is the one implementation the
+    engine and the Detectors table both read.
+
+    RETURNED MAPPING: every detector the engine knows, with True only for the ones that may set the
+    fused score. The caller (`ensemble.contributing_scores`) excludes, rather than zeroes, the rest.
     """
-    res = client.query(
-        "SELECT model_name, observed_far, target_far, computed_at FROM weirvern.ml_calibration FINAL "
-        # ONLY THE POOLED ROW. Per-stratum rows (scope='coverage') measure a sub-population and
-        # are written beside the pooled one; letting them into this dict would make the model's
-        # eligibility depend on whichever stratum row the engine returned last.
-        "WHERE scope = 'global' AND computed_at = (SELECT max(computed_at) "
-        "FROM weirvern.ml_calibration)"
-    )
-    rows = res.result_rows
-    out = eligibility_from_rows(
-        [(row[0], row[1], row[2]) for row in rows],
-        float(getattr(settings, "ml_target_far", 0.01) or 0.01),
-        float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0),
-    )
-    try:
-        trained = client.query(
-            "SELECT model_type, max(trained_at) FROM weirvern.ml_models GROUP BY model_type"
-        )
-        latest_train = {str(name): when for name, when in trained.result_rows}
-        for row in rows:
-            name, when = str(row[0]), row[3]
-            model_when = latest_train.get(name)
-            if model_when is not None and when is not None and model_when > when:
-                out[name] = False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("eligibility: could not read model artifact dates (stale gate skipped): %s",
-                       exc)
+    from weirvern.models import eligibility as _eligibility  # noqa: PLC0415
 
-    # PR-1: a calibration score is not permission to serve. The model must also have a current
-    # card whose status is `production`. This is deliberately fail-closed: a missing table, a
-    # retired card and a name nobody registered all produce False. A deployment can see why in
-    # the Models view and in this log line rather than discovering it as silent silence.
-    try:
-        from weirvern.models import cards as _cards  # noqa: PLC0415
-        registered = _cards.registration(client)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("eligibility: could not read model cards; no model is registered: %s", exc)
-        registered = {}
-    barred = sorted(name for name in out if not registered.get(name, False))
-    if barred:
-        logger.warning("eligibility: %s barred by model card: %s", len(barred), ", ".join(barred))
-    for name in list(out):
-        if not registered.get(name, False):
-            out[name] = False
-    return out
+    report = _eligibility.evaluate(client, settings, persist=True)
+    eligible = report.eligible
+    out = sorted(name for name, ok in eligible.items() if not ok)
+    if out:
+        logger.warning("ML eligibility: %d detector(s) not contributing: %s",
+                       len(out), ", ".join(out))
+    return eligible
 
 
 def record_population(client: Client, population: Iterable[dict], *,
@@ -884,7 +830,7 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
 __all__ = ["Calibration", "COVERAGE_CONTRACT", "MIN_STRATUM_SAMPLES", "MODEL_COLUMNS",
            "MODEL_EXPECTED_FEATURES", "POPULATION_MODELS", "ScoreContract",
            "StratifiedCalibration", "conformal_pvalue", "conformal_threshold", "contract_for",
-           "coverage_evidence", "coverage_stratum", "eligibility", "eligibility_from_rows",
+           "coverage_evidence", "coverage_stratum", "eligibility",
            "fit", "fit_stratified", "record_population", "register_model_contract", "run",
            "usable_scores"]
 

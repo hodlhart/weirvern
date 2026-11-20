@@ -46,7 +46,8 @@ ML_MODULES = [
     # THE DETECTORS ARE ML TOO, and leaving them out produced a false finding: this audit reported
     # `flows_aggregated_temporal`, `flows_aggregated_diversity` and `baseline_history` as "not modelled"
     # when `models/detectors.py` reads all three -- two as LEFT JOINs that feed the Adaptive Baseline
-    # and DBSCAN feature vectors, one as the persisted baseline state. Together they are ~14% of all
+    # and cross-sectional feature vectors, one as the persisted baseline state. Together they are
+    # ~14% of all
     # stored volume, so the omission moved the headline number by a third.
     #
     # The lesson is the point of this file: a coverage audit is only as good as its list of readers,

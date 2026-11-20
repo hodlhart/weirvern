@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from weirvern.features import DBSCAN_FEATURES, HOST_FEATURES, IF_FEATURES, extract_features
+from weirvern.features import CROSS_SECTIONAL_FEATURES, HOST_FEATURES, IF_FEATURES, extract_features
 from weirvern.models import readiness
 
 
@@ -21,7 +21,7 @@ def test_feature_names_do_not_encode_network_identity():
         "src_addr", "dst_addr", "hostname", "subnet", "prefix", "vlan",
         "interface", "iface", "network_scope", "scope_id",
     )
-    for name in HOST_FEATURES + IF_FEATURES + DBSCAN_FEATURES:
+    for name in HOST_FEATURES + IF_FEATURES + CROSS_SECTIONAL_FEATURES:
         assert not any(token in name for token in forbidden), (
             f"feature {name!r} encodes network identity; a model trained on it would learn "
             "the deployment, not the behaviour"

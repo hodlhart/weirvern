@@ -201,7 +201,7 @@ def test_model_overview_parses_the_training_history():
     rows = [
         ("Isolation Forest", None, 360, 1.0, '{"n": 1}'),
         ("Isolation Forest", None, 9496, 1.2, '{"n": 2}'),
-        ("DBSCAN", None, 281, 1.0, "{}"),
+        ("LOF", None, 281, 1.0, "{}"),
     ]
     client = FakeClient({"ml_models": rows})
     out = _status_module().model_overview(client, hours=72)
@@ -226,7 +226,7 @@ def test_model_overview_survives_malformed_feature_contributions():
     """feature_contributions is a String holding JSON. A malformed value must degrade,
     not raise -- one bad row should not blank the whole panel."""
     rows = [(
-        0.5, 0.4, 0.3, 0.2, 0.1, 0.5, "Isolation Forest", "low",
+        0.5, 0.4, 0.3, 0.2, 0.5, "Isolation Forest", "low",
         "total_bytes", 1.0, None, "203.0.113.9",
         "NOT JSON{{{",
     )]
@@ -241,9 +241,9 @@ def test_model_overview_aggregates_feature_deviation_z_scores():
     contrib_a = json.dumps({"total_bytes": {"z": 2.0}, "unique_dst_ips": {"z": 1.0}})
     contrib_b = json.dumps({"total_bytes": {"z": 4.0}})
     rows = [
-        (0.9, 0.9, 0.9, 0.9, 0.9, 1.0, "Isolation Forest", "high", "total_bytes",
+        (0.9, 0.9, 0.9, 0.9, 1.0, "Isolation Forest", "high", "total_bytes",
          3.0, None, "203.0.113.1", contrib_a),
-        (0.8, 0.8, 0.8, 0.8, 0.8, 1.0, "Gradient Boosting", "medium", "total_bytes",
+        (0.8, 0.8, 0.8, 0.8, 1.0, "Gradient Boosting", "medium", "total_bytes",
          2.0, None, "203.0.113.2", contrib_b),
     ]
     client = FakeClient({"netflow_anomalies": rows})
@@ -259,9 +259,9 @@ def test_model_overview_aggregates_feature_deviation_z_scores():
 
 def test_model_overview_counts_which_models_fired_together():
     rows = [
-        (0.9, 0, 0, 0, 0, 0.5, "Isolation Forest,Gradient Boosting", "low",
+        (0.9, 0, 0, 0, 0.5, "Isolation Forest,Gradient Boosting", "low",
          "x", 1.0, None, "198.51.100.1", ""),
-        (0.9, 0, 0, 0, 0, 0.5, "Isolation Forest", "low", "x", 1.0, None, "198.51.100.2", ""),
+        (0.9, 0, 0, 0, 0.5, "Isolation Forest", "low", "x", 1.0, None, "198.51.100.2", ""),
     ]
     client = FakeClient({"netflow_anomalies": rows})
     out = _status_module().model_overview(client, hours=24)
@@ -441,11 +441,11 @@ def test_the_card_panel_compares_the_registry_with_what_is_installed(tmp_path):
 
     (tmp_path / "Isolation Forest_v4.pkl").write_bytes(b"old")
     (tmp_path / "Isolation Forest_v5.pkl").write_bytes(b"new")
-    (tmp_path / "DBSCAN_v5.pkl").write_bytes(b"db")
+    (tmp_path / "LOF_v5.pkl").write_bytes(b"db")
     (tmp_path / "notes.txt").write_text("ignore me")
     inv = artifact_inventory(str(tmp_path))
     assert inv["Isolation Forest"]["version"] == "v5"          # newest, not the first found
-    assert inv["DBSCAN"]["version"] == "v5"
+    assert inv["LOF"]["version"] == "v5"
     assert inv["Isolation Forest"]["hash"] and inv["Isolation Forest"]["written_at"]
     assert "notes.txt" not in {v["file"] for v in inv.values()}
 
@@ -462,14 +462,14 @@ def test_the_models_payload_does_not_drop_fields_it_computed():
 
     out = models_payload({
         "available": True,
-        "model_artifacts": {"DBSCAN": {"version": "v5"}},
-        "model_cards_behind": ["DBSCAN"],
-        "model_training": {"DBSCAN": {"trained_at": "2026-11-19 08:21:17"}},
+        "model_artifacts": {"LOF": {"version": "v5"}},
+        "model_cards_behind": ["LOF"],
+        "model_training": {"LOF": {"trained_at": "2026-11-19 08:21:17"}},
         "normalized": {"available": True, "total": 3, "by_source": {"zeek": 3}},
     })
-    assert out["model_artifacts"]["DBSCAN"]["version"] == "v5"
-    assert out["model_cards_behind"] == ["DBSCAN"]
-    assert out["model_training"]["DBSCAN"]["trained_at"].startswith("2026-11-19")
+    assert out["model_artifacts"]["LOF"]["version"] == "v5"
+    assert out["model_cards_behind"] == ["LOF"]
+    assert out["model_training"]["LOF"]["trained_at"].startswith("2026-11-19")
     assert out["normalized"]["total"] == 3
 
 
@@ -488,11 +488,11 @@ def test_the_training_query_never_names_an_alias_after_a_column():
         def query(self, sql):
             seen["sql"] = sql
             class R:
-                result_rows = [("DBSCAN", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000)]
+                result_rows = [("LOF", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000)]
             return R()
 
     out = payloads.model_training(Client())
     sql = seen["sql"]
     assert "AS last_trained" in sql and "AS last_window_end" in sql
     assert "AS trained_at" not in sql
-    assert out["DBSCAN"]["samples"] == 5000
+    assert out["LOF"]["samples"] == 5000

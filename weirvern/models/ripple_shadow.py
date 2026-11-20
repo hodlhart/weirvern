@@ -14,7 +14,7 @@ HONEST LIMITS, measured against the live deployment on 2026-11-11:
   * every channel except the change point reports at the 5-minute scale, so a ripple can only
     clear the two-scale bar when a change point supplies the second scale;
   * the reference population is the most recent REFERENCE_SAMPLE scores per model (a week of
-    HDBSCAN alone is ~900k rows; the whole population does not fit in a fusion pass);
+    the HDBSCAN candidate alone is ~900k rows; the whole population does not fit in one pass);
   * a change point's scale comes from `run_length`, the length of the regime that ENDED -- the
     only duration the change-point table records. It is not the duration of the new regime,
     which is unknown until the next change point.
