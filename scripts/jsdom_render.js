@@ -2760,8 +2760,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // ── NORMALIZE ONE EVIDENCE LINE (2026-11-20) ───────────────────────────────────────────
     // The verb is per evidence line, the preview names the exact value, and the write says what
     // changed and offers the one-click way back. The rate-only lines must say why they cannot.
-    const sigButtons = [...doc.querySelectorAll("#rp-evidence .rp-sig-open")];
-    const allSigButtons = [...doc.querySelectorAll("#rp-evidence tbody tr td:last-child button")];
+    const sigButtons = [...doc.querySelectorAll("#rp-evidence .rp-sig-open:not([disabled])")];
+    const allSigButtons = [...doc.querySelectorAll("#rp-evidence tbody tr td:first-child button")];
     check("every evidence line carries the Normalize this pattern verb, and a rate-only line is refused",
           sigButtons.length === 1 && allSigButtons.length === 3
           && allSigButtons.filter((b) => b.disabled).length === 2,

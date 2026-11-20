@@ -2923,19 +2923,19 @@ function rippleEvidenceTable(ripple) {
     el("th", { text: "Channel" }), el("th", { text: "Family" }), el("th", { text: "Scale" }),
     el("th", { text: "Value" }), el("th", { text: "Baseline median" }),
     el("th", { text: "p-value" }), el("th", { text: "Baseline" }), el("th", { text: "Direction" }),
-    el("th", { text: "Signature" }),
   ])]));
   const tbody = el("tbody");
   const rows = ripple.evidence || [];
   if (!rows.length) {
-    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 9 },
+    tbody.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 8 },
       text: "This ripple carries no evidence rows. That is a payload defect, not a quiet reading." })]));
   }
   for (const e of rows) {
     const baseline = `${Number(e.sample_count || 0)} windows` +
       (e.baseline_short ? " (below the minimum)" : "");
     tbody.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: e.channel || "—" }),
+      el("td", {}, [el("div", { class: "mono", text: e.channel || "—" }),
+                     rippleSignatureAction(ripple, e)]),
       el("td", { text: e.family || "—" }),
       el("td", { class: "mono", text: e.scale || "—" }),
       el("td", { class: "num", text: rippleNum(e.value) }),
@@ -2943,7 +2943,6 @@ function rippleEvidenceTable(ripple) {
       el("td", { class: "num", text: rippleP(e.p_value, e.at_floor) }),
       el("td", { text: baseline }),
       el("td", { class: "muted", text: e.direction || "—" }),
-      rippleSignatureCell(ripple, e),
     ]));
   }
   table.appendChild(tbody);
@@ -2955,21 +2954,24 @@ function rippleEvidenceTable(ripple) {
  * ripple: "this TLS pair is our new appliance, stop calling it new". A channel that measures a
  * number (volume, ratio, sum) has no single value to name, and its button says so instead of
  * opening a form that could only widen into something the store cannot express. */
-function rippleSignatureCell(ripple, event) {
+function rippleSignatureAction(ripple, event) {
+  // THE VERB SITS UNDER THE LINE'S OWN CHANNEL, not in a ninth column: the ripple sheet is the
+  // house 480px sheet, and a ninth nowrap column pushed the action off the visible edge. The
+  // first cell is the line's identity, so the action reads as belonging to that line.
   if (!event.signature_capable) {
-    return el("td", {}, [el("button", {
-      class: "quiet", text: "Normalize this pattern",
+    return el("button", {
+      class: "quiet rp-sig-open", text: "Normalize this pattern",
       title: "This channel measures a number, not one named value. There is no single pattern "
         + "to normalize; a signature names one exact value on one channel.",
       attrs: { type: "button", disabled: "disabled" },
-    })]);
+    });
   }
-  return el("td", {}, [el("button", {
+  return el("button", {
     class: "quiet rp-sig-open", text: "Normalize this pattern",
     attrs: { type: "button",
              "aria-label": `normalize one ${event.channel} pattern on ${ripple.host}` },
     on: { click: () => openSignaturePreview(ripple, event) },
-  })]);
+  });
 }
 
 function signatureValueText(value) {
