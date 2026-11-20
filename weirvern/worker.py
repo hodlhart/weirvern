@@ -31,9 +31,10 @@ from weirvern.ingester import tail_forever
 from weirvern.models import readiness as readiness_mod
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
-    DBSCANDetector,
     GradientBoostingDetector,
     IsolationForestDetector,
+    KNNDistanceDetector,
+    LOFDetector,
 )
 from weirvern.zeek_features import zeek_window_sql
 
@@ -603,7 +604,15 @@ def _handle_sigterm(signum, frame):  # noqa: ARG001
 
 
 def build_detectors(settings, cfg: ModelConfig, model_dir: str | None = None):
-    """The four detectors, aimed at `model_dir` (the live artifact directory by default).
+    """The five LIVE detectors, aimed at `model_dir` (the live artifact directory by default).
+
+    THE ORDER IS PART OF THE INTERFACE. `load_or_train` and `train_if_due` name the first four
+    positionally (the student must train on the teacher's matrix), so a reordering here is a
+    behavioural change, not a tidy-up.
+
+    DBSCAN IS NOT HERE ANY MORE (retired 2026-11-20). It was removed from this list and from the
+    fused ensemble after its stored score measured 97.89% at 0.99 or above (p50 = p99 = max). Its
+    class is kept in `detectors.py` for one release; nothing constructs it.
 
     The override exists for the FORCED RETRAIN: the candidate must train through these same
     classes with these same arguments, or the rehearsal proves nothing about the scheduled path
@@ -613,7 +622,8 @@ def build_detectors(settings, cfg: ModelConfig, model_dir: str | None = None):
     return [
         IsolationForestDetector(model_dir, cfg),
         GradientBoostingDetector(model_dir, cfg),
-        DBSCANDetector(model_dir, cfg),
+        KNNDistanceDetector(model_dir, cfg),
+        LOFDetector(model_dir, cfg),
         AdaptiveBaselineDetector(model_dir, cfg),
     ]
 
@@ -642,7 +652,6 @@ def load_or_train(client: Client, detectors, settings,
     The age now comes from the ARTIFACT rather than from the process's uptime, so a warm start
     resumes the previous schedule instead of restarting it.
     """
-    if_model, gb_model, db_model, bl_model = detectors
     any_loaded = 0
     for d in detectors:
         if d.load():
@@ -664,21 +673,32 @@ def load_or_train(client: Client, detectors, settings,
     # is built from the real return values rather than inferred later from `trained_at`, because
     # that inference is the same guess that produced the defect.
     trained: list = []
-    if if_model.train(start_dt, end_dt, client) and if_model.X_train_unscaled is not None:
-        trained.append(if_model)
+    teacher = _detector_named(detectors, "Isolation Forest")
+    student = _detector_named(detectors, "Gradient Boosting")
+    baseline = _detector_named(detectors, "Adaptive Baseline")
+    if teacher.train(start_dt, end_dt, client) and teacher.X_train_unscaled is not None:
+        trained.append(teacher)
         trained_any = True
         # The GB teacher is fitted from IF's own labels, but a GB train can still return
         # False (no anomalies in the teacher, no teacher). A False result must not earn a
         # training-history row (GitHub #60); the detector still has the previous artifact.
-        if gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client):
-            trained.append(gb_model)
-    if db_model.train(start_dt, end_dt, client):
-        trained.append(db_model)
+        if student.train(teacher, teacher.X_train_unscaled, start_dt, end_dt, client):
+            trained.append(student)
+    # THE CROSS-SECTIONAL PAIR, IN NAME ORDER, EACH ON ITS OWN REFERENCE. They are independent
+    # detectors -- separate fit, separate artifact, separate calibration -- so they are trained
+    # independently: one refusing its reference must not stop the other.
+    for det in detectors:
+        if det.name in ("Isolation Forest", "Gradient Boosting", "Adaptive Baseline"):
+            continue
+        if det.train(start_dt, end_dt, client):
+            trained.append(det)
+            trained_any = True
+        else:
+            _record_refusal(client, det)
+    if baseline.train(start_dt, end_dt, client):
+        trained.append(baseline)
         trained_any = True
-    if bl_model.train(start_dt, end_dt, client):
-        trained.append(bl_model)
-        trained_any = True
-        bl_model.persist_history(client, settings.retrain_window_h)
+        baseline.persist_history(client, settings.retrain_window_h)
     if trained:
         _record_model_metadata(client, trained)
 
@@ -750,23 +770,32 @@ def train_if_due(
         end_dt = now
         start_dt = now - timedelta(hours=settings.retrain_window_h)
         logger.info("🔄 Full retrain (window %dh)", settings.retrain_window_h)
-        if_model, gb_model, db_model, bl_model = detectors
+        teacher = _detector_named(detectors, "Isolation Forest")
+        student = _detector_named(detectors, "Gradient Boosting")
+        baseline = _detector_named(detectors, "Adaptive Baseline")
         trained_any = False
         # Same rule as the cold start: record history ONLY for what trained (audit F023).
         trained: list = []
-        if if_model.train(start_dt, end_dt, client):
+        if teacher.train(start_dt, end_dt, client):
             trained_any = True
-            trained.append(if_model)
-            if if_model.X_train_unscaled is not None and gb_model.train(
-                    if_model, if_model.X_train_unscaled, start_dt, end_dt, client):
-                trained.append(gb_model)
-        if db_model.train(start_dt, end_dt, client):
+            trained.append(teacher)
+            if teacher.X_train_unscaled is not None and student.train(
+                    teacher, teacher.X_train_unscaled, start_dt, end_dt, client):
+                trained.append(student)
+        # Each cross-sectional detector fits its OWN reference; one refusing does not stop the
+        # other (see load_or_train).
+        for det in detectors:
+            if det.name in ("Isolation Forest", "Gradient Boosting", "Adaptive Baseline"):
+                continue
+            if det.train(start_dt, end_dt, client):
+                trained_any = True
+                trained.append(det)
+            else:
+                _record_refusal(client, det)
+        if baseline.train(start_dt, end_dt, client):
             trained_any = True
-            trained.append(db_model)
-        if bl_model.train(start_dt, end_dt, client):
-            trained_any = True
-            trained.append(bl_model)
-            bl_model.persist_history(client, settings.retrain_window_h)
+            trained.append(baseline)
+            baseline.persist_history(client, settings.retrain_window_h)
         if not trained_any:
             logger.warning("Full retrain produced nothing (insufficient data) — will retry next cycle")
             return last_full_train
@@ -867,6 +896,45 @@ def process_model_actions(client: Client, detectors, settings, cfg: ModelConfig)
             continue
         actions.finish(client, action_id, actions.DISCARDED, report=outcome,
                        note=f"{len(outcome['removed'])} artifact(s) removed")
+
+
+def _detector_named(detectors, name: str):
+    """The live detector with this name, or a loud failure.
+
+    NAME, NOT POSITION. `build_detectors` returns five detectors now, and the teacher/student pair
+    and the baseline are the only ones that need naming here -- indexing them by position made a
+    list reorder a silent behavioural change.
+    """
+    found = next((d for d in detectors if getattr(d, "name", "") == name), None)
+    if found is None:
+        raise RuntimeError(f"the detector list has no {name!r}; build_detectors is out of step")
+    return found
+
+
+def _record_refusal(client: Client, detector) -> None:
+    """Record a REFUSED fit in the engine's own log, so the Detectors row can say why.
+
+    WHY THIS EXISTS. A detector that refused its reference has no artifact and no calibration
+    row. Without a record it renders as "not trained", which is indistinguishable from a model
+    that has simply not been reached yet -- and the operator's requirement is the explicit
+    sentence `not trained: degenerate reference`. `ml_models` is the engine's training log, so a
+    refusal belongs there, marked `refused` with a zero sample count so every reader that counts
+    training runs can tell it apart from a fit that produced a model.
+    """
+    if str(getattr(detector, "train_outcome", "")) != "degenerate-reference":
+        return
+    row = detector.metadata.to_row()
+    row["model_id"] = f"{detector.name.lower().replace(' ', '_')}_refused_{int(time.time())}"
+    row["training_sample_count"] = 0
+    row["model_params"] = json.dumps({"refused": True, "outcome": "degenerate-reference"})
+    row["metrics"] = json.dumps({"refused": True, "outcome": "degenerate-reference"})
+    try:
+        client.insert("weirvern.ml_models", [list(row.values())],
+                      column_names=list(row.keys()))
+        logger.error("%s recorded a REFUSED fit (degenerate reference); it contributes nothing",
+                     detector.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not record the refused fit for %s: %s", detector.name, exc)
 
 
 def _record_model_metadata(client: Client, detectors) -> None:

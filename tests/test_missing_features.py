@@ -320,7 +320,8 @@ def test_calibration_records_the_exclusion_on_the_row():
 
         def query(self, sql, parameters=None):
             if "FROM weirvern.ml_window_scores" in sql:
-                names = ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")
+                names = ("Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
+                         "Adaptive Baseline")
                 rows = []
                 for name in names:
                     rows.extend([name, 0.9, 0.02] for _ in range(20))
@@ -333,22 +334,28 @@ def test_calibration_records_the_exclusion_on_the_row():
 
     client = FakeClient()
     rows = run(client, Settings(ml_min_feature_coverage=0.15))
-    assert len(rows) == 4  # the four detectors; the fused score has no population here
-    for row in rows:
+    pooled = [row for row in rows if row["scope"] == "global"]
+    assert len(pooled) == 5  # one per live detector; the fused score has no population here
+    for row in pooled:
         assert row["sample_count"] == 20
         assert row["excluded_windows"] == 20
         assert "excluded 20 window(s)" in row["reference_source"]
+    # Every model also gets a coverage-stratum row. 20 windows cannot resolve a 1% budget, so
+    # the stratum explicitly borrows the pooled threshold and says so.
+    strata = [row for row in rows if row["scope"] == "coverage"]
+    assert strata and all("FELL BACK to the pooled threshold" in r["reference_source"]
+                          for r in strata)
 
 
 # ── the detector table's fifth state ────────────────────────────────────────────────────────
 
 def _detector_row(*, coverage_value, observed=0.0, target=0.01):
     return detector_rows(
-        {"DBSCAN": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
-        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
-        {"DBSCAN": {"observed_far": observed, "target_far": target,
-                    "coverage": coverage_value}},
-        {"DBSCAN": "production"},
+        {"KNN distance": {"trained_at": "2026-11-19 08:21:17", "samples": 5000}},
+        {"KNN distance": {"version": "v5", "written_at": "2026-11-19T08:22:00+00:00"}},
+        {"KNN distance": {"observed_far": observed, "target_far": target,
+                          "coverage": coverage_value}},
+        {"KNN distance": "production"},
         min_coverage=DEFAULT_MIN_COVERAGE,
     )[0]
 

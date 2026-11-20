@@ -8,13 +8,16 @@ from weirvern.ensemble import contributing_scores, detect_flows, fuse_scores
 from weirvern.models.calibration import eligibility_from_rows
 
 
-def test_ineligible_dbscan_cannot_win_max_fusion():
-    scores = {"DBSCAN": 0.99, "Isolation Forest": 0.20, "Adaptive Baseline": 0.10}
-    contributing = contributing_scores(scores, {"DBSCAN": False})
-    assert contributing["DBSCAN"] == 0.0
+def test_an_ineligible_detector_is_removed_from_fusion_not_zeroed():
+    """Excluded, not counted as zero -- a zero would still drag a mean fusion down."""
+    scores = {"KNN distance": 0.99, "Isolation Forest": 0.20, "Adaptive Baseline": 0.10}
+    contributing = contributing_scores(scores, {"KNN distance": False,
+                                                "Isolation Forest": True,
+                                                "Adaptive Baseline": True})
+    assert "KNN distance" not in contributing, "an ineligible model must not enter fusion"
     assert fuse_scores(contributing) == 0.20
     # Evidence still carries the raw score.
-    assert scores["DBSCAN"] == 0.99
+    assert scores["KNN distance"] == 0.99
 
 
 def test_eligibility_uses_target_times_multiple():
@@ -31,9 +34,12 @@ def test_eligibility_uses_target_times_multiple():
     assert out["Gradient Boosting"] is True
 
 
-def test_missing_calibration_does_not_quarantine_a_model():
+def test_an_empty_calibration_mapping_does_not_quarantine_a_model():
+    """A deployment with no calibration rows at all still runs detection."""
     assert eligibility_from_rows([], target_far=0.01, multiple=3.0) == {}
-    assert contributing_scores({"DBSCAN": 0.99}, {})["DBSCAN"] == 0.99
+    assert contributing_scores({"KNN distance": 0.99}, {})["KNN distance"] == 0.99
+    # ... but once the mapping exists, a model absent from it has no met budget and is out.
+    assert contributing_scores({"KNN distance": 0.99}, {"Isolation Forest": True}) == {}
 
 
 def test_eligibility_default_is_on_with_a_kill_switch():

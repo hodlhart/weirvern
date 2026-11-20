@@ -412,10 +412,12 @@ def test_the_done_write_survives_real_datetimes_from_the_detector_metadata(tmp_p
     det.metadata.window_end = datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
 
     def build(model_dir):
-        # run_candidate expects the four detectors in their slots: IF, GB, DBSCAN, baseline.
+        # run_candidate looks the teacher/student/baseline up BY NAME and rehearses every other
+        # detector too, so the candidate set is the same five the live path builds.
         return [det,
                 _Det("Gradient Boosting", Path(model_dir)),
-                _Det("DBSCAN", Path(model_dir), trains=False),
+                _Det("KNN distance", Path(model_dir), trains=False),
+                _Det("LOF", Path(model_dir), trains=False),
                 _Det("Adaptive Baseline", Path(model_dir))]
 
     settings = SimpleNamespace(retrain_window_h=6, model_dir=str(tmp_path))
@@ -445,7 +447,7 @@ def test_the_summary_never_sums_counts_that_count_different_things():
     summary = retrain.report_summary({
         "detectors": [
             {"name": "Gradient Boosting", "trained": True, "sample_count": 500},
-            {"name": "DBSCAN", "trained": True, "sample_count": 100},
+            {"name": "KNN distance", "trained": True, "sample_count": 100},
             {"name": "Adaptive Baseline", "trained": True, "sample_count": 90},
             {"name": "Isolation Forest", "trained": False, "sample_count": 0},
         ],
@@ -455,7 +457,7 @@ def test_the_summary_never_sums_counts_that_count_different_things():
     # 0.23.80: the header names each detector's own count with its own unit instead of quoting
     # one detector's number as the run's (the operator's screenshot, 2026-11-19).
     assert "500" in summary, summary
-    assert "DBSCAN 100 window sample" in summary, summary
+    assert "KNN distance 100 reference windows" in summary, summary
     assert "Adaptive Baseline 90 hosts" in summary, summary
     assert "590" not in summary and "690" not in summary and "9840" not in summary, (
         f"numbers from different units were summed: {summary}"

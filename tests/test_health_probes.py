@@ -84,7 +84,7 @@ def test_a_STALE_pipeline_is_reported_as_not_ok():
     pipeline that has stopped training, and the probe must say so rather than counting rows."""
     now = datetime.datetime.now()
     old = now - datetime.timedelta(hours=27)
-    rows = [(n, old, "{}", 20) for n in ("Isolation Forest", "Gradient Boosting", "DBSCAN")]
+    rows = [(n, old, "{}", 20) for n in ("Isolation Forest", "Gradient Boosting", "KNN distance")]
     rows.append(("Adaptive Baseline", now - datetime.timedelta(hours=1), "{}", 216))
     p = _probe("models", by_fragment={"FROM weirvern.ml_models": rows})
     assert p is not None, "the models probe did not run"
@@ -100,7 +100,8 @@ def test_a_FRESH_pipeline_is_ok():
     noise nobody reads."""
     now = datetime.datetime.now()
     rows = [(n, now - datetime.timedelta(hours=1), "{}", 20)
-            for n in ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")]
+            for n in ("Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
+                      "Adaptive Baseline")]
     p = _probe("models", by_fragment={"FROM weirvern.ml_models": rows})
     assert p is not None and p.ok is True, f"a 1h-old pipeline must be ok: {p.detail!r}"
     assert "cadence" in str(p.detail), "a green verdict should state the interval it judged against"
@@ -132,7 +133,7 @@ def test_a_single_detector_does_not_make_the_others_look_stale():
 def test_a_detector_with_NO_timestamp_is_stale():
     """A detector that never trained has no timestamp, and a MISSING MEASUREMENT MUST NOT READ AS
     A HEALTHY ONE -- the rule `_staleness` already documents, which this adapter must not undo."""
-    assert status._model_staleness([("DBSCAN", None, "{}", 0)], _settings()) == ["DBSCAN"]
+    assert status._model_staleness([("KNN distance", None, "{}", 0)], _settings()) == ["KNN distance"]
 
 
 def test_the_cadence_comes_from_settings_not_a_literal():
@@ -148,8 +149,9 @@ def test_a_datetime_from_clickhouse_is_accepted():
     """ClickHouse returns a naive datetime, and `_model_staleness` must convert rather than raise.
     A TypeError here would be swallowed by the probe's own try/except and read as "not stale"."""
     now = datetime.datetime.now()
-    assert status._model_staleness([("DBSCAN", now - datetime.timedelta(hours=30), "{}", 1)],
-                                   _settings()) == ["DBSCAN"]
+    assert status._model_staleness(
+        [("KNN distance", now - datetime.timedelta(hours=30), "{}", 1)],
+        _settings()) == ["KNN distance"]
 
 
 # ── the report as a whole ────────────────────────────────────────────────────────────────────

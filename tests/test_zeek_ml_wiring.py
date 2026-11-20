@@ -148,14 +148,20 @@ def test_the_scoring_path_is_wrapped_so_zeek_failure_does_not_stop_detection():
 # ── every detector, on the training path ────────────────────────────────────────
 
 @pytest.mark.parametrize("detector", ["IsolationForestDetector", "GradientBoostingDetector",
-                                      "DBSCANDetector", "AdaptiveBaselineDetector"])
+                                      "KNNDistanceDetector", "LOFDetector",
+                                      "AdaptiveBaselineDetector", "DBSCANDetector"])
 def test_every_detector_is_covered(detector):
-    """A guard on this file itself: if a fifth detector is added, the list above must be
-    extended deliberately rather than the new one going unwired."""
+    """A guard on this file itself: if a detector is added, the list above must be extended
+    deliberately rather than the new one going unwired.
+
+    DBSCANDetector is in the list because the CLASS still exists (retired, kept for one release);
+    the two cross-sectional detectors are the live pair that replaced it.
+    """
     assert f"class {detector}" in DETECTORS, f"{detector} no longer exists; update this test"
     others = set(re.findall(r"^class (\w+Detector)", DETECTORS, re.M))
     assert others <= set(["IsolationForestDetector", "GradientBoostingDetector",
-                          "DBSCANDetector", "AdaptiveBaselineDetector"]), (
+                          "KNNDistanceDetector", "LOFDetector",
+                          "AdaptiveBaselineDetector", "DBSCANDetector"]), (
         f"a detector exists that this test does not cover: {others}"
     )
 

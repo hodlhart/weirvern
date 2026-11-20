@@ -456,7 +456,11 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         data["model_training"], data["model_artifacts"], calibration, card_statuses,
         target_far=float(getattr(settings, "ml_target_far", 0.01) or 0.01),
         multiple=float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0),
-        min_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)))
+        min_coverage=float(getattr(settings, "ml_min_feature_coverage", 0.15)),
+        # The last training OUTCOME per model, so a REFUSED fit renders as
+        # "not trained: degenerate reference" instead of as an ordinary absence.
+        outcomes={name: str((row or {}).get("outcome") or "")
+                  for name, row in data["model_training"].items()})
     data["detector_summary"] = detector_summary(data["detectors"], calibration.get(FUSED_MODEL))
     return web_api.models_payload(data)
 
@@ -794,18 +798,33 @@ def model_training(client: Client) -> dict[str, dict[str, Any]]:
             # ALIASES MUST NOT SHARE A COLUMN'S NAME (ClickHouse Code 184): `AS trained_at`
             # made the alias visible inside `max(trained_at)`, which the engine refuses as
             # "aggregate function found inside another aggregate". Same class as bytes_total.
+            #
+            # `last_metrics` carries the REFUSAL record: a cross-sectional detector whose
+            # reference was degenerate writes a row with `{"refused": true}` and no artifact.
+            # Without reading it here the Detectors table cannot say "not trained: degenerate
+            # reference" and would render the refusal as an ordinary training run.
             "SELECT model_type, toString(max(trained_at)) AS last_trained, "
             "toString(max(training_window_end)) AS last_window_end, "
-            "argMax(training_sample_count, trained_at) AS samples "
+            "argMax(training_sample_count, trained_at) AS samples, "
+            "argMax(metrics, trained_at) AS last_metrics "
             "FROM weirvern.ml_models GROUP BY model_type")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
         logger.warning("model training history unavailable: %s", exc)
         return {}
     out: dict[str, dict[str, Any]] = {}
     for row in (getattr(res, "result_rows", None) or []):
-        name, trained_at, window_end, samples = (list(row) + ["", "", "", 0])[:4]
+        name, trained_at, window_end, samples, metrics = (list(row) + ["", "", "", 0, ""])[:5]
+        outcome = ""
+        refused = False
+        try:
+            parsed = json.loads(metrics) if metrics else {}
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            outcome = str(parsed.get("outcome") or "")
+            refused = bool(parsed.get("refused", False))
         out[str(name)] = {"trained_at": str(trained_at), "window_end": str(window_end),
-                          "samples": int(samples or 0)}
+                          "samples": int(samples or 0), "outcome": outcome, "refused": refused}
     return out
 
 
@@ -827,7 +846,7 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
             "argMax(excluded_windows, computed_at), argMax(coverage_detail, computed_at), "
             "argMax(coverage_observed, computed_at), argMax(coverage_expected, computed_at), "
             "argMax(missing_mode, computed_at) "
-            "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+            "FROM weirvern.ml_calibration FINAL WHERE scope = 'global' GROUP BY model_name")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
         # THE COVERAGE COLUMNS ARRIVED IN 056 AND THE COUNTS IN 058. A deployment still on an
         # older schema must not lose the whole Detectors table to a field only the missing-data
@@ -841,7 +860,7 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
                 "SELECT model_name, argMax(observed_far, computed_at), "
                 "argMax(target_far, computed_at), argMax(coverage, computed_at), "
                 "argMax(excluded_windows, computed_at) "
-                "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+                "FROM weirvern.ml_calibration FINAL WHERE scope = 'global' GROUP BY model_name")
         except Exception as exc2:  # noqa: BLE001
             logger.warning("calibration coverage columns unavailable (%s); falling back to the "
                            "pre-056 shape", exc2)
@@ -849,7 +868,8 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
                 res = client.query(
                     "SELECT model_name, argMax(observed_far, computed_at), "
                     "argMax(target_far, computed_at) "
-                    "FROM weirvern.ml_calibration FINAL GROUP BY model_name")
+                    "FROM weirvern.ml_calibration FINAL WHERE scope = 'global' "
+                    "GROUP BY model_name")
             except Exception as exc3:  # noqa: BLE001
                 logger.warning("model calibration rows unavailable: %s", exc3)
                 return {}

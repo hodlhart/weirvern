@@ -50,19 +50,19 @@ def _card(name, status="production"):
 
 
 def population():
-    names = ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")
+    names = ("Isolation Forest", "Gradient Boosting", "KNN distance", "LOF", "Adaptive Baseline")
     return [[name, 0.70] for name in names for _ in range(40)]
 
 
 def test_run_uses_all_scored_windows_when_population_exists():
     client = FakeClient(population_rows=population())
     rows = run(client, Settings())
-    assert len(rows) == 4
+    assert len(rows) == 5
     assert all(row["subject"] == "all scored host-windows" for row in rows)
     assert all("ml_window_scores" in row["reference_source"] for row in rows)
     assert all(row["sample_count"] == 40 for row in rows)
     inserted = [i for i in client.inserts if i[0] == "weirvern.ml_calibration"]
-    assert inserted and len(inserted[0][1]) == 4
+    assert inserted and len(inserted[0][1]) == 5
 
 
 def test_record_population_writes_one_row_per_model_and_window():

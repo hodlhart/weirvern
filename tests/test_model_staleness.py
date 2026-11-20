@@ -71,9 +71,10 @@ def test_a_detector_that_never_trained_reads_as_stale_not_fresh():
 
 def test_every_known_detector_appears_even_with_no_data():
     """A missing detector must not silently vanish from the table."""
-    rows = status._staleness(_stamps(**{"DBSCAN": 1}), interval_h=6)
+    rows = status._staleness(_stamps(**{"KNN distance": 1}), interval_h=6)
     names = {r["model"] for r in rows}
-    assert {"Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"} <= names, (
+    assert {"Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
+            "Adaptive Baseline"} <= names, (
         f"the table omits detectors that have not reported data: {names}. Absence must be "
         f"visible, not implicit."
     )
@@ -81,12 +82,12 @@ def test_every_known_detector_appears_even_with_no_data():
 
 def test_the_stalest_detector_sorts_first():
     """The thing needing attention belongs at the top of a list that gets skimmed."""
-    # All four given a timestamp, so this tests ORDER BY AGE rather than the never-trained case
-    # (which has its own test below and sorts ahead of everything).
+    # Every live detector given a timestamp, so this tests ORDER BY AGE rather than the
+    # never-trained case (which has its own test below and sorts ahead of everything).
     rows = status._staleness(
         _stamps(**{
-            "Isolation Forest": 1, "Gradient Boosting": 30, "DBSCAN": 10,
-            "Adaptive Baseline": 0.1,
+            "Isolation Forest": 1, "Gradient Boosting": 30, "KNN distance": 10,
+            "LOF": 20, "Adaptive Baseline": 0.1,
         }),
         interval_h=6,
     )
@@ -94,7 +95,7 @@ def test_the_stalest_detector_sorts_first():
         f"order is {[r['model'] for r in rows]}; the stalest must come first"
     )
     assert [r["model"] for r in rows] == [
-        "Gradient Boosting", "DBSCAN", "Isolation Forest", "Adaptive Baseline"
+        "Gradient Boosting", "LOF", "KNN distance", "Isolation Forest", "Adaptive Baseline"
     ], f"not sorted by age descending: {[r['model'] for r in rows]}"
 
 
@@ -104,8 +105,8 @@ def test_a_never_trained_detector_sorts_ahead_of_a_merely_overdue_one():
         _stamps(**{"Isolation Forest": 30, "Gradient Boosting": 2}),
         interval_h=6,
     )
-    ahead = [r["model"] for r in rows][:2]
-    assert "DBSCAN" in ahead and "Adaptive Baseline" in ahead, (
+    ahead = [r["model"] for r in rows][:3]
+    assert "KNN distance" in ahead and "LOF" in ahead and "Adaptive Baseline" in ahead, (
         f"never-trained detectors did not sort ahead of the 30h-overdue one: "
         f"{[r['model'] for r in rows]}"
     )
@@ -173,11 +174,11 @@ def test_the_payload_carries_staleness_and_the_interval():
 
 
 def test_last_trained_and_last_usable_are_separate_facts():
-    """GitHub #60: a centreless DBSCAN has a training date but no usable date; it must not be
-    rendered as current."""
-    rows = status._staleness(_stamps(**{"DBSCAN": 1}), interval_h=6,
+    """GitHub #60: a detector that trained into an unusable state has a training date but no
+    usable date; it must not be rendered as current."""
+    rows = status._staleness(_stamps(**{"KNN distance": 1}), interval_h=6,
                              usable={"Isolation Forest": "2026-01-01T00:00:00"})
-    row = next(r for r in rows if r["model"] == "DBSCAN")
+    row = next(r for r in rows if r["model"] == "KNN distance")
     assert row["last_trained"]
     assert row["last_usable"] == ""
     assert row["usable"] is False

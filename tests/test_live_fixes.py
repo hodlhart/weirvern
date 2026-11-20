@@ -178,8 +178,9 @@ def test_load_or_train_reports_failure_when_there_is_no_data(monkeypatch):
     successful warm start from a cold start with nothing to train on."""
     _stub_metadata(monkeypatch)
     settings = MagicMock(retrain_window_h=72)
-    dets = [_Detector("if", False, has_scaled=False), _Detector("gb", False),
-            _Detector("db", False), _Detector("bl", False)]
+    dets = [_Detector("Isolation Forest", False, has_scaled=False),
+            _Detector("Gradient Boosting", False), _Detector("KNN distance", False),
+            _Detector("LOF", False), _Detector("Adaptive Baseline", False)]
 
     usable, _trained = load_or_train(MagicMock(), dets, settings, MagicMock())
     assert usable is False
@@ -187,8 +188,9 @@ def test_load_or_train_reports_failure_when_there_is_no_data(monkeypatch):
     # separately below because Gradient Boosting is trained from Isolation
     # Forest's scaled output, so it is deliberately skipped when IF produced
     # nothing — that is correct behaviour, not a skipped attempt.
-    _, gb, db, bl = dets
-    assert db.train_calls == 1, "DBSCAN must be attempted"
+    _, gb, knn, lof, bl = dets
+    assert knn.train_calls == 1, "KNN distance must be attempted"
+    assert lof.train_calls == 1, "LOF must be attempted"
     assert bl.train_calls == 1, "the baseline must be attempted"
     assert gb.train_calls == 0, (
         "GB trains on IF's output; with no IF there is nothing to learn from"
@@ -200,8 +202,9 @@ def test_load_or_train_reports_success_when_any_detector_trains(monkeypatch):
     flag a bytes outlier, which is the most common real case."""
     _stub_metadata(monkeypatch)
     settings = MagicMock(retrain_window_h=72)
-    dets = [_Detector("if", False, has_scaled=False), _Detector("gb", False),
-            _Detector("db", False), _Detector("bl", True)]
+    dets = [_Detector("Isolation Forest", False, has_scaled=False),
+            _Detector("Gradient Boosting", False), _Detector("KNN distance", False),
+            _Detector("LOF", False), _Detector("Adaptive Baseline", True)]
 
     usable, _trained = load_or_train(MagicMock(), dets, settings, MagicMock())
     assert usable is True
@@ -210,8 +213,9 @@ def test_load_or_train_reports_success_when_any_detector_trains(monkeypatch):
 def test_load_or_train_reports_success_on_a_warm_start(monkeypatch):
     """All detectors load from disk: no training needed, but it IS usable."""
     _stub_metadata(monkeypatch)
-    dets = [_Detector("if", False), _Detector("gb", False),
-            _Detector("db", False), _Detector("bl", False)]
+    dets = [_Detector("Isolation Forest", False), _Detector("Gradient Boosting", False),
+            _Detector("KNN distance", False), _Detector("LOF", False),
+            _Detector("Adaptive Baseline", False)]
     for d in dets:
         d.load = lambda: True  # type: ignore[method-assign]
 
@@ -233,19 +237,21 @@ def test_baseline_history_is_only_persisted_when_training_succeeded(monkeypatch)
     _stub_metadata(monkeypatch)
     settings = MagicMock(retrain_window_h=72)
 
-    bl_fail = _Detector("bl", False)
+    bl_fail = _Detector("Adaptive Baseline", False)
     bl_fail.persist_history = MagicMock()  # type: ignore[method-assign]
-    load_or_train(MagicMock(), [_Detector("if", False, has_scaled=False),
-                                _Detector("gb", False), _Detector("db", False),
+    load_or_train(MagicMock(), [_Detector("Isolation Forest", False, has_scaled=False),
+                                _Detector("Gradient Boosting", False),
+                                _Detector("KNN distance", False), _Detector("LOF", False),
                                 bl_fail], settings, MagicMock())
     assert bl_fail.persist_history.call_count == 0, (
         "baseline history must not be persisted when the baseline failed to train"
     )
 
-    bl_ok = _Detector("bl", True)
+    bl_ok = _Detector("Adaptive Baseline", True)
     bl_ok.persist_history = MagicMock()  # type: ignore[method-assign]
-    load_or_train(MagicMock(), [_Detector("if", False, has_scaled=False),
-                                _Detector("gb", False), _Detector("db", False),
+    load_or_train(MagicMock(), [_Detector("Isolation Forest", False, has_scaled=False),
+                                _Detector("Gradient Boosting", False),
+                                _Detector("KNN distance", False), _Detector("LOF", False),
                                 bl_ok], settings, MagicMock())
     assert bl_ok.persist_history.call_count == 1
 

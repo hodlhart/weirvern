@@ -138,7 +138,9 @@ def run_candidate(
     target = candidate_dir(settings.model_dir)
     detectors = builder(str(target))
 
-    if_det, gb_det, db_det, bl_det = detectors
+    if_det = next(d for d in detectors if d.name == "Isolation Forest")
+    gb_det = next(d for d in detectors if d.name == "Gradient Boosting")
+    bl_det = next(d for d in detectors if d.name == "Adaptive Baseline")
     reports: list[dict[str, Any]] = []
 
     trained = if_det.train(start, now, client)
@@ -155,11 +157,21 @@ def run_candidate(
     if trained:
         if_det.save()
 
-    for det in (db_det, bl_det):
+    # THE CROSS-SECTIONAL DETECTORS ARE CANDIDATES TOO. A rehearsal that skipped them would
+    # report "keep this candidate" for a set that does not contain the detectors the live path
+    # would install. Each one is reported with its own outcome, including a refusal.
+    for det in detectors:
+        if det.name in ("Isolation Forest", "Gradient Boosting", "Adaptive Baseline"):
+            continue
         ok = bool(det.train(start, now, client))
         reports.append(_detector_report(det, trained=ok))
         if ok:
             det.save()
+
+    ok = bool(bl_det.train(start, now, client))
+    reports.append(_detector_report(bl_det, trained=ok))
+    if ok:
+        bl_det.save()
 
     files = candidate_files(settings.model_dir)
     report = {
@@ -273,7 +285,8 @@ def report_summary(report: dict[str, Any]) -> str:
     # The unit belongs to the detector: a model trains on windows, DBSCAN on a sample of them,
     # the baseline on HOSts. Printing them in one list with no units is how they got summed.
     units = {"Gradient Boosting": "windows", "Isolation Forest": "windows",
-             "DBSCAN": "window sample", "Adaptive Baseline": "hosts"}
+             "KNN distance": "reference windows", "LOF": "reference windows",
+             "Adaptive Baseline": "hosts"}
     parts = [f"{len(trained)} of {len(dets)} detector(s) trained"]
     detail = [f"{d.get('name') or 'detector'} {_count(d):,} "
               f"{units.get(str(d.get('name')), 'samples')}"

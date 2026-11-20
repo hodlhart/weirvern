@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.23.101 — 2026-11-20
+
+DBSCAN IS RETIRED; TWO CROSS-SECTIONAL DETECTORS TAKE ITS PLACE, AND THE THRESHOLD NOW KNOWS HOW
+MUCH OF THE VECTOR WAS MEASURED.
+
+- **kNN distance (k = 10) replaces DBSCAN in the ensemble.** Score = distance to the k-th nearest
+  neighbour in the standardised 19-column vector, with the reference set persisted in the artifact
+  (at most 5,000 × 19, 760 KB). The bake-off measured 1.18% held-out FAR at a 0.01 target with
+  per-stratum calibration, 2,590 distinct scores and 4.8 µs per window.
+  `docs/research/cross-sectional-detector-2026-11-20.md`.
+- **LOF (k = 20, `novelty=True`) ships as a separate, independent detector** — its own reference
+  set, artifact, calibration and eligibility row. It is bounded on purpose: the statistic is
+  `log1p(LOF)`, so the bake-off's 8.5e8 threshold becomes ~20.6, and a fit whose reference cannot
+  produce a distinguishable score is REFUSED instead of persisted.
+- **DBSCAN is gone from `build_detectors`, `MODEL_FAMILIES` and the fusion.** Its stored score was
+  degenerate: 97.89% of 27,454 rows at 0.99 or above, p50 = p99 = max. The class is kept for one
+  release with the measurement in its docstring, and the Detectors table says
+  `retired -- removed from the ensemble on 2026-11-20, scores were degenerate` rather than
+  inferring retirement from a missing artifact (it has one).
+- **The `sipHash64(src_addr) % 5 == 1` host sampling is removed from the cross-sectional training
+  path.** It kept 5 of 24 monitored hosts; a cross-sectional reference of five hosts is not a
+  population. The reference is capped by ROWS (5,000) with the same deterministic hash order, so
+  every monitored host can contribute, and the live sample now covers 24 of 24.
+- **Calibration is stratified by coverage, generically.** `calibration.fit_stratified` takes
+  `(score, stratum)` and knows nothing about which model produced the score; a model registers how
+  its rows map to a key. Each stratum carries its own threshold and a stratum with too few
+  reference windows explicitly falls back to the pooled one. This is the fix for the measured
+  0.00% alert rate on partial-coverage windows against 2.3–2.5% on full ones; the scorer grades
+  each window against its own stratum, so a partial window at its stratum's 99th percentile is as
+  alertable as a full one at its own.
+- **Fusion excludes an ineligible model instead of zeroing it**, and a model absent from a
+  non-empty eligibility mapping is ineligible. A freshly trained kNN/LOF therefore contributes
+  nothing until it has a calibration row **and** a `production` model card — the honest first
+  state, visible in the Detectors table, not a silent zero.
+- **No fused weight, alert bar or ripple channel changed.** Both new detectors carry the explicit
+  neutral weight 1.0 (inert under `max` fusion). Measured on the live 24 h day: with both eligible
+  the fused `max` shifts p50 0.145 → 0.302 and the share at or above `BASE_THRESHOLD` 25.6% →
+  42.8%, which is stated here because it is a real rebalancing and not a free addition; nothing
+  downstream changes until the two are promoted.
+- **Ripples still consume raw telemetry only.** The single place a detector score and a ripple meet
+  is the anomaly page's corroboration block, which is display, not input.
+
 ## 0.23.85 — 2026-11-19
 
 THE ML TAB NAMES ITS WHOLE INPUT.

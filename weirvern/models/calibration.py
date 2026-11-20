@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -34,11 +34,27 @@ logger = logging.getLogger(__name__)
 # The models whose scores the console already stores. IF and GB are listed separately here
 # because their distributions differ; corroboration independence is an ENSEMBLE question, not a
 # calibration one.
+#
+# DBSCAN IS GONE FROM THIS LIST (retired 2026-11-20). Its stored score was degenerate -- 97.89%
+# of 27,454 rows at 0.99 or above, p50 = p99 = max = 0.99 -- so a calibration row for it measured
+# a step function, not a detector. Its historical rows stay in the table; nothing new is written.
 MODEL_COLUMNS = (
     ("Isolation Forest", "isolation_forest_score"),
     ("Gradient Boosting", "gradient_boosting_score"),
-    ("DBSCAN", "dbscan_score"),
     ("Adaptive Baseline", "baseline_score"),
+)
+
+# WHAT `run` CALIBRATES, in this order. This is the model list the calibration pass walks; it is
+# not the same as MODEL_COLUMNS, which is the LEGACY fallback read of the alert tail's columns.
+# A cross-sectional detector (KNN distance, LOF) has no netflow_anomalies column yet -- its
+# population comes from ml_window_scores, where `record_population` stores every score under its
+# own name -- so it belongs here and not in MODEL_COLUMNS.
+POPULATION_MODELS = (
+    "Isolation Forest",
+    "Gradient Boosting",
+    "KNN distance",
+    "LOF",
+    "Adaptive Baseline",
 )
 
 # THE EXPECTED WIDTH OF EACH MODEL'S VECTOR. One narrow job: recovering the counts behind a
@@ -49,6 +65,8 @@ MODEL_COLUMNS = (
 MODEL_EXPECTED_FEATURES = {
     "Isolation Forest": len(IF_FEATURES),
     "Gradient Boosting": len(IF_FEATURES),
+    "KNN distance": len(DBSCAN_FEATURES),
+    "LOF": len(DBSCAN_FEATURES),
     "DBSCAN": len(DBSCAN_FEATURES),
     "Adaptive Baseline": len(TELEMETRY_FEATURES),
     FUSED_MODEL: len(TELEMETRY_FEATURES),
@@ -163,6 +181,170 @@ def fit(reference: Iterable[float], target_far: float) -> Calibration | None:
     )
 
 
+# ── A THRESHOLD PER POPULATION THE DETECTOR ACTUALLY SEES ─────────────────────────────────────
+#
+# WHY THIS LAYER EXISTS. A host-window with 11 of its 19 columns absent is not a different KIND of
+# observation, but every cross-sectional score built on that shorter vector is systematically
+# SMALLER for it. Measured on the deployment before this existed: with one pooled threshold,
+# partial-coverage windows alerted at 0.00% while fully observed windows alerted at 2.3-2.5%, so
+# 35% of the population was silently unalertable while the headline false-alarm rate looked
+# healthy. The coverage stratum has to be part of the calibration key.
+#
+# THE KEY IS COVERAGE, NOT THE MODEL. Nothing here knows which detector produced a score: the
+# input is (score, stratum) pairs and the output is one threshold per stratum. A model may
+# register how its stored rows map to a key (see ScoreContract); the default is the
+# observed/expected column count `record_population` already writes beside every score.
+#
+# HOW MANY WINDOWS A STRATUM NEEDS. Split-conformal at a 0.01 target needs a calibration half of
+# at least 199 scores for the ⌈(n+1)·0.99⌉ rank to sit BELOW the maximum -- with fewer, the
+# threshold IS the maximum and nothing can cross it (the saturation `Calibration.saturated`
+# names). `fit` splits the reference even/odd, so a stratum needs ~400 reference windows to
+# express a 1% budget at all. Below that the stratum explicitly falls back to the pooled
+# threshold instead of storing a bar that cannot fire.
+MIN_STRATUM_SAMPLES = 400
+
+
+def coverage_stratum(coverage: Any = None, observed: Any = None,
+                     expected: Any = None) -> str:
+    """The calibration stratum for one window: its measured-column count, or a ratio bucket.
+
+    Counts are authoritative: `19/19` says exactly how much of the vector was measured, and two
+    windows with the same count saw the same dimensions (the deployment's absent sources are
+    all-or-nothing families, so 8/19 and 16/19 are the real levels). A row that carries only the
+    ratio -- written before schema 058 stored the counts -- is bucketed to two decimals, which
+    keeps 0.4211 and 0.42 in one stratum.
+
+    An unknown coverage (None) returns "" -- the pooled stratum. Absence of a measurement must
+    not be bucketed as if it were one.
+    """
+    counts = _counts_pair((observed, expected))
+    if counts is not None:
+        return f"{counts[0]}/{counts[1]}"
+    cov = _finite(coverage)
+    if cov is None or not 0.0 <= cov <= 1.0:
+        return ""
+    return f"{cov:.2f}"
+
+
+def _row_score(row: Sequence[Any]) -> float | None:
+    """`score` from a (score, coverage, observed, expected) population row."""
+    return row[0] if len(row) > 0 else None
+
+
+def _row_stratum(row: Sequence[Any]) -> str:
+    """The coverage stratum of a population row, by the same rule every consumer uses."""
+    return coverage_stratum(row[1] if len(row) > 1 else None,
+                            row[2] if len(row) > 2 else None,
+                            row[3] if len(row) > 3 else None)
+
+
+@dataclass(frozen=True)
+class ScoreContract:
+    """How ONE model's stored row becomes (score, stratum), registered by the model itself.
+
+    This is the seam that keeps the calibration layer model-agnostic: `run` asks the registry
+    how to read a row and never branches on a detector name. A model that stores its score
+    somewhere other than column 0 -- or derives its stratum from something other than coverage --
+    registers its own contract; everything else gets COVERAGE_CONTRACT.
+    """
+
+    score: Callable[[Sequence[Any]], float | None]
+    stratum: Callable[[Sequence[Any]], str]
+
+
+COVERAGE_CONTRACT = ScoreContract(score=_row_score, stratum=_row_stratum)
+_MODEL_CONTRACTS: dict[str, ScoreContract] = {}
+
+
+def register_model_contract(model_name: str, contract: ScoreContract) -> None:
+    """Register a model's row reader. Idempotent; the newest registration wins."""
+    _MODEL_CONTRACTS[str(model_name)] = contract
+
+
+def contract_for(model_name: str) -> ScoreContract:
+    """The contract a model registered, or the generic coverage contract."""
+    return _MODEL_CONTRACTS.get(str(model_name), COVERAGE_CONTRACT)
+
+
+@dataclass(frozen=True)
+class StratifiedCalibration:
+    """One pooled calibration plus a threshold for every coverage stratum observed.
+
+    `strata` contains an entry for EVERY stratum the reference saw. A stratum whose own
+    reference was too small to resolve the target maps to the POOLED Calibration and is listed
+    in `fallbacks` with its window count -- so a reader can tell "this stratum was measured and
+    met its own budget" from "this stratum borrowed the pooled bar because it could not
+    resolve one". Both are usable; only the first is a measurement of that stratum.
+    """
+
+    pooled: Calibration
+    strata: dict[str, Calibration] = field(default_factory=dict)
+    fallbacks: dict[str, int] = field(default_factory=dict)
+    min_samples: int = MIN_STRATUM_SAMPLES
+
+    def for_stratum(self, stratum: str | None) -> Calibration:
+        """The calibration that governs this stratum, falling back to the pooled one."""
+        return self.strata.get(str(stratum or ""), self.pooled)
+
+    def threshold_for(self, stratum: str | None) -> float:
+        return float(self.for_stratum(stratum).threshold)
+
+    def threshold(self, stratum: str | None = None) -> float:
+        """Alias with the argument first-class: `strat.threshold("8/19")`."""
+        return self.threshold_for(stratum)
+
+
+def fit_stratified(rows: Iterable[tuple[float, str]], target_far: float, *,
+                   min_samples: int = MIN_STRATUM_SAMPLES) -> StratifiedCalibration | None:
+    """Fit the pooled threshold and one threshold per coverage stratum.
+
+    `rows` is (score, stratum) and nothing else -- no model name, no feature list. The pooled
+    threshold is fitted exactly as `fit` always did, so an unstratified caller gets the same
+    number it always got; every stratum with enough reference windows is then fitted on its own
+    even/odd split.
+
+    A stratum is a FALLBACK (not an error) when:
+      * it has fewer than `min_samples` reference windows, or
+      * its own conformal threshold lands at its reference ceiling (a saturated bar cannot fire,
+        and storing one would reproduce the silent-detector defect this layer exists to end).
+    """
+    pairs: list[tuple[float, str]] = []
+    for score, stratum in rows:
+        try:
+            value = float(score)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            pairs.append((value, str(stratum or "")))
+    if len(pairs) < 20:
+        return None
+    pooled = fit([p[0] for p in pairs], target_far)
+    if pooled is None:
+        return None
+
+    groups: dict[str, list[float]] = {}
+    for value, key in pairs:
+        if key:
+            groups.setdefault(key, []).append(value)
+
+    strata: dict[str, Calibration] = {}
+    fallbacks: dict[str, int] = {}
+    for key in sorted(groups):
+        group = groups[key]
+        if len(group) < int(min_samples):
+            strata[key] = pooled
+            fallbacks[key] = len(group)
+            continue
+        cal = fit(group, target_far)
+        if cal is None or cal.saturated:
+            strata[key] = pooled
+            fallbacks[key] = len(group)
+            continue
+        strata[key] = cal
+    return StratifiedCalibration(pooled=pooled, strata=strata, fallbacks=fallbacks,
+                                 min_samples=int(min_samples))
+
+
 def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str, bool]:
     """Map the latest calibration rows to an eligibility decision per model.
 
@@ -197,7 +379,11 @@ def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
     """
     res = client.query(
         "SELECT model_name, observed_far, target_far, computed_at FROM weirvern.ml_calibration FINAL "
-        "WHERE computed_at = (SELECT max(computed_at) FROM weirvern.ml_calibration)"
+        # ONLY THE POOLED ROW. Per-stratum rows (scope='coverage') measure a sub-population and
+        # are written beside the pooled one; letting them into this dict would make the model's
+        # eligibility depend on whichever stratum row the engine returned last.
+        "WHERE scope = 'global' AND computed_at = (SELECT max(computed_at) "
+        "FROM weirvern.ml_calibration)"
     )
     rows = res.result_rows
     out = eligibility_from_rows(
@@ -309,6 +495,43 @@ def record_population(client: Client, population: Iterable[dict], *,
     return len(rows)
 
 
+def _usable_rows(rows: Iterable[Sequence[Any]],
+                 min_coverage: float | None) -> tuple[list[Sequence[Any]], int]:
+    """The rows that may calibrate, and how many were excluded for coverage.
+
+    Split out of `usable_scores` because the STRATIFIED pass needs the whole row (score AND the
+    coverage counts that name its stratum), not only the score. One filter, so the pooled and
+    per-stratum references can never disagree about which windows were evidence.
+    """
+    floor = None
+    if min_coverage is not None:
+        try:
+            value = float(min_coverage)
+        except (TypeError, ValueError):
+            value = 0.0
+        floor = value if math.isfinite(value) and value > 0 else None
+
+    kept: list[Sequence[Any]] = []
+    excluded = 0
+    for row in rows:
+        cov = row[1] if len(row) > 1 else None
+        if cov is not None and floor is not None:
+            try:
+                if float(cov) < floor:
+                    excluded += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
+        score = row[0] if len(row) > 0 else None
+        try:
+            value = float(score) if score is not None else float("nan")
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            kept.append(row)
+    return kept, excluded
+
+
 def usable_scores(rows: Iterable[Sequence[Any]],
                   min_coverage: float | None) -> tuple[list[float], int]:
     """Split a population into (scores to calibrate on, excluded-window count).
@@ -327,33 +550,14 @@ def usable_scores(rows: Iterable[Sequence[Any]],
     what `_population_scores` reads now, and the narrow one is still accepted so a caller (or a
     deployment on the older schema) cannot be broken by a column it does not have.
     """
-    floor = None
-    if min_coverage is not None:
+    kept, excluded = _usable_rows(rows, min_coverage)
+    scores: list[float] = []
+    for row in kept:
         try:
-            value = float(min_coverage)
-        except (TypeError, ValueError):
-            value = 0.0
-        floor = value if math.isfinite(value) and value > 0 else None
-
-    kept: list[float] = []
-    excluded = 0
-    for row in rows:
-        cov = row[1] if len(row) > 1 else None
-        if cov is not None and floor is not None:
-            try:
-                if float(cov) < floor:
-                    excluded += 1
-                    continue
-            except (TypeError, ValueError):
-                pass
-        score = row[0] if len(row) > 0 else None
-        try:
-            value = float(score) if score is not None else float("nan")
-        except (TypeError, ValueError):
+            scores.append(float(row[0]))
+        except (TypeError, ValueError, IndexError):
             continue
-        if math.isfinite(value):
-            kept.append(value)
-    return kept, excluded
+    return scores, excluded
 
 
 def coverage_evidence(rows: Iterable[Sequence[Any]],
@@ -530,7 +734,8 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         return ""
 
     def _row(model_name: str, cal: Calibration, source: str, subject: str,
-             reference: list[tuple[Any, Any, Any, Any]], excluded: int) -> dict:
+             reference: Sequence[Any], excluded: int,
+             *, scope: str = "global") -> dict:
         # `coverage` is taken over the WHOLE reference population, before the exclusion --
         # that is the evidence about whether this detector has enough telemetry to be
         # calibrated at all. A mean over the kept rows would sit above the floor by
@@ -539,7 +744,7 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         source += _coverage_source_note(evidence, len(reference))
         return {
             "model_name": model_name,
-            "scope": "global",
+            "scope": scope,
             "subject": subject,
             "statistic": cal.statistic,
             "target_far": cal.target_far,
@@ -562,47 +767,99 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
             "excluded_windows": int(excluded),
         }
 
-    for model_name, column in MODEL_COLUMNS:
+    def _stratum_rows(model_name: str, stratified: StratifiedCalibration,
+                      source: str, subject: str,
+                      kept: list[Sequence[Any]], contract: ScoreContract) -> list[dict]:
+        """One row per coverage stratum, so the Detectors table can say WHICH population failed.
+
+        These are written with `scope = "coverage"` and `subject = "<observed>/<expected>"`; the
+        pooled row keeps `scope = "global"`, which is the only row `eligibility` and the console's
+        model summary read. A stratum that could not resolve the target says so in
+        `reference_source` and carries the pooled threshold -- the explicit fallback, visible in
+        the table rather than inferred from a missing row.
+        """
+        out: list[dict] = []
+        for key in sorted(stratified.strata):
+            scal = stratified.strata[key]
+            group = [row for row in kept if contract.stratum(row) == key]
+            note = source
+            if key in stratified.fallbacks:
+                note += (f"; FELL BACK to the pooled threshold: {stratified.fallbacks[key]} "
+                         f"reference window(s) in this stratum cannot resolve a {target:.2%} "
+                         f"budget (a stratum needs {stratified.min_samples}; the conformal rank "
+                         f"lands on the maximum below that)")
+            out.append(_row(model_name, scal, note, key, list(group), 0, scope="coverage"))
+        return out
+
+    for model_name in POPULATION_MODELS:
+        column = dict(MODEL_COLUMNS).get(model_name)
+        contract = contract_for(model_name)
         reference: list[tuple[Any, Any, Any, Any]] = population.get(model_name) or []
-        scores, excluded = usable_scores(reference, min_coverage)
         source = (f"all scored host-windows (ml_window_scores), model {__version__}, "
                   f"last {window_days} days")
         subject = "all scored host-windows"
-        if len(scores) < 20:
+        kept, excluded = _usable_rows(reference, min_coverage)
+        scores: list[float] = []
+        for row in kept:
+            value = contract.score(row)
+            if value is None:
+                continue
+            number = float(value)
+            if math.isfinite(number):
+                scores.append(number)
+        if len(scores) < 20 and column is not None:
             reference = [(score, None, None, None)
                          for score in _score_rows(client, column, days=30)]
-            scores, excluded = usable_scores(reference, min_coverage)
+            kept, excluded = _usable_rows(reference, min_coverage)
+            scores = [float(row[0]) for row in kept]
             source = "fallback: stored anomaly scores (tail only); population rows unavailable"
             subject = "fallback stored detections"
+        if len(scores) < 20:
+            # NOT A CALIBRATION. A model with no population rows has nothing to measure; say so
+            # once in the log rather than writing a threshold fitted to four scores.
+            logger.info("calibration: no reference for %s (%d usable score(s)); skipped",
+                        model_name, len(scores))
+            continue
         if excluded:
             source += (f"; excluded {excluded} window(s) below the "
                        f"{float(min_coverage if min_coverage is not None else 0.0):.2f} "
                        f"coverage floor")
-        cal = fit(scores, target)
-        if cal is None:
+        pairs: list[tuple[float, str]] = []
+        for row in kept:
+            value = contract.score(row)
+            if value is None:
+                continue
+            number = float(value)
+            if math.isfinite(number):
+                pairs.append((number, contract.stratum(row)))
+        stratified = fit_stratified(pairs, target)
+        if stratified is None:
             continue
+        cal = stratified.pooled
+        pooled_source = source
         if cal.saturated:
             # Say so where an operator reads it, rather than storing a threshold that silently
             # cannot be crossed and leaving the cause to be rediscovered.
-            source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target FAR "
-                       f"is below what {cal.sample_count} samples can express")
-        rows.append(_row(model_name, cal, source, subject, reference, excluded))
+            pooled_source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the "
+                              f"target FAR is below what {cal.sample_count} samples can express")
+        rows.append(_row(model_name, cal, pooled_source, subject, reference, excluded))
+        rows.extend(_stratum_rows(model_name, stratified, source, subject, kept, contract))
 
     reference = population.get(FUSED_MODEL) or []
     scores, excluded = usable_scores(reference, min_coverage)
     if len(scores) >= 20:
-        cal = fit(scores, target)
-        if cal is not None:
+        fused_cal = fit(scores, target)
+        if fused_cal is not None:
             source = (f"the fused score itself (ml_window_scores), model {__version__}, "
                       f"last {window_days} days")
             if excluded:
                 source += (f"; excluded {excluded} window(s) below the "
                            f"{float(min_coverage if min_coverage is not None else 0.0):.2f} "
                            f"coverage floor")
-            if cal.saturated:
-                source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target "
-                           f"FAR is below what {cal.sample_count} samples can express")
-            rows.append(_row(FUSED_MODEL, cal, source,
+            if fused_cal.saturated:
+                source += (f"; SATURATED at the reference ceiling ({fused_cal.ceiling:.4f}): the "
+                           f"target FAR is below what {fused_cal.sample_count} samples can express")
+            rows.append(_row(FUSED_MODEL, fused_cal, source,
                              "the fused score the decision compares", reference, excluded))
     if not rows:
         return []
@@ -624,9 +881,12 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
     return rows
 
 
-__all__ = ["Calibration", "MODEL_COLUMNS", "MODEL_EXPECTED_FEATURES", "conformal_pvalue",
-           "conformal_threshold", "coverage_evidence", "eligibility", "eligibility_from_rows",
-           "fit", "record_population", "run", "usable_scores"]
+__all__ = ["Calibration", "COVERAGE_CONTRACT", "MIN_STRATUM_SAMPLES", "MODEL_COLUMNS",
+           "MODEL_EXPECTED_FEATURES", "POPULATION_MODELS", "ScoreContract",
+           "StratifiedCalibration", "conformal_pvalue", "conformal_threshold", "contract_for",
+           "coverage_evidence", "coverage_stratum", "eligibility", "eligibility_from_rows",
+           "fit", "fit_stratified", "record_population", "register_model_contract", "run",
+           "usable_scores"]
 
 
 def calibrated_bar(client: Client, settings: Settings) -> float | None:

@@ -8,7 +8,8 @@ from datetime import datetime
 
 from weirvern import detector_registry as dr
 
-ENSEMBLE_NAMES = ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")
+ENSEMBLE_NAMES = ("Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
+                  "Adaptive Baseline")
 
 
 def test_every_ensemble_detector_is_registered_with_owner_and_runbook():
@@ -22,7 +23,7 @@ def test_every_ensemble_detector_is_registered_with_owner_and_runbook():
 
 
 def test_an_unregistered_detector_cannot_page():
-    ok, why = dr.may_page("Mystery Net, DBSCAN")
+    ok, why = dr.may_page("Mystery Net, KNN distance")
     assert ok is False
     assert "unregistered" in why
     assert "Mystery Net" in why
@@ -34,7 +35,7 @@ def test_a_verdict_with_no_detector_cannot_page():
 
 
 def test_a_registered_verdict_pages_and_says_nothing():
-    ok, why = dr.may_page("Isolation Forest,DBSCAN")
+    ok, why = dr.may_page("Isolation Forest,KNN distance")
     assert ok is True and why == ""
 
 

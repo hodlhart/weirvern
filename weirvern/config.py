@@ -654,6 +654,21 @@ class ModelConfig:
     dbscan_eps: float = 0.6
     dbscan_min_samples: int = 5
     dbscan_n_samples: int = 5_000
+    # ── CROSS-SECTIONAL DETECTORS (kNN distance and LOF) ────────────────────────────────────────
+    #
+    # Both ask the same question of the same 19-column vector: does this host-window look unlike
+    # the population of host-windows? They are SEPARATE detectors -- separate artifacts, reference
+    # sets, calibrations and eligibility rows -- and these are the parameters the bake-off used,
+    # not values searched here (`docs/research/cross-sectional-detector-2026-11-20.md` §3.4).
+    #
+    # `knn_k` = 10 and `lof_neighbors` = 20 are the report's values. `*_n_samples` is the ROW cap
+    # on the reference (production's old dbscan_n_samples), applied with a deterministic
+    # `ORDER BY sipHash64(src_addr, window_start) LIMIT n`; there is NO host sampling, because a
+    # 1-in-5 host cut left 5 of 24 hosts and a cross-sectional model cannot work from five.
+    knn_k: int = 10
+    knn_n_samples: int = 5_000
+    lof_neighbors: int = 20
+    lof_n_samples: int = 5_000
     gb_max_samples: int = 50_000
     test_size: float = 0.2
     random_state: int = 42
@@ -664,6 +679,16 @@ class ModelConfig:
     weight_if: float = 1.0
     weight_gb: float = 0.75
     weight_dbscan: float = 0.65
+    # THE TWO CROSS-SECTIONAL DETECTORS CARRY THE NEUTRAL WEIGHT, EXPLICITLY.
+    #
+    # The shipped fusion mode is "max", which does not read weights at all (see fuse_scores); these
+    # exist so mean-mode A/B carries a stated number rather than an implicit 1.0 from the unknown-
+    # name fallback. 1.0 is the neutral value on purpose: the bake-off measured these as NEW
+    # independent evidence, and an unmeasured down-weight would rebalance the ensemble by accident
+    # -- the exact failure the operator asked to avoid. If a future measurement says they deserve
+    # less, that is a tuning change with its own before/after distribution.
+    weight_knn: float = 1.0
+    weight_lof: float = 1.0
     weight_baseline: float = 1.3   # when baseline exists
     weight_baseline_missing: float = 0.5
 
@@ -777,6 +802,8 @@ class ModelConfig:
             "isolation_forest": self.weight_if,
             "gradient_boosting": self.weight_gb,
             "dbscan": self.weight_dbscan,
+            "knn": self.weight_knn,
+            "lof": self.weight_lof,
             "adaptive_baseline": self.weight_baseline,
         }
 

@@ -45,6 +45,23 @@ DEFAULT_MIN_COVERAGE = 0.15
 NOT_TRAINED = "not trained"
 CONTRIBUTING = "contributing"
 BARRED = "trained, barred by model card"
+# A REFUSED FIT IS NOT A QUIET DETECTOR. A cross-sectional model whose reference cannot produce a
+# distinguishable score is refused at train time (no artifact, no calibration row). Reporting that
+# as "not trained" would be indistinguishable from a model that has not been reached yet, and
+# reporting it as anything resembling "contributing" would be a lie about a score nobody has.
+REFUSED = "not trained: degenerate reference"
+# THE SIXTH STATE: RETIRED BY DECISION, NOT BY ABSENCE.
+#
+# WHY A REGISTRY AND NOT A CARD. `ml_model_cards` is a curation snapshot, and its `retired` word is
+# deliberately never rendered -- the engine training a detector outranks a hand-edited status. But
+# a detector REMOVED from the engine cannot say anything about itself, and the honest sentence is a
+# fact about the release, not about a row: it was taken out, when, and why. That belongs in code
+# where it is dated and reviewable. "No artifact + no training rows" is NOT the shape here --
+# DBSCAN has both, historically -- so absence cannot be used to infer retirement.
+RETIRED_DETECTORS: dict[str, str] = {
+    "DBSCAN": ("retired -- removed from the ensemble on 2026-11-20, scores were degenerate "
+               "(97.89% of 27,454 stored scores at 0.99 or above; p50 = p99 = max = 0.99)"),
+}
 # THE FIFTH STATE. A detector can be trained, correctly calibrated and within its false-alarm
 # budget, and still have no opinion about most of the traffic because most of its vector was
 # never measured. That is a different fact from "not contributing" (a measured overrun) and
@@ -116,6 +133,12 @@ def detector_status(row: dict[str, Any]) -> str:
     """
     observed = _number(row.get("observed_far"))
     target = _number(row.get("target_far"))
+    # RETIREMENT FIRST. A retired detector has history (training rows, perhaps an artifact) and no
+    # future; every other branch below would describe it as a live model that is failing.
+    if row.get("retired"):
+        return str(row["retired"])
+    if str(row.get("train_outcome") or "") == "degenerate-reference":
+        return REFUSED
     if not row.get("trained") and not row.get("artifact_version"):
         return NOT_TRAINED
     cov = _number(row.get("coverage"))
@@ -154,6 +177,7 @@ def detector_rows(
     target_far: float = DEFAULT_TARGET_FAR,
     multiple: float = DEFAULT_ELIGIBILITY_MULTIPLE,
     min_coverage: float = DEFAULT_MIN_COVERAGE,
+    outcomes: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """One row per detector the ENGINE knows, from the union of its log and the calibration.
 
@@ -161,9 +185,17 @@ def detector_rows(
     `production_allowed`, so the string `retired` can influence `barred` and can never reach the
     rendered row: `status` is computed from `barred`, not copied from the card.
 
+    `outcomes` is `model_name -> last training outcome` from `ml_models` metrics. It is how a
+    REFUSED fit (`degenerate-reference`) reaches the table as that sentence instead of as an
+    ordinary "not trained".
+
     THE UNION IS BY NAME, and `__fused__` is excluded: it is the decision's own score, not a
-    detector, and it would otherwise appear as a fifth row nobody can retrain.
+    detector, and it would otherwise appear as a fifth row nobody can retrain. RETIRED detectors
+    arrive through the union like any other model -- they have training history and usually an
+    artifact -- and RETIRED_DETECTORS supplies the honest STATUS for them. A name with no evidence
+    at all still does not appear; the registry is not a way to invent a row.
     """
+    outcomes = outcomes or {}
     allowed = production_allowed(card_statuses)
     names = (set(training) | set(calibration)) - {FUSED_MODEL}
     cal_rows = [
@@ -181,9 +213,16 @@ def detector_rows(
         observed = _number(cal.get("observed_far"))
         measured_target = _number(cal.get("target_far"))
         measured_coverage = _number(cal.get("coverage"))
-        is_trained = bool(trained)
+        outcome = str(outcomes.get(name) or "")
+        retired = RETIRED_DETECTORS.get(name, "")
+        # A REFUSED FIT IS NOT A TRAINED MODEL. The row exists in the engine's log (it says why),
+        # but `training_sample_count` is 0 and no artifact was written; counting the timestamp as
+        # "trained" would put a model in the table that cannot score a single window.
+        is_trained = bool(trained) and outcome != "degenerate-reference"
         is_barred = not bool(allowed.get(name, False))
-        is_eligible = bool(eligible.get(name, False))
+        is_eligible = bool(eligible.get(name, False)) and not retired
+        if retired:
+            is_eligible = False
         # INSUFFICIENT TELEMETRY IS NOT A PASS AND NOT AN OVERRUN. A calibration whose reference
         # population sat below the coverage floor measured the imputer, not the detector; it
         # cannot make the model eligible, and the row says so in words rather than borrowing a
@@ -202,8 +241,8 @@ def detector_rows(
             is_eligible = False
         row: dict[str, Any] = {
             "name": name,
-            "trained_at": trained,
-            "samples": int((training.get(name) or {}).get("samples") or 0),
+            "trained_at": trained if is_trained else "",
+            "samples": int((training.get(name) or {}).get("samples") or 0) if is_trained else 0,
             "artifact_written_at": str(artifact.get("written_at") or ""),
             "observed_far": observed,
             # A model with no calibration row still shows the policy target it will be measured
@@ -235,7 +274,14 @@ def detector_rows(
         row["calibration_stale"] = calibration_stale
         row["insufficient_telemetry"] = insufficient
         row["coverage_note"] = coverage_note(row)
-        row["contributing"] = bool(is_trained and is_eligible and not is_barred)
+        # ONLY WHEN PRESENT. An empty `retired: ""` / `train_outcome: ""` on every live row would
+        # put the word "retired" into the payload of models that are running, which is exactly the
+        # kind of stale-looking status this table was rebuilt to stop rendering.
+        if retired:
+            row["retired"] = retired
+        if outcome:
+            row["train_outcome"] = outcome
+        row["contributing"] = bool(is_trained and is_eligible and not is_barred and not retired)
         row["status"] = detector_status(row)
         rows.append(row)
     return rows
@@ -266,6 +312,6 @@ def detector_summary(rows: list[dict[str, Any]],
 
 __all__ = [
     "BARRED", "CONTRIBUTING", "DEFAULT_ELIGIBILITY_MULTIPLE", "DEFAULT_MIN_COVERAGE",
-    "DEFAULT_TARGET_FAR", "INSUFFICIENT_TELEMETRY", "NOT_TRAINED", "coverage_note",
-    "detector_rows", "detector_status", "detector_summary",
+    "DEFAULT_TARGET_FAR", "INSUFFICIENT_TELEMETRY", "NOT_TRAINED", "REFUSED",
+    "RETIRED_DETECTORS", "coverage_note", "detector_rows", "detector_status", "detector_summary",
 ]

@@ -314,11 +314,14 @@ def test_no_detector_redeclares_its_own_zeek_columns():
     join and the names cannot differ between detectors."""
     src = (ROOT / "weirvern" / "models" / "detectors.py").read_text()
     code = "\n".join(ln.split("#")[0] for ln in src.splitlines())
-    # Every detector that trains against Zeek must call the shared helper.
+    # Every detector that trains against Zeek must obtain its columns from the shared helper --
+    # directly, or through `cross_sectional_training_sql`, which is itself built from
+    # `_zeek_clause`. Counting both call sites keeps the invariant ("no detector hand-writes its
+    # Zeek select-list") true however the query is assembled.
     trainings = code.count("def train(self")
-    helper_uses = code.count("_zeek_clause(")
+    helper_uses = code.count("_zeek_clause(") + code.count("cross_sectional_training_sql(")
     assert helper_uses >= trainings, (
-        f"{trainings} train() methods but only {helper_uses} uses of the shared _zeek_clause "
-        f"helper -- at least one detector builds its own Zeek columns, which is how the "
+        f"{trainings} train() methods but only {helper_uses} uses of the shared Zeek-column "
+        f"helper(s) -- at least one detector builds its own Zeek columns, which is how the "
         f"Adaptive Baseline's query drifted and broke"
     )

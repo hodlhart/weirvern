@@ -1,12 +1,17 @@
-"""The four detectors, rebuilt from the v19 model code with the lessons applied:
+"""The detectors, rebuilt from the v19 model code with the lessons applied:
 
 1. IsolationForestDetector — v19's 14-feature multi-granularity version with
    extremes sampling retained (trains on normal traffic AND extreme outliers).
 2. GradientBoostingDetector — semi-supervised student of the Isolation Forest,
    class-imbalance weighted, F1-evaluated on a held-out split.
-3. DBSCANDetector — 8 flow features + the Zeek subset (incl. the JA4 pair); score = distance
-   to nearest centroid.
-4. AdaptiveBaselineDetector — per-host percentile/σ baselines from ClickHouse.
+3. KNNDistanceDetector — cross-sectional distance to the k-th nearest reference window (k=10)
+   on the 19-feature DBSCAN_FEATURES vector. Replaces DBSCAN in the ensemble.
+4. LOFDetector — local outlier factor (k=20, novelty=True) on the SAME 19-feature vector, as an
+   INDEPENDENT detector: its own reference set, artifact, calibration and eligibility row.
+5. AdaptiveBaselineDetector — per-host percentile/σ baselines from ClickHouse.
+
+DBSCANDetector is RETIRED (2026-11-20) and is no longer constructed by `build_detectors`; the
+class is kept for one release with its measurement in the class docstring.
 
 Changes vs legacy: SQL is parameterized and lives close to the models; all
 magic numbers come from weirvern.config.ModelConfig; training always
@@ -27,12 +32,14 @@ from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
 from weirvern import flow_windows, networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
+from weirvern.models.calibration import COVERAGE_CONTRACT, register_model_contract
 from weirvern.models.missing import (
     DEFAULT_MIN_COVERAGE,
     MissingAwarePreprocessor,
@@ -414,7 +421,517 @@ class GradientBoostingDetector(BaseDetector):
 
 
 # ============================================================================
+# ── CROSS-SECTIONAL DETECTORS: THE SAME VECTOR, TWO INDEPENDENT SCORES ─────────────────────────
+#
+# WHY THIS EXISTS. The retired DBSCAN asked "is this window inside a dense cluster?" and answered
+# with a step function: 97.89% of 27,454 stored scores sat at 0.99 or above (p50 = p99 = max =
+# 0.99), so no threshold could separate anything from anything. The question the slot should ask
+# is CROSS-SECTIONAL -- "does this host-window look unlike the population of host-windows?" -- and
+# `scripts/cross_sectional_bakeoff.py` measured six answers to it on this deployment
+# (`docs/research/cross-sectional-detector-2026-11-20.md`).
+#
+# Two of them ship here, as SEPARATE detectors with separate artifacts, reference sets,
+# calibrations and eligibility rows:
+#
+#   * KNN distance (k=10) -- the bake-off winner: 1.18% held-out FAR at a 0.01 target with
+#     per-coverage-stratum calibration, 2,590 distinct scores, 0.01 s fit / 4.8 us per window.
+#   * LOF (k=20, novelty=True) -- the only genuinely independent score in the study (rho = -0.08
+#     with Isolation Forest against kNN's +0.46). Its raw score is unbounded and, on a reference
+#     full of exact duplicate quiet windows, produced a threshold of 8.5e8 (a detector silently
+#     off). It ships BOUNDED: the statistic is log1p(LOF) and a fit whose reference distances are
+#     degenerate is REFUSED rather than persisted.
+#
+# NEITHER of them shares a line of model code with the other: `_fit_reference` and `_grade` are
+# plumbing (median impute + standardise, and a monotone map into the ensemble's band), not a
+# combined density model.
+#
+# THE SCORE IS THE STATISTIC, MAPPED MONOTONICALLY. `score(X)` returns the raw statistic the
+# bake-off measured -- the k-th neighbour distance in scaled units, or log1p(LOF). `predict()`
+# maps that number into [0, 0.99] with a STRICTLY INCREASING piecewise map over the reference
+# quantiles, because the ensemble's fusion, agreement and severity gates are defined on that
+# band. Strict monotonicity matters: a conformal threshold chosen on the raw statistic selects
+# exactly the same windows as one chosen on the mapped score, so the measured false-alarm rates
+# carry over unchanged.
+
+# A reference smaller than this is not a population. It is also below the 100-row floor every
+# detector here uses, so the message stays consistent.
+MIN_REFERENCE_ROWS = 100
+# How many distinct k-th-neighbour distances a usable reference must produce. A constant (or
+# near-constant) reference -- every window identical, or a handful of blobs -- yields a degenerate
+# score: every threshold lands on the same value and the detector is either always on or always
+# off. Both detectors refuse that fit.
+MIN_DISTINCT_DISTANCES = 50
+# How many reference windows a COVERAGE STRATUM needs before its own quantiles are trusted for
+# scoring. Below it, grading falls back to the pooled quantiles (the same explicit fallback the
+# calibration layer makes for its thresholds).
+MIN_GRADE_SAMPLES = 50
+
+
+def cross_sectional_training_sql(start: str, end: str, cfg: ModelConfig,
+                                 *, scope_filter: str = "", limit: int | None = None) -> str:
+    """The 19-feature training matrix for BOTH cross-sectional detectors.
+
+    One builder for both, assembled from the repository's own constants (`_zeek_clause`,
+    `flow_windows.folded`, `_flagged_exclusion_clause`) so the two reference sets cannot drift
+    into different feature definitions.
+
+    NO HOST SAMPLING. This query used to carry `sipHash64(a.src_addr) % 5 == 1` -- a 1-in-5 cut
+    of the HOST population. Measured on the deployment: 24 monitored hosts, 5 surviving the cut.
+    A cross-sectional model needs a population to compare against; five hosts is not one. The
+    sample is bounded by ROWS instead (`ORDER BY sipHash64(src_addr, window_start) LIMIT n`), the
+    same deterministic cut the bake-off used, so every monitored host can contribute rows.
+
+    `scope_filter` is `networks.training_filter(client)` at the call site -- a predicate that
+    keeps training on the monitored scopes. Passed in so this function stays testable without a
+    ClickHouse client.
+    """
+    s, e = start, end
+    zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)
+    excl = _flagged_exclusion_clause(s, e, cfg)
+    n_rows = int(limit if limit is not None else cfg.knn_n_samples)
+    return f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
+        WITH {zeek_cte}
+        SELECT
+            log(a.total_bytes + 1),
+            log(a.total_packets + 1),
+            log(a.unique_dst_ips + 1),
+            log(a.flow_count + 1),
+            log(coalesce(d.unique_dst_ports, 0) + 1),
+            coalesce(d.port_entropy, 0),
+            coalesce(t.activity_regularity, 1.0),
+            coalesce(t.burstiness, 1.0),
+{zeek_cols}
+        FROM {flow_windows.folded(flow_windows.between(s, e))}
+        LEFT JOIN weirvern.flows_aggregated_diversity d
+            ON a.window_start = d.window_start AND a.src_addr = d.src_addr
+        LEFT JOIN weirvern.flows_aggregated_temporal t
+            ON a.window_start = t.window_start AND a.src_addr = t.src_addr
+        {zeek_join}
+        WHERE a.window_start BETWEEN '{s}' AND '{e}'
+          AND a.total_bytes > 0{excl}{scope_filter}
+        -- Deterministic row sample, NOT a host sample: every monitored host contributes, and
+        -- the cut is stable across retrains so the reference does not churn between cycles.
+        ORDER BY sipHash64(a.src_addr, a.window_start)
+        LIMIT {n_rows}
+    """
+
+
+def kth_neighbour_distances(X: np.ndarray, k: int) -> np.ndarray:
+    """Distance from every row of `X` to its k-th nearest neighbour IN `X`.
+
+    Self is the first neighbour of a row scored against its own reference (distance 0), so this
+    is the k-th of the remaining k-1 others -- exactly what the bake-off measured for its fit
+    half. A row NOT in the reference has k reference neighbours, which the conformal threshold
+    absorbs: the calibration slice is always out-of-sample.
+    """
+    matrix = np.asarray(X, dtype=float)
+    neighbours = int(max(1, min(int(k), len(matrix) - 1)))
+    model = NearestNeighbors(n_neighbors=neighbours + 1).fit(matrix)
+    dist, _ = model.kneighbors(matrix, n_neighbors=neighbours + 1)
+    # Column 0 is the row itself (distance 0); the k-th neighbour is at column k.
+    return np.asarray(dist[:, -1], dtype=float)
+
+
+def reference_degeneracy(distances: np.ndarray) -> str:
+    """Why a reference cannot produce a usable score, or "" when it can.
+
+    THE CHECK IS THE POINT. DBSCAN shipped for months with a score that was constant on 98% of
+    windows because nothing refused a reference that could not be separated. Here a fit whose
+    k-th-neighbour distances do not vary is REFUSED -- no artifact is written, `is_ready()` stays
+    False, and the Detectors row says `not trained: degenerate reference` rather than showing a
+    detector that is merely quiet.
+    """
+    values = np.asarray(distances, dtype=float)
+    if values.size == 0:
+        return "the reference is empty"
+    if not bool(np.isfinite(values).all()):
+        return "a k-th neighbour distance is not finite"
+    distinct = int(np.unique(np.round(values, 12)).size)
+    if distinct < MIN_DISTINCT_DISTANCES:
+        return (f"the reference produces only {distinct} distinct k-th neighbour distance(s) "
+                f"(need {MIN_DISTINCT_DISTANCES})")
+    p50, p99 = (float(v) for v in np.percentile(values, [50, 99]))
+    if not p99 > p50:
+        return "the k-th neighbour distance does not vary across the reference (p99 == p50)"
+    return ""
+
+
+def distance_quantiles(distances: np.ndarray) -> dict[str, float]:
+    """The quantiles the score map is anchored on."""
+    values = np.asarray(distances, dtype=float)
+    p10, p50, p95, p99 = (float(v) for v in np.percentile(values, [10, 50, 95, 99]))
+    return {"p10": p10, "p50": p50, "p95": p95, "p99": p99}
+
+
+def grade_distance(distance: float, quantiles: dict[str, float]) -> float:
+    """Map a raw cross-sectional statistic into the ensemble's [0, 0.99) band.
+
+    STRICTLY INCREASING, so selecting the top 1% by this score is selecting the top 1% by the raw
+    distance -- the conformal rate the bake-off measured is preserved exactly.
+
+    The shape follows the other detectors' percentile grading (normal traffic low, only the tail
+    high) for a reason: a rank-uniform score would put HALF the population above 0.20, and
+    `DETECTED_BY_SCORE`/the agreement gate would then read kNN as agreeing on almost every
+    window. Anchors: p50 -> 0.15, p95 -> 0.60, p99 -> 0.85, asymptotic to 0.99.
+    """
+    q = quantiles or {}
+    p50 = float(q.get("p50", 0.0) or 0.0)
+    p95 = float(q.get("p95", p50) or p50)
+    p99 = float(q.get("p99", p95) or p95)
+    d = max(float(distance), 0.0)
+    if p50 <= 0.0 or p95 <= p50 or p99 <= p95:
+        # A reference this degenerate should never have been persisted; refuse to pretend a
+        # score is calibrated rather than emitting a number nobody can read.
+        return 0.0
+    if d <= p50:
+        return 0.15 * (d / p50)
+    if d <= p95:
+        return 0.15 + 0.45 * ((d - p50) / (p95 - p50))
+    if d <= p99:
+        return 0.60 + 0.25 * ((d - p95) / (p99 - p95))
+    # The last band approaches 0.99 without ever reaching it, so equal distances cannot tie at a
+    # ceiling and a 1% threshold keeps its resolution in the tail.
+    scale = max(p99 - p95, 1e-9)
+    return 0.85 + 0.14 * (1.0 - math.exp(-(d - p99) / scale))
+
+
+def coverage_stratum_of_row(row: np.ndarray, expected: int) -> str:
+    """`observed/expected` for one RAW feature row (NaN = absent, never 0)."""
+    observed = int(np.isfinite(np.asarray(row, dtype=float)).sum())
+    return f"{observed}/{int(expected)}"
+
+
+def _fit_reference(Xraw: np.ndarray, cfg: ModelConfig) -> tuple[Any, np.ndarray]:
+    """Fit the shared preprocessor and return (preprocessor, scaled matrix).
+
+    The SAME path DBSCAN used: median impute with the training-time neutral, then StandardScaler.
+    With `missing_features` ON the neutrals come from `column_neutrals` over observed values and
+    the absent Zeek families are NaN (see `null_absent_zeek`); with it OFF the historical
+    `RobustPreprocessor` is used unchanged.
+    """
+    prep = _preprocessor_for(cfg, indicators=False)
+    scaled = np.asarray(prep.fit_transform(np.asarray(Xraw, dtype=float)), dtype=float)
+    return prep, scaled
+
+
+def _grade_by_stratum(distances: np.ndarray, strata: list[str]) -> dict[str, dict[str, float]]:
+    """Reference quantiles per coverage stratum, plus the pooled entry under "".
+
+    A stratum with fewer than MIN_GRADE_SAMPLES reference windows keeps the pooled entry: its own
+    quantiles would be estimated from a handful of points, and the score would swing between
+    retrains. That is the same explicit fallback the calibration layer makes for thresholds.
+    """
+    pooled = distance_quantiles(distances)
+    groups: dict[str, list[float]] = {}
+    for value, key in zip(distances, strata, strict=False):
+        groups.setdefault(str(key), []).append(float(value))
+    out: dict[str, dict[str, float]] = {"": pooled}
+    for key, values in groups.items():
+        if key and len(values) >= MIN_GRADE_SAMPLES:
+            out[key] = distance_quantiles(np.asarray(values, dtype=float))
+    return out
+
+
+# ============================================================================
+class KNNDistanceDetector(BaseDetector):
+    """Distance to the k-th nearest neighbour in a persisted reference population.
+
+    THE SCORE. `score(X)` is the k-th neighbour distance in the standardised 19-feature space --
+    the statistic the bake-off measured at 1.18% held-out FAR. `predict()` maps it monotonically
+    into [0, 0.99] for the ensemble (see `grade_distance`).
+
+    THE REFERENCE IS PERSISTED. The artifact carries the scaled reference matrix (at most
+    `cfg.knn_n_samples` rows x 19 columns, 8 bytes each -- 760 KB at the 5,000-row cap) plus the
+    per-stratum quantiles. It has to travel with the model: a distance is meaningless without the
+    population it was measured against.
+    """
+
+    name = "KNN distance"
+
+    def __init__(self, model_dir, cfg: ModelConfig | None = None):
+        super().__init__(model_dir)
+        self.cfg = cfg or ModelConfig()
+        self.k = int(getattr(self.cfg, "knn_k", 10) or 10)
+        self.preprocessor: Any = _preprocessor_for(self.cfg, indicators=False)
+        self.reference_: np.ndarray | None = None
+        self.strata_: list[str] = []
+        self.grades_: dict[str, dict[str, float]] = {}
+        self.neighbours: NearestNeighbors | None = None
+        # "" = never trained, "ok", "insufficient-rows", "degenerate-reference".
+        self.train_outcome = ""
+
+    def is_ready(self) -> bool:
+        return self.neighbours is not None and self.reference_ is not None
+
+    def expected_feature_columns(self) -> list[str]:
+        return list(DBSCAN_FEATURES)
+
+    def score(self, X: np.ndarray) -> np.ndarray:
+        """The raw statistic: distance to the k-th nearest reference window."""
+        if self.neighbours is None or self.reference_ is None:
+            raise RuntimeError("KNN distance is not fitted")
+        matrix = np.asarray(self.preprocessor.transform(np.asarray(X, dtype=float)), dtype=float)
+        k = int(max(1, min(self.k, len(self.reference_))))
+        dist, _ = self.neighbours.kneighbors(matrix, n_neighbors=k)
+        return np.asarray(dist[:, -1], dtype=float)
+
+    def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
+        st = time.time()
+        s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        query = cross_sectional_training_sql(
+            s, e, self.cfg, scope_filter=networks.training_filter(client),
+            limit=self.cfg.knn_n_samples)
+        data = client.query(query, settings=QUERY_SETTINGS).result_rows
+        if len(data) < MIN_REFERENCE_ROWS:
+            self.train_outcome = "insufficient-rows"
+            logger.warning(
+                "Not enough data for %s: %d rows (floor %d). Every monitored host is sampled; "
+                "a longer seed window is what adds rows.", self.name, len(data), MIN_REFERENCE_ROWS)
+            return False
+        Xraw = np.asarray(data, dtype=float)
+        if self.cfg.missing_features:
+            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
+        prep, scaled = _fit_reference(Xraw, self.cfg)
+        distances = kth_neighbour_distances(scaled, self.k)
+        reason = reference_degeneracy(distances)
+        if reason:
+            # REFUSE THE FIT. Clearing the in-memory model matters: a half-fitted detector that
+            # kept scoring would be exactly the silent failure this check exists to prevent.
+            self.train_outcome = "degenerate-reference"
+            self.reference_ = None
+            self.neighbours = None
+            self.grades_ = {}
+            logger.error(
+                "%s REFUSED its reference: %s. No artifact was written; the detector reports "
+                "'not trained: degenerate reference' and contributes nothing.", self.name, reason)
+            return False
+        self.preprocessor = prep
+        self.reference_ = scaled
+        strata = [coverage_stratum_of_row(row, len(DBSCAN_FEATURES)) for row in Xraw]
+        self.strata_ = strata
+        self.grades_ = _grade_by_stratum(distances, strata)
+        self.neighbours = NearestNeighbors(
+            n_neighbors=int(max(1, min(self.k, len(scaled))))).fit(scaled)
+        self.metadata = ModelMetadata(
+            model_type=self.name, duration_seconds=time.time() - st,
+            feature_columns=DBSCAN_FEATURES,
+            params={"model": "knn-distance", "k": self.k, "n_samples": len(scaled),
+                    "reference_rows": len(scaled),
+                    "reference_bytes": int(scaled.nbytes),
+                    "missing_features": bool(self.cfg.missing_features),
+                    "min_feature_coverage": _floor(self.cfg),
+                    "grades": {key: {k2: round(v2, 6) for k2, v2 in q.items()}
+                               for key, q in self.grades_.items()}},
+            metrics={"reference_rows": int(len(scaled)),
+                     "distinct_reference_distances": int(np.unique(np.round(distances, 12)).size),
+                     "reference_p50": round(float(np.median(distances)), 6),
+                     "reference_p99": round(float(np.percentile(distances, 99)), 6),
+                     "strata": {key: strata.count(key) for key in sorted(set(strata))}},
+            window_start=start_dt, window_end=end_dt, sample_count=len(scaled),
+        )
+        self.train_outcome = "ok"
+        logger.info("✅ %s trained: %d reference windows, %d distinct distances, k=%d",
+                    self.name, len(scaled), int(np.unique(np.round(distances, 12)).size), self.k)
+        self.save()
+        return True
+
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
+        if not self.is_ready():
+            return 0.0
+        try:
+            if self.cfg.missing_features:
+                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
+                    return 0.0
+                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
+            else:
+                vec = feature_vector(features or {}, DBSCAN_FEATURES)
+            row = np.asarray([vec], dtype=float)
+            distance = float(self.score(row)[0])
+            stratum = coverage_stratum_of_row(row[0], len(DBSCAN_FEATURES))
+            quantiles = self.grades_.get(stratum, self.grades_.get("", {}))
+            return float(grade_distance(distance, quantiles))
+        except Exception as exc:  # noqa: BLE001
+            return self.note_predict_error(exc)
+
+
+# ============================================================================
+class LOFDetector(BaseDetector):
+    """Local Outlier Factor (k=20, novelty=True) over the same 19-feature vector.
+
+    INDEPENDENT OF KNN ON PURPOSE. Separate class, separate training query result, separate
+    reference set, separate artifact (`LOF_v5.pkl`), separate calibration and eligibility row.
+    The bake-off measured it as the only score not redundant with Isolation Forest (rho = -0.08
+    against kNN's +0.46), which is the reason to carry a second cross-sectional view at all.
+
+    THE SCORE IS BOUNDED. Raw LOF divides by a local reachability density, and a reference full
+    of exact duplicate quiet windows makes that density infinite -- the bake-off's F4 fold produced
+    a 99th-percentile score of 8.5e8, i.e. a threshold above every score the detector could emit
+    (a detector silently off, reading as a 0.39% false-alarm rate). Two defences here:
+
+      1. the statistic is `log1p(LOF)`, so a threshold lives on a scale a reader can judge
+         (log1p(8.5e8) ~= 20.6 instead of 850,000,000); and
+      2. a fit whose reference k-th-neighbour distances are degenerate is REFUSED, exactly as for
+         kNN, so the pathology cannot be persisted and reported as a quiet detector.
+    """
+
+    name = "LOF"
+
+    def __init__(self, model_dir, cfg: ModelConfig | None = None):
+        super().__init__(model_dir)
+        self.cfg = cfg or ModelConfig()
+        self.k = int(getattr(self.cfg, "lof_neighbors", 20) or 20)
+        self.preprocessor: Any = _preprocessor_for(self.cfg, indicators=False)
+        self.reference_: np.ndarray | None = None
+        self.strata_: list[str] = []
+        self.grades_: dict[str, dict[str, float]] = {}
+        self.model: LocalOutlierFactor | None = None
+        self.train_outcome = ""
+
+    def is_ready(self) -> bool:
+        return self.model is not None and self.reference_ is not None
+
+    def expected_feature_columns(self) -> list[str]:
+        return list(DBSCAN_FEATURES)
+
+    def score(self, X: np.ndarray) -> np.ndarray:
+        """The raw statistic: log1p(LOF). Higher = less like its local neighbourhood."""
+        if self.model is None or self.reference_ is None:
+            raise RuntimeError("LOF is not fitted")
+        matrix = np.asarray(self.preprocessor.transform(np.asarray(X, dtype=float)), dtype=float)
+        # sklearn's score_samples is the NEGATIVE LOF (higher = more normal); negate first, then
+        # log1p. Both are monotone, so ordering -- and any conformal threshold -- is preserved.
+        raw = np.maximum(-np.asarray(self.model.score_samples(matrix), dtype=float), 0.0)
+        return np.log1p(raw)
+
+    def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
+        st = time.time()
+        s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        query = cross_sectional_training_sql(
+            s, e, self.cfg, scope_filter=networks.training_filter(client),
+            limit=self.cfg.lof_n_samples)
+        data = client.query(query, settings=QUERY_SETTINGS).result_rows
+        if len(data) < max(MIN_REFERENCE_ROWS, self.k + 1):
+            self.train_outcome = "insufficient-rows"
+            logger.warning(
+                "Not enough data for %s: %d rows (floor %d, k=%d). Every monitored host is "
+                "sampled; a longer seed window is what adds rows.",
+                self.name, len(data), max(MIN_REFERENCE_ROWS, self.k + 1), self.k)
+            return False
+        Xraw = np.asarray(data, dtype=float)
+        if self.cfg.missing_features:
+            Xraw = null_absent_zeek(Xraw, DBSCAN_FEATURES)
+        prep, scaled = _fit_reference(Xraw, self.cfg)
+        distances = kth_neighbour_distances(scaled, self.k)
+        reason = reference_degeneracy(distances)
+        if reason:
+            self.train_outcome = "degenerate-reference"
+            self.reference_ = None
+            self.model = None
+            self.grades_ = {}
+            logger.error(
+                "%s REFUSED its reference: %s. No artifact was written; the detector reports "
+                "'not trained: degenerate reference' and contributes nothing.", self.name, reason)
+            return False
+        model = LocalOutlierFactor(n_neighbors=int(min(self.k, len(scaled) - 1)),
+                                   novelty=True).fit(scaled)
+        raw = np.maximum(-np.asarray(model.score_samples(scaled), dtype=float), 0.0)
+        statistic = np.log1p(raw)
+        if not bool(np.isfinite(statistic).all()):
+            self.train_outcome = "degenerate-reference"
+            self.reference_ = None
+            self.model = None
+            self.grades_ = {}
+            logger.error("%s REFUSED: log1p(LOF) is not finite on the reference.", self.name)
+            return False
+        finite_quantiles = distance_quantiles(statistic)
+        if not finite_quantiles["p99"] > finite_quantiles["p50"]:
+            self.train_outcome = "degenerate-reference"
+            self.reference_ = None
+            self.model = None
+            self.grades_ = {}
+            logger.error("%s REFUSED: log1p(LOF) does not vary across the reference.", self.name)
+            return False
+        self.preprocessor = prep
+        self.reference_ = scaled
+        strata = [coverage_stratum_of_row(row, len(DBSCAN_FEATURES)) for row in Xraw]
+        self.strata_ = strata
+        self.grades_ = _grade_by_stratum(statistic, strata)
+        self.model = model
+        self.metadata = ModelMetadata(
+            model_type=self.name, duration_seconds=time.time() - st,
+            feature_columns=DBSCAN_FEATURES,
+            params={"model": "lof", "k": self.k, "novelty": True, "n_samples": len(scaled),
+                    "reference_rows": len(scaled),
+                    "reference_bytes": int(scaled.nbytes),
+                    "statistic": "log1p(lof)",
+                    "missing_features": bool(self.cfg.missing_features),
+                    "min_feature_coverage": _floor(self.cfg),
+                    "grades": {key: {k2: round(v2, 6) for k2, v2 in q.items()}
+                               for key, q in self.grades_.items()}},
+            metrics={"reference_rows": int(len(scaled)),
+                     "distinct_reference_distances": int(np.unique(np.round(distances, 12)).size),
+                     "statistic_p50": round(float(np.median(statistic)), 6),
+                     "statistic_p99": round(float(np.percentile(statistic, 99)), 6),
+                     "statistic_max": round(float(np.max(statistic)), 6),
+                     "strata": {key: strata.count(key) for key in sorted(set(strata))}},
+            window_start=start_dt, window_end=end_dt, sample_count=len(scaled),
+        )
+        self.train_outcome = "ok"
+        logger.info("✅ %s trained: %d reference windows, log1p(LOF) p50=%.3f p99=%.3f, k=%d",
+                    self.name, len(scaled), float(np.median(statistic)),
+                    float(np.percentile(statistic, 99)), self.k)
+        self.save()
+        return True
+
+    def predict(self, flow: dict[str, Any],
+                features: dict[str, float | None] | None = None) -> float:
+        if not self.is_ready():
+            return 0.0
+        try:
+            if self.cfg.missing_features:
+                if below_floor(features, DBSCAN_FEATURES, _floor(self.cfg)):
+                    return 0.0
+                vec = feature_vector(features or {}, DBSCAN_FEATURES, preserve_missing=True)
+            else:
+                vec = feature_vector(features or {}, DBSCAN_FEATURES)
+            row = np.asarray([vec], dtype=float)
+            statistic = float(self.score(row)[0])
+            stratum = coverage_stratum_of_row(row[0], len(DBSCAN_FEATURES))
+            return float(grade_distance(statistic,
+                                        self.grades_.get(stratum, self.grades_.get("", {}))))
+        except Exception as exc:  # noqa: BLE001
+            return self.note_predict_error(exc)
+
+
+# Both models register the GENERIC coverage contract with the calibration layer. They do not need
+# a custom one -- `ml_window_scores` stores (score, coverage, observed, expected) and that is
+# enough -- but the registration is the declared seam: the calibration layer never branches on a
+# model name, it asks the registry how to read a row.
+register_model_contract(KNNDistanceDetector.name, COVERAGE_CONTRACT)
+register_model_contract(LOFDetector.name, COVERAGE_CONTRACT)
+
+
+# ============================================================================
 class DBSCANDetector(BaseDetector):
+    """RETIRED 2026-11-20 — kept in the tree for one release, not constructed or scored.
+
+    WHY IT IS RETIRED. Removed from `build_detectors` and from the fused ensemble by operator
+    decision on 2026-11-20, after the measurement in
+    `docs/research/cross-sectional-detector-2026-11-20.md`: of 27,454 stored DBSCAN scores,
+    97.89% sat at 0.99 or above with p50 = p99 = max = 0.99. A detector whose score is at its
+    ceiling on 98% of windows cannot be given a threshold -- any cut below the ceiling fires on
+    essentially everything, which is the FAR ~= 1.0 the retirement is about.
+
+    It also trained on five hosts in production (`sipHash64(src_addr) % 5 == 1` cut 24 hosts to
+    5), which is not a population for a density estimate. That cut is removed from this query as
+    well, so a future resurrection does not inherit the bug.
+
+    NOTHING CONSTRUCTS THIS CLASS. `weirvern.worker.build_detectors` returns the five live
+    detectors; `ensemble.MODEL_FAMILIES` no longer knows this name. The class exists so the
+    artifact/format history stays readable for one release.
+    """
+
     name = "DBSCAN"
 
     def __init__(self, model_dir, cfg: ModelConfig | None = None):
@@ -468,10 +985,12 @@ class DBSCANDetector(BaseDetector):
                 ON a.window_start = t.window_start AND a.src_addr = t.src_addr
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
-              AND a.total_bytes > 0
-              AND sipHash64(a.src_addr) % 5 == 1{excl}{scope_filter}
+              AND a.total_bytes > 0{excl}{scope_filter}
             -- Same deterministic cut as the Isolation Forest query (GitHub #61). Hash order
             -- keeps the surviving sample uniform instead of biasing it to one end of the window.
+            -- NO host sampling: the `sipHash64(src_addr) % 5 == 1` cut that used to sit above
+            -- this line kept 5 of 24 hosts (measured 2026-11-20) and is removed for every
+            -- cross-sectional fit; it is left out here too so a resurrection cannot inherit it.
             ORDER BY sipHash64(a.src_addr, a.window_start)
             LIMIT {int(self.cfg.dbscan_n_samples)}
         """
@@ -481,7 +1000,7 @@ class DBSCANDetector(BaseDetector):
             # The floor belongs in the message: a reader who sees only "not enough data" cannot
             # tell 12 rows from 99, and the remedy (a longer seed) depends on the gap.
             logger.warning(
-                "Not enough data for %s: %d rows after the 1-in-5 host sampling, floor 100. A "
+                "Not enough data for %s: %d rows after the monitored-scope filter, floor 100. A "
                 "longer seed window is what adds them.", self.name, len(data),
             )
             return False

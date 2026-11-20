@@ -6229,7 +6229,8 @@ async function bootAuthed() {
 const MODEL_COLORS = {
   "Isolation Forest": "var(--series-1)",
   "Gradient Boosting": "var(--series-2)",
-  "DBSCAN": "var(--series-3)",
+  "KNN distance": "var(--series-3)",
+  "LOF": "var(--series-6)",
   "Adaptive Baseline": "var(--series-4)",
   "Ensemble": "var(--series-5)",
 };

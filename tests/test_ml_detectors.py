@@ -1,10 +1,15 @@
 """The Detectors table: status derived from evidence, never from a stored card value.
 
-THE OPERATOR'S RULING IS THE SPEC: "DBSCAN trains, therefore it is not retired." The old table read
-`ml_model_cards.status`, a curated snapshot that still said `retired` while DBSCAN was training
-every six hours and writing a new artifact. These tests pin the replacement: a training row, an
-artifact on disk, a measured false-alarm rate against its target, and the card's existing veto --
-with no path from a stored status word to the rendered row.
+WHY IT IS DERIVED. The old table read `ml_model_cards.status`, a curated snapshot that still said
+`retired` while DBSCAN was training every six hours and writing a new artifact. These tests pin the
+replacement: a training row, an artifact on disk, a measured false-alarm rate against its target,
+and the card's existing veto -- with no path from a stored status word to the rendered row.
+
+THE RULING CHANGED ON 2026-11-20: DBSCAN was retired by operator decision (its stored score was
+degenerate -- 97.89% at 0.99 or above). Retirement is therefore a fact about the RELEASE, carried
+in `RETIRED_DETECTORS`, not inferred from absence: a retired detector keeps its training history
+and its artifact, so "no artifact + no training rows" is not the shape to look for. The live-model
+cases below use `KNN distance`, which replaced it in the ensemble.
 
 The derivation is pure, so every case below runs without a ClickHouse. The last test is the seam
 the jsdom harness cannot see statically: the ids and the header/row widths must agree between the
@@ -25,7 +30,7 @@ WRITTEN = "2026-11-19T08:22:00+00:00"
 
 def _rows(*, observed: float | None = 1.0, target: float | None = 0.01,
           card: str | None = "production", trained: bool = True,
-          name: str = "DBSCAN") -> list[dict]:
+          name: str = "KNN distance") -> list[dict]:
     """One detector's row, with each evidence source switched on or off independently."""
     training = {name: {"trained_at": TODAY, "samples": 5000}} if trained else {}
     artifacts = {name: {"version": "v5", "written_at": WRITTEN}} if trained else {}
@@ -36,7 +41,7 @@ def _rows(*, observed: float | None = 1.0, target: float | None = 0.01,
 
 
 def test_a_trained_detector_over_its_far_budget_is_not_contributing() -> None:
-    """The live DBSCAN reading: trained today, measured 1.00 against a 0.01 target."""
+    """A live detector trained today, measured 1.00 against a 0.01 target."""
     row = _rows()[0]
     assert row["status"].startswith("trained, not contributing")
     assert "1.00" in row["status"] and "0.01" in row["status"]
@@ -83,14 +88,14 @@ def test_a_detector_with_no_training_and_no_artifact_is_not_trained() -> None:
 def test_the_fused_score_is_never_shown_without_its_target() -> None:
     rows = detector_rows(
         {n: {"trained_at": TODAY, "samples": 100} for n in
-         ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")},
+         ("Isolation Forest", "Gradient Boosting", "KNN distance", "Adaptive Baseline")},
         {n: {"version": "v5"} for n in
-         ("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline")},
+         ("Isolation Forest", "Gradient Boosting", "KNN distance", "Adaptive Baseline")},
         {"Isolation Forest": {"observed_far": 0.0, "target_far": 0.01},
          "Gradient Boosting": {"observed_far": 0.0, "target_far": 0.01},
-         "DBSCAN": {"observed_far": 1.0, "target_far": 0.01},
+         "KNN distance": {"observed_far": 1.0, "target_far": 0.01},
          "Adaptive Baseline": {"observed_far": 1.0, "target_far": 0.01}},
-        dict.fromkeys(("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"),
+        dict.fromkeys(("Isolation Forest", "Gradient Boosting", "KNN distance", "Adaptive Baseline"),
                       "production"),
     )
     summary = detector_summary(rows, {"observed_far": 0.04, "target_far": 0.01})
@@ -137,25 +142,25 @@ def test_the_models_fetcher_derives_the_rows_from_the_live_reads(monkeypatch, tm
         def query(self, sql, parameters=None):  # noqa: ANN001, ANN201
             rows: list = []
             if "ml_models" in sql:
-                rows = [("DBSCAN", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000)]
+                rows = [("KNN distance", "2026-11-19 08:21:17", "2026-11-19 08:21:08", 5000)]
             elif "ml_calibration" in sql:
-                rows = [("DBSCAN", 1.0, 0.01), ("__fused__", 0.04, 0.01)]
+                rows = [("KNN distance", 1.0, 0.01), ("__fused__", 0.04, 0.01)]
             return type("R", (), {"result_rows": rows})()
 
     monkeypatch.setattr(payloads.status_mod, "model_overview",
                         lambda client, **kw: {"available": True, "hours": 24})
     monkeypatch.setattr(cards_mod, "current_cards",
-                        lambda client: [{"model_name": "DBSCAN", "status": "retired",
+                        lambda client: [{"model_name": "KNN distance", "status": "retired",
                                          "version": "v5"}])
     monkeypatch.setattr(cards_mod, "artifact_inventory",
-                        lambda model_dir: {"DBSCAN": {"version": "v5",
+                        lambda model_dir: {"KNN distance": {"version": "v5",
                                                       "written_at": WRITTEN}})
     settings = types.SimpleNamespace(ml_target_far=0.01, ml_eligibility_multiple=3.0,
                                      model_dir=str(tmp_path))
 
     out = payloads.models(_Client(), hours=24, settings=settings)
 
-    assert [row["name"] for row in out["detectors"]] == ["DBSCAN"]
+    assert [row["name"] for row in out["detectors"]] == ["KNN distance"]
     assert out["detectors"][0]["status"].startswith("trained, not contributing")
     assert "retired" not in json.dumps(out["detectors"]).lower()
     assert "0.04" in out["detector_summary"] and "0.01 target" in out["detector_summary"]
@@ -194,11 +199,11 @@ def test_a_calibration_older_than_the_artifact_is_not_evidence_about_it():
     from weirvern.models.detector_status import detector_rows
 
     rows = detector_rows(
-        {"DBSCAN": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
-        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
-        {"DBSCAN": {"observed_far": 0.0, "target_far": 0.01,
+        {"KNN distance": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
+        {"KNN distance": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
+        {"KNN distance": {"observed_far": 0.0, "target_far": 0.01,
                     "computed_at": "2026-11-19 09:00:00"}},
-        {"DBSCAN": "production"},
+        {"KNN distance": "production"},
     )
     row = rows[0]
     assert row["contributing"] is False
@@ -210,10 +215,10 @@ def test_a_calibration_newer_than_the_artifact_still_contributes():
     from weirvern.models.detector_status import detector_rows
 
     rows = detector_rows(
-        {"DBSCAN": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
-        {"DBSCAN": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
-        {"DBSCAN": {"observed_far": 0.0, "target_far": 0.01,
+        {"KNN distance": {"trained_at": "2026-11-19 10:00:00", "samples": 5000}},
+        {"KNN distance": {"version": "v5", "written_at": "2026-11-19T10:00:00"}},
+        {"KNN distance": {"observed_far": 0.0, "target_far": 0.01,
                     "computed_at": "2026-11-19 11:00:00"}},
-        {"DBSCAN": "production"},
+        {"KNN distance": "production"},
     )
     assert rows[0]["contributing"] is True

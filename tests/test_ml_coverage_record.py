@@ -74,7 +74,8 @@ class _Client:
         return found[-1][1], found[-1][2]
 
 
-def _population(names=("Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"),
+def _population(names=("Isolation Forest", "Gradient Boosting", "KNN distance", "LOF",
+                       "Adaptive Baseline"),
                 windows: int = 40, observed: int = 10, expected: int = 77):
     """A reference where every window measured `observed` of `expected` columns."""
     rows = []
@@ -92,7 +93,15 @@ def test_a_calibration_row_records_the_coverage_of_its_reference():
     # The floor is switched off for this test: at the shipped 0.15 a 10/77 window is excluded
     # from the reference by design, and the point here is what the row stores when it is kept.
     rows = run(client, Settings(ml_missing_features=True, ml_min_feature_coverage=0.0))
-    assert len(rows) == 4, "one row per detector"
+    pooled = [row for row in rows if row["scope"] == "global"]
+    assert len(pooled) == 5, "one pooled row per live detector"
+    # AND ONE ROW PER COVERAGE STRATUM beside each pooled row: the whole reference measured
+    # 10/77, so every detector has exactly one stratum, and 40 windows is below the 400 needed
+    # to resolve a 1% budget -- it therefore says it fell back to the pooled threshold.
+    strata = [row for row in rows if row["scope"] == "coverage"]
+    assert len(strata) == 5
+    assert {row["subject"] for row in strata} == {"10/77"}
+    assert all("FELL BACK to the pooled threshold" in row["reference_source"] for row in strata)
     for row in rows:
         assert row["coverage"] == pytest.approx(10 / 77)
         assert row["coverage_observed"] == 10 * 40
@@ -142,8 +151,8 @@ def test_two_calibrations_in_different_missing_modes_are_distinguishable():
     on_rows = run(_Client(_population()),
                   Settings(ml_missing_features=True, ml_min_feature_coverage=0.0))
     off_population = [[name, 0.5 + i / 4000, None, None, None]
-                      for name in ("Isolation Forest", "Gradient Boosting",
-                                   "DBSCAN", "Adaptive Baseline") for i in range(40)]
+                      for name in ("Isolation Forest", "Gradient Boosting", "KNN distance",
+                                   "LOF", "Adaptive Baseline") for i in range(40)]
     off_rows = run(_Client(off_population, counts=False),
                    Settings(ml_missing_features=False, ml_min_feature_coverage=0.0))
 

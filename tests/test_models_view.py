@@ -425,12 +425,12 @@ def test_the_retrain_header_names_every_detector_and_never_one_number_for_all(tm
         "detectors": [
             {"name": "Isolation Forest", "trained": True, "sample_count": 11900},
             {"name": "Gradient Boosting", "trained": True, "sample_count": 9520},
-            {"name": "DBSCAN", "trained": True, "sample_count": 817},
+            {"name": "KNN distance", "trained": True, "sample_count": 817},
             {"name": "Adaptive Baseline", "trained": True, "sample_count": 10},
         ],
         "contamination": {"available": True, "detections": 1094},
     })
-    for count in ("11,900 windows", "9,520 windows", "817 window sample", "10 hosts"):
+    for count in ("11,900 windows", "9,520 windows", "817 reference windows", "10 hosts"):
         assert count in summary, summary
     assert "9,520 host-window(s)" not in summary
     assert "1,094" in summary

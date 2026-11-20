@@ -1783,7 +1783,7 @@ def _staleness(newest: dict[str, str], interval_h: float,
     """
     from datetime import datetime
 
-    known = ["Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"]
+    known = ["Isolation Forest", "Gradient Boosting", "KNN distance", "LOF", "Adaptive Baseline"]
     rows: list[dict] = []
     last_usable = usable or {}
     for name in known:
@@ -1946,6 +1946,11 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
             m = json.loads(metrics) if metrics else {}
         except (ValueError, TypeError):
             m = {}
+        # A REFUSED FIT IS NOT A TRAINING RUN. It is recorded (so the Detectors table can say
+        # `not trained: degenerate reference`) with `sample_count = 0` and no artifact. Plotting
+        # it here would give a model that cannot score a line that looks like a retrain.
+        if isinstance(m, dict) and m.get("refused"):
+            continue
         hist.setdefault(mtype, []).append({
             "t": _iso(trained_at),
             "n": int(n or 0),
@@ -2017,9 +2022,13 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
     MODELS = [
         ("isolation_forest_score", "Isolation Forest"),
         ("gradient_boosting_score", "Gradient Boosting"),
-        ("dbscan_score", "DBSCAN"),
         ("baseline_score", "Adaptive Baseline"),
     ]
+    # DBSCAN'S BAR IS GONE (2026-11-20). The column is still written as 0.0 for historical rows
+    # because the schema keeps it, but the detector is retired: plotting a bar that is zero by
+    # construction would be a chart of nothing under a name that no longer scores. The two
+    # cross-sectional detectors have no netflow_anomalies column yet either, so the honest chart
+    # is the three live per-model scores plus the ensemble.
     scores: dict[str, list[float]] = {label: [] for _col, label in MODELS}
     scores["Ensemble"] = []
     points: list[dict] = []
@@ -2031,7 +2040,6 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
          devmag, window, src, contrib) = r
         scores["Isolation Forest"].append(float(ifs or 0))
         scores["Gradient Boosting"].append(float(gb or 0))
-        scores["DBSCAN"].append(float(db or 0))
         scores["Adaptive Baseline"].append(float(bl or 0))
         scores["Ensemble"].append(float(score or 0))
         points.append({

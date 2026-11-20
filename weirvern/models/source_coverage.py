@@ -78,7 +78,8 @@ def summarise(sources: list[dict[str, Any]], roles: dict[str, Any] | None) -> di
         "models": [
             {"name": name, "usable": not missing,
              "reason": "" if not missing else "required source missing: " + ", ".join(missing)}
-            for name in ("Adaptive Baseline", "Isolation Forest", "Gradient Boosting", "DBSCAN")
+            for name in ("Adaptive Baseline", "Isolation Forest", "Gradient Boosting",
+                         "KNN distance", "LOF")
         ],
     }
 

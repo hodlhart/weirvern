@@ -32,12 +32,23 @@ DETECTORS: dict[str, dict] = {
         "rule": "GradientBoosting scored this window above the strong-signal floor",
         "loud": True,
     },
-    "DBSCAN": {
+    "KNN distance": {
         "owner": "ops",
-        "runbook": "DBSCAN found this window's behaviour outside every dense cluster. Open the "
-                   "evidence panel; a cluster that is merely new (a new device, a new service) "
-                   "is not an incident -- check the host's first-seen date before acting.",
-        "rule": "DBSCAN found the window outside every dense behavioural cluster",
+        "runbook": "The k-th-neighbour distance says this host-window sits far from every other "
+                   "window with the same measured columns. Open the evidence panel: a host that "
+                   "is new, rebuilt or running a new service is far from the population without "
+                   "being an incident -- check first-seen before acting.",
+        "rule": "KNN distance placed the window outside the population of host-windows",
+        "loud": True,
+    },
+    "LOF": {
+        "owner": "ops",
+        "runbook": "The local outlier factor says this window's neighbourhood is far sparser than "
+                   "its neighbours' -- a local density anomaly, not a global one. It is the most "
+                   "independent score in the ensemble, so a hit here with no corroboration is a "
+                   "lead: read the evidence panel before acting, and expect it on hosts whose "
+                   "traffic mix changes rather than on volume.",
+        "rule": "LOF found the window in a sparser local neighbourhood than its peers",
         "loud": True,
     },
     "Adaptive Baseline": {

@@ -53,13 +53,18 @@ DETECTED_BY_SCORE = 0.20
 # GradientBoostingDetector.train: `teacher.predict(Xs)`). It is a STUDENT of the forest, so a high
 # score from both is one observation stated twice -- not two independent observations. Counting
 # both as corroboration is how ordinary gateway traffic with a 1.3x byte change reached
-# `critical` on the live cluster. DBSCAN and Adaptive Baseline learn different things and remain
-# separate families; an unknown future detector is its own family unless it is explicitly related
-# to one here.
+# `critical` on the live cluster.
+#
+# KNN distance and LOF are two DIFFERENT cross-sectional questions and are separate families on
+# purpose: kNN asks "how far is the k-th neighbour?" (global distance), LOF asks "how much denser
+# is my neighbourhood than my neighbours'?" (local density ratio). They share a feature vector and
+# nothing else, and the bake-off measured them as nearly uncorrelated. The Adaptive Baseline learns
+# a third thing again.
 MODEL_FAMILIES: dict[str, str] = {
     "Isolation Forest": "forest",
     "Gradient Boosting": "forest",   # semi-supervised student of Isolation Forest
-    "DBSCAN": "density",
+    "KNN distance": "distance",
+    "LOF": "local-density",
     "Adaptive Baseline": "baseline",
 }
 
@@ -117,14 +122,22 @@ def contributing_scores(scores: dict[str, float],
                         eligible: dict[str, bool] | None = None) -> dict[str, float]:
     """Scores that may set the fused result.
 
-    An ineligible model still contributes its raw score to the evidence record, but a zero here
-    keeps it from winning `max` fusion or counting toward the agreement gate. Missing eligibility
-    information means eligible: the gate is an explicit operator rail, not a second failure mode.
+    EXCLUDED, NOT ZEROED. A model that is not eligible is REMOVED from the mapping, not replaced
+    with 0.0. In max fusion the two are equivalent, but in mean fusion a zero drags the average
+    down -- i.e. an uncalibrated detector would still change the decision while being reported as
+    "not contributing". The operator's rule is that such a model is excluded from the fused score
+    entirely.
+
+    A MODEL ABSENT FROM A NON-EMPTY `eligible` MAPPING IS NOT ELIGIBLE. `eligibility()` returns a
+    row only for a model that has a calibration measurement; "no row" is "no met budget", the same
+    rule `detector_status` applies. This is what keeps a freshly trained, not-yet-calibrated kNN
+    or LOF OUT of the fused score on its first cycle instead of letting it win `max` fusion while
+    it has no measured false-alarm rate. The empty mapping is different: a deployment that has
+    produced no calibration rows at all still runs detection, and every detector contributes.
     """
     if not eligible:
         return dict(scores)
-    return {name: (score if eligible.get(name, True) else 0.0)
-            for name, score in scores.items()}
+    return {name: score for name, score in scores.items() if eligible.get(name, False)}
 
 
 def detection_confidence_factor(flow: dict, cfg) -> float:
@@ -387,7 +400,8 @@ def detect_flows(
     NAME_TO_KEY = {
         "Isolation Forest": "isolation_forest",
         "Gradient Boosting": "gradient_boosting",
-        "DBSCAN": "dbscan",
+        "KNN distance": "knn",
+        "LOF": "lof",
         "Adaptive Baseline": "adaptive_baseline",
     }
 

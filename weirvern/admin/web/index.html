@@ -837,13 +837,13 @@
       <h2>Overview <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span> <span id="m-filters"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
-  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods —
-  Isolation Forest, its Gradient Boosting student, DBSCAN and an adaptive per-host baseline — and
-  the ensemble asks how many independent families agree before a score is believed. Isolation
-  Forest and Gradient Boosting are one family; the baseline is another. Whether a detector
-  contributes is derived in the Detectors table below — a training row, an artifact on disk, a
-  measured false-alarm rate against its target, and the model card's veto. No stored status word is
-  repeated as a fact here.</p>
+  <p><strong>What it is.</strong> Five detectors watch the same traffic with different methods —
+  Isolation Forest, its Gradient Boosting student, a kNN-distance detector, a local outlier factor
+  (LOF) and an adaptive per-host baseline — and the ensemble asks how many independent families
+  agree before a score is believed. Isolation Forest and Gradient Boosting are one family; kNN,
+  LOF and the baseline are three more. Whether a detector contributes is derived in the Detectors
+  table below — a training row, an artifact on disk, a measured false-alarm rate against its
+  target, and the model card's veto. No stored status word is repeated as a fact here.</p>
   <p><strong>What is new.</strong> Calibration and the shadow channels below are read-only experiments: they measure budgets, candidates and regime changes, but no shadow row can create or change an alert.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
@@ -908,10 +908,10 @@
     <div class="card">
       <h2>Training history <span class="muted">samples per retrain</span> <button class="info-btn" data-info="m-history-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-history-info">
-  <p><strong>What it is.</strong> Each line is one detector over time. The three sampled detectors
+  <p><strong>What it is.</strong> Each line is one detector over time. The sampled detectors
   draw from a 72h training window every 6h and the line shows how many rows they sampled, capped at
-  80k (Isolation Forest), 40k (Gradient Boosting) and 5k (DBSCAN) &mdash; a flat line means the window
-  is already full.</p>
+  80k (Isolation Forest), 40k (Gradient Boosting) and 5k (KNN distance and LOF, each on its own
+  19-column reference) &mdash; a flat line means the window is already full.</p>
   <p><strong>The Adaptive Baseline is a different quantity.</strong> It rebuilds per-host baselines
   from the last 24h on every detection cycle, so its line is the number of HOSTS it just baselined
   (tens, not thousands) and it has far more points than the others. It is on this chart because its

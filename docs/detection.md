@@ -9,36 +9,92 @@ means, and how the console presents it.
 
 ### The ensemble
 
-Four detectors, each contributing a normalised 0–1 score:
+Five detectors, each contributing a normalised 0–1 score:
 
 | Detector | What it catches | Notes |
 |---|---|---|
 | Isolation Forest | Multivariate outliers across the full feature vector | Calibrated against its own training distribution |
 | Gradient Boosting | Non-linear patterns, trained on IF's labels (a distillation) | Probability calibrated; class-imbalanced weighting |
-| DBSCAN | Dense clusters vs. outliers — port diversity, fan-out, TLS fingerprints | Score calibrated against the measured distance distribution |
+| KNN distance | A host-window that sits far from the population of host-windows on the same measured columns | Distance to the k-th neighbour (k = 10) in the standardised 19-column vector; the reference set travels with the artifact |
+| LOF | A host-window whose local neighbourhood is sparser than its neighbours' — a *local* density outlier | Independent of kNN: `novelty=True`, k = 20, its own reference set and artifact. Scored as `log1p(LOF)` so the number is bounded |
 | Adaptive Baseline | Per-host percentile deviation (p95/p99/p999) | Learns each host's normal; needs ≥10 observations |
+
+**DBSCAN was retired on 2026-11-20.** Of 27,454 stored DBSCAN scores, **97.89% sat at 0.99 or
+above** (p50 = p99 = max = 0.99): a score that is at its ceiling on 98% of windows cannot be
+given a threshold, and any cut below the ceiling fires on essentially everything. The class is
+kept in the tree for one release; nothing constructs it. The Detectors table states the
+retirement with its measurement rather than inferring it from a missing artifact.
+
+**The cross-sectional pair was measured, not guessed.** `docs/research/cross-sectional-detector-2026-11-20.md`
+contains the bake-off: six candidates on the same 19-feature vector, the same walk-forward folds
+and the same conformal rule. kNN at k = 10 was the only candidate whose false-alarm rate held
+within a quarter of a point of target in *every* coverage stratum (1.05% / 1.07% / 1.24% at a
+0.01 target); LOF is the only genuinely independent score (ρ = −0.08 with Isolation Forest,
+against kNN's +0.46). Both enter the ensemble at the neutral weight of 1.0, and the shipped
+`max` fusion does not read weights at all.
 
 Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.
 
+**Fusion reads ELIGIBLE detectors only, and an ineligible one is *removed*, not zeroed.** A model
+with no calibration row, a stale calibration, an over-budget false-alarm rate or no `production`
+model card is excluded from the fused score; it is not counted as a zero (a zero still drags a
+mean fusion down, and in `max` fusion it would look identical to an opinion of "normal"). The
+two new detectors therefore contribute **nothing** on the cycle they first train: they have no
+card and no calibration measurement yet. That is the intended first state, and it is visible in
+the Detectors table rather than silent.
+
 **Severity escalation requires independent corroboration and material evidence**:
 at least two *families* must agree (Isolation Forest and its Gradient Boosting
-student are one family; DBSCAN and the Adaptive Baseline are separate), and the
-window must carry a material deviation, a structural signature (e.g. a zero-byte
-port scan), or true novelty. A strong score alone is not enough — a high score is
+student are one family; KNN distance, LOF and the Adaptive Baseline are three separate
+families), and the window must carry a material deviation, a structural signature (e.g. a
+zero-byte port scan), or true novelty. A strong score alone is not enough — a high score is
 a ranking, not an incident. Rows that do not clear the gate stay visible at a
 lower severity with their reason; they are not deleted. This gate exists because
 measurement showed a 90-false-positive storm without it.
 
+### Coverage-stratified calibration
+
+A host-window whose Zeek row never arrived is not a different *kind* of observation, but every
+cross-sectional score built on its shorter vector is systematically **smaller**. Measured before
+this change: with one pooled threshold, partial-coverage windows alerted at **0.00%** while fully
+observed windows alerted at **2.3–2.5%** — 35% of the population was silently unalertable while
+the headline rate looked healthy.
+
+The calibration key is therefore the **coverage stratum** (`19/19`, `16/19`, `8/19` on this
+deployment), never the model:
+
+- `weirvern/models/calibration.py` fits a conformal threshold per stratum from `(score, stratum)`
+  pairs. It does not know which detector produced a score; a model registers how its stored rows
+  map to a key (`ScoreContract`), and the generic coverage contract is the default.
+- The scorer grades each window against **its own stratum's** reference quantiles, so a partial
+  window at its stratum's 99th percentile is as alertable as a full window at its own.
+- A stratum with fewer than **400** reference windows cannot resolve a 1% budget (split-conformal
+  needs a calibration half of ≥199 scores for the rank to sit below the maximum). It explicitly
+  **falls back to the pooled threshold** and says so in its row — the fallback is written, not
+  inferred from a missing row.
+- The Detectors table reads the pooled row only; per-stratum measurements are stored with
+  `scope = 'coverage'` and `subject = '<observed>/<expected>'`, so the table's status and
+  eligibility still answer one question with one number.
+
+### Ripples do not consume detector scores
+
+Ripples are computed from **raw telemetry channels** (bytes, packets, ports, timing, graph
+relationships) and stay that way deliberately: independence from the models is the point, and a
+model score feeding a channel would turn one observation into two. The only place the two meet is
+the anomaly page's **corroboration block**, which is display, not input. Do not wire a detector
+score into `weirvern/models/ripple*.py`.
+
 ### Shadow calibration and challengers
 
-The production ensemble is still the four detectors above. The newer layer is
+The production ensemble is the five detectors above. The newer layer is
 read-only and cannot create or change an alert:
 
 - **Calibration** measures a requested false-alarm budget against the stored
-  detection tail and reports the observed rate; it is not wired to the alert path.
+  detection population and reports the observed rate per model and per coverage stratum; it is
+  not wired to the alert path.
 - **HDBSCAN** is a density challenger scored on the same host-window matrix; a
-  candidate must beat the production model at the same alerts/day before it can
-  replace DBSCAN.
+  candidate must beat the production model at the same alerts/day before it can be promoted. Its
+  slot is no longer "replace DBSCAN" — that detector is retired and its replacement is measured.
 - **Matrix Profile** records shape discords that the per-window tabular detectors
   cannot see, and **Page-Hinkley** records regime changes. Both are evidence
   channels, not alert sources.
