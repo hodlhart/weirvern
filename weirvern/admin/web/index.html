@@ -100,14 +100,14 @@
     <h1>Weirvern</h1>
   </div>
   <div class="status" id="statusline">
-    <button class="pill" id="health-pill" type="button" title="click for every check">loading…</button>
-      <div id="pill-pop" class="pill-pop" hidden></div>
+    <button class="bubble control" id="health-pill" type="button" title="click for every check">loading…</button>
+      <div id="status-pop" class="status-pop" hidden></div>
     <span class="muted" id="fetched"></span>
     <span class="muted" id="user-chip" title=""></span>
-    <button class="pill hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
-    <button class="pill bad hidden" id="auto-block-pill" type="button" title="AUTO-BLOCK IS ARMED: detections at or above this score are blocked without anyone looking first — click for the controls that pause it" aria-pressed="false"></button>
-    <button class="pill" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
-    <button class="pill" id="auto-toggle" type="button" title="auto-refresh of the view you are looking at — click to pause or resume" aria-pressed="false">live · 15s</button>
+    <button class="bubble control hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
+    <button class="bubble control bad hidden" id="auto-block-pill" type="button" title="AUTO-BLOCK IS ARMED: detections at or above this score are blocked without anyone looking first — click for the controls that pause it" aria-pressed="false"></button>
+    <button class="bubble filter" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
+    <button class="bubble filter" id="auto-toggle" type="button" title="auto-refresh of the view you are looking at — click to pause or resume" aria-pressed="false">live · 15s</button>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
     <div class="timerange">
       <button id="tr-open" aria-expanded="false" title="The time range every tab answers to">Last 24 hours</button>
@@ -183,6 +183,12 @@
 
 <!-- The drill-down's path back (TH-3): set by the drill, cleared by any view change. -->
 <div id="crumbs" class="hidden" aria-label="breadcrumb"></div>
+
+<!-- ONE FILTER BAR, EVERY VIEW (operator, 2026-11-20). It sits above the view so a filter is
+     always in the same place; clicking a value in a table adds a removable pill here, and the
+     row's own click still opens the right-side sheet. Hidden when the current view holds no
+     filters — an empty bar is furniture. -->
+<div id="filter-bar" class="filter-bar" role="region" aria-label="active filters" hidden></div>
 
 <main>
   <!-- ── Netflow ──────────────────────────────────────────────────────── -->
@@ -274,18 +280,18 @@
         
         <button id="nw-clear">Clear selection</button>
         <button id="nw-settle">Re-settle</button>
-        <button id="nw-only-tracked" class="chip act" type="button" aria-pressed="false"
+        <button id="nw-only-tracked" class="bubble filter" type="button" aria-pressed="false"
                 title="show only the hosts you track">tracked only</button>
       </div>
       <!-- THE MAP'S THREE READINGS: every host, the hosts a live block rule names, and the
            hosts with an anomaly window in this range. Buttons, not a select, because the
            operator switches between these readings while reading the map. -->
       <div id="nw-status" class="chips" role="group" aria-label="filter graph by host status">
-        <button id="nw-status-all" class="chip act" type="button" data-nw-status="all"
+        <button id="nw-status-all" class="bubble filter" type="button" data-nw-status="all"
                 aria-pressed="true">All</button>
-        <button id="nw-status-blocked" class="chip act" type="button" data-nw-status="blocked"
+        <button id="nw-status-blocked" class="bubble filter" type="button" data-nw-status="blocked"
                 aria-pressed="false"><span class="nw-swatch blocked"></span>Blocked</button>
-        <button id="nw-status-alerted" class="chip act" type="button" data-nw-status="alerted"
+        <button id="nw-status-alerted" class="bubble filter" type="button" data-nw-status="alerted"
                 aria-pressed="false"><span class="nw-swatch alerted"></span>Alerted</button>
       </div>
       <!-- THE MAP'S FILTERS COMPOSE. Ripple presence (the shipped 2026-11-20 filter), the ripple
@@ -295,30 +301,30 @@
       <div id="nw-filters" class="nw-filters">
         <div id="nw-ripple" class="chips" role="group" aria-label="filter graph by ripple presence">
           <span class="muted">ripples</span>
-          <button class="chip act" type="button" data-nw-ripple="all"
+          <button class="bubble filter" type="button" data-nw-ripple="all"
                   aria-pressed="true">All</button>
-          <button class="chip act" type="button" data-nw-ripple="any"
+          <button class="bubble filter" type="button" data-nw-ripple="any"
                   aria-pressed="false">Hosts with ripples</button>
-          <button class="chip act" type="button" data-nw-ripple="high"
+          <button class="bubble filter" type="button" data-nw-ripple="high"
                   aria-pressed="false">High and above</button>
         </div>
         <div id="nw-family" class="chips" role="group" aria-label="filter graph by ripple family">
           <span class="muted">family</span>
-          <button class="chip act" type="button" data-nw-family="all"
+          <button class="bubble filter" type="button" data-nw-family="all"
                   aria-pressed="true">All</button>
-          <button class="chip act" type="button" data-nw-family="flow"
+          <button class="bubble filter" type="button" data-nw-family="flow"
                   aria-pressed="false">flow</button>
-          <button class="chip act" type="button" data-nw-family="conn"
+          <button class="bubble filter" type="button" data-nw-family="conn"
                   aria-pressed="false">conn</button>
-          <button class="chip act" type="button" data-nw-family="dns"
+          <button class="bubble filter" type="button" data-nw-family="dns"
                   aria-pressed="false">dns</button>
-          <button class="chip act" type="button" data-nw-family="tls"
+          <button class="bubble filter" type="button" data-nw-family="tls"
                   aria-pressed="false">tls</button>
-          <button class="chip act" type="button" data-nw-family="http"
+          <button class="bubble filter" type="button" data-nw-family="http"
                   aria-pressed="false">http</button>
-          <button class="chip act" type="button" data-nw-family="ssh"
+          <button class="bubble filter" type="button" data-nw-family="ssh"
                   aria-pressed="false">ssh</button>
-          <button class="chip act" type="button" data-nw-family="notice"
+          <button class="bubble filter" type="button" data-nw-family="notice"
                   aria-pressed="false">notice</button>
         </div>
         <div class="controls nw-filter-fields">
@@ -805,6 +811,9 @@
             aria-label="close this panel (Escape also closes)">Close</button></h2>
   <p class="muted" id="rp-detail-note">One host and one hour. The evidence is the finding; the model anomalies below it are corroboration.</p>
   <div id="rp-detail-body"></div>
+  <!-- THE SAME ACTION MENU FOR BOTH ALERT KINDS. A ripple row and a model-anomaly row open this
+       one sheet, and the verbs here are built by one function so they cannot drift apart. -->
+  <div id="rp-detail-actions" class="alert-sheet-actions"></div>
   <div class="controls sheet-actions">
     <button id="rp-detail-host" class="quiet" type="button">Open host</button>
     <button id="rp-detail-cancel" class="quiet" type="button">Close</button>
@@ -1625,12 +1634,12 @@
          full-bleed band -- the same chip that ranks a ripple ranks a degraded gate. -->
     <div class="grid2 sl2-gates">
       <div class="card sl2-gate">
-        <h2>Domain gate <span class="muted">DNS</span> <span class="rp-sev-chip sev-low" id="sl2-dom-chip">loading&hellip;</span>
+        <h2>Domain gate <span class="muted">DNS</span> <span class="bubble state sev-low" id="sl2-dom-chip">loading&hellip;</span>
           <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
                   aria-expanded="false" title="what this view shows">i</button>
         </h2>
         <div class="chips sl2-fault hidden" id="sl2-dom-band" role="status">
-          <span class="rp-sev-chip sev-critical sl2-fault-chip">Degraded</span>
+          <span class="bubble state sev-critical sl2-fault-bubble">Degraded</span>
           <span class="sl2-fault-why"></span>
           <span class="muted sl2-fault-since"></span>
         </div>
@@ -1657,9 +1666,9 @@
         <!-- THE FAULT IS THE CARD'S FIRST LINE, not a paragraph with the same weight as a fact.
              It carries the state word, the measured reason and the last report time, and it sits
              against the card's own top edge so a degraded gate cannot be mistaken for a quiet one. -->
-        <h2>Traffic gate <span class="muted">packets</span> <span class="rp-sev-chip sev-low" id="sl2-traf-chip">loading&hellip;</span></h2>
+        <h2>Traffic gate <span class="muted">packets</span> <span class="bubble state sev-low" id="sl2-traf-chip">loading&hellip;</span></h2>
         <div class="chips sl2-fault hidden" id="sl2-traf-band" role="status">
-          <span class="rp-sev-chip sev-critical sl2-fault-chip">Degraded</span>
+          <span class="bubble state sev-critical sl2-fault-bubble">Degraded</span>
           <span class="sl2-fault-why" id="sl-gate-warning"></span>
           <span class="muted sl2-fault-since"></span>
         </div>
@@ -1691,9 +1700,9 @@
            ("which rules am I looking at"), so they sit on one line instead of the toggle
            floating above the heading. -->
       <div class="controls" id="sl2-filters" role="group" aria-label="filter rules by gate">
-        <button class="dc-chip active" type="button" data-gate="all" aria-pressed="true">All rules</button>
-        <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain gate</button>
-        <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
+        <button class="bubble filter active" type="button" data-gate="all" aria-pressed="true">All rules</button>
+        <button class="bubble filter" type="button" data-gate="domain" aria-pressed="false">Domain gate</button>
+        <button class="bubble filter" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
         <label class="check">
           <input id="sl2-show-revoked" type="checkbox">
           <span>Show revoked</span>
@@ -2461,6 +2470,7 @@
 <script src="/discover.js"></script>
 <script src="/dnsview.js"></script>
 <script src="/blocked.js"></script>
+<script src="/filters.js"></script>
 <script src="/palette.js"></script>
 </body>
 </html>

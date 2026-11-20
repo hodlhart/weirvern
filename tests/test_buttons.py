@@ -19,15 +19,15 @@ WEB = Path(__file__).resolve().parents[1] / "weirvern" / "admin" / "web"
 BUTTON_CLASSES = (
     "primary", "danger", "quiet", "tab", "review-act", "pager-btn", "info-btn",
     "setting-help-btn", "user-act", "icon-btn", "sheet-close", "gate-linkish",
-    "dc-chip", "wl-adopt",
+    "bubble", "wl-adopt",
 )
 # EXCEPTIONS with a reason, never convenience:
 #   the base rule itself carries the size (it IS the system);
-#   icon buttons and the chip's remove control are icon-shaped by nature;
-#   the chip is a pill (999px) whose height is still the base's variable;
+#   icon buttons and the pill's remove control are icon-shaped by nature;
+#   the bubble is a pill (999px) whose height is still the base's variable;
 #   `gate-linkish` is a button DELIBERATELY dressed as a text link (US-4's grammar).
 SIZE_PROPS = ("font-size", "padding", "height", "min-height", "border-radius", "min-width")
-ALLOW_SIZE = {"button", ".setting-help-btn", ".info-btn", ".dc-chip", ".dc-chip-x",
+ALLOW_SIZE = {"button", ".setting-help-btn", ".info-btn", ".bubble", ".bubble .bubble-x",
               ".gate-linkish", ".tab", ".icon-btn",
               #   .pager-btn: the pager is icon-sized at desktop; its mobile rule raises the
               #     width to the 44px touch floor, which is the same sanctioned exception the

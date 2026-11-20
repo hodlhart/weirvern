@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.23.113 — 2026-11-20
+
+THE OPERATOR PASS: the console answers the reports against 0.23.112. No detection, capture or
+enforcement semantics changed — this is the reading surface.
+
+- **Weirlings: declared and observed networks are two counts, and both are shown.** The tile
+  counted only the segments a sensor happened to report, so a declared scope with no NIC behind
+  it vanished while Settings still listed it ("the Weirlings tab says we only have 1 network,
+  but we have 2"). `/api/weirlings` now carries `summary.networks_declared` (monitored
+  declarations), `networks_declared_all`, `networks_observed` and a `network_coverage` block with
+  every scope, its observed flag and the declared-but-unseen list; the fleet summary states
+  "Declared but not seen by any sensor: …" instead of letting the two facts contradict. A scope
+  table that cannot be read is `available: false` with the reason, never a confident zero, and
+  observation is decided by CIDR OVERLAP (a sensor reporting a narrower /25 still observes its
+  declared /24).
+- **One pill for the whole console: `.bubble`.** Four vocabularies (`.chip`, `.dc-chip`,
+  `.rp-sev-chip`, `.pill`) drew status and filter pills at different radii, padding and heights —
+  the header's `<button>` pills inherited the 28px button box while table pills were 21px, and
+  the filter pill's `×` was a larger font than its own text. Every pill is now
+  `.bubble.state` (still: no pointer, no hover, no handler) or `.bubble.filter` (pressable:
+  `aria-pressed` required, dashed at rest, solid + checkmark when holding) or `.bubble.control`
+  (opens something). One rule owns radius (999px), padding (4×8), type (11px/1) and height
+  (auto); no variant may re-declare them, and the phone block's 44px touch floor is the only
+  sanctioned exception. Sluice's gate chips, the fleet rows, the severity chips and the header
+  controls all wear it.
+- **The filter bar: one surface, two verbs, never both.** `#filter-bar` sits between the header
+  and `<main>` and `filters.js` mirrors every view's existing filter state into removable
+  `.bubble.filter` pills. Clicking a VALUE in a table adds a pill and narrows (the handler is
+  capture-phase and swallows the event, so the row cannot also act); clicking the ROW keeps its
+  established verb (open the host sheet, open the rule, drill). Removing a pill restores the
+  view; `clear all` empties the bar; every pill's state rides the URL (`nw.q`, `nw.subnet`,
+  `nw.status`, `nz.band`, `nz.kind`, `dc.f.…`, …) and a cold load rebuilds the pill. Adapters
+  exist for every tab, including the three that have no value filters and keep the bar hidden.
+- **Alerts: counters and actions behave the same in both lists.** One `renderBandCounters`
+  component draws the model and ripple criticality rows from identical markup, band order,
+  geometry and colours; a ripple band tile is a real pressed button (click again to clear, click
+  another to switch) and the count sentence names the active filter. A ripple and a model
+  anomaly now open the SAME side sheet (`#rp-detail-card`) with the same action menu — Block goes
+  through the identical confirmation and read-back, and "Open host" works for either kind. The
+  two differ in the sheet's body (ripple evidence vs model scores) and nowhere else.
+  `al.band` and `al.model_band` ride the URL (`an.sev` still reads for old links).
+- **Normalize: the Alert column.** Feed rows are joined server-side to the same
+  `ml_ripple_evidence` and `netflow_anomalies` the Alerts tab reads, under the global window,
+  and carry `alert_kind` / `alert_band` / `alert_ref`. A ripple alert opens its house sheet; a
+  model detection lands on Alerts filtered to the host; a measured em dash says no alert
+  matched; an unreadable join says "unavailable", never "no alert". The band counters and a
+  kind axis (All / Ripple / Anomaly / None) compose, and both ride the URL. Normalize no longer
+  owns `#nz-hours`: it reads the header's window through `trHours()`.
+- **Network: solid rings, reserved ring colours, one pager, and a host sheet.** The ripple ring
+  is SOLID (`stroke-dasharray: none`) — a dashed ring read as the legend's "unclassified" cue —
+  and unclassified scope is a word in the tables, not a third outline. Ring hues are a reserved
+  cool set so a high ring is not the alerted fill's orange; a host with no ripples draws no
+  ring. All long tables share one pager (25 rows, `Previous / page N of M / Next`, 44px targets,
+  "rows 1–25 of 102", server truncation stated). Clicking a host opens a right-side sheet with
+  identity, traffic, peers, services, DNS/TLS, ripples, model detections and normalization, each
+  stating the coverage it actually holds.
+- **One time control.** No view declares its own hours selector (a `data-hours` preset, a
+  `*hours` id or a JS lookup of one outside `#tr-panel` fails the suite); every loader answers
+  the header's range, and the phone layout stacks the same controls.
+
+Tests: pytest 3,635 passed / 6 skipped; jsdom 1,121 checks passed, 0 failed — including the new
+bubble-geometry sweep across every view and the filter bar's five rendered behaviours.
+
 ## 0.23.109 — 2026-11-20
 
 THE SLUICE TAB NOW LEADS WITH WHAT THE GATES HAVE MEASURABLY DONE, NOT WITH THE CONTROLS THAT

@@ -154,7 +154,8 @@ async function main() {
         JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/normalize.js",
                                                  "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
-                                                 "/dnsview.js", "/blocked.js", "/palette.js"]),
+                                                 "/dnsview.js", "/blocked.js",
+                                                 "/filters.js", "/palette.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -1152,8 +1153,23 @@ const WEIRLINGS_PAYLOAD = {
   reason: null,
   heartbeats_available: true,
   heartbeat_reason: null,
-  summary: { total: 6, registered: 5, problems: 4, networks: 2, alive: 1, stale: 1, never_seen: 1,
+  summary: { total: 6, registered: 5, problems: 4, networks: 1, networks_observed: 1,
+             networks_declared: 2, networks_declared_all: 2,
+             networks_coverage_available: true, networks_coverage_reason: "",
+             alive: 1, stale: 1, never_seen: 1,
              unregistered: 1, disabled: 1 },
+  network_coverage: {
+    available: true, declared: 2, declared_monitored: 2, observed: 1,
+    observed_segments: ["198.51.100.0/24"],
+    unobserved: [{ cidr: "203.0.113.0/24", label: "dmz", monitored: true, policy: "full" }],
+    scopes: [
+      { id: "a", cidr: "198.51.100.0/24", label: "internal", monitored: true,
+        policy: "full", description: "", source: "operator", warning: "", observed: true },
+      { id: "b", cidr: "203.0.113.0/24", label: "dmz", monitored: true,
+        policy: "full", description: "", source: "operator", warning: "", observed: false },
+    ],
+    unconfigured: false,
+  },
   sensors: [
     {
       sensor_id: "edge-alive", state: "alive", is_problem: false,
@@ -2048,11 +2064,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         H.ASSETS_STATE.tracked.length === 2,
         JSON.stringify(H.ASSETS_STATE.tracked));
   check("both tracked hosts are listed as chips",
-        doc.querySelectorAll("#nw-selected .chip").length === 2,
-        `${doc.querySelectorAll("#nw-selected .chip").length} chips`);
+        doc.querySelectorAll("#nw-selected .bubble").length === 2,
+        `${doc.querySelectorAll("#nw-selected .bubble").length} chips`);
   check("a chip removes its host when clicked",
         (() => {
-          doc.querySelector("#nw-selected .chip")
+          doc.querySelector("#nw-selected .bubble")
              .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
           return H.ASSETS_STATE.tracked.length === 1;
         })(), JSON.stringify(H.ASSETS_STATE.tracked));
@@ -2287,7 +2303,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the connection detail table also carries the Ripple column",
           [...doc.querySelectorAll("#nw-detail-table th")]
             .some((th) => th.textContent.trim() === "Ripple")
-          && !!doc.querySelector("#nw-detail-table tbody .nw-ripple-chip.sev-high"),
+          && !!doc.querySelector("#nw-detail-table tbody .nw-ripple-bubble.sev-high"),
           needEl("nw-detail-table").textContent.slice(0, 200));
 
     // ── THE RIPPLE FILTER (operator, 2026-11-20: "for network i need to be able to filter by
@@ -2551,7 +2567,114 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     needEl("nw-host-close").click();
     fetchOverride = null;
     H.clearGetCache();
+
+    // ── THE FILTER BAR: A VALUE ADDS A PILL, A ROW OPENS THE SHEET, NEVER BOTH ────────────
+    // The operator's two verbs (2026-11-20). Each is asserted by EXECUTING the shipping
+    // capture-phase handler, not by reading filters.js: a value cell must add exactly one
+    // pill and swallow the click; a row click must open the sheet and add nothing; a pill
+    // must be removable and Clear all must empty the bar; the state must survive a URL trip.
+    H.ASSETS_STATE.graph = FILTER_GRAPH;
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.rippleFilter = "all";
+    H.ASSETS_STATE.family = "all";
+    H.ASSETS_STATE.subnet = "";
+    H.ASSETS_STATE.query = "";
+    needEl("nw-find").value = "";
+    needEl("nw-subnet").value = "";
+    H.renderNetwork();
+    await sleep(40);   // the tbody MutationObserver tags value cells a tick later
+    const bar = needEl("filter-bar");
+    const barPills = () => [...bar.querySelectorAll(".bubble.filter[data-filter-key]")];
+    const liveRows = () => [...doc.querySelectorAll("#nw-hosts-table tbody tr")]
+      .filter((r) => r.querySelector("td.link"));
+    check("the filter bar starts hidden on an unfiltered view",
+          bar.hidden === true && barPills().length === 0, `hidden=${bar.hidden}`);
+
+    const valueCells = [...doc.querySelectorAll("#nw-hosts-table tbody td[data-filter-field]")];
+    const vaultCell = valueCells.find((c) => /192\.0\.2\.40/.test(c.textContent));
+    check("a host address in the table is a tagged value cell", !!vaultCell,
+          `${valueCells.length} tagged cells`);
+    if (vaultCell) { vaultCell.click(); }
+    await sleep(220);  // the click's own render, plus the 150ms URL debounce
+    check("a value click adds ONE removable pill naming the value",
+          barPills().length === 1 && bar.hidden === false
+          && barPills()[0].dataset.filterKey === "nw.q"
+          && /192\.0\.2\.40/.test(barPills()[0].textContent),
+          `pills=${barPills().length} bar=${bar.textContent.trim()}`);
+    check("...it narrows the table to the value that was clicked",
+          liveRows().length === 1 && /192\.0\.2\.40/.test(liveRows()[0].textContent),
+          `${liveRows().length} rows`);
+    check("...and it does NOT also open the host sheet (the verbs are separated by the event)",
+          needEl("nw-host-card").classList.contains("hidden"),
+          needEl("nw-host-card").className);
+    check("...and the filter rides the URL", /nw\.q=192\.0\.2\.40/.test(window.location.hash),
+          window.location.hash.slice(0, 140));
+
+    // A ROW CLICK IS THE OTHER VERB. Target the row itself so no value cell is in the path.
+    fetchOverride = (u) => (String(u).includes("/api/network/host")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                          json: async () => HOST_SHEET })
+      : null);
+    H.clearGetCache();
+    const pillsBeforeRow = barPills().length;
+    if (liveRows()[0]) { liveRows()[0].click(); }
+    await sleep(120);
+    check("a row click opens the host sheet",
+          !needEl("nw-host-card").classList.contains("hidden"),
+          needEl("nw-host-card").className);
+    check("...and adds NO pill and leaves the value filter in place",
+          barPills().length === pillsBeforeRow && H.ASSETS_STATE.query === "192.0.2.40",
+          `pills=${barPills().length} q=${H.ASSETS_STATE.query}`);
+    needEl("nw-host-close").click();
+    fetchOverride = null;
+    H.clearGetCache();
+
+    if (barPills()[0]) { barPills()[0].click(); }
+    await sleep(220);
+    check("removing the pill restores the full table and hides the bar",
+          barPills().length === 0 && bar.hidden === true && liveRows().length === 3,
+          `pills=${barPills().length} rows=${liveRows().length} hidden=${bar.hidden}`);
+
+    // TWO PILLS, THEN CLEAR ALL. The second one comes from the view's own status control,
+    // which is the bar's mirror contract: pressing it must surface the same pill.
+    // Re-query: the previous render replaced the tbody, so a captured cell is detached and its
+    // click never reaches the document's capture listener (a real click would not either).
+    const firstCell = [...doc.querySelectorAll("#nw-hosts-table tbody td[data-filter-field]")][0];
+    if (firstCell) { firstCell.click(); }
+    await sleep(220);
+    const blockedChip = doc.getElementById("nw-status-blocked");
+    if (blockedChip) { blockedChip.click(); }
+    await sleep(220);
+    check("the bar mirrors a filter set by the view's own control (two pills)",
+          barPills().length === 2 && H.ASSETS_STATE.status === "blocked",
+          `pills=${barPills().length} status=${H.ASSETS_STATE.status}`);
+    const clearAll = bar.querySelector(".bubble.filter.filter-clear");
+    check("Clear all is a bubble.filter too, not a second pill shape", !!clearAll);
+    if (clearAll) { clearAll.click(); }
+    await sleep(220);
+    check("Clear all empties every pill and restores the view",
+          barPills().length === 0 && bar.hidden === true
+          && liveRows().length === 3 && H.ASSETS_STATE.query === ""
+          && H.ASSETS_STATE.status === "all",
+          `pills=${barPills().length} q='${H.ASSETS_STATE.query}' status=${H.ASSETS_STATE.status}`);
+
+    // URL ROUND TRIP: a link built after a filter must rebuild the pill on a cold load.
+    window.location.hash = "#v=network&nw.q=192.0.2.40";
+    H.applyURLState();
+    await sleep(60);
+    check("a cold load from a filtered URL rebuilds the pill and the table",
+          barPills().length === 1 && H.ASSETS_STATE.query === "192.0.2.40"
+          && liveRows().length === 1 && needEl("nw-find").value === "192.0.2.40",
+          `pills=${barPills().length} q='${H.ASSETS_STATE.query}' rows=${liveRows().length}`);
+
+    window.location.hash = "#v=network";
+    H.applyURLState();
+    await sleep(40);
+    H.ASSETS_STATE.query = "";
+    H.ASSETS_STATE.status = "all";
+    needEl("nw-find").value = "";
     H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
+    H.renderNetwork();
   }
 
   // ── THE UNIVERSAL PAGER, AND THE TWO COUNTER ROWS (2026-11-20) ───────────────────────────
@@ -3059,15 +3182,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     const modelCards = [...doc.querySelectorAll("#anomalies-cards .rp-card")];
     const rippleCards = [...doc.querySelectorAll("#ripples-cards .rp-card")];
-    const modelChip = modelCards[0] ? modelCards[0].querySelector(".rp-sev-chip") : null;
-    const rippleChip = rippleCards[0] ? rippleCards[0].querySelector(".rp-sev-chip") : null;
+    const modelChip = modelCards[0] ? modelCards[0].querySelector(".bubble.state") : null;
+    const rippleChip = rippleCards[0] ? rippleCards[0].querySelector(".bubble.state") : null;
     check("the model list has a stacked card per row, with the ripple card's geometry",
           modelCards.length === anRows.length,
           `cards=${modelCards.length} rows=${anRows.length}`);
     check("both stacked-card lists carry the same severity chip class and word",
           !!modelChip && !!rippleChip
-          && modelChip.className === "rp-sev-chip sev-high"
-          && rippleChip.className === "rp-sev-chip sev-low"
+          && modelChip.className === "bubble state sev-high"
+          && rippleChip.className === "bubble state sev-low"
           && modelChip.textContent.trim() === "\u25c6 high",
           `model=${modelChip ? modelChip.className + "/" + modelChip.textContent.trim() : "none"} ` +
           `ripple=${rippleChip ? rippleChip.className + "/" + rippleChip.textContent.trim() : "none"}`);
@@ -3088,7 +3211,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const root = doc.getElementById(id);
       const card = root && root.querySelector(".card");
       const chip = doc.createElement("span");
-      chip.className = "rp-sev-chip sev-low";
+      chip.className = "bubble state sev-low";
       const btn = doc.createElement("button");
       btn.className = "primary";
       if (root) { root.appendChild(chip); root.appendChild(btn); }
@@ -3433,13 +3556,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a single-family ripple is LOW and never styled sev-high",
           !!single && single.classList.contains("rp-sev-low")
           && !single.classList.contains("rp-sev-high")
-          && !!single.querySelector(".rp-sev-chip.sev-low")
+          && !!single.querySelector(".bubble.state.sev-low")
           && !!single.querySelector(".rp-card-score.sev-low")
           && !singleText.includes("high"),
           single ? `${single.className} | ${singleText.slice(0, 80)}` : "no single-family card");
     check("a three-family ripple is HIGH and carries the severity chip + coloured score",
           !!cards[2] && cards[2].classList.contains("rp-sev-high")
-          && !!cards[2].querySelector(".rp-sev-chip.sev-high")
+          && !!cards[2].querySelector(".bubble.state.sev-high")
           && !!cards[2].querySelector(".rp-card-score.sev-high"),
           cards[2] ? cards[2].className : "no high card");
     check("the desk table carries the same band per row",
@@ -3966,8 +4089,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         `${doc.querySelectorAll("#zk-dns .bar-row").length} names`);
 
   // Remove the chips and prove the next request is unfiltered again.
-  while (doc.querySelector("#zk-chips .dc-chip")) {
-    doc.querySelector("#zk-chips .dc-chip")
+  while (doc.querySelector("#zk-chips .bubble.filter")) {
+    doc.querySelector("#zk-chips .bubble.filter")
       .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -4460,10 +4583,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             pill.slice(0, 140));
       // ── CLICK IT (the operator, 2026-10-16): the ratio must open the per-check list ──────────
       {
-        const pid = needEl("pill-pop");
+        const pid = needEl("status-pop");
         needEl("health-pill").click();
         await new Promise((r) => setTimeout(r, 30));
-        const lines = pid ? pid.querySelectorAll(".pill-line").length : 0;
+        const lines = pid ? pid.querySelectorAll(".status-line").length : 0;
         check("clicking the health pill lists every check", !!pid && !pid.hidden && lines >= 2,
               "lines=" + lines + " hidden=" + (pid ? pid.hidden : "?"));
         check("with its states, not-applicable included",
@@ -4757,7 +4880,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the anomalies table renders a row per payload entry", anomRows.length === 3,
         `${anomRows.length} rows`);
 
-  const chips = [...doc.querySelectorAll("#anomalies-table .review-chip")];
+  const chips = [...doc.querySelectorAll("#anomalies-table .review-bubble")];
   check("every anomaly row carries a review chip", chips.length === anomRows.length,
         `${chips.length} chips for ${anomRows.length} rows`);
   check("an UNREVIEWED row says so", chips.some((c) => c.textContent === "unreviewed"));
@@ -4891,7 +5014,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   gRow0.querySelector(".review-act[title*='as ack']").click();
   await new Promise((r) => setTimeout(r, 120));
   const gRow1 = findGroupRow();
-  const chip1 = gRow1.querySelector(".review-chip");
+  const chip1 = gRow1.querySelector(".review-bubble");
   const rem1 = gRow1.querySelector(".review-remain");
   const tip1 = gRow1.querySelector("td.num").getAttribute("title");
   check("after acking the newest of three, the chip states the state AND the remainder",
@@ -4915,7 +5038,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadAnomalies();
   let occ = await openOccurrences(findGroupRow());
   check("the unfold lists every occurrence with its own controls",
-        occ.length === 3 && occ.every((o) => o.querySelector(".review-chip")
+        occ.length === 3 && occ.every((o) => o.querySelector(".review-bubble")
                                               && o.querySelector(".review-act")),
         `${occ.length} occurrence(s)`);
   check("the acked newest occurrence offers the OTHER dispositions, not ack",
@@ -4944,7 +5067,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         tip2);
   occ = await openOccurrences(gRow2);
   check("and the occurrence itself now reads resolved",
-        occ[0].querySelector(".review-chip").textContent === "resolved");
+        occ[0].querySelector(".review-bubble").textContent === "resolved");
 
   // 4) finish the row: with every occurrence dispositioned, all three surfaces say "done".
   occ[1].querySelector(".review-act[title*='as ack']").click();
@@ -4952,7 +5075,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const gRow3 = findGroupRow();
   check("a fully dispositioned group drops the remainder chip",
         gRow3 && !gRow3.querySelector(".review-remain")
-        && gRow3.querySelector(".review-chip").textContent === "ack");
+        && gRow3.querySelector(".review-bubble").textContent === "ack");
   check("its tooltip no longer claims any unreviewed",
         gRow3.querySelector("td.num").getAttribute("title")
         === "3 occurrence(s) \u2014 click to list them");
@@ -4972,8 +5095,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadAnomalies();
   occ = await openOccurrences(findGroupRow());
   check("an unavailable occurrence keeps its distinct label",
-        occ[1].querySelector(".review-chip").textContent === "review unavailable",
-        occ[1].querySelector(".review-chip").textContent);
+        occ[1].querySelector(".review-bubble").textContent === "review unavailable",
+        occ[1].querySelector(".review-bubble").textContent);
   check("...and offers no write at all",
         occ[1].querySelectorAll(".review-act").length === 0);
   midWin.review_state = midState;
@@ -6041,11 +6164,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the fleet's counts are filters, not decoration",
           tiles.length >= 6 && tiles.every((t) => t.tagName === "BUTTON"),
           `${tiles.length} tiles, first tag ${tiles[0] ? tiles[0].tagName : "none"}`);
-    const networksTile = tiles.find((t) => /networks/i.test(t.textContent));
-    check("Networks replaces Problems and states the collected subnet count",
-          !!networksTile && /2/.test(networksTile.textContent)
+    const declaredTile = tiles.find((t) => /networks declared/i.test(t.textContent));
+    const seenTile = tiles.find((t) => /segments seen/i.test(t.textContent));
+    check("the fleet states declared networks AND observed segments, never one bare count",
+          !!declaredTile && !!seenTile && /2/.test(declaredTile.textContent)
+          && /1/.test(seenTile.textContent)
           && !tiles.some((t) => /problems/i.test(t.textContent)),
-          networksTile ? networksTile.textContent.trim() : "no networks tile");
+          `${declaredTile ? declaredTile.textContent.trim() : "no declared tile"} / ` +
+          `${seenTile ? seenTile.textContent.trim() : "no seen tile"}`);
+    check("a declared-but-unobserved network is named in the fleet note",
+          /203\.0\.113\.0\/24/.test(needEl("wl-summary-note").textContent),
+          needEl("wl-summary-note").textContent);
     // THE TILE MUST NOT WEAR THE BUTTON'S 28px BOX (2026-10-19): the clickable summary tiles
     // are <button>s, so BTN-1's height squeezed a 51px label+number stack out of the pill.
     if (tiles.length) {
@@ -6905,6 +7034,69 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("BTN-1: no button still wears a retired size class",
           doc.querySelectorAll("button.small, .btn-small, .btn-lg").length === 0,
           String(doc.querySelectorAll("button.small").length));
+  }
+
+  // ── THE BUBBLE RATCHET (operator pass, 2026-11-20) ─────────────────────────────────────────
+  // ONE pill, everywhere. The console had `.chip`, `.dc-chip`, `.rp-sev-chip` and a `.pill` in
+  // different views; adjacent tabs drew status and filter pills at different heights. This
+  // walks every view, collects EVERY `.bubble` (state, filter, control, static markup and
+  // rendered), and requires one computed geometry: radius, all four paddings, height and type.
+  // Height is read from the cascade (jsdom does not lay out); the stylesheet pin in
+  // tests/test_bubble_contract.py separately forbids any `.bubble` variant declaring its own.
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sweep = () => {
+      const seen = new Map();
+      let n = 0;
+      for (const b of doc.querySelectorAll(".bubble")) {
+        const cs = window.getComputedStyle(b);
+        const sig = [cs.borderTopLeftRadius, cs.paddingTop, cs.paddingRight,
+                     cs.paddingBottom, cs.paddingLeft, cs.height, cs.fontSize].join("|");
+        n += 1;
+        if (!seen.has(sig)) seen.set(sig, []);
+        if (seen.get(sig).length < 3) {
+          seen.get(sig).push(`${b.className || "?"}: ${(b.textContent || "").trim().slice(0, 22)}`);
+        }
+      }
+      return { n, seen };
+    };
+    let total = 0;
+    const variants = new Map();
+    for (const view of ["health", "anomalies", "normalize", "network", "discover", "dns",
+                        "zeek", "sluice", "weirlings", "models", "assets", "netflow",
+                        "blocked", "settings", "logs"]) {
+      await H.showView(view);
+      await sleep(60);
+      const { n, seen } = sweep();
+      total = Math.max(total, n);
+      for (const [sig, names] of seen) {
+        if (!variants.has(sig)) variants.set(sig, []);
+        variants.get(sig).push(...names);
+      }
+    }
+    // The filter bar is markup the views do not own: render a real pill so the remove control
+    // is measured too (its `×` used to be a larger font than the pill and grew the box).
+    await H.showView("network");
+    H.ASSETS_STATE.query = "vault";
+    if (window.FILTER_BAR) window.FILTER_BAR.render();
+    await sleep(60);
+    const withBar = sweep();
+    total = Math.max(total, withBar.n);
+    for (const [sig, names] of withBar.seen) {
+      if (!variants.has(sig)) variants.set(sig, []);
+      variants.get(sig).push(...names);
+    }
+    H.ASSETS_STATE.query = "";
+    if (window.FILTER_BAR) window.FILTER_BAR.render();
+
+    const geometry = [...variants.entries()].filter(([, names]) => names.length);
+    check("the console has one bubble geometry in every view (radius, padding, height, type)",
+          geometry.length === 1 && total >= 20,
+          `${total} bubbles, ${geometry.length} geometry/ies: ` +
+          geometry.map(([sig, names]) => `[${sig}] ${names.join(" / ")}`).join(" ;; "));
+    check("...and no legacy pill class survives in the live DOM",
+          doc.querySelectorAll(".chip, .dc-chip, .rp-sev-chip, .pill").length === 0,
+          `${doc.querySelectorAll(".chip, .dc-chip, .rp-sev-chip, .pill").length} legacy pills`);
   }
 
   // ── THE GROUPED NAV AND ITS BREADCRUMBS (TH-3) ──────────────────────────────────────────────
@@ -8055,7 +8247,29 @@ check("...a contradicted segment names BOTH segments on the issues list",
             return !!cell && /^siphon$/i.test(cell.textContent.trim())
               && /registry declares loch/.test(title || "");
           })(),
-          "one is a claim somebody made and the other is a fact the sensor produced");
+          (() => {
+            const r = [...H.document.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row):not(.wl-colhead)")]
+              .find((tr) => (tr.textContent || "").includes("edge-moved"));
+            const parts = [];
+            let sib = r ? r.nextElementSibling : null;
+            for (let i = 0; sib && i < 4; i++, sib = sib.nextElementSibling) {
+              parts.push(`${i}:${sib.className}:${(sib.textContent || "").slice(0, 80)}`);
+            }
+            return parts.join(" || ") + (() => {
+              const cap = (() => {
+                let s = r ? r.nextElementSibling : null;
+                if (s && s.classList.contains("wl-colhead")) s = s.nextElementSibling;
+                while (s && s.classList.contains("wl-nic-row")) {
+                  if (/capture/.test(s.textContent)) return s;
+                  s = s.nextElementSibling;
+                }
+                return null;
+              })();
+              const c = cap ? cap.querySelector("td:nth-child(2)") : null;
+              return ` TITLE=${c ? JSON.stringify(c.getAttribute("title")) : "none"}` +
+                ` TEXT=${c ? JSON.stringify(c.textContent.trim()) : "none"}`;
+            })();
+          })());
     H.document.getElementById("wl-detail-close").click();
   }
 }
@@ -8866,7 +9080,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("sluice");
     await H.loadSluice();
     await sleep(150);
-    const gateCell = doc.querySelector("#sl-reach button.dc-chip");
+    const gateCell = doc.querySelector("#sl-reach button.bubble.filter");
     check("a gate's sensor chip names its destination",
           !!gateCell && /^weirvern-/.test((gateCell.textContent || "").trim()),
           gateCell ? gateCell.textContent : "no reach chip");
@@ -8959,10 +9173,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (sevCell) { sevCell.click(); await sleep(250); }
     const chipsBefore = (needEl("an-chips") || {}).textContent || "";
     const anRowE = doc.querySelector("#anomalies-table tbody tr");
-    check("an anomaly row opens Evidence", !!anRowE);
+    check("a model-anomaly row opens the shared side sheet", !!anRowE);
     if (anRowE) {
       anRowE.click();
       await sleep(250);
+      check("...the SAME sheet a ripple opens, titled for the detection",
+            !needEl("rp-detail-card").classList.contains("hidden")
+            && /model detection/i.test(needEl("rp-detail-title").textContent),
+            needEl("rp-detail-title").textContent);
+      const evBtn = [...doc.querySelectorAll("#rp-detail-actions button")]
+        .find((b) => /^Evidence$/i.test((b.textContent || "").trim()));
+      check("...with the shared action menu, including Evidence", !!evBtn,
+            needEl("rp-detail-actions").textContent);
+      if (evBtn) { evBtn.click(); await sleep(250); }
       const crumbs = needEl("crumbs") || { textContent: "" };
       const evBackFirst = needEl("ev-back");
       check("...and Evidence has ONE labeled back control, not a crumb plus a button",
@@ -9481,12 +9704,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
       }
     }
     clicks = 0;
-    C(jobRow);                                   // 1: the row -> Evidence
+    C(jobRow);                                   // 1: the row -> the shared sheet
     await sleep(280);
-    check("JOB investigate-anomaly: understanding is ONE click (row -> Evidence)",
-          clicks === 1 && needEl("view-evidence").classList.contains("active"),
+    check("JOB investigate-anomaly: understanding is ONE click (row -> the shared sheet)",
+          clicks === 1 && !needEl("rp-detail-card").classList.contains("hidden"),
           `clicks=${clicks}`);
     note("investigate-anomaly", "understand", clicks);
+    // The sheet's Evidence verb is the second, explicit step to the raw records. It is not
+    // counted as an extra click for the one-click understanding claim.
+    const jobEvBtn = [...doc.querySelectorAll("#rp-detail-actions button")]
+      .find((b) => /^Evidence$/i.test((b.textContent || "").trim()));
+    if (jobEvBtn) { jobEvBtn.click(); await sleep(250); }
     const evVerb = doc.querySelector("#ev-verdict .gate-open");
     clicks = 0;
     if (evVerb) {
@@ -9686,7 +9914,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           && Number(H.trHours()) === 6,
           `host=${H.AN_FILTERS.host} model=${H.AN_FILTERS.model} h=${H.trHours()}`);
     check("ARRIVAL: a removable chip explains the link's filters",
-          [...doc.querySelectorAll("#an-filters .dc-chip")]
+          [...doc.querySelectorAll("#an-filters .bubble.filter")]
             .some((c) => /arrived with filters/.test(c.textContent)),
           (needEl("an-filters").textContent || "").slice(0, 90));
     check("ARRIVAL: the header says showing X of Y",
@@ -9698,6 +9926,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("RETURN: an alert row is on screen to drill into", !!rowA);
     if (rowA) { rowA.click(); }
     await sleep(320);
+    const returnEv = [...doc.querySelectorAll("#rp-detail-actions button")]
+      .find((b) => /^Evidence$/i.test((b.textContent || "").trim()));
+    if (returnEv) { returnEv.click(); await sleep(250); }
     const evBack = needEl("ev-back");
     check("RETURN: Evidence's exit is the labeled back button",
           !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
@@ -9783,7 +10014,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAssets();
     await sleep(300);
-    const facet = [...doc.querySelectorAll("#as-facets .dc-chip")];
+    const facet = [...doc.querySelectorAll("#as-facets .bubble.filter")];
     check("ASSETS: the inventory offers service filter chips",
           facet.length >= 2, `chips=${facet.length}`);
     const beforeRows = doc.querySelectorAll("#as-table tbody tr").length;
@@ -9792,7 +10023,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const svcLabel = facet[0] ? facet[0].textContent.split(" \u00b7 ")[0].trim() : "";
     // The render REPLACES the chips, so the clicked node is detached and reads stale: ask the
     // fresh set which chip is pressed (the DOM is the contract, not the node we held).
-    const pressedNow = [...doc.querySelectorAll("#as-facets .dc-chip")]
+    const pressedNow = [...doc.querySelectorAll("#as-facets .bubble.filter")]
       .find((c) => c.getAttribute("aria-pressed") === "true");
     check("ASSETS: clicking the chip filters the inventory in place and marks it pressed",
           !!pressedNow && H.ASSETS_STATE.svc === svcLabel
@@ -9816,10 +10047,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(120);
     check("ASSETS: a reload restored by the URL puts the filter back",
           wiped === "" && H.ASSETS_STATE.svc === svcLabel
-          && [...doc.querySelectorAll("#as-facets .dc-chip")]
+          && [...doc.querySelectorAll("#as-facets .bubble.filter")]
                .some((c) => c.getAttribute("aria-pressed") === "true"),
           `wiped=${wiped} now=${H.ASSETS_STATE.svc}`);
-    const pressedFacet = [...doc.querySelectorAll("#as-facets .dc-chip")]
+    const pressedFacet = [...doc.querySelectorAll("#as-facets .bubble.filter")]
       .find((c) => c.getAttribute("aria-pressed") === "true");
     if (pressedFacet) { pressedFacet.click(); await sleep(120); }   // stop filtering
 
@@ -10012,7 +10243,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("US-9: the rules surface states its reach",
           !!reach && /can act on \d+ sensor/.test(reach.textContent || ""),
           (reach && reach.textContent || "").slice(0, 130));
-    const reachChip = reach && reach.querySelector("button.dc-chip");
+    const reachChip = reach && reach.querySelector("button.bubble.filter");
     check("...with a sensor chip for a reachable sensor", !!reachChip,
           reachChip ? reachChip.textContent : "none");
     if (reachChip) { reachChip.click(); }
@@ -10116,17 +10347,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
       // The chip renders when the re-fetch lands (dcAddChip reloads the page of flows), so the
       // check waits for that microtask chain instead of racing it.
       await new Promise((r) => setTimeout(r, 60));
-      const chips = doc.querySelectorAll("#dc-chips .dc-chip");
+      const chips = doc.querySelectorAll("#dc-chips .bubble.filter");
       check("clicking a source adds it as a chip", chips.length === 1 &&
             /src = 198\.51\.100\.20/.test(chips[0].textContent),
             "chips=" + [...chips].map((c) => c.textContent).join(" | "));
-      const x = chips[0] ? chips[0].querySelector("button.dc-chip-x") : null;
+      const x = chips[0] ? chips[0].querySelector("button.bubble-x") : null;
       check("and the chip can be removed again", !!x, "no remove control on the chip");
       if (x) {
         x.click();
         await new Promise((r) => setTimeout(r, 60));
         check("removing the chip empties the filter row",
-              doc.querySelectorAll("#dc-chips .dc-chip").length === 0,
+              doc.querySelectorAll("#dc-chips .bubble.filter").length === 0,
               needEl("dc-chips").textContent.slice(0, 60));
       }
     }
@@ -10158,7 +10389,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const hitRows = doc.querySelectorAll("#bl-hit-rows tr");
     check("the hits table renders with rule/list labels",
           hitRows.length === 2 &&
-          /rule|list/.test((doc.querySelector("#bl-hit-rows tr .chip") || {}).textContent || ""),
+          /rule|list/.test((doc.querySelector("#bl-hit-rows tr .bubble.state") || {}).textContent || ""),
           "rows=" + hitRows.length);
     check("a rule hit and a list hit are distinguishable in the row",
           /rule/.test(doc.querySelector("#bl-hit-rows tr td:nth-child(2)").textContent) &&
@@ -10254,7 +10485,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !!detail && /ads\.example\.com/.test(detail.textContent),
           detail ? detail.textContent.slice(0, 140) : "no detail row");
     const act = detail
-      ? [...detail.querySelectorAll("button.dc-chip")].find((b) => /\+ domain/.test(b.textContent))
+      ? [...detail.querySelectorAll("button.bubble.filter")].find((b) => /\+ domain/.test(b.textContent))
       : null;
     if (act) act.click();
     await new Promise((r) => setTimeout(r, 40));

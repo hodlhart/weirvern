@@ -164,7 +164,7 @@
       for (const kind of KINDS) {
         const label = kind || "All";
         const btn = el("button", {
-          class: "chip act", text: label,
+          class: "bubble filter", text: label,
           attrs: { type: "button", "aria-pressed": KIND === kind ? "true" : "false",
                    "aria-label": kind ? `show only ${kind === "None" ? "rows with no alert" : kind} rows` : "show every row" },
         });
@@ -223,25 +223,25 @@
         "aria-label": "no alert matched this row in this window (measured, not unknown)" } });
     }
     const btn = el("button", {
-      class: "chip nz-alert-btn" + (r.alert_band ? " sev-" + r.alert_band : ""),
+      class: "bubble state nz-alert-btn" + (r.alert_band ? " sev-" + r.alert_band : ""),
       text: kind,
       attrs: { type: "button", "aria-label": `open the ${kind} on ${r.src_addr} in Alerts` },
     });
-    btn.addEventListener("click", (ev) => { ev.stopPropagation(); openAlertRef(r.alert_ref || {}); });
+    btn.addEventListener("click", (ev) => { ev.stopPropagation(); openAlertRef(r.alert_ref || {}, r); });
     return btn;
   }
 
-  /** Load the underlying alert and open its house sheet (ripple), or land on its Alerts list. */
-  function openAlertRef(ref) {
+  /** Load the underlying alert and open its house sheet (ripple or model), or land on Alerts. */
+  function openAlertRef(ref, row) {
     const kinds = ref.kinds || [];
     if (kinds.includes("Ripple")) {
       getJSON(`/api/ripples?hours=${encodeURIComponent(hours())}`).then((d) => {
         const want = String(ref.ripple_window || "").slice(0, 13);
-        const row = ((d && d.ripples) || []).find((x) =>
+        const rowHit = ((d && d.ripples) || []).find((x) =>
           String(x.host || "") === String(ref.host || "") &&
           (!want || String(x.window_start || "").replace("T", " ").slice(0, 13) === want));
-        if (row && typeof openRippleSheet === "function") {
-          openRippleSheet(row, document.getElementById("nz-feed"));
+        if (rowHit && typeof openRippleSheet === "function") {
+          openRippleSheet(rowHit, document.getElementById("nz-feed"));
           return;
         }
         AN_FILTERS.host = ref.host || "";
@@ -249,7 +249,23 @@
       }).catch(() => { AN_FILTERS.host = ref.host || ""; showView("anomalies"); });
       return;
     }
-    // A model detection has no sheet of its own: its Alerts list row is the record.
+    // A MODEL DETECTION OPENS THE SAME SHARED SHEET the Alerts row opens. It used to land on the
+    // Alerts list with a host filter, so clicking "Anomaly" here and clicking the same alert
+    // there produced two different surfaces. The sheet's Normalize line then says why this
+    // host-scoped detection is not a pattern we can normalize.
+    if (typeof openAnomalySheet === "function") {
+      openAnomalySheet({
+        src_addr: ref.host || "",
+        window_start: ref.model_window || "",
+        detected_at: ref.model_window || "",
+        severity_band: (row && row.alert_band) || "",
+        anomaly_score: null,
+        baseline_comparison: "",
+        detected_by_models: "",
+        review_state: "",
+      }, document.getElementById("nz-feed"));
+      return;
+    }
     AN_FILTERS.host = ref.host || "";
     showView("anomalies");
     if (typeof loadAnomalies === "function") loadAnomalies();

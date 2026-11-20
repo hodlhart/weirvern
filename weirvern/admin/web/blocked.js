@@ -108,7 +108,7 @@ function blRenderHits(d) {
       on: { click: () => blOpenHit(h) } }, [
       blCell(fmtTime(new Date(h.ts)), "muted"),
       (() => {
-        const td = el("td", {}, [el("span", { class: "chip " + (h.rule_id ? "ok" : "muted"),
+        const td = el("td", {}, [el("span", { class: "bubble state " + (h.rule_id ? "ok" : "muted"),
                                             text: h.rule_id ? "rule" : "list" })]);
         if (h.rule_id) {
           td.classList.add("dcell");

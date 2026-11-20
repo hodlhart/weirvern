@@ -817,6 +817,11 @@ def test_a_failed_gate_query_reports_rather_than_rendering_empty():
     const fs = require("fs");
     const src = fs.readFileSync(process.argv[2], "utf8");
     const made = [];
+    // A REAL BROWSER ALWAYS HAS `window`, AND THE SHIPPING FILE USES IT (it publishes
+    // SL2_GATE_FILTER for app.js's URL writer). Leaving it out made loadSluice reject on a
+    // ReferenceError before its fetch, so the banner this test pins was never reached -- a gap
+    // in the MOCK, not in the loader. Same precedent as `document.addEventListener` above.
+    global.window = global;
     global.document = {
       // The shipping file wires controls at the top level (the blocklist panel, 2026-10-16); a
       // real DOM always has this, so the mock must too -- the previous mock predated top-level

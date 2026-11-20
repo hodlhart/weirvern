@@ -113,11 +113,11 @@ def test_a_rule_links_into_the_blocks_or_flows_behind_it():
 def test_the_gate_state_chips_reuse_the_alerts_severity_vocabulary():
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
     html = (WEB / "index.html").read_text(encoding="utf-8")
-    assert "rp-sev-chip sev-" in js
+    assert "bubble state sev-" in js
     assert "SL2_STATE_SEV" in js
     assert "enforcing: \"low\"" in js and "degraded: \"critical\"" in js
     # The markup starts from a real chip, so the first paint is not an unstyled word.
-    assert 'class="rp-sev-chip sev-low" id="sl2-traf-chip"' in html
+    assert 'class="bubble state sev-low" id="sl2-traf-chip"' in html
 
 
 def test_the_fleet_is_per_sensor_cards_and_says_when_there_is_nothing():
@@ -168,7 +168,7 @@ def test_a_fault_owns_the_top_of_its_card_and_the_first_screen():
     assert dom_band < html.index('class="controls', dom_band)
     traf_band = html.index('id="sl2-traf-band"')
     assert traf_band < html.index('class="controls', traf_band)
-    assert "function sl2BandSet(" in js and "sl2-fault-chip" in js
+    assert "function sl2BandSet(" in js and "sl2-fault-bubble" in js
     assert 'degraded: "critical"' in js and 'stale: "high"' in js
     # "New rule" is the shared header primary, not a second bespoke button style.
     assert 'id="sl2-new" class="primary"' in html
@@ -191,9 +191,9 @@ def test_state_is_a_shared_severity_chip_and_action_stays_a_button():
     css = (WEB / "style.css").read_text(encoding="utf-8")
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
     # THE STATE CHIP IS THE ALERTS CHIP. No second pill shape for Sluice.
-    assert '<span class="rp-sev-chip sev-low" id="sl2-dom-chip">' in html
-    assert '<span class="rp-sev-chip sev-low" id="sl2-traf-chip">' in html
-    assert "function sl2StateChip(" in js and "class: `rp-sev-chip sev-${sev}`" in js
+    assert '<span class="bubble state sev-low" id="sl2-dom-chip">' in html
+    assert '<span class="bubble state sev-low" id="sl2-traf-chip">' in html
+    assert "function sl2StateChip(" in js and "class: `bubble state sev-${sev}`" in js
     assert "sl2-pill" not in js and ".sl2-pill" not in css
 
 

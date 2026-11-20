@@ -113,14 +113,64 @@ h1 { font-size: var(--fs-4); font-weight: 400; margin: 0; }
 .status { display: flex; align-items: center; gap: 12px; font-size: var(--fs-2);
   flex-wrap: wrap; min-width: 0; }
 
-.pill {
-  padding: 4px 11px; border-radius: 6px; font-weight: 600;
-  background: var(--surface-2); color: var(--muted); border: 1px solid transparent;
+/* THE STATE BUBBLE. One geometry for every status and filter pill in the console, taken from
+ * the Sluice gate's own state chip: 999px radius, 4x8 padding, currentColor border, a 12% wash
+ * of the same hue, and one type size. A second pill shape is how "status" and "filter" came to
+ * look like two different systems on adjacent tabs.
+ *
+ *   .bubble.state  — a still reading. No pointer, no hover, no handler.
+ *   .bubble.filter — pressable. aria-pressed is REQUIRED; the checkmark is the state, never
+ *                    colour alone.
+ */
+.bubble {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  max-width: 100%;
+  /* HEIGHT IS THE PILL'S OWN. `.bubble.control` is a <button> and inherited the button base's
+   * `height: var(--btn-h)`, so the header controls stood 28px while every status pill stood
+   * 21px -- one class, two heights, measured across the views. The pill's box is its padding
+   * and its line, like the tile panels that also opt out of the button height. */
+  height: auto;
+  padding: 4px 8px; border: 1px solid currentColor; border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: var(--fs-1); font-weight: 400; line-height: 1; white-space: nowrap;
+  color: var(--muted);
 }
-.pill.ok { background: var(--wash-ok); color: color-mix(in srgb, var(--ok) 78%, var(--fg)); }
-.pill.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
-  color: color-mix(in srgb, var(--warn) 82%, var(--fg)); }
-.pill.bad { background: var(--wash-bad); color: color-mix(in srgb, var(--bad) 78%, var(--fg)); }
+.bubble.state { cursor: default; }
+.bubble.state.ok { color: var(--ok); }
+.bubble.state.warn { color: var(--warn); font-weight: 400; }
+.bubble.state.bad, .bubble.state.critical { color: var(--crit); }
+.bubble.state.muted { color: var(--muted); }
+.bubble.state.high { color: var(--sev-high); }
+.bubble.state.medium { color: var(--sev-medium); }
+.bubble.state.low { color: var(--muted); }
+.bubble.filter {
+  cursor: pointer; color: var(--fg-2); background: var(--panel2);
+  border-style: dashed;
+}
+.bubble.filter:hover { border-color: var(--accent); color: var(--fg); }
+.bubble.filter[aria-pressed="true"] {
+  border-style: solid; border-color: var(--accent); color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.bubble.filter[aria-pressed="true"]::before {
+  content: "\2713"; font-size: var(--fs-1); line-height: 1; color: var(--accent);
+}
+.bubble.filter:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.bubble .bubble-x {
+  border: 0; background: transparent; color: inherit; padding: 0 2px;
+  /* INHERIT THE PILL'S TYPE. A larger × made every remove-pill two pixels taller than a state
+   * pill -- the same class, two heights. The remove control is part of the pill, not a second
+   * size system. */
+  font-size: inherit; line-height: 1; cursor: pointer;
+}
+.bubble .bubble-x:hover { color: var(--bad); }
+.bubble.filter.filter-clear { color: var(--muted); border-style: solid; }
+.bubble.filter.filter-clear::before { content: none; }
+/* A header CONTROL that reports a state and opens something (health, staged changes, the armed
+ * auto-block). It is deliberately not `.state`: that class is reserved for a still reading. */
+.bubble.control { cursor: pointer; color: var(--fg-2); background: var(--panel2); }
+.bubble.control:hover { border-color: var(--accent); color: var(--fg); }
+.bubble.control.bad { color: var(--crit); }
 
 /* THE BUTTON SYSTEM (BTN-1). One base, three numbers, colour variants only.
  *
@@ -237,7 +287,7 @@ tr.clickable > td:last-child::after { content: "\203A"; float: right; color: var
  * DIFFERENT from "unreviewed": claiming nothing has been reviewed when the
  * review store cannot be read is the confident-empty failure this UI avoids.
  */
-.review-chip {
+.review-bubble {
   display: inline-block; border-radius: 999px; padding: 2px 8px;
   font-size: var(--fs-1); border: 1px solid var(--border); color: var(--muted);
   white-space: nowrap;
@@ -493,17 +543,9 @@ td.rp-sevcell { white-space: nowrap; }
 .rp-card-fams { color: var(--muted); font-size: var(--fs-1); }
 .rp-card-why { margin: 0; color: var(--fg-2); overflow-wrap: anywhere; }
 .rp-card-cue { color: var(--accent); font-size: var(--fs-1); white-space: nowrap; }
-/* THE SEVERITY CHIP IS THE HOUSE GRAMMAR: colour + glyph + word, the class names the anomaly
-   tab already uses (sev-high / sev-medium / sev-low), and a border that inherits the hue. */
-.rp-sev-chip {
-  display: inline-flex; align-items: center; gap: 4px; flex: none;
-  padding: 4px 8px; border: 1px solid currentColor; border-radius: 999px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  /* WEIGHT IS PART OF THE CHIP, NOT OF ITS PARENT. A chip inside a 15px/600 card heading
-     otherwise inherits the heading's weight (measured on Sluice's gate title), while the same
-     chip in an Alerts row inherits 400 -- one shape, two weights. */
-  font-size: var(--fs-1); font-weight: 400; line-height: 1; white-space: nowrap;
-}
+/* THE SEVERITY CHIP IS THE HOUSE BUBBLE. The geometry moved to the one `.bubble` rule near the
+   top of this file (2026-11-20); `.sev-*` still supplies the hue, so the word + glyph + colour
+   grammar is unchanged. No second pill shape is defined here. */
 .rp-legend {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
   margin: 8px 0 12px; padding: 8px 10px;
@@ -895,6 +937,16 @@ svg.spark rect.cur { fill: var(--accent); }
   width: min(480px, 94vw); max-width: 100vw; margin: 0; border-radius: 0;
   border-left: 1px solid var(--border-solid); overflow-y: auto; z-index: 75;
   animation: sheet-in .18s ease-out; }
+/* THE SHARED ALERT ACTION MENU: one row of verbs for both alert kinds, then the sentence that
+   says why Normalize does not apply to a host-scoped detection. */
+.alert-sheet-actions { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.alert-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.alert-normalize-note { margin: 6px 0 0; font-size: var(--fs-1); }
+.alert-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px; margin: 10px 0; font-size: var(--fs-2); }
+.alert-facts dt { color: var(--muted); }
+.alert-facts dd { margin: 0; overflow-wrap: anywhere; }
+.alert-contrib { margin: 4px 0 8px; padding-left: 20px; font-size: var(--fs-2); }
 .sheet.hidden { display: none; }
 /* The primary verb stays in thumb reach: a sheet's action row is sticky at its foot. */
 .sheet-actions { position: sticky; bottom: 0; z-index: 1; margin-top: 16px;
@@ -943,8 +995,8 @@ svg.spark rect.cur { fill: var(--accent); }
 .row-flash { animation: rowflash 1.6s ease-out; }
 @keyframes rowflash { 0% { background: var(--surface-2); } 100% { background: transparent; } }
 /* THE PAGING CHIP (BF-12): loud and quiet are one word apart on purpose. */
-.chip.pages { color: var(--ok); }
-.chip.quiet { color: var(--warn); }
+.bubble.state.pages { color: var(--ok); }
+.bubble.state.quiet { color: var(--warn); }
 .firstrun-next, .firstrun-review, .firstrun-skip { margin-right: 6px; }
 .firstrun-next, .firstrun-review { border-color: var(--accent); color: var(--accent); }
 .firstrun-skip { color: var(--muted); }
@@ -1048,7 +1100,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting-prov .link { background: none; border: 0; padding: 0; font-size: var(--fs-1); }
 /* the trail's own table: dense, mono where it matters */
 .wtl-note { margin: 6px 0; }
-.wtl-chip { margin-left: 4px; }
+.wtl-bubble { margin-left: 4px; }
 /* US-4: the occurrence expansion announces itself -- a chevron at rest that flips when open. */
 .expander { cursor: pointer; }
 .expander::after {
@@ -1062,14 +1114,8 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * single node, so the chosen hosts are listed above the canvas and each is removable.
  */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
-.chip { display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--mono); font-size: var(--fs-2); color: var(--fg);
-  background: var(--panel2); border: 1px solid var(--border-solid);
-  border-radius: 999px; padding: 3px 10px; }
-/* US-1: most chips are STATUS (inert) and must not wear a pointer or a hover wash -- the cue
- * at rest means clickable. Interactive chips opt in with .act. */
-.chip.act { cursor: pointer; }
-.chip.act:hover { border-color: var(--accent); }
+/* THE HOST CHIPS ARE BUBBLES TOO. Their class strings were migrated to `.bubble state/filter`
+ * (2026-11-20); this container is only the wrap. No second pill geometry lives here. */
 /* A status filter doubles as the colour key for the graph: the swatch is the same hex the
    node and edge use, and the word remains, so colour is never the only carrier. */
 .nw-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -1084,17 +1130,6 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
   0% { box-shadow: 0 0 0 3px rgba(255, 200, 80, 0.85); }
   100% { box-shadow: 0 0 0 3px rgba(255, 200, 80, 0); }
 }
-.chip .x { color: var(--muted); font-weight: 700; }
-.chip .x:hover { color: var(--danger); }
-/* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a
- * state modifier. The modifiers existed since the fleet shipped but rendered neutral -- the
- * colour lived only in the row's left bar. They now wear the same wash fills as .pill, so the
- * word and the colour arrive together (phase 2 follow-up). */
-.chip.ok { background: var(--wash-ok); border-color: transparent; color: color-mix(in srgb, var(--ok) 78%, var(--fg)); }
-.chip.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
-  color: color-mix(in srgb, var(--warn) 82%, var(--fg)); }
-.chip.bad { background: var(--wash-bad); border-color: transparent; color: color-mix(in srgb, var(--crit) 78%, var(--fg)); }
-.chip.muted { background: var(--surface-2); border-color: transparent; color: var(--muted); }
 
 /* ── the connection graph canvas ───────────────────────────────────────────
  * A fixed viewport height with the SVG filling it, so the layout has real bounds to work
@@ -1123,7 +1158,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .graph .node .node-ripple-ring.rp-sev-unknown { stroke: var(--muted); }
 /* The Network table's Ripple column. A cell with no ripple is EMPTY, never a zero chip. */
 .nw-ripple-cell { white-space: nowrap; width: 92px; }
-.nw-ripple-chip.clickable { cursor: pointer; }
+.nw-ripple-bubble.clickable { cursor: pointer; }
 .rp-link { background: none; border: 0; padding: 0; height: auto; color: var(--accent);
   font: inherit; }
 .rp-link:hover { text-decoration: underline; }
@@ -1302,7 +1337,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
   flex-wrap: wrap; }
 
 /* ── confidence chips (host identity) ──────────────────────────────────────
- * DELIBERATELY NOT .chip: that class is the clickable host-tracking chip and carries
+ * DELIBERATELY NOT a status bubble: this is the clickable host-tracking bubble and carries
  * cursor:pointer plus a hover border. Reusing it here would make a status LABEL look like a
  * button, which is a small lie the operator pays for by clicking something inert.
  *
@@ -1467,7 +1502,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
 
   /* NETWORK FILTERS AND WORKLIST. A chip is a finger target here, not a desktop label; the
      host table sheds its two least-scanned columns instead of forcing the page sideways. */
-  #nw-filters .chip.act { min-height: 44px; padding: 10px 12px; }
+  #nw-filters .bubble.filter { min-height: 44px; padding: 10px 12px; }
   #nw-hosts-table th, #nw-hosts-table td { padding: 9px 6px; }
   #nw-hosts-table tbody tr { min-height: 44px; }
   #nw-hosts-table .nw-h-name, #nw-hosts-table .nw-h-peers { display: none; }
@@ -1523,40 +1558,38 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .tr-panel button { cursor: pointer; }
 #tr-note { margin: 8px 0 0; font-size: var(--fs-2); }
 
+/* ── the filter bar (one surface, every view) ────────────────────────────────────────────── */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 0; padding: 8px 18px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2); min-width: 0; }
+.filter-bar[hidden] { display: none; }
+.filter-bar-label { font-size: var(--fs-1); color: var(--muted); margin-right: 2px; }
+.filter-bar .bubble.filter { max-width: 100%; }
+.filter-bar .bubble.filter[aria-pressed="true"]::before { content: none; }
+@media (max-width: 420px) {
+  .filter-bar { padding: 8px 10px; }
+  .filter-bar .bubble.filter { white-space: normal; overflow-wrap: anywhere; }
+}
+
 /* ── Discover's click-a-value filters ────────────────────────────────────────────────────── */
 .dc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 1.6em; }
-/* US-7: THE FILTER-CHIP GRAMMAR, beside the status-chip contract (US-1) and pinned there.
- *  - `.chip` is a STATUS pill: no pointer, no hover, a SOLID border.
- *  - `.dc-chip` / `.chip.act` are FILTERS and toggles: the same pill shape with a DASHED border
- *    at rest -- additive and temporary, not a state the system reports.
- *  - a chip HOLDING a filter wears the accent border, a CHECKMARK and aria-pressed="true".
- *    Never colour alone: the checkmark is the state, the border is the reinforcement. */
-.dc-chip { display: inline-flex; align-items: center; gap: 4px; height: var(--btn-h);
-  padding: 0 var(--btn-px);
-  background: var(--panel); border: 1px dashed var(--line); border-radius: 12px;
-  font-size: var(--fs-2); }
-.dc-chip[aria-pressed="true"], .chip.act[aria-pressed="true"] {
-  border-style: solid; border-color: var(--accent); color: var(--fg);
-}
-.dc-chip[aria-pressed="true"]::before, .chip.act[aria-pressed="true"]::before {
-  content: "\2713"; font-size: var(--fs-1); line-height: 1; color: var(--accent);
-}
-.dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
-  font-size: var(--fs-2); line-height: 1; }
-.dc-chip-x:hover { color: var(--bad); }
+/* US-7 / BUBBLE-1: the filter grammar is the ONE `.bubble.filter` rule near the top of this
+ * file. A filter is dashed at rest and, while it HOLDS a value, solid with a CHECKMARK and
+ * aria-pressed="true" -- never colour alone. No `.dc-chip` or `.chip.act` exists any more. */
 /* (US-4: the td.dcell rules moved into the single grammar block above.) */
 
-/* (US-4: deleted -- every .pill is a <button>, which the base button rule already cues.) */
-.pill-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: var(--fs-2);
+/* THE STATUS POPOVER's internals. The header pill opened this; the words are lines, not pills,
+ * so they keep their own small classes and never inherit the bubble geometry. */
+.status-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: var(--fs-2);
   background: var(--panel2); border: 1px solid var(--border-solid); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
-.pill-pop .pill-line { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
-.pill-pop .pill-state { font-family: monospace; font-size: var(--fs-1); min-width: 34px;
+.status-pop .status-line { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.status-pop .status-state { font-family: monospace; font-size: var(--fs-1); min-width: 34px;
   flex: 0 0 auto; }
-.pill-pop .pill-state.ok { color: var(--ok); }
-.pill-pop .pill-state.bad { color: var(--crit); }
-.pill-pop .pill-state.na { color: var(--muted); }
-.pill-pop p { margin: 6px 0 2px; }
+.status-pop .status-state.ok { color: var(--ok); }
+.status-pop .status-state.bad { color: var(--crit); }
+.status-pop .status-state.na { color: var(--muted); }
+.status-pop p { margin: 6px 0 2px; }
 
 /* ── chrome — scrollbars, focus ring, motion (visual-theme pass, 2026-10-17) ─────────────── */
 html { scrollbar-width: thin; scrollbar-color: var(--hover) transparent; }
@@ -1735,8 +1768,8 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
     width: 44px;
     height: 44px;
   }
-  #nw-status .chip.act { min-height: 44px; }
-  #nw-ripple .chip.act { min-height: 44px; }
+  #nw-status .bubble.filter { min-height: 44px; }
+  #nw-ripple .bubble.filter { min-height: 44px; }
   /* Touch floors for the controls this pass touched (390 and 320 audits). */
   .rp-ml, .rp-link { min-height: 44px; }
   #view-anomalies .controls select,
@@ -1744,7 +1777,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   #view-anomalies .dcell { min-height: 44px; min-width: 44px; display: inline-flex;
     align-items: center; justify-content: center; }
   .pager-btn { min-width: 44px; }
-  .dc-chip { min-height: 44px; }
+  .bubble.filter { min-height: 44px; }
   #view-network .controls input[type="number"],
   #view-network .controls input[type="checkbox"] { min-height: 44px; }
   #view-network .controls input[type="checkbox"] { width: 44px; height: 44px; }
@@ -1874,7 +1907,6 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .nw-filter-fields { margin: 0 0 8px; }
 .nw-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .nw-sig-cell { white-space: nowrap; }
-.chip.nw-sig { font-size: var(--fs-1); padding: 2px 8px; }
 .nw-worst-cell { white-space: nowrap; }
 /* THE NORMALIZE FEED'S ALERT COLUMN AND PHONE FORM (operator, 2026-11-20). */
 .nz-alert-btn { min-height: 44px; }
@@ -1917,7 +1949,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 /* ── Sluice Gate (2026-11-20 CONVERGENCE) ───────────────────────────────────────────────────
  * This tab speaks the console's vocabulary, not a local one. Measured from Alerts, Models,
  * Network and Flows and adopted here: card 8px/22px/18px rhythm, card heading 15px/600,
- * table rows 8px 10px at 13px with a hairline, .rp-sev-chip severity chips, 28px/6px buttons
+ * table rows 8px 10px at 13px with a hairline, severity bubbles, 28px/6px buttons
  * whose only variant is colour, and the .controls toolbar. Sluice-only surfaces are VARIANTS
  * built from those tokens: a fault is a severity chip plus its sentence INSIDE the card that
  * owns it (no page strip, no full-bleed band); a sensor is a nested surface card; orphan rules

@@ -231,7 +231,7 @@ function nfRenderChips() {
   if (!box) return;
   box.replaceChildren();
   for (const [i, f] of NF_FILTERS.entries()) {
-    const chip = el("button", { class: "dc-chip",
+    const chip = el("button", { class: "bubble filter",
       text: `${NF_FIELD_LABELS[f.field] || f.field} = ${f.label} \u00d7`,
       attrs: { title: "remove this filter" } });
     chip.addEventListener("click", () => nfRemoveChip(i));
@@ -450,7 +450,7 @@ function zkRenderChips() {
   if (!box) return;
   box.replaceChildren();
   for (const [i, f] of ZEEK_FILTERS.entries()) {
-    const chip = el("button", { class: "dc-chip", text: `${ZEEK_FIELD_LABELS[f.field] || f.field} = ${f.label} \u00d7`,
+    const chip = el("button", { class: "bubble filter", text: `${ZEEK_FIELD_LABELS[f.field] || f.field} = ${f.label} \u00d7`,
       attrs: { title: "remove this filter" } });
     chip.addEventListener("click", () => zkRemoveFilter(i));
     box.appendChild(chip);
@@ -887,14 +887,18 @@ async function loadHealthDeep() {
   // The header pill. It was populated by the removed Overview loader, so without this it read
   // "loading…" forever -- an element that looks like it is still working when it is not. Health
   // is the view that owns this fact now, so it sets the pill as well as the summary.
+  //
+  // IT WEARS THE BUBBLE CLASS IT WAS BORN WITH. This used to overwrite className with the
+  // retired `.pill` vocabulary, which no stylesheet defines: one health read and the header
+  // control lost its shape. The class list here must remain the one index.html declares.
   const pill = document.getElementById("health-pill");
   if (pill) {
     if (!d.health) {
       pill.textContent = "no database";
-      pill.className = "pill bad";
+      pill.className = "bubble control bad";
     } else {
       pill.textContent = `${measurable.length - bad}/${measurable.length} checks passing${naSuffix}`;
-      pill.className = "pill " + (h.ok ? "ok" : "bad");
+      pill.className = "bubble control" + (h.ok ? "" : " bad");
       // WHAT THE COUNT MEANS, one hover away. The pill reads "N of M checks passing, K not
       // applicable" -- and an operator is right to ask which ones, and what "not applicable"
       // even means for a health check. M counts only the checks that CAN pass or fail (a probe
@@ -1130,7 +1134,7 @@ function renderAlertAudit(a) {
  */
 function pillPopoverInit() {
   const pill = document.getElementById("health-pill");
-  const pop = document.getElementById("pill-pop");
+  const pop = document.getElementById("status-pop");
   if (!pill || !pop || pill.dataset.wired) return;
   pill.dataset.wired = "1";
   pill.addEventListener("click", (e) => {
@@ -1145,8 +1149,8 @@ function pillPopoverInit() {
     for (const c of checks) {
       const state = c.ok === true ? "PASS" : c.ok === false ? "FAIL" : "N/A";
       const cls = c.ok === true ? "ok" : c.ok === false ? "bad" : "na";
-      pop.appendChild(el("div", { class: "pill-line" }, [
-        el("span", { class: "pill-state " + cls, text: state }),
+      pop.appendChild(el("div", { class: "status-line" }, [
+        el("span", { class: "status-state " + cls, text: state }),
         el("span", { text: c.name + (c.ok === false && c.detail ? " \u2014 " + c.detail : "") }),
       ]));
     }

@@ -124,6 +124,9 @@ STATIC_FILES = {
     "/discover.js": ("discover.js", "application/javascript; charset=utf-8"),
     "/dnsview.js": ("dnsview.js", "application/javascript; charset=utf-8"),
     "/blocked.js": ("blocked.js", "application/javascript; charset=utf-8"),
+    # The universal filter bar (operator, 2026-11-20): one pill surface for every view. Loaded
+    # last because it reads the state and setters the view modules define.
+    "/filters.js": ("filters.js", "application/javascript; charset=utf-8"),
     # The command palette (BF-11). Its own file for the same reason as the others -- and
     # because the shortcut grammar is code a reader should find in one place.
     "/palette.js": ("palette.js", "application/javascript; charset=utf-8"),

@@ -421,12 +421,38 @@ def test_the_new_filter_state_round_trips_through_the_url():
 
 
 def test_no_view_declares_its_own_time_control():
-    """One range, in the header. A per-view hours select silently ignores the global choice."""
+    """One range, in the header. A per-view hours select silently ignores the global choice.
+
+    The ratchet is broad on purpose: an id ending in `hours` was only the FIRST shape this
+    drift took. Any element that lets a view choose a window -- a `data-hours` preset, a
+    `<select>`/`<input>` whose id names hours/hrs/range, or a JS lookup of a `*hours` control --
+    must belong to the one global control (`#tr-panel` / `#tr-presets`). Normalize's private
+    `nz-hours` was removed for exactly this; the header is the only owner.
+    """
     stale = sorted(re.findall(r'id="([\w-]*hours)"', INDEX))
     assert not stale, (
         f"index.html still declares a per-view time control: {stale}. The header owns the range; "
         f"a view keeps its own selector only by ignoring every other tab's window.")
     assert "nz-hours" not in INDEX_CODE and "nz-hours" not in _code(NORMALIZE_JS)
+
+    # EVERY `data-hours` PRESET LIVES IN THE ONE GLOBAL PANEL.
+    panel = INDEX.split('id="tr-panel"', 1)[1].split('id="tr-note"', 1)[0]
+    assert INDEX.count("data-hours=") == panel.count("data-hours=") == 7, (
+        "a view grew its own hour preset outside #tr-panel")
+
+    # NO VIEW-SCOPED WINDOW CONTROL. Only elements the operator can CHOOSE a time with count;
+    # `nw-window`/`dc-window` are display captions, not controls, and stay legal.
+    controls = re.findall(r"<(select|input)\b[^>]*>", INDEX)
+    offenders = [tag for tag in controls
+                 if re.search(r'\bid="[^"]*(hours?|hrs|range|window)[^"]*"', tag)
+                 and "tr-" not in tag]
+    assert not offenders, f"a view declares its own time control: {offenders}"
+
+    # ...AND NO SCRIPT READS ONE BEHIND THE GLOBAL CONTROL'S BACK.
+    js = "\n".join(p.read_text() for p in sorted(WEB.glob("*.js")))
+    stray = sorted(set(re.findall(r'getElementById\("([\w-]*hours?)"\)', js)))
+    assert not stray, f"a script reads a private hours control: {stray}"
+
     # Normalize reads the same global state every other loader does.
     normal_code = _code(NORMALIZE_JS)
     body = normal_code[normal_code.index("  function hours()"):

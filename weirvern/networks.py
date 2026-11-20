@@ -172,14 +172,22 @@ def filter_monitored(rows: Iterable[dict[str, Any]], scopes: Iterable[Scope]) ->
 
 
 # ── database helpers ──────────────────────────────────────────────────────────────────────
-def load_scopes(client) -> list[Scope]:
-    """Read the live table. A missing table means "not configured", not a silent zero scope."""
+def load_scopes(client, *, strict: bool = False) -> list[Scope]:
+    """Read the live table. A missing table means "not configured", not a silent zero scope.
+
+    `strict` exists for the fleet summary: a pre-035 deployment and a broken ClickHouse both
+    return [] on the tolerant path, and a tile that reads "0 declared" for an unreadable table
+    is the confident-empty failure this module refuses everywhere else. Callers that render a
+    declaration count pass strict=True and state the read failure instead of a zero.
+    """
     try:
         result = client.query(
             "SELECT id, cidr, label, monitored, policy, description, source "
             "FROM weirvern.network_scopes FINAL WHERE deleted = 0 ORDER BY id"
         ).result_rows
     except Exception:  # noqa: BLE001 - pre-035 deployments and ClickHouse outages both degrade
+        if strict:
+            raise
         return []
     out: list[Scope] = []
     for row in result:
@@ -233,6 +241,87 @@ def delete_scope(client, scope_id: str) -> bool:
                       "source", "deleted"],
     )
     return True
+
+
+def _network_of(raw: object) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    """A stored segment as a network, or None when it is not address-shaped.
+
+    A sensor's `segment` is usually a CIDR, but an older registration can carry a bare address
+    or a prose label ("mtls verification"). The former is a /32 or /128; the latter is not a
+    network at all and must not be counted as one.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        try:
+            addr = ipaddress.ip_address(text)
+        except ValueError:
+            return None
+        return ipaddress.ip_network(f"{addr}/{addr.max_prefixlen}", strict=False)
+
+
+def observed_matches(scope: Scope, observed: Iterable[str]) -> bool:
+    """Whether a sensor segment covers (or is covered by) this declared scope.
+
+    OVERLAP, NOT STRING EQUALITY. A sensor that reports 192.0.2.0/24 observes a declared
+    /24 exactly; one that reports a narrower /25 still observes part of it, and one that
+    reports a wider /16 covers it. All three are evidence that the declared network was seen,
+    and an operator who declared .2 but whose sensor reports .2.10/25 would otherwise be told
+    it was never observed.
+    """
+    net = scope.network
+    if net is None:
+        return False
+    for raw in observed:
+        other = _network_of(raw)
+        if other is None or other.version != net.version:
+            continue
+        if other == net or net.overlaps(other):
+            return True
+    return False
+
+
+def coverage(scopes: Iterable[Scope], observed: Iterable[str]) -> dict[str, Any]:
+    """Both counts, side by side, plus every declared network that no sensor has seen.
+
+    THE OPERATOR'S COMPLAINT THIS ANSWERS (2026-11-20): "weirlings tab says we only have 1
+    network, but we have 2." The old summary counted only the segments a sensor happened to
+    report, so a declaration with no NIC behind it vanished from the count while remaining
+    visible in Settings. A bare observed count can never contradict a visible declaration
+    again: the payload carries declared AND observed, and `unobserved` names the gap.
+    """
+    declared = list(scopes)
+    observed_keys = []
+    for raw in observed:
+        key = _network_of(raw)
+        if key is not None:
+            text = str(key)
+            if text not in observed_keys:
+                observed_keys.append(text)
+    rows = []
+    unobserved = []
+    for scope in declared:
+        seen = observed_matches(scope, observed_keys)
+        row = scope.public()
+        row["observed"] = seen
+        rows.append(row)
+        if not seen:
+            unobserved.append({"cidr": scope.cidr, "label": scope.label,
+                               "monitored": scope.monitored, "policy": scope.policy})
+    monitored = [s for s in declared if is_monitored(s)]
+    return {
+        "available": True,
+        "declared": len(declared),
+        "declared_monitored": len(monitored),
+        "observed": len(observed_keys),
+        "observed_segments": observed_keys,
+        "unobserved": unobserved,
+        "scopes": rows,
+        "unconfigured": not declared,
+    }
 
 
 def overview(client, hours: int = 24) -> dict[str, Any]:

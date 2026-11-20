@@ -36,9 +36,9 @@ function dcRenderChips() {
     return;
   }
   DC_STATE.filters.forEach((f, i) => {
-    const chip = el("span", { class: "dc-chip" });
+    const chip = el("span", { class: "bubble filter" });
     chip.appendChild(el("span", { text: f.label }));
-    const x = el("button", { class: "dc-chip-x", text: "\u00d7",
+    const x = el("button", { class: "bubble-x", text: "\u00d7",
                              attrs: { title: "remove this filter" } });
     x.addEventListener("click", (e) => { e.stopPropagation(); dcRemoveChip(i); });
     chip.appendChild(x);

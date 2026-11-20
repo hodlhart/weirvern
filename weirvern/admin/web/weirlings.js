@@ -60,7 +60,7 @@ function wlStateChip(state) {
     unregistered: "unregistered",
     disabled: "disabled",
   }[state] || state || "unknown";
-  return el("span", { class: `chip ${cls}`, text: label });
+  return el("span", { class: `bubble state ${cls}`, text: label });
 }
 
 // Capture loss: null is NOT 0.0. A sensor that has never measured it must not read as perfect.
@@ -111,38 +111,56 @@ async function loadWeirlings() {
 
   // ── the fleet's own state, first and largest
   const s = d.summary || {};
+  const cov = d.network_coverage || {};
+  const declaredNets = s.networks_declared;
+  const observedNets = s.networks_observed ?? s.networks;
   // THE THIRD ELEMENT IS THE TILE'S MEANING, not its number: a count of zero needs no colour,
   // and a problem nobody can spot at a glance is a problem reported in sixpt grey.
   const problemsOnly = document.getElementById("wl-problems-only").checked;
   const items = [
     ["weirlings", String(s.total ?? "—"), "", ""],
     ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : "", "alive"],
-    // NETWORKS REPLACES PROBLEMS (operator, 2026-10-20): the fleet's job is coverage, and
-    // the count is distinct collected segments -- one subnet shared by two NICs is one network.
-    // It is a count, not a filter: there is no per-network state to narrow the worklist by.
-    ["networks", String(s.networks ?? "—"), (s.networks ?? 0) > 0 ? "ok" : "", null],
+    // BOTH NETWORK COUNTS (operator, 2026-11-20): "weirlings tab says we only have 1 network,
+    // but we have 2." A single observed count sat beside a Settings page that declared two, and
+    // the operator had no way to tell which number was wrong. Declared and seen are separate
+    // facts; when they differ the note below names every declaration no sensor has seen.
+    ["networks declared", declaredNets === null || declaredNets === undefined ? "—" : String(declaredNets),
+      declaredNets > 0 ? "ok" : (cov.available ? "" : "warn"), "declared"],
+    ["segments seen", String(observedNets ?? "—"),
+      (observedNets ?? 0) > 0 ? "ok" : "", "observed"],
     ["stale", String(s.stale ?? "—"), (s.stale ?? 0) > 0 ? "warn" : "", "stale"],
     ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : "", "unregistered"],
     ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : "", "disabled"],
   ];
   // THE COUNTS ARE FILTERS (BF-7; research: Security Onion's grid grammar). Clicking a count
-  // narrows the worklist to exactly it; the active filter is visibly the active one.
+  // narrows the worklist to exactly it; the active filter is visibly the active one. The two
+  // network tiles are READING counts, not states: they scroll to the coverage card, where the
+  // declared-but-unobserved rows live.
   for (const [k, v, cls, state] of items) {
-    const countOnly = state === null;
+    const countOnly = state === "declared" || state === "observed";
     const active = countOnly ? false
       : (state === "problem"
         ? problemsOnly
         : (state ? WL_FILTERS.state === state : (!WL_FILTERS.state && !problemsOnly)));
-    const attrs = { type: "button", title: countOnly
-      ? "distinct network segments this fleet is collecting (one per subnet, not one per NIC)"
-      : (state ? `show ${k} only` : "clear every filter") };
+    const title = state === "declared"
+      ? (cov.available === false
+        ? `the declared networks could not be read: ${cov.reason || "no reason reported"}`
+        : "monitored networks declared in Settings — click to see every declaration and whether a sensor has seen it")
+      : (state === "observed"
+        ? "distinct segments a sensor is actually collecting — click to compare with the declarations"
+        : (countOnly ? "a reading, not a filter" : (state ? `show ${k} only` : "clear every filter")));
+    const attrs = { type: "button", title };
     if (!countOnly) attrs["data-state"] = state;
-    if (countOnly) attrs.disabled = "disabled";
     const tile = el("button", {
       class: (cls ? `stat clickable ${cls}` : "stat clickable") + (active ? " active" : "")
         + (countOnly ? " stat-count" : ""),
       attrs,
-      on: countOnly ? {} : { click: () => wlSetState(state) },
+      on: countOnly ? { click: () => {
+        const target = document.getElementById("wl-network-list");
+        if (target && target.scrollIntoView) {
+          try { target.scrollIntoView({ block: "center" }); } catch (_e) { /* optional */ }
+        }
+      } } : { click: () => wlSetState(state) },
     }, [
       // TH-5 recipe, built inline: label above value; fleet counts carry no series, so no
       // sparkline is faked onto them.
@@ -155,7 +173,7 @@ async function loadWeirlings() {
   // A reading surface like the fleet table: its failure is reported by its own note rather
   // than blanking the fleet. It is loaded here so the coverage question is answered beside
   // the sensors that collect it.
-  loadNetworkCoverage().catch(() => {});
+  loadNetworkCoverage(d.network_coverage || null).catch(() => {});
 
   // The server's own sentences, verbatim: it knows whether the heartbeat read degraded, and
   // paraphrasing would lose the reason an operator acts on.
@@ -166,6 +184,16 @@ async function loadWeirlings() {
       + `the weirlings.`);
   }
   if (d.filtered) bits.push("Showing problems only.");
+  if (Array.isArray(cov.unobserved) && cov.unobserved.length) {
+    // A DECLARATION WITH NO SENSOR BEHIND IT IS THE GAP, and it is named rather than folded
+    // into a count. The operator declared these in Settings; no weirling is collecting them.
+    bits.push(`Declared but not seen by any sensor: ` +
+      cov.unobserved.map((u) => `${u.cidr}${u.label ? ` (${u.label})` : ""}`).join(", ") +
+      `. The two counts above are different facts, not a disagreement.`);
+  } else if (cov.available === false) {
+    bits.push(`The declared-network count is unavailable (${cov.reason || "the read failed"}); ` +
+      `the seen count is still measured.`);
+  }
   if ((s.total ?? 0) === 0 && d.heartbeats_available !== false) {
     bits.push("No weirlings are registered and none are reporting. Register one below to record the "
       + "expectation, so a weirling that never comes up is reported rather than invisible.");
@@ -825,7 +853,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
         // SEVEN COLUMNS, not six: first cell plus colspan 6. The old 5 left the revoked row
         // short one column and it drifted under the wrong header.
         tr.appendChild(el("td", { attrs: { colspan: "6" } }, [
-          el("span", { class: "chip muted", text: "revoked" }),
+          el("span", { class: "bubble state muted", text: "revoked" }),
           el("span", { class: "muted",
                        text: r.revoked_at ? ` retired ${r.revoked_at}` : "" }),
         ]));
@@ -2389,7 +2417,7 @@ function wlRenderExternalExposure(ext) {
   }
 }
 
-async function loadNetworkCoverage() {
+async function loadNetworkCoverage(coverage) {
   const note = document.getElementById("wl-network-note");
   const list = document.getElementById("wl-network-list");
   const state = document.getElementById("wl-network-state");
@@ -2397,21 +2425,40 @@ async function loadNetworkCoverage() {
   // `full` is the storage/API value, but it reads as a generic intensifier on the console.
   // Say what it actually buys the operator: per-host baselines and alerts.
   const policyLabel = (policy) => policy === "full" ? "per-host" : (policy || "");
+  const covAvailable = Boolean(coverage && coverage.available);
+  const covBy = new Map(((coverage && coverage.scopes) || []).map((s) => [s.cidr, s]));
   let d;
   try {
     d = await getJSON("/api/networks");
   } catch (err) {
-    note.textContent = "Network coverage could not be read: " + (err && err.message ? err.message : err);
-    return;
+    if (!covAvailable) {
+      note.textContent = "Network coverage could not be read: " + (err && err.message ? err.message : err);
+      return;
+    }
+    d = null;
   }
-  if (!d.available) {
-    note.textContent = "Network coverage unavailable: " + (d.reason || "the read did not run");
-    list.replaceChildren();
-    return;
+  if (!d || !d.available) {
+    if (covAvailable) {
+      // THE DECLARATIONS STILL RENDER WHEN THE COUNTS ROUTE FAILS. The scope list is the part
+      // that answers "what did I declare, and did a sensor see it"; host/alert counts are the
+      // optional half and say "—" rather than a false zero.
+      d = { available: true, scopes: coverage.scopes, counts_available: false, hours: 24,
+            summary: { total: coverage.declared, monitored: coverage.declared_monitored,
+                       observed: Math.max(0, (coverage.declared || 0) - (coverage.declared_monitored || 0)),
+                       unclassified_hosts: null, unclassified_alerts: null },
+            unconfigured: Boolean(coverage.unconfigured), external: null, external_peers: [] };
+    } else {
+      note.textContent = "Network coverage unavailable: " + ((d && d.reason) || "the read did not run");
+      list.replaceChildren();
+      return;
+    }
   }
   const s = d.summary || {};
-  if (state) state.textContent = d.unconfigured ? "not configured" :
-    `${s.monitored || 0} monitored · ${s.observed || 0} observed`;
+  if (state) {
+    const seen = covAvailable ? ` · ${coverage.observed} seen` : "";
+    state.textContent = d.unconfigured ? "not configured" :
+      `${s.monitored || 0} monitored · ${s.observed || 0} observed${seen}`;
+  }
   list.replaceChildren();
   const peerBox = document.getElementById("wl-peer-list");
   if (peerBox) peerBox.replaceChildren();
@@ -2434,20 +2481,32 @@ async function loadNetworkCoverage() {
       "last 24h fall outside every declared network.");
   }
   if (!d.counts_available) bits.push("Some counts could not be read; — means unknown, not zero.");
+  if (covAvailable && coverage.unobserved && coverage.unobserved.length) {
+    bits.push(`Declared but no sensor has seen: ` +
+      coverage.unobserved.map((u) => u.cidr).join(", ") + ".");
+  }
   note.textContent = bits.join(" ") || "Counts cover the last 24 hours.";
   for (const scope of d.scopes || []) {
     const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
+    const seen = covBy.has(scope.cidr) ? Boolean(covBy.get(scope.cidr).observed)
+      : (scope.observed === undefined ? null : Boolean(scope.observed));
     const card = el("button", {
-      class: "net-card clickable " + (monitored ? "monitored" : "observed"),
+      class: "net-card clickable" + (monitored ? "monitored" : "observed")
+        + (seen === false ? " not-seen" : ""),
       type: "button",
-      title: `${scope.cidr} · ${scope.label} · ${policyLabel(scope.policy)}`,
+      title: `${scope.cidr} · ${scope.label} · ${policyLabel(scope.policy)}` +
+        (seen === null ? "" : (seen ? " · seen by a sensor" : " · no sensor sees this network")),
     }, [
       el("div", { class: "net-k", text: scope.label }),
       el("div", { class: "net-v mono", text: scope.cidr }),
       el("div", { class: "net-m", text: (monitored ? "monitored" : "observed") + " · " +
         policyLabel(scope.policy) }),
       el("div", { class: "net-m", text: `hosts ${scope.hosts === null || scope.hosts === undefined ? "—" : scope.hosts} · alerts ${scope.alerts === null || scope.alerts === undefined ? "—" : scope.alerts}` }),
-    ]);
+      seen === null ? null : el("div", {
+        class: "net-m" + (seen ? "net-seen" : "net-not-seen"),
+        text: seen ? "seen by a sensor" : "not seen by any sensor",
+      }),
+    ].filter(Boolean));
     card.addEventListener("click", () => {
       if (typeof AN_FILTERS !== "undefined") { AN_FILTERS.host = ""; }
       if (typeof showView === "function") showView("settings");
@@ -2532,9 +2591,9 @@ async function loadNetworkCoverage() {
 // "not reported", which is not the same fact as "basic". After the operator installs Nmap
 // from their own package manager, the next scanner pass flips the profile automatically.
 function scannerChip(item) {
-  if (item.state === "not_reported") return el("span", { class: "chip muted", text: "not reported" });
-  if (item.profile === "nmap") return el("span", { class: "chip ok", text: "Nmap" });
-  return el("span", { class: "chip warn", text: "Basic" });
+  if (item.state === "not_reported") return el("span", { class: "bubble state muted", text: "not reported" });
+  if (item.profile === "nmap") return el("span", { class: "bubble state ok", text: "Nmap" });
+  return el("span", { class: "bubble state warn", text: "Basic" });
 }
 
 function scannerAge(value) {

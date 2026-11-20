@@ -117,7 +117,7 @@ const DN_FACET_SHOWN = 10;
 
 function dnFacetChips(box, rows, shown, total, applyField, title) {
   for (const row of rows.slice(0, shown)) {
-    const chip = el("button", { class: "dc-chip", text: `${row.value} \u00b7 ${row.count}`,
+    const chip = el("button", { class: "bubble filter", text: `${row.value} \u00b7 ${row.count}`,
                                 attrs: { title } });
     chip.addEventListener("click", () => dnApply([[applyField, row.value]]));
     box.appendChild(chip);
@@ -125,7 +125,7 @@ function dnFacetChips(box, rows, shown, total, applyField, title) {
   if (rows.length <= shown && total <= rows.length) return;
   const rest = rows.slice(shown);
   const others = Math.max(total - shown, rest.length);
-  const chip = el("button", { class: "dc-chip", text: `others (+${others})`,
+  const chip = el("button", { class: "bubble filter", text: `others (+${others})`,
                               attrs: { title: "show the rest" } });
   chip.addEventListener("click", () => {
     chip.remove();
@@ -178,7 +178,7 @@ function dnReverseInto(container, ip) {
       container.appendChild(el("span", { class: "muted", text: `${ip} \u2190 ` }));
       d.domains.forEach((r, i) => {
         if (i) container.appendChild(el("span", { class: "muted", text: ", " }));
-        const b = el("button", { class: "dc-chip", text: r.domain,
+        const b = el("button", { class: "bubble filter", text: r.domain,
                                  attrs: { title: "filter to this domain" } });
         b.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-domain", r.domain]]); });
         container.appendChild(b);
@@ -203,7 +203,7 @@ function dnToggleDetail(tr, r) {
     if (r.answer_ips.length > 1) {
       const more = el("div", { class: "dc-chips" });
       r.answer_ips.slice(1).forEach((ip) => {
-        const b = el("button", { class: "dc-chip", text: ip,
+        const b = el("button", { class: "bubble filter", text: ip,
                                  attrs: { title: "reverse-look this address" } });
         b.addEventListener("click", (e) => { e.stopPropagation(); dnReverseInto(line, ip); });
         more.appendChild(b);
@@ -213,7 +213,7 @@ function dnToggleDetail(tr, r) {
   }
   const actions = el("div", { class: "dc-chips" });
   const act = (label, pairs) => {
-    const b = el("button", { class: "dc-chip", text: label });
+    const b = el("button", { class: "bubble filter", text: label });
     b.addEventListener("click", (e) => { e.stopPropagation(); dnApply(pairs); });
     actions.appendChild(b);
   };

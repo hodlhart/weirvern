@@ -177,7 +177,7 @@ function bandCell(value) {
 
 function bandChip(value) {
   const band = bandValue(value);
-  return el("span", { class: `rp-sev-chip sev-${band}`, text: sevText(band) });
+  return el("span", { class: `bubble state sev-${band}`, text: sevText(band) });
 }
 
 function emptyRow(tbody, cols, message, action) {
@@ -2084,7 +2084,7 @@ function anReviewSummary(a) {
 /** The state chip for one occurrence (or a whole row): the state, its label, and WHEN. */
 function reviewChip(state, reviewedAt) {
   return el("span", {
-    class: "review-chip " + reviewClass(state),
+    class: "review-bubble " + reviewClass(state),
     text: REVIEW_LABELS[state] !== undefined ? REVIEW_LABELS[state] : state,
     title: reviewedAt ? "reviewed " + fmtTime(reviewedAt) : "not reviewed yet",
   });
@@ -2267,7 +2267,7 @@ function anRenderChips() {
   // the URL -- so the reason is said out loud, and one click shows everything again.
   if (ARRIVED_FROM_LINK && (AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model
       || AN_FILTERS.feature)) {
-    const arrival = el("button", { class: "dc-chip",
+    const arrival = el("button", { class: "bubble filter",
       attrs: { title: "these filters arrived with the link; click to show everything" },
       text: "arrived with filters \u2014 show everything \u00d7" });
     arrival.addEventListener("click", () => { ARRIVED_FROM_LINK = false; anClearAllFilters(); });
@@ -2275,7 +2275,7 @@ function anRenderChips() {
   }
   for (const field of ["host", "severity", "model", "feature"]) {
     if (!AN_FILTERS[field]) continue;
-    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+    const chip = el("button", { class: "bubble filter", attrs: { title: "remove this filter" },
       text: `${field} = ${AN_FILTERS[field]} \u00d7` });
     chip.addEventListener("click", () => {
       AN_FILTERS[field] = "";
@@ -2375,7 +2375,7 @@ async function loadAudit() {
   for (const f of findings) {
     tbody.appendChild(el("tr", {}, [
       el("td", {}, [
-        el("span", { class: "chip " + (f.severity === "warn" ? "warn" : "muted"),
+        el("span", { class: "bubble state " + (f.severity === "warn" ? "warn" : "muted"),
                      text: AUDIT_CLASS_LABELS[f.class] || f.class }),
       ]),
       el("td", {}, [
@@ -2468,12 +2468,12 @@ async function loadDetectors() {
         el("span", { class: "mono dcell", attrs: { title: "show only this detector's alerts" },
                      on: { click: () => anSetFilter("model", det.name) } },
            [el("span", { text: det.name })]),
-        det.known ? null : el("span", { class: "chip warn", text: " unregistered",
+        det.known ? null : el("span", { class: "bubble state warn", text: " unregistered",
           attrs: { title: "nobody has registered this detector: it cannot page until an owner and runbook exist" } }),
       ]),
       el("td", { text: det.owner || "—" }),
       el("td", {}, [
-        el("span", { class: "chip " + (det.loud ? "pages" : "quiet"),
+        el("span", { class: "bubble state " + (det.loud ? "pages" : "quiet"),
                      text: det.loud ? "pages" : "quiet",
                      attrs: { title: det.loud
                        ? `may page a phone; runbook: ${det.runbook || "none recorded"}`
@@ -2642,6 +2642,9 @@ function anClearAllFilters() {
  */
 const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25, bands: null, band: "" };
 let RIPPLE_SHEET = null;
+// The host the SHARED alert sheet is about. Both open functions set it, so the sheet's own
+// "Open host" control works for a model detection as well as a ripple.
+let ALERT_SHEET_HOST = "";
 
 /** A server timestamp in milliseconds. Naive ISO strings are UTC, like the server's clock. */
 function rippleTs(value) {
@@ -2771,9 +2774,9 @@ function anomalyCard(a, band) {
       el("span", { class: "rp-card-cue", text: "Evidence \u203a" }),
     ]),
   ]);
-  card.addEventListener("click", () => openEvidence(a));
+  card.addEventListener("click", () => openAnomalySheet(a));
   card.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openEvidence(a); }
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openAnomalySheet(a); }
   });
   return card;
 }
@@ -2799,7 +2802,7 @@ function renderRippleLegend(data, rows) {
   ];
   for (const [name, text] of items) {
     box.appendChild(el("span", { class: "rp-legend-item" }, [
-      el("span", { class: "rp-sev-chip sev-" + name, text: sevText(name) }),
+      el("span", { class: "bubble state sev-" + name, text: sevText(name) }),
       el("span", { class: "rp-legend-text", text }),
     ]));
   }
@@ -3393,16 +3396,223 @@ function wireRippleSheet() {
   }
   const host = document.getElementById("rp-detail-host");
   if (host) host.addEventListener("click", () => {
-    const ripple = RIPPLE_SHEET;
+    const addr = ALERT_SHEET_HOST;
     if (typeof closeSheet === "function") closeSheet(card);
-    if (ripple && ripple.host) openHost(ripple.host);
+    if (addr) openHost(addr);
   });
+}
+
+/* ── THE SHARED ALERT SHEET ────────────────────────────────────────────────────────────────
+ *
+ * Operator (2026-11-20): "ripple and model-anomaly rows should open the SAME side sheet; same
+ * action menu; model anomalies offer Block through the identical confirmation and read-back;
+ * normalize says why it does not apply to a host-scoped detection."
+ *
+ * ONE card (`#rp-detail-card`), one action builder, one block path. The two kinds differ in
+ * their BODY (ripple evidence vs model scores) and in nothing else, so a verb added to one is
+ * present on the other by construction rather than by remembering to copy it.
+ */
+
+const HOST_SCOPED_NORMALIZE_WHY =
+  "Normalize does not apply to a host-scoped detection: normalization marks a traffic pattern " +
+  "(host \u2192 destination/port or a DNS name) as normal for a host's baseline, while this " +
+  "detection is a score for the whole host-window. Open the host, then normalize a specific " +
+  "pattern from the Normalize tab.";
+
+function alertSheetHost(kind, alert) {
+  return String((kind === "ripple" ? alert.host : alert.src_addr) || "");
+}
+
+function alertSheetClose(card) {
+  if (typeof closeSheet === "function") closeSheet(card);
+  else if (card) card.classList.add("hidden");
+}
+
+function renderAlertSheetActions(kind, alert, card) {
+  const box = document.getElementById("rp-detail-actions");
+  if (!box) return;
+  const host = alertSheetHost(kind, alert);
+  box.replaceChildren();
+  const menu = el("div", { class: "alert-actions", attrs: { role: "group", "aria-label": "alert actions" } });
+  const verb = (text, fn) => {
+    const b = el("button", { class: "review-act", text, attrs: { type: "button" } });
+    b.addEventListener("click", fn);
+    menu.appendChild(b);
+  };
+  verb("Evidence", () => {
+    alertSheetClose(card);
+    openEvidence({
+      src_addr: host,
+      window_start: alert.window_start || alert.detected_at,
+      window_end: alert.window_end,
+    });
+  });
+  verb("Block\u2026", () => alertBlockPanel(kind, alert, card));
+  verb("Open host", () => {
+    alertSheetClose(card);
+    openHost(host);
+  });
+  box.appendChild(menu);
+  // NORMALIZE STATES ITS SCOPE. A disabled control without a reason is the dead control this
+  // console keeps refusing; the sentence is the reason.
+  const normalized = el("button", {
+    class: "review-act", text: "Normalize\u2026",
+    attrs: { type: "button", disabled: "disabled",
+             title: "normalization is for a traffic pattern, not a host-scoped detection" },
+  });
+  normalized.disabled = true;
+  box.appendChild(normalized);
+  box.appendChild(el("p", { class: "muted alert-normalize-note", text: HOST_SCOPED_NORMALIZE_WHY }));
+}
+
+/** The ONE block path both alert kinds use: explicit blast radius, a reason, then a READ-BACK. */
+function alertBlockPanel(kind, alert, card) {
+  const box = document.getElementById("rp-detail-actions");
+  if (!box) return;
+  const host = alertSheetHost(kind, alert);
+  const reason = gateBlockableReason();
+  box.replaceChildren();
+  if (reason) {
+    box.appendChild(el("p", { class: "muted", text: `Block unavailable \u2014 ${reason}.` }));
+    box.appendChild(el("button", {
+      class: "quiet", text: "Back to actions", attrs: { type: "button" },
+      on: { click: () => renderAlertSheetActions(kind, alert, card) },
+    }));
+    return;
+  }
+  const ttl = 60;
+  const gate = (GATE_STATE && GATE_STATE.gate) || {};
+  const blast = el("p", { class: "muted" });
+  blast.textContent = `Blast radius: all traffic from ${host}, forward direction, enforced at the ` +
+    `gate${gate.iface ? ` on ${gate.iface}` : ""} (${gate.rules_active || 0} rule(s) active) ` +
+    `for ${ttl} minutes.`;
+  const why = el("input", {
+    class: "gate-why",
+    attrs: { type: "text", "aria-label": "reason for this block" },
+    value: kind === "ripple"
+      ? `ripple score ${Number(alert.score || 0).toFixed(2)} on ${host}, window ${fmtTime(alert.window_start)}`
+      : `model score ${Number(alert.anomaly_score ?? 0).toFixed(3)} on ${host}, window ${fmtTime(alert.window_start)}`,
+  });
+  const note = el("span", { class: "muted gate-note", attrs: { role: "status", "aria-live": "polite" } });
+  const confirm = el("button", {
+    class: "review-act", text: `Confirm block for ${ttl} min`,
+    attrs: { type: "button" },
+    on: { click: async () => {
+      confirm.disabled = true;
+      note.textContent = "filing\u2026";
+      try {
+        const out = await postJSON(API.sluiceBlock, {
+          src_cidr: host, dst_cidr: "", protocol: "", dst_port: 0,
+          direction: "forward", ttl_minutes: ttl, reason: why.value.trim(),
+        });
+        if (!out || out.ok === false) {
+          note.textContent = (out && out.error) || "the gate refused the rule";
+          return;
+        }
+        // THE READ-BACK IS THE PROOF. A 200 says the request was accepted; the rules list says
+        // whether the gate now holds the rule and in what mode. Both alert kinds print the same
+        // sentences because this is the same function.
+        let readBack = null;
+        let readErr = "";
+        try {
+          readBack = await getJSON(API.sluice);
+        } catch (err) {
+          readErr = err && err.message ? err.message : String(err);
+        }
+        const rule = readBack && (readBack.rules || []).find((r) => r.rule_id === out.rule_id);
+        if (!readBack) {
+          note.textContent = `The gate accepted ${out.rule_id || "the rule"}, but the read-back ` +
+            `failed (${readErr || "no answer"}), so its live state is not claimed.`;
+        } else if (!rule) {
+          note.textContent = `The gate accepted ${out.rule_id || "the rule"}, but the read-back ` +
+            `does not list it. Treat it as unconfirmed.`;
+        } else {
+          note.textContent = `Read back: ${rule.rule_id} is ${rule.mode || "unknown"}` +
+            (rule.revoked_at ? " (revoked)" : "") +
+            (rule.expires_at ? ` until ${fmtTime(rule.expires_at)}` : " until revoked") + ".";
+        }
+      } catch (err) {
+        note.textContent = err && err.message ? err.message : String(err);
+      } finally {
+        confirm.disabled = false;
+      }
+    } },
+  });
+  const back = el("button", {
+    class: "quiet", text: "Back", attrs: { type: "button" },
+    on: { click: () => renderAlertSheetActions(kind, alert, card) },
+  });
+  box.appendChild(blast);
+  box.appendChild(el("div", { class: "gate-line" }, [why]));
+  box.appendChild(el("div", { class: "gate-line" }, [confirm, back, note]));
+}
+
+/** The model-anomaly half of the ONE alert sheet. */
+function openAnomalySheet(a, opener) {
+  const card = document.getElementById("rp-detail-card");
+  if (!card || !a || !a.src_addr) return;
+  RIPPLE_SHEET = null;
+  ALERT_SHEET_HOST = String(a.src_addr || "");
+  const title = document.getElementById("rp-detail-title");
+  const stamp = document.getElementById("rp-detail-id");
+  const note = document.getElementById("rp-detail-note");
+  const body = document.getElementById("rp-detail-body");
+  if (title) title.textContent = `Model detection on ${a.src_addr}`;
+  if (stamp) stamp.textContent = a.window_start ? fmtCompactTime(a.window_start) : "";
+  if (note) note.textContent = "A host-scoped detection: the model's fused score for this host " +
+    "in this window. This is the same sheet a ripple opens; the evidence table is what differs.";
+  if (!body) return;
+  body.replaceChildren();
+  const band = bandValue(a.severity_band || a.severity);
+  body.appendChild(el("p", {}, [
+    el("span", { class: "rp-score sev-" + band, text: (a.anomaly_score ?? 0).toFixed(3) }),
+    el("span", { class: "muted", text: ` \u00b7 ${a.severity_basis || band + " band"}` }),
+  ]));
+  body.appendChild(el("p", { text: a.baseline_comparison || "No baseline comparison was carried." }));
+  const facts = el("dl", { class: "alert-facts" });
+  const fact = (k, v) => {
+    if (!v) return;
+    facts.appendChild(el("dt", { text: k }));
+    facts.appendChild(el("dd", { text: String(v) }));
+  };
+  fact("host", a.src_addr);
+  fact("hostname", a.hostname || "");
+  fact("detected", a.detected_at ? fmtTime(a.detected_at) : "");
+  fact("window", a.window_start ? `${fmtTime(a.window_start)} \u2013 ${fmtTime(a.window_end || a.detected_at)}` : "");
+  fact("models", a.detected_by_models || "");
+  fact("matched rule", a.matched_rule || "");
+  fact("location", a.location
+    ? `${a.location.weirling} \u00b7 ${a.location.network_name || a.location.network}` : "unplaced");
+  fact("review", REVIEW_LABELS[a.review_state || ""] || a.review_state || "unreviewed");
+  body.appendChild(facts);
+  if (a.primary_deviation_feature) {
+    body.appendChild(el("p", { class: "mono", text: "primary feature: " + a.primary_deviation_feature }));
+  }
+  const contrib = a.feature_contributions || {};
+  const entries = Object.entries(contrib).sort((x, y) => Math.abs(y[1].z) - Math.abs(x[1].z)).slice(0, 5);
+  if (entries.length) {
+    body.appendChild(el("h3", { text: "Contributing features" }));
+    const ul = el("ul", { class: "alert-contrib" });
+    for (const [name, d] of entries) {
+      ul.appendChild(el("li", { class: "mono", text: `${name} z=${d.z}` }));
+    }
+    body.appendChild(ul);
+  }
+  renderAlertSheetActions("anomaly", a, card);
+  if (opener && typeof opener.focus === "function") opener.focus();
+  if (typeof openSheet === "function") {
+    openSheet(card, { scrimId: "rp-detail-scrim", initialFocus: "rp-detail-close" });
+  } else {
+    card.classList.remove("hidden");
+    card.setAttribute("aria-hidden", "false");
+  }
 }
 
 function openRippleSheet(ripple, opener) {
   const card = document.getElementById("rp-detail-card");
   if (!card || !ripple) return;
   RIPPLE_SHEET = ripple;
+  ALERT_SHEET_HOST = String(ripple.host || "");
   const title = document.getElementById("rp-detail-title");
   const stamp = document.getElementById("rp-detail-id");
   const note = document.getElementById("rp-detail-note");
@@ -3443,6 +3653,7 @@ function openRippleSheet(ripple, opener) {
     corrSlot,
   ]);
   body.appendChild(corr);
+  renderAlertSheetActions("ripple", ripple, card);
   wireRippleSheet();
   if (opener && typeof opener.focus === "function") opener.focus();
   if (typeof openSheet === "function") {
@@ -3547,8 +3758,8 @@ async function loadAnomalies() {
       .map(([name, d]) => `${name} z=${d.z}`)
       .join(", ");
     tbody.appendChild(el("tr", { class: `clickable rp-sev-${band}`,
-                                 attrs: { title: "Show the raw evidence for this alert" },
-                                 on: { click: () => openEvidence(a) } }, [
+                                 attrs: { title: "Open the model detection in the same sheet a ripple uses" },
+                                 on: { click: () => openAnomalySheet(a) } }, [
       el("td", { class: "mono an-stamp", text: fmtCompactTime(a.detected_at) }),
       el("td", { class: "mono an-stamp", text: fmtCompactTime(a.window_start) }),
       // US-4: the expansion cue rides the cell at rest (chevron + aria-expanded), and the
@@ -4193,7 +4404,7 @@ function hpRenderScanExposure(exp) {
   const stats = el("div", { class: "stats" }, [
     el("div", { class: "stat" }, [
       el("div", { class: "k", text: "exposure" }),
-      el("div", { class: "v" }, [el("span", { class: `chip ${cls}`, text: band })]),
+      el("div", { class: "v" }, [el("span", { class: `bubble state ${cls}`, text: band })]),
     ]),
     el("div", { class: "stat" }, [
       el("div", { class: "k", text: "services" }),
@@ -5851,10 +6062,10 @@ async function loadWriteTrail(mountId, defaultScope) {
     refreshWriteTrails();
   });
   head.append(scopeSel, actSel);
-  head.appendChild(el("span", { class: "wtl-chip" }, [el("span", { class: "muted",
+  head.appendChild(el("span", { class: "wtl-bubble" }, [el("span", { class: "muted",
     text: WTL_STATE.target ? "target " : "" })]));
   if (WTL_STATE.target) {
-    const targetChip = el("button", { class: "dc-chip", text: WTL_STATE.target + " \u00d7",
+    const targetChip = el("button", { class: "bubble filter", text: WTL_STATE.target + " \u00d7",
       attrs: { type: "button", title: "stop filtering by this target" } });
     targetChip.addEventListener("click", () => {
       WTL_STATE.target = "";
@@ -6027,6 +6238,11 @@ function showView(name) {
   }
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === "view-" + name);
+  }
+  // THE FILTER BAR FOLLOWS THE VIEW (operator, 2026-11-20). It is one surface, so a view that
+  // carries filters always shows them in the same place, with the same removal verb.
+  if (window.FILTER_BAR && typeof window.FILTER_BAR.render === "function") {
+    window.FILTER_BAR.render();
   }
   // On a narrow screen the tab strip is a scrolling strip, and a view change that came from
   // clicking a row (Evidence, a drill-down) can leave the active tab scrolled out of view.
@@ -7475,7 +7691,7 @@ function mRenderChips() {
   box.replaceChildren();
   for (const field of ["host", "feature"]) {
     if (!M_FILTERS[field]) continue;
-    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+    const chip = el("button", { class: "bubble filter", attrs: { title: "remove this filter" },
       text: `${field} = ${M_FILTERS[field]} \u00d7` });
     chip.addEventListener("click", () => {
       M_FILTERS[field] = "";
@@ -7897,7 +8113,7 @@ function idRenderChips() {
   box.replaceChildren();
   for (const field of ["os", "confidence"]) {
     if (!ID_FILTERS[field]) continue;
-    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+    const chip = el("button", { class: "bubble filter", attrs: { title: "remove this filter" },
       text: `${field} = ${ID_FILTERS[field]} \u00d7` });
     chip.addEventListener("click", () => {
       ID_FILTERS[field] = "";
@@ -8190,6 +8406,9 @@ let PENDING_SCROLL = null;
  * can say WHY the list looks short and offer the way out. */
 let ARRIVED_FROM_LINK = false;
 let PENDING_WL = "";   // a sensor drill-down a link asked for, opened once the fleet loads
+// A gate filter from the URL, held until sluice.js has initialised its own state (app.js is
+// evaluated first; touching that module's `let` here would be a temporal-dead-zone read).
+let PENDING_SL_GATE = "";
 // BROWSER BACK/FORWARD (operator, 2026-10-20). Every view change used to replaceState, so the
 // browser had one history entry for the whole session. A PAGE change now pushes; filter and
 // time-range edits within that page still replace, or a slider would fill the history stack.
@@ -8272,6 +8491,26 @@ function syncURL() {
   if (typeof ZEEK_FILTERS !== "undefined") {
     for (const f of ZEEK_FILTERS) p.append("zk", f.field + ":" + f.value);
   }
+  // NORMALIZE'S FEED FILTERS (operator, 2026-11-20). The band and kind already rode the URL;
+  // the four text/select filters did not, so a reload silently widened the feed while the
+  // filter bar showed the pills. Every pill the bar can render now has a key.
+  for (const [id, key] of [["nz-source", "nz.source"], ["nz-segment", "nz.segment"],
+                           ["nz-port", "nz.port"], ["nz-minbytes", "nz.min"],
+                           ["nz-find", "nz.q"]]) {
+    const elx = document.getElementById(id);
+    if (elx && String(elx.value || "").trim()) p.set(key, String(elx.value).trim());
+  }
+  // THE SLUICE GATE FILTER. A filter you can see in the bar but not reload into is a lie about
+  // the link; `sl.gate` restores the same rule list. sluice.js publishes the current value on
+  // `window` so app.js can read it before that module's `let` binding exists.
+  if (window.SL2_GATE_FILTER && window.SL2_GATE_FILTER !== "all") {
+    p.set("sl.gate", window.SL2_GATE_FILTER);
+  }
+  // Settings' find box is a filter over the settings list.
+  {
+    const stFind = document.getElementById("st-filter");
+    if (stFind && String(stFind.value || "").trim()) p.set("st.q", String(stFind.value).trim());
+  }
   // `wl` IS A WEIRLINGS DEEP LINK, NOT GLOBAL STATE (operator, 2026-10-19: why does an
   // anomalies URL carry wl=weirvern-eth2?). It used to be written whenever a weirling sheet had
   // ever been opened, so the parameter survived a tab switch and then FORCED the next reload
@@ -8320,6 +8559,9 @@ function syncURL() {
     location.hash = qs;
   }
   LAST_HISTORY_VIEW = viewForURL || "";
+  if (window.FILTER_BAR && typeof window.FILTER_BAR.render === "function") {
+    window.FILTER_BAR.render();
+  }
 }
 
 function applyURLState() {
@@ -8431,6 +8673,24 @@ function applyURLState() {
   if (min && p.get("an.min")) min.value = p.get("an.min");
   if (p.get("m.host")) M_FILTERS.host = p.get("m.host");
   if (p.get("m.feature")) M_FILTERS.feature = p.get("m.feature");
+  // Normalize's feed filters and the Sluice gate filter restore BEFORE the view's loader runs,
+  // so the first read is the filtered one (never an unfiltered flash that then narrows).
+  for (const [id, key] of [["nz-source", "nz.source"], ["nz-segment", "nz.segment"],
+                           ["nz-port", "nz.port"], ["nz-minbytes", "nz.min"],
+                           ["nz-find", "nz.q"]]) {
+    if (p.get(key)) {
+      const elx = document.getElementById(id);
+      if (elx) elx.value = p.get(key);
+    }
+  }
+  if (p.get("sl.gate")) {
+    PENDING_SL_GATE = ["all", "domain", "traffic"].includes(p.get("sl.gate"))
+      ? p.get("sl.gate") : "all";
+  }
+  if (p.get("st.q")) {
+    const stFind = document.getElementById("st-filter");
+    if (stFind) stFind.value = p.get("st.q");
+  }
   if (p.get("id.os")) ID_FILTERS.os = p.get("id.os");
   if (p.get("id.conf")) ID_FILTERS.confidence = p.get("id.conf");
   const nfPairs = p.getAll("nf");

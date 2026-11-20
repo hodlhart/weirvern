@@ -40,7 +40,7 @@ function sl2On(key) {
 
 /* ── Evidence primitives ─────────────────────────────────────────────────────────────────────
  *
- * THE STATE CHIP IS THE ALERTS CHIP. Same `.rp-sev-chip` shape, same `sev-*` ramp, same
+ * THE STATE CHIP IS THE ALERTS CHIP. Same `.bubble state` shape, same `sev-*` ramp, same
  * colour+glyph+word grammar: a red chip means the same thing on this tab as on Alerts. Four
  * states, and every one of them is derived from what the gate reports or from what is actually
  * loaded -- never from the setting alone.
@@ -59,7 +59,7 @@ function sl2StateChip(kind, extra) {
   const text = `${glyph ? glyph + " " : ""}${sl2StateWord(kind)}${extra ? " · " + extra : ""}`;
   // STATE IS A PILL, ACTION IS A BUTTON. The pill's capsule shape and filled tint are the
   // vocabulary that keeps a revoked rule from reading like a disabled control.
-  return el("span", { class: `rp-sev-chip sev-${sev}`, text });
+  return el("span", { class: `bubble state sev-${sev}`, text });
 }
 
 /** Replace the chip in place, keeping its id: the markup owns one element, and the renderer
@@ -151,6 +151,8 @@ function sl2Visible(rule) {
  *  come through here, so the pressed state and the rows cannot disagree. */
 function sl2SetGate(gate) {
   SL2_STATE.filter = gate || "all";
+  // Published for app.js's URL writer, which is evaluated before this module's `let` exists.
+  window.SL2_GATE_FILTER = SL2_STATE.filter;
   const filters = document.getElementById("sl2-filters");
   if (filters) {
     for (const button of filters.querySelectorAll("[data-gate]")) {
@@ -167,11 +169,24 @@ function sl2SetGate(gate) {
 }
 
 function sl2Chip(text, cls) {
-  return el("span", { class: `chip ${cls || "muted"}`, text });
+  return el("span", { class: `bubble state ${cls || "muted"}`, text });
 }
 
 async function loadSluice() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
+  // THE PENDING GATE IS app.js's, AND app.js IS NOT ALWAYS LOADED WITH US. `let` at the top
+  // level of another script is a lexical binding, not a window property: it is visible in the
+  // browser (one global scope for classic scripts) but absent when this file is executed on its
+  // own -- as the loader check in tests/test_sluice.py does. Reading it unguarded threw
+  // ReferenceError before the fetch, so a failed gate query reported nothing at all. Guard the
+  // read, and only write it back inside the branch that proved it exists.
+  const pendingGate = typeof PENDING_SL_GATE === "string" ? PENDING_SL_GATE : "";
+  if (pendingGate) {
+    SL2_STATE.filter = ["all", "domain", "traffic"].includes(pendingGate)
+      ? pendingGate : "all";
+    PENDING_SL_GATE = "";
+  }
+  window.SL2_GATE_FILTER = SL2_STATE.filter;
   let d;
   // SETTINGS ARE INDEPENDENT OF THE GATE QUERY. Sequentially awaiting them made a 2.3s
   // gate read plus another round trip before the view could render; start the settings
@@ -283,9 +298,9 @@ function sl2BandSet(bandId, word, why, since, sev) {
   if (!band) return;
   const show = Boolean(String(why || "").trim());
   band.classList.toggle("hidden", !show);
-  const chip = band.querySelector(".sl2-fault-chip");
+  const chip = band.querySelector(".sl2-fault-bubble");
   if (chip) {
-    chip.className = `rp-sev-chip sl2-fault-chip sev-${sev || "critical"}`;
+    chip.className = `bubble state sl2-fault-bubble sev-${sev || "critical"}`;
     chip.textContent = word || "Degraded";
   }
   const whyEl = band.querySelector(".sl2-fault-why");
@@ -533,7 +548,7 @@ function renderSluiceGates(d) {
         verb: "Pause auto-block",
       });
       autoEl.replaceChildren(
-        el("span", { class: "rp-sev-chip sev-high", text: "▲ auto-block on" }),
+        el("span", { class: "bubble state sev-high", text: "▲ auto-block on" }),
         el("span", { class: "muted", text: `detections at or above ${auto.toFixed(2)} are blocked without review` }),
         pause,
       );
@@ -626,7 +641,7 @@ function renderSluiceFleet(gates, d) {
     const ago = g.age_s === null || g.age_s === undefined ? "some time ago" : sl2Ago(g.age_s);
     const band = (kind === "stale" || kind === "degraded")
       ? el("div", { class: "chips sl2-fault", attrs: { role: "status" } }, [
-          el("span", { class: `rp-sev-chip sl2-fault-chip sev-${SL2_STATE_SEV[kind]}`,
+          el("span", { class: `bubble state sl2-fault-bubble sev-${SL2_STATE_SEV[kind]}`,
                        text: kind === "stale" ? "Stale" : "Degraded" }),
           el("span", { class: "sl2-fault-why", text: kind === "stale"
             ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
@@ -684,7 +699,7 @@ function renderSluiceReach(d) {
   box.appendChild(el("span", { class: "muted",
     text: `Packet rules can act on ${reach.length} sensor${reach.length === 1 ? "" : "s"}: ` }));
   for (const sen of reach) {
-    const chip = el("button", { class: "dc-chip", text: sen, attrs: { type: "button" } });
+    const chip = el("button", { class: "bubble filter", text: sen, attrs: { type: "button" } });
     chip.addEventListener("click", () => {
       if (typeof openWeirling === "function") openWeirling(sen);
     });
@@ -826,7 +841,7 @@ function renderSluiceOrphans(list) {
     btn.addEventListener("click", () => openRuleSheet(rule));
     const chip = sl2StateChip(state.kind);
     chip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
-    chip.className = `rp-sev-chip sev-${state.sev}`;
+    chip.className = `bubble state sev-${state.sev}`;
     rows.appendChild(el("div", { class: "sl2-orphan" }, [btn, chip]));
   }
   details.appendChild(rows);
@@ -896,7 +911,7 @@ function renderSluiceRules(d) {
     }
     const stateChip = sl2StateChip(state.kind);
     stateChip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
-    stateChip.className = `rp-sev-chip sev-${state.sev}`;
+    stateChip.className = `bubble state sev-${state.sev}`;
     const tr = el("tr", {
       class: "clickable sl2-rule-row",
       attrs: { "data-rule-id": rule.rule_id },
@@ -1300,8 +1315,8 @@ function renderBlocklists(d) {
   }
   for (const s of sources) {
     const state = s.last_error
-      ? el("span", { class: "chip bad", text: "last sync failed" })
-      : (s.fetched_at ? el("span", { class: "chip ok", text: "ok" }) : el("span", { class: "chip muted", text: "never fetched" }));
+      ? el("span", { class: "bubble state bad", text: "last sync failed" })
+      : (s.fetched_at ? el("span", { class: "bubble state ok", text: "ok" }) : el("span", { class: "bubble state muted", text: "never fetched" }));
     // ── THE ROW IS INERT; A BUTTON CARRIES THE TOGGLE (WV1-14) ──────────────────────────────
     //
     // The whole <tr> used to be the toggle, and one of its cells is `s.last_error.slice(0, 90)`.
@@ -1317,7 +1332,7 @@ function renderBlocklists(d) {
       text: s.enabled ? "Turn off" : "Turn on" });
     toggle.addEventListener("click", () => slToggleSource(s, toggle).catch(showError));
     const tr = el("tr", {}, [
-      el("td", {}, [el("span", { class: "chip " + (s.enabled ? "ok" : "muted"), text: s.enabled ? "on" : "off" }),
+      el("td", {}, [el("span", { class: "bubble state " + (s.enabled ? "ok" : "muted"), text: s.enabled ? "on" : "off" }),
         el("span", { text: " " + s.name })]),
       el("td", {}, [state, el("span", { text: " " }), toggle]),
       el("td", { class: "mono", text: String(s.domain_count || 0) }),

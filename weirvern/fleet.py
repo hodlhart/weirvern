@@ -996,6 +996,7 @@ def summarise(health: list[SensorHealth]) -> dict:
     }
     for h in health:
         counts[h.state] = counts.get(h.state, 0) + 1
+    collected = _collected_networks(health)
     return {
         "total": len(health),
         "registered": sum(1 for h in health if h.registered),
@@ -1005,7 +1006,13 @@ def summarise(health: list[SensorHealth]) -> dict:
         # non-empty segment this fleet has a plan or a report for, counted once even when two
         # NICs sit on the same subnet. An empty plan/report contributes nothing -- it is not a
         # network of 0.0.0.0/0.
-        "networks": len(_collected_networks(health)),
+        #
+        # THE LIST RIDES BESIDE THE COUNT so a consumer never re-derives it. The payload used
+        # to recompute the observed set from the serialised rows, and the JSON plan omits
+        # `nics` -- so the recomputation silently dropped every NIC-plan segment and could
+        # disagree with this count. One producer, one answer.
+        "networks": len(collected),
+        "networks_list": sorted(collected),
         **counts,
     }
 
@@ -1023,6 +1030,16 @@ def _network_key(raw: object) -> str:
         # A named segment ("third floor") is still an operator-declared network; counting it
         # is more honest than dropping it because it is not CIDR-shaped.
         return value
+
+
+def collected_networks(health: list[SensorHealth]) -> set[str]:
+    """The public name for the distinct segments a fleet is actually collecting.
+
+    Payloads use this to count OBSERVED segments beside the operator's DECLARED scopes; the
+    two are different facts and a summary that shipped only one of them could contradict a
+    visible declaration (operator, 2026-11-20).
+    """
+    return _collected_networks(health)
 
 
 def _collected_networks(health: list[SensorHealth]) -> set[str]:

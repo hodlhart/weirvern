@@ -3519,6 +3519,43 @@ def weirlings(with_client: Any, *, settings: Any, include_problems: bool,
         # "eth1 - Servers", not only a CIDR.
         row["network_names"] = network_names
 
+    # ── DECLARED vs OBSERVED NETWORKS (operator, 2026-11-20) ──────────────────────────────────
+    #
+    # "weirlings tab says we only have 1 network, but we have 2." The summary counted only the
+    # segments a sensor happened to report, so a declared scope with no NIC behind it vanished
+    # from the tile while staying visible in Settings. Both counts now ride the payload, and
+    # every declared-but-unobserved scope is named, so a bare observed count cannot contradict
+    # a visible declaration.
+    #
+    # THE OBSERVED SET COMES FROM THE SUMMARY, never re-derived here: `summarise` counts the
+    # sensor plans (including their parsed NIC plans) from the SensorHealth objects, and the
+    # serialised rows do not carry `plan.nics` -- a second derivation would quietly disagree
+    # with the count printed beside it.
+    observed = set((payload.get("summary") or {}).get("networks_list") or [])
+    coverage: dict[str, Any] = {
+        "available": False, "reason": "the network scopes were not read", "declared": None,
+        "declared_monitored": None, "observed": len(observed),
+        "observed_segments": sorted(observed), "unobserved": [], "scopes": [],
+        "unconfigured": False,
+    }
+    try:
+        from weirvern import networks  # noqa: PLC0415
+
+        with with_client() as net_client:
+            scopes = networks.load_scopes(net_client, strict=True)
+        coverage = networks.coverage(scopes, observed)
+    except Exception as exc:  # noqa: BLE001 - a failed scope read is a named state
+        coverage["reason"] = f"the declared networks could not be read: {str(exc)[:200]}"
+    payload["network_coverage"] = coverage
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        # `networks` stays the OBSERVED count for older readers; the new keys are explicit.
+        summary["networks_observed"] = len(observed)
+        summary["networks_declared"] = coverage["declared_monitored"]
+        summary["networks_declared_all"] = coverage["declared"]
+        summary["networks_coverage_available"] = bool(coverage["available"])
+        summary["networks_coverage_reason"] = coverage.get("reason") or ""
+
     # WL-1: the flow trend and the tap indicators, from the flows' own exporter address. One query
     # each for the whole fleet; a failure leaves the fields ABSENT (the list renders "not observed"
     # with its reason), never a fabricated zero. A row's exporter is its own address, but THIS

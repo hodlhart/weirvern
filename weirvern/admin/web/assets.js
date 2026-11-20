@@ -150,7 +150,7 @@ function renderAssetFacets(all) {
   for (const [svc, n] of top) {
     const on = ASSETS_STATE.svc.toLowerCase() === svc.toLowerCase();
     const chip = el("button", {
-      class: "dc-chip", text: `${svc} \u00b7 ${n}`,
+      class: "bubble filter", text: `${svc} \u00b7 ${n}`,
       attrs: { type: "button", "aria-pressed": on ? "true" : "false",
                title: on ? `stop filtering by ${svc}` : `show only hosts speaking ${svc}` },
     });
@@ -338,7 +338,7 @@ function renderAssets() {
       el("td", { class: "muted" }, [
         el("span", { text: h.name || "—" }),
         (h.first_seen && (Date.now() - Date.parse(h.first_seen)) < (Number(d.hours) || 24) * 3600e3)
-          ? el("span", { class: "chip muted", text: " new",
+          ? el("span", { class: "bubble state muted", text: " new",
                          attrs: { title: `first seen ${fmtTime(h.first_seen)}` } })
           : null,
       ]),
@@ -388,7 +388,7 @@ function renderAssets() {
           : band === "medium" ? "warn" : "muted";
         const total = scan.findings && Number(scan.findings.total || 0);
         const chip = el("span", {
-          class: `chip ${cls}`,
+          class: `bubble state ${cls}`,
           text: total ? `${band} · ${total}` : band,
         });
         cell.appendChild(chip);
@@ -623,7 +623,7 @@ function renderChips() {
   for (const addr of ASSETS_STATE.tracked) {
     // US-7: this chip HOLDS a filter (the host is tracked), so it says so: aria-pressed, and
     // the grammar's checkmark follows from the attribute. Clicking releases it.
-    const chip = el("span", { class: "chip act", title: "click to stop tracking this host",
+    const chip = el("span", { class: "bubble filter", title: "click to stop tracking this host",
                               attrs: { "aria-pressed": "true" } }, [
       el("span", { text: addr }),
       el("span", { class: "x", text: "×" }),
@@ -735,7 +735,7 @@ function networkRippleCell(row) {
   const band = rippleBand(row, bands);
   const families = (row.families || []).join(" / ") || "no family named";
   const chip = el("span", {
-    class: "rp-sev-chip nw-ripple-chip clickable sev-" + band,
+    class: "bubble state nw-ripple-bubble clickable sev-" + band,
     text: sevText(band),
     attrs: {
       role: "button", tabindex: "0",
@@ -956,7 +956,7 @@ function nwSignalChip(node, d, opts) {
   }
   const text = `${rippleAvailable ? rn : "?"}r · ${modelAvailable ? mn : "?"}m`;
   const chip = el("span", {
-    class: "chip nw-sig" + (band ? " sev-" + band : ""),
+    class: "bubble state nw-sig" + (band ? " sev-" + band : ""),
     text,
     attrs: { "aria-label": `${node.id}: ${rn} ripple windows, ${mn} model detections` },
   });
@@ -979,7 +979,7 @@ function nwWorstCell(node) {
     cell.appendChild(el("span", { class: "muted", text: "—" }));
     return cell;
   }
-  const chip = el("span", { class: "rp-sev-chip sev-" + band, text: sevText(band) });
+  const chip = el("span", { class: "bubble state sev-" + band, text: sevText(band) });
   chip.setAttribute("title", `worst band on ${node.id} in this window: ${band}`);
   cell.appendChild(chip);
   return cell;
@@ -2003,8 +2003,8 @@ function zeekWindow() {
 /** The status chip shared by the node and edge details. The word is always present; the colour
  *  is a second encoding, never the only one. */
 function statusChip(status) {
-  if (status === "blocked") return el("span", { class: "chip bad", text: "blocked" });
-  if (status === "alerted") return el("span", { class: "chip warn", text: "alerted" });
+  if (status === "blocked") return el("span", { class: "bubble state bad", text: "blocked" });
+  if (status === "alerted") return el("span", { class: "bubble state warn", text: "alerted" });
   return null;
 }
 
@@ -2432,7 +2432,7 @@ function nwRenderHostSheet(data, node) {
   } else {
     const chips = el("div", { class: "chips" });
     for (const s of svc.services || []) {
-      chips.appendChild(el("span", { class: "chip", text: `${s.service} ${Number(s.conns).toLocaleString()}` }));
+      chips.appendChild(el("span", { class: "bubble state", text: `${s.service} ${Number(s.conns).toLocaleString()}` }));
     }
     if (!(svc.services || []).length) chips.appendChild(el("span", { class: "muted", text: "no service label in this window" }));
     svcChildren.push(el("div", { class: "nw-host-kv" }, [
@@ -2479,13 +2479,13 @@ function nwRenderHostSheet(data, node) {
   } else {
     ripChildren.push(el("p", { class: "nw-host-kv" }, [
       el("span", { class: "nw-host-k", text: "worst" }),
-      el("span", { class: "rp-sev-chip sev-" + (ripples.worst || "low"), text: sevText(ripples.worst || "low") }),
+      el("span", { class: "bubble state sev-" + (ripples.worst || "low"), text: sevText(ripples.worst || "low") }),
       el("span", { class: "muted", text: `${ripples.count} ripple window${ripples.count === 1 ? "" : "s"} in ${Number(ripples.window_hours || hours)}h` }),
     ]));
     for (const r of ripples.rows) {
       const row = el("div", { class: "nw-host-ripple" }, [
         el("div", { class: "nw-host-ripple-head" }, [
-          el("span", { class: "rp-sev-chip sev-" + (r.severity || "low"), text: sevText(r.severity || "low") }),
+          el("span", { class: "bubble state sev-" + (r.severity || "low"), text: sevText(r.severity || "low") }),
           el("span", { class: "muted", text: `score ${Number(r.score || 0).toFixed(2)}` }),
           el("span", { class: "muted", text: fmtTime(r.window_start) }),
         ]),
@@ -2522,7 +2522,7 @@ function nwRenderHostSheet(data, node) {
   } else {
     modelChildren.push(el("p", { class: "nw-host-kv" }, [
       el("span", { class: "nw-host-k", text: "worst" }),
-      el("span", { class: "rp-sev-chip sev-" + (models.worst || "low"), text: sevText(models.worst || "low") }),
+      el("span", { class: "bubble state sev-" + (models.worst || "low"), text: sevText(models.worst || "low") }),
       el("span", { class: "muted", text: `${models.count} detection${models.count === 1 ? "" : "s"} in this ${hours}h window` }),
     ]));
     const t = el("table", { class: "nw-host-table" });
@@ -2534,7 +2534,7 @@ function nwRenderHostSheet(data, node) {
     for (const m of models.rows) {
       const tr = el("tr", { class: "clickable" }, [
         el("td", { class: "mono", text: fmtTime(m.window_start) }),
-        el("td", {}, [el("span", { class: "rp-sev-chip sev-" + (m.severity || "low"), text: sevText(m.severity || "low") })]),
+        el("td", {}, [el("span", { class: "bubble state sev-" + (m.severity || "low"), text: sevText(m.severity || "low") })]),
         el("td", { class: "mono", text: Number(m.score || 0).toFixed(2) }),
         el("td", { text: m.models || "—" }),
       ]);
@@ -2862,7 +2862,7 @@ function renderAssetChanges() {
     const band = posture.band || "unscored";
     const reasons = (posture.reasons || []).join(" ");
     const chip = el("span", {
-      class: `chip ${bandClass[band] || "muted"}`,
+      class: `bubble state ${bandClass[band] || "muted"}`,
       text: band === "unscored" ? "unscored" : `${band} ${Number(posture.score || 0).toFixed(2)}`,
       attrs: reasons ? { title: reasons } : {},
     });

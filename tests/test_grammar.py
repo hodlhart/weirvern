@@ -60,8 +60,8 @@ def test_the_pointer_sweep_no_dead_pointers():
         "button", ".review-act", ".user-role", ".user-act", ".icon-btn", ".sl-rule-row",
         ".zk-bar", ".tile", ".sheet-close", ".crumb", ".palette-row", ".clickable",
         ".sl2-rule-btn",
-        ".dc-row", ".dcell", ".link", ".expander", ".chip.act", ".pager-btn",
-        ".stat.clickable", ".dc-chip-x", ".tr-panel button", "h2.acc", ".modal-x",
+        ".dc-row", ".dcell", ".link", ".expander", ".bubble.filter", ".pager-btn",
+        ".stat.clickable", ".bubble .bubble-x", ".bubble.control", ".tr-panel button", "h2.acc", ".modal-x",
         ".info-btn", ".graph", ".gate-field", ".sev-tiles",
         ".gate-linkish", ".setting-help-btn", ".setting-toggle-label", ".sortable",
         # A checkbox is a control: its own label and its box are clickable (Sluice filter bar).
