@@ -4085,7 +4085,7 @@ function renderFindings() {
   const d = FINDINGS_STATE.data || {};
   tbody.replaceChildren();
   note.replaceChildren();
-  empty.textContent = "";
+  empty.replaceChildren();
   if (sev && sev.value !== FINDINGS_STATE.severity) sev.value = FINDINGS_STATE.severity;
   if (hostFilter) {
     hostFilter.replaceChildren();
@@ -4119,9 +4119,15 @@ function renderFindings() {
     el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
   ])));
   if (!rows.length) {
-    empty.textContent = FINDINGS_STATE.ip || FINDINGS_STATE.severity
-      ? "No recorded findings match this filter. A clear finding set is not proof the host is patched."
-      : "No recorded findings. A clear finding set is not proof the host is patched.";
+    const filtered = Boolean(FINDINGS_STATE.ip || FINDINGS_STATE.severity);
+    empty.replaceChildren(emptyState({
+      state: filtered ? "filtered" : "none",
+      message: filtered
+        ? "No recorded findings match this filter. A clear finding set is not proof the host is patched."
+        : "No recorded findings. A clear finding set is not proof the host is patched.",
+      filters: [FINDINGS_STATE.ip ? `host = ${FINDINGS_STATE.ip}` : "",
+                FINDINGS_STATE.severity ? `severity = ${FINDINGS_STATE.severity}` : ""].filter(Boolean),
+    }));
     return;
   }
   for (const f of rows) {
@@ -8275,15 +8281,27 @@ async function loadIdentity() {
   if (!shown.length) {
     // THREE DIFFERENT EMPTINESSES, three different sentences: a failed read, a filter that
     // matches nothing, and a segment that has produced no identity at all. Conflating them is
-    // this project's named failure mode.
-    empty.textContent = !d.available
-      ? ""
-      : (hosts.length
-          ? "No host matches the filter. Remove it to see the whole list."
-          : "No host has been identified yet. Identity comes from application banners, DHCP leases and TLS fingerprints, so a segment with none of those produces nothing here.");
+    // this project's named failure mode -- and the component now carries the distinction.
+    if (!d.available) {
+      empty.replaceChildren(emptyState({
+        state: "failed",
+        message: `Identity could not be read: ${d.reason || "the read did not run"}.`,
+      }));
+    } else if (hosts.length) {
+      empty.replaceChildren(emptyState({
+        state: "filtered",
+        message: "No host matches the filter. Remove it to see the whole list.",
+        filters: activeFilterLabels("identity"),
+      }));
+    } else {
+      empty.replaceChildren(emptyState({
+        state: "none",
+        message: "No host has been identified yet. Identity comes from application banners, DHCP leases and TLS fingerprints, so a segment with none of those produces nothing here.",
+      }));
+    }
     return;
   }
-  empty.textContent = "";
+  empty.replaceChildren();
 
   for (const h of shown) {
     const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "";

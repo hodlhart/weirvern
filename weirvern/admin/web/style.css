@@ -1010,6 +1010,7 @@ svg.spark rect.cur { fill: var(--accent); }
 .scan-honest { font-size: var(--fs-2); margin: 10px 0 0; padding-left: 10px;
   border-left: 2px solid var(--border); }
 .scan-findings-title { margin: 20px 0 8px; font-size: var(--fs-3); }
+.scan-findings-count { margin: 0 0 6px; font-size: var(--fs-2); color: var(--fg-2); }
 .scan-findings-list { list-style: none; margin: 0; padding: 0; display: flex;
   flex-direction: column; gap: 6px; }
 .scan-finding { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); }

@@ -836,9 +836,15 @@ function renderWeirlings(rows, revoked, revokedReason) {
   // answerable or the cleanup erases the evidence.
   if (showRevoked) {
     if (revokedReason) {
-      empty.textContent = `Revoked registrations could not be read: ${revokedReason}`;
+      tbody.appendChild(el("tr", {}, [emptyStateCell(7, {
+        state: "failed",
+        message: `Revoked registrations could not be read: ${revokedReason}`,
+      })]));
     } else if (!revoked.length) {
-      empty.textContent = "No sensor has been revoked.";
+      tbody.appendChild(el("tr", {}, [emptyStateCell(7, {
+        state: "none",
+        message: "No sensor has been revoked.",
+      })]));
     } else {
       for (const r of revoked) {
         const tr = el("tr", { class: "muted" });

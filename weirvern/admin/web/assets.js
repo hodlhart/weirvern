@@ -216,13 +216,11 @@ function identityForAsset(h) {
 function renderAssets() {
   const tbody = document.querySelector("#as-table tbody");
   const note = document.getElementById("as-note");
-  const empty = document.getElementById("as-empty");
   const summary = document.getElementById("as-summary");
   if (!tbody) return;
 
   const d = ASSETS_STATE.inventory || {};
   note.replaceChildren();
-  empty.textContent = "";
 
   if (d.available === false) {
     summary.textContent = "";
@@ -439,7 +437,6 @@ function renderAssets() {
   // The range is stated by the pager, but the summary line repeats it because it is the line an
   // analyst reads first -- and a paged table that does not say "of 245" is the same
   // silent-truncation problem as the graph's edge cap.
-  empty.textContent = "";
 
   // Feed the drill-down datalist, so typing an address is a suggestion not a memory test.
   const dl = document.getElementById("known-hosts");
@@ -2819,7 +2816,7 @@ function renderAssetChanges() {
   const d = ASSETS_STATE.changes || {};
   tbody.replaceChildren();
   note.replaceChildren();
-  empty.textContent = "";
+  empty.replaceChildren();
   coverage.textContent = "";
   if (!d.available) {
     summary.textContent = "unavailable";
@@ -2865,8 +2862,11 @@ function renderAssetChanges() {
     ? `${rows.length} in the window`
     : "none in the window";
   if (!rows.length) {
-    empty.textContent = "No service changes between successful scans in this window. " +
-      "A change appears only when two scans disagree; a failed scan is not a change.";
+    empty.replaceChildren(emptyState({
+      state: "none",
+      message: "No service changes between successful scans in this window. " +
+        "A change appears only when two scans disagree; a failed scan is not a change.",
+    }));
     return;
   }
 

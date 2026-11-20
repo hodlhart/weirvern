@@ -274,7 +274,9 @@ function scanTick() {
   const node = document.getElementById("scan-elapsed");
   if (!node) return;
   const e = scanElapsed(job);
-  node.textContent = `${e.label} ${e.text}`;
+  // The LABEL is already the <dt> beside this value ("running", "waiting", "finished in").
+  // Repeating it here read as "waiting waiting 3m" in the live console.
+  node.textContent = e.text;
 }
 
 function scanFact(dl, key, value, cls) {
@@ -291,7 +293,10 @@ function scanRenderBody() {
   const missing = !job && SCAN_STATE.missingPolls >= 6;
   const word = missing ? "Not in the queue" : scanWord(job);
   if (els.stateLine) {
-    const raw = job && job.state ? ` · queue says ${job.state}` : "";
+    // THE RAW QUEUE WORD IS SHOWN ONLY WHEN IT DIFFERS from the word the operator reads
+    // (claimed -> Running, error -> Failed). "Queued · queue says queued" was noise.
+    const differs = job && job.state && job.state.toLowerCase() !== word.toLowerCase();
+    const raw = differs ? ` · queue says ${job.state}` : "";
     els.stateLine.textContent = word + raw;
     els.stateLine.className = "scan-state-line" + (job && job.state === "error" ? " bad" : "");
   }
@@ -354,6 +359,15 @@ function scanRenderBody() {
   }
 
   els.body.appendChild(el("h3", { class: "scan-findings-title", text: "Findings recorded by this scan" }));
+  // THE COUNT IS PART OF THE TERMINAL ANSWER, not only the list. "Done" without a number
+  // leaves the operator to count rows; zero is a measurement and is stated as one.
+  if (SCAN_STATE.findingsState === "ok") {
+    const n = SCAN_STATE.findings.length;
+    els.body.appendChild(el("p", {
+      class: "scan-findings-count",
+      text: `${n} finding${n === 1 ? "" : "s"} recorded on or after this job was queued.`,
+    }));
+  }
   if (SCAN_STATE.findingsState === "failed") {
     els.body.appendChild(el("p", {
       class: "warn",

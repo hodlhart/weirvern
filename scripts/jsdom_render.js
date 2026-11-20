@@ -10742,8 +10742,20 @@ check("...a contradicted segment names BOTH segments on the issues list",
           /Done/.test(needEl("scan-state-line").textContent)
           && /scan completed/.test(needEl("scan-body").textContent),
           needEl("scan-body").textContent.slice(0, 120));
+    check("...the terminal state names the finding count", /1 finding recorded/.test(
+          needEl("scan-body").textContent), needEl("scan-body").textContent.slice(0, 120));
     check("...the findings drill is one control away", !!needEl("scan-findings")
           && !needEl("scan-findings").classList.contains("hidden"));
+    // A SHEET IS AN OVERLAY, NOT A VIEW: moving to another tab must not close it, and coming
+    // back must find it still showing the same job.
+    H.showView("network");
+    await new Promise((r) => setTimeout(r, 120));
+    const survived = !scanSheet.classList.contains("hidden");
+    H.showView("assets");
+    await new Promise((r) => setTimeout(r, 120));
+    check("the sheet survives navigation within the view",
+          survived && !scanSheet.classList.contains("hidden")
+          && H.SCAN_STATE.jobId === "job-scan-1");
     check("...and polling stops at the terminal state",
           H.SCAN_STATE.pollTimer === null, String(H.SCAN_STATE.pollTimer));
 
