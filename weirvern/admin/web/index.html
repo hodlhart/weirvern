@@ -287,17 +287,45 @@
         <button id="nw-status-alerted" class="chip act" type="button" data-nw-status="alerted"
                 aria-pressed="false"><span class="nw-swatch alerted"></span>Alerted</button>
       </div>
-      <!-- THE RIPPLE FILTER (operator, 2026-11-20): the graph already annotates ripple hosts;
-           this narrows the graph and BOTH tables to them. Same chip grammar as the status
-           filter above, keyboard reachable, 44px on a phone. -->
-      <div id="nw-ripple" class="chips" role="group" aria-label="filter graph by ripple presence">
-        <span class="muted">ripples</span>
-        <button class="chip act" type="button" data-nw-ripple="all"
-                aria-pressed="true">All</button>
-        <button class="chip act" type="button" data-nw-ripple="any"
-                aria-pressed="false">Hosts with ripples</button>
-        <button class="chip act" type="button" data-nw-ripple="high"
-                aria-pressed="false">High and above</button>
+      <!-- THE MAP'S FILTERS COMPOSE. Ripple presence (the shipped 2026-11-20 filter), the ripple
+           FAMILY, a subnet and a free-text host/name filter all narrow the map, the host table
+           and the edge table together; the count line names every one that is on, and each is
+           in the URL. One state object, no per-panel copy. -->
+      <div id="nw-filters" class="nw-filters">
+        <div id="nw-ripple" class="chips" role="group" aria-label="filter graph by ripple presence">
+          <span class="muted">ripples</span>
+          <button class="chip act" type="button" data-nw-ripple="all"
+                  aria-pressed="true">All</button>
+          <button class="chip act" type="button" data-nw-ripple="any"
+                  aria-pressed="false">Hosts with ripples</button>
+          <button class="chip act" type="button" data-nw-ripple="high"
+                  aria-pressed="false">High and above</button>
+        </div>
+        <div id="nw-family" class="chips" role="group" aria-label="filter graph by ripple family">
+          <span class="muted">family</span>
+          <button class="chip act" type="button" data-nw-family="all"
+                  aria-pressed="true">All</button>
+          <button class="chip act" type="button" data-nw-family="flow"
+                  aria-pressed="false">flow</button>
+          <button class="chip act" type="button" data-nw-family="conn"
+                  aria-pressed="false">conn</button>
+          <button class="chip act" type="button" data-nw-family="dns"
+                  aria-pressed="false">dns</button>
+          <button class="chip act" type="button" data-nw-family="tls"
+                  aria-pressed="false">tls</button>
+          <button class="chip act" type="button" data-nw-family="http"
+                  aria-pressed="false">http</button>
+          <button class="chip act" type="button" data-nw-family="ssh"
+                  aria-pressed="false">ssh</button>
+          <button class="chip act" type="button" data-nw-family="notice"
+                  aria-pressed="false">notice</button>
+        </div>
+        <div class="controls nw-filter-fields">
+          <label>subnet <input type="text" id="nw-subnet" autocomplete="off"
+                   placeholder="192.168.2.0/24"></label>
+          <label>host or name <input type="text" id="nw-find" autocomplete="off"
+                   placeholder="address or name"></label>
+        </div>
       </div>
       <div class="info-text hidden" id="nw-info">
   <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
@@ -348,20 +376,68 @@
       </div>
     </div>
 
+    <!-- THE HOST TABLE: the map's population as a worklist. One row per host the loaded map
+         holds, with the per-host findings that explain why it is interesting. Rows open the
+         host sheet; the sheet owns the drill into Alerts and Flows. -->
+    <div class="card">
+      <h2>Hosts <span class="muted" id="nw-hosts-caption">loading…</span></h2>
+      <div class="controls">
+        <label>order
+          <select id="nw-sort">
+            <option value="interest">most interesting (band, then bytes)</option>
+            <option value="busy">busiest (bytes)</option>
+          </select>
+        </label>
+      </div>
+      <p class="muted" id="nw-hosts-note"></p>
+      <div class="nw-table-wrap">
+        <table id="nw-hosts-table">
+          <thead><tr>
+            <th>Host</th><th class="nw-h-name">Name</th><th>Ripples</th><th>Model</th>
+            <th>Worst</th><th class="nw-h-bytes">Bytes</th><th class="nw-h-peers">Peers</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Edges as a table <button class="info-btn" data-info="nw-tables-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="nw-tables-info">
-  <p><strong>What it is.</strong> The same edges the graph is drawn from, as text — a graph that cannot be read as text is a graph an analyst cannot paste into a ticket.</p>
+  <p><strong>What it is.</strong> The same edges the graph is drawn from, as text — a graph that cannot be read as text is a graph an analyst cannot paste into a ticket. The two signals columns carry each endpoint's own counts: ripples and model detections in this window, with the endpoint's worst band.</p>
   <p><strong>What writes it.</strong> The same store the graph uses; one source, two views.</p>
   <p><strong>Last changed.</strong> Follows the window pill and each refresh.</p>
   <p><strong>Where to see it.</strong> Sort and click rows here for the version that goes into a ticket.</p>
 </div>
-      <table id="nw-table">
-        <thead><tr><th>Source</th><th>Target</th><th>Ripple</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="nw-table-wrap">
+        <table id="nw-table">
+          <thead><tr><th>Source</th><th>Target</th><th>Source signals</th><th>Target signals</th>
+            <th>Bytes</th><th>Flows</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
+
+  <!-- THE NETWORK HOST SHEET: why is this address interesting, in the global window.
+       Identity (PTR / DNS / NetBIOS / TLS SNI), traffic in and out, peers, services, ripples with
+       their own sentences, model detections with bands, and the normalisation state. Every count
+       names the window it answers for. -->
+  <div class="card sheet hidden" id="nw-host-card" tabindex="-1" role="dialog" aria-modal="true"
+       aria-labelledby="nw-host-title" aria-hidden="true">
+    <h2><span id="nw-host-title">Host</span>
+      <span id="nw-host-addr" class="muted"></span>
+      <button id="nw-host-close" class="sheet-close" type="button"
+              aria-label="close this panel (Escape also closes)">Close</button></h2>
+    <p class="muted" id="nw-host-note">Loading…</p>
+    <div id="nw-host-body"></div>
+    <div class="controls sheet-actions">
+      <button id="nw-host-alerts" class="quiet" type="button">Alerts for this host</button>
+      <button id="nw-host-flows" class="quiet" type="button">Flows for this host</button>
+      <button id="nw-host-page" class="quiet" type="button">Open host page</button>
+      <button id="nw-host-cancel" class="quiet" type="button">Close</button>
+    </div>
+  </div>
 
   <section id="view-discover" class="view">
     <div class="card">
