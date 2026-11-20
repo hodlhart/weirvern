@@ -3012,10 +3012,18 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
 
     from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
 
+    now = _dt.datetime.now(_dt.UTC)
+
     payload: dict = {
         "available": False, "reason": "", "rules": [], "live": 0, "gate": {},
         "policies": {}, "criticality": "", "enabled": False, "iface": "",
         "hits_hours": hours,
+        # Firing evidence, keyed by rule id. "The rule is live" and "the rule has done
+        # anything" are different statements, and only the event table can tell them apart.
+        # An unreadable event table is its own state: the rule rows then say the evidence
+        # could not be read rather than rendering a confident zero.
+        "evidence": {}, "evidence_available": False, "evidence_reason": "",
+        "blocklists_available": False, "blocklists_reason": "",
     }
     # The policies are STATIC, so they are populated even when the database is unreachable.
     try:
@@ -3048,7 +3056,9 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
             # caught" and "what was caught" in one place, each degrading on its own.
             try:
                 payload["blocklists"] = blocklists.load_sources(client)
+                payload["blocklists_available"] = True
             except Exception as exc:  # noqa: BLE001
+                payload["blocklists_reason"] = f"{type(exc).__name__}: {exc}"[:200]
                 logger.warning("blocklist sources unavailable: %s", exc)
             try:
                 # SAME WINDOW AS THE BLOCKS DRILL (SL3). "Recent" is not a window: the overview
@@ -3066,6 +3076,44 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
                     for r in hit_rows]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("domain hits unavailable: %s", exc)
+            # ── WHAT EACH RULE HAS ACTUALLY DONE, IN THE SAME WINDOW ─────────────────────────
+            #
+            # The rule row is about to read as a sentence with its evidence ("12 matches in 24h,
+            # last 6m ago"). That sentence is only honest when it comes from the event table:
+            # an installed rule with no events is a rule that has caught nothing, which is a
+            # different and more useful statement than a blank cell. One grouped read keeps the
+            # cost flat as the rule count grows.
+            try:
+                ev_rows = client.query(
+                    "SELECT rule_id, count(), max(ts), sum(packets), sum(bytes), "
+                    "countIf(kind = 'dns'), countIf(kind != 'dns') "
+                    "FROM weirvern.sluice_events "
+                    f"WHERE ts >= now() - INTERVAL {int(hours)} HOUR "
+                    "GROUP BY rule_id").result_rows
+                payload["evidence"] = {}
+                for r in ev_rows:
+                    last = r[2]
+                    age = None
+                    if isinstance(last, _dt.datetime):
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=_dt.UTC)
+                        age = int((now - last).total_seconds())
+                    payload["evidence"][str(r[0] or "")] = {
+                        "events": int(r[1] or 0),
+                        # The AGE is the honest reading: the GUI can print "6m ago" without
+                        # doing clock arithmetic against a server in another timezone.
+                        "last_age_s": age,
+                        "last_ts": (last.isoformat() if hasattr(last, "isoformat")
+                                    else str(last or "")),
+                        "packets": int(r[3] or 0),
+                        "bytes": int(r[4] or 0),
+                        "dns": int(r[5] or 0),
+                        "flow": int(r[6] or 0),
+                    }
+                payload["evidence_available"] = True
+            except Exception as exc:  # noqa: BLE001
+                payload["evidence_reason"] = f"{type(exc).__name__}: {exc}"[:200]
+                logger.warning("rule firing evidence unavailable: %s", exc)
             # ONE RULE STORE, MANY GATES: every box that can enforce reports its own row, so the
             # operator sees who is actually filtering (and who has stopped).
             fleet_gates = sluice_store.load_gate_states(client)
@@ -3076,6 +3124,7 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
 
     now = _dt.datetime.now(_dt.UTC)
     rows = []
+    evidence = payload.get("evidence") or {}
     for r in rules:
         exp = r.expires_at
         if exp is not None and exp.tzinfo is None:
@@ -3100,6 +3149,10 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
             # may not share a timezone with, and a NEGATIVE value is a meaningful answer ("lapsed
             # N seconds ago") rather than an error.
             "expires_in_s": int((exp - now).total_seconds()) if exp else None,
+            # The rule's own firing record for the selected window, or null when the event
+            # table could not be read. Never a fabricated zero: the row renders "evidence
+            # unavailable" instead of "no matches", because those mean different things.
+            "evidence": evidence.get(r.rule_id),
         })
     # A GATE THAT STOPPED IS ITS OWN STATE, not an absent one. Four missed intervals is the
     # threshold: the cadence is minutes, and one slow cycle is not news.
@@ -3107,6 +3160,16 @@ def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
         stale_after = max(180, 4 * int(settings.sluice_interval_s))
     except Exception:  # noqa: BLE001
         stale_after = 180
+    # The local gate row is the same shape as a fleet row: the renderer reasons about both, and
+    # "last reported" must be a measured age rather than "no report time" for the hub.
+    try:
+        updated = gate.get("updated_at")
+        if isinstance(updated, _dt.datetime):
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=_dt.UTC)
+            gate["age_s"] = int((now - updated).total_seconds())
+    except Exception:  # noqa: BLE001
+        pass
     payload.update({
         "available": True, "rules": rows,
         "live": sum(1 for r in rows if r["live"]), "gate": gate,

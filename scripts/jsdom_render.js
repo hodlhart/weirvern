@@ -661,6 +661,15 @@ const SLUICE_PAYLOAD = {
   hits: [{ ts: "2026-10-16 06:01:00", rule_id: "", domain: "ads.example.com",
            query: "ads.example.com", client: "198.51.100.20" }],
   enabled: true, iface: "eth1", live: 2,
+  // The firing record the rule rows read: a domain rule that HAS matched, a traffic rule
+  // that has dropped packets, and rules with no evidence at all (the honest zero).
+  evidence_available: true, blocklists_available: true,
+  evidence: {
+    r1: { events: 12, dns: 12, flow: 0, packets: 0, bytes: 0, last_age_s: 360,
+          last_ts: "2026-10-16T05:55:00Z" },
+    "r-live-1": { events: 4, dns: 0, flow: 4, packets: 1204, bytes: 9000,
+                  last_age_s: 600, last_ts: "2026-10-16T05:50:00Z" },
+  },
   criticality: "high",
   gate: {
     available: true, state: "armed", iface: "eth1", mgmt_iface: "eth0",
@@ -712,7 +721,8 @@ const SLUICE_PAYLOAD = {
     { rule_id: "r1", describes: "block ads.example.com (resolves to 1 address)", src_cidr: "", dst_cidr: "",
       protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       domain: "ads.example.com", origin: "manual", severity: "", created_by: "admin",
-      origin_ref: "", reason: "", expires_at: "2026-10-16T07:00:00Z", expires_in_s: 1800 },
+      origin_ref: "", reason: "", expires_at: "2026-10-16T07:00:00Z", expires_in_s: 1800,
+      evidence: { events: 12, dns: 12, flow: 0, packets: 0, bytes: 0, last_age_s: 360 } },
     { rule_id: "r2", describes: "alert on track.example.net", src_cidr: "", dst_cidr: "",
       protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       domain: "track.example.net", origin: "manual", severity: "", created_by: "admin",
@@ -720,7 +730,8 @@ const SLUICE_PAYLOAD = {
     { rule_id: "r-live-1", describes: "block traffic from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
-      reason: "scanner on the lab segment", expires_at: "", expires_in_s: 1800 },
+      reason: "scanner on the lab segment", expires_at: "", expires_in_s: 1800,
+      evidence: { events: 4, dns: 0, flow: 4, packets: 1204, bytes: 9000, last_age_s: 600 } },
     { rule_id: "r-live-2", describes: "block traffic from 198.51.100.9/32 on tcp/22", src_cidr: "198.51.100.9/32",
       dst_cidr: "", protocol: "tcp", dst_port: 22, direction: "forward", live: true, revoked: false,
       origin: "detection", severity: "high", created_by: "detection", origin_ref: "w-123",
@@ -4848,9 +4859,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!pause && !pause.classList.contains("hidden") && /pause/i.test(pause.textContent),
           pause ? pause.textContent : "no pause control");
     if (pause) {
-      pause.click();   // arm the confirm (the house two-stage pattern)
-      await new Promise((r) => setTimeout(r, 30));
-      const armedText = pause.textContent;
+      // RE-AUTHORED (2026-11-20): pausing now opens the ONE confirm surface -- a consequence
+      // sentence and a required reason -- and the write is followed by a read-back. Two clicks
+      // on the banner button is no longer the flow; a confirm without a recorded reason is.
+      pause.click();
+      await new Promise((r) => setTimeout(r, 40));
+      const confirmTitle = needEl("sl2-confirm-title").textContent || "";
+      const openNow = !needEl("modal").classList.contains("hidden");
+      check("...pausing asks a blocking question with its consequence",
+            openNow && /automatic blocking/i.test(confirmTitle), confirmTitle);
       // The mock does not echo a POST back into the fixture, so the landing alone cannot
       // prove WHAT was posted -- spy the body to pin the value itself.
       const posts = [];
@@ -4859,16 +4876,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         if (/settings\/apply/.test(String(u)) && o && o.body) posts.push(String(o.body));
         return origFetch2(u, o);
       };
+      const why = needEl("sl2-confirm-reason");
+      why.value = "harness: pause the auto-block";
       autoRow.value = "0";   // the apply lands; the re-read after it sees zero
-      pause.click();   // confirm
+      needEl("sl2-confirm-go").click();
       await new Promise((r) => setTimeout(r, 250));
       window.fetch = origFetch2;
-      // The note is a STATUS line -- the apply's own message is replaced by the re-read
-      // moments later, so the pin is on the landing itself, below.
-      check("...pausing asks for a confirm first", /Confirm/i.test(armedText), armedText);
-      check("...and the pause posts the zero, not a guess",
-            posts.some((b) => /SLUICE_AUTO_SCORE/.test(b) && /"0"/.test(b)),
-            posts.join(" | ").slice(0, 120));
+      check("...and the pause posts the zero with a reason",
+            posts.some((b) => /SLUICE_AUTO_SCORE/.test(b) && /"0"/.test(b) && /harness/.test(b)),
+            posts.join(" | ").slice(0, 160));
+      check("...the receipt reports what landed and what was read back",
+            /SLUICE_AUTO_SCORE=0/.test(needEl("sl2-receipt").textContent || "")
+            && /read back/i.test(needEl("sl2-receipt").textContent || ""),
+            (needEl("sl2-receipt").textContent || "").slice(0, 120));
       check("...the state line reports it off",
             /off/i.test((needEl("sl2-auto") || {}).textContent || "")
             || needEl("sl2-auto").classList.contains("hidden"));
@@ -4890,15 +4910,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 80));
     const gateState = needEl("sl2-traf-chip");
     check("the status line states the packet gate's state in words",
-          !!gateState && /^(armed|off|degraded|unknown)/i.test(gateState.textContent.trim()),
+          !!gateState && /^(?:[\u25b2\u25c6\u25cf\u25cb]\s*)?(enforcing|monitoring|off|degraded|unknown)/i
+            .test(gateState.textContent.trim()),
           gateState ? gateState.textContent : "no state");
     check("...and offers exactly one control to change it",
           !!doc.getElementById("sl2-traf-toggle")
           && doc.querySelectorAll("#view-sluice #sl2-traf-toggle").length === 1);
     const domLine = needEl("sl2-dom-line");
     const domState = needEl("sl2-dom-chip");
-    check("the domain-blocking card states on/off and what it costs",
-          !!domState && /^(on|off)$/i.test(domState.textContent.trim())
+    check("the domain-blocking card states its enforcement state and what it costs",
+          !!domState
+          && /^(?:[\u25b2\u25c6\u25cf\u25cb]\s*)?(enforcing|monitoring|off|degraded|unknown)$/i
+            .test(domState.textContent.trim())
           && !!domLine && domLine.textContent.length > 40,
           domState ? domState.textContent : "no state");
     const domToggle = needEl("sl2-dom-toggle");
@@ -4911,9 +4934,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         if (/settings\/apply/.test(String(u)) && o && o.body) spy.push(String(o.body));
         return origFetch3(u, o);
       };
-      domToggle.click();   // arm the confirm
-      await new Promise((r) => setTimeout(r, 30));
-      domToggle.click();   // confirm
+      // ONE CONFIRM SURFACE (2026-11-20): the button opens a modal, the reason is required,
+      // and the write is read back. The old two-click-in-place flow is gone on purpose.
+      domToggle.click();
+      await new Promise((r) => setTimeout(r, 40));
+      needEl("sl2-confirm-reason").value = "harness: exercise the domain gate";
+      needEl("sl2-confirm-go").click();
       await new Promise((r) => setTimeout(r, 200));
       window.fetch = origFetch3;
       check("the domain toggle posts SLUICE_BLOCK_DOMAINS through the apply path",
@@ -4969,10 +4995,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!gateChip && /degraded/i.test(gateChip.textContent.trim()),
           gateChip ? gateChip.textContent : "no chip");
     check("...and carries the server's reason where it is read",
-          !!gateLine
-            && /still present after deletion/.test(gateLine.textContent
-                                                   + (gateLine.getAttribute("title") || "")),
-          gateLine ? gateLine.textContent : "no line");
+          /still present after deletion/.test(needEl("sl-gate-warning").textContent || ""),
+          needEl("sl-gate-warning").textContent || "no reason");
     window.fetch = origFetch;
     H.clearGetCache();
     await H.loadBlockingControls();   // tidy back to the healthy fixture
@@ -5007,9 +5031,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     check("a failed gate read does not render the chip as 'off'",
           chipNow.toLowerCase() !== "off", `chip read ${JSON.stringify(chipNow)}`);
-    check("...it says the state is unavailable instead", /unavailable/i.test(chipNow), chipNow);
+    check("...it says the state is unknown instead", /unknown/i.test(chipNow), chipNow);
     check("...the line carries the reason and disclaims the card",
-          /cannot read the gate/i.test(lineNow) && /no claim/i.test(lineNow), lineNow.slice(0, 110));
+          /cannot read the gate/i.test(lineNow)
+          && /no claim/i.test(needEl("sl2-traf-ev").textContent || ""),
+          lineNow.slice(0, 110));
     // `disabled` ALONE DOES NOT DISCRIMINATE. With an empty gate payload the button is already
     // disabled for an unrelated reason ("no nft backend"), so that assertion passes with the fix
     // reverted -- measured by mutation. The TITLE is what the fix sets, so it is what proves it.
@@ -5093,9 +5119,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     check("the auto-block banner is shown when the threshold is armed",
           !auto.classList.contains("hidden"), `class=${auto.className || ""}`);
-    check("...and its pause control has a note element to answer in", spans.length >= 3,
-          `${spans.length} span(s) in the banner: ` +
-          JSON.stringify(spans.map((s) => (s.textContent || "").slice(0, 24))));
+    // RE-AUTHORED (2026-11-20): the answer surface moved from a span inside the banner to the
+    // one confirm modal -- it carries the consequence, a required reason and the server's reply.
+    check("...and its pause control has a confirm surface with a reason field",
+          !!doc.querySelector("#sl2-auto button") && !!doc.getElementById("sl2-confirm-reason")
+          && !!doc.getElementById("sl2-confirm-note"),
+          `${spans.length} span(s) in the banner, confirm=${
+            !!doc.getElementById("sl2-confirm-reason")}`);
   }
 
   // ── DNS FAILED READ: THE FACET STRIP AND THE PAGER (WV1-09) ─────────────────────────────────
@@ -5486,7 +5516,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           `${picks.filter((b) => (b.textContent || "").trim().length <= 8).length} unnamed`);
 
     const rowGates =
-      [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row td:nth-child(2) .chip")];
+      [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row .sl2-rule-gate")];
     check("every rule names the gate that enforces it",
           rowGates.length > 0 && rowGates.every((c) => /^(Domain|Traffic)$/.test(c.textContent.trim()))
           && rowGates.some((c) => c.textContent.trim() === "Domain")
@@ -6680,7 +6710,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const emptyLine = doc.getElementById("sl2-empty");
     check("an empty rule list still renders the gates and says why the table is empty",
           !!emptyLine && !emptyLine.classList.contains("hidden")
-          && /no (live )?rules match/i.test(emptyLine.textContent || "")
+          && /no (live )?rules match|no rule has been filed|no .* rule exists/i
+            .test(emptyLine.textContent || "")
           && doc.querySelectorAll("#view-sluice .sl2-gates > .card").length === 2,
           emptyLine ? emptyLine.textContent.slice(0, 100) : "no empty line");
     await H.loadSluice();   // tidy back to the full fixture
@@ -7179,7 +7210,7 @@ check("the two gate cards share one horizontal grid, not two stacked full-width 
 check("the fleet packet table is its own card, not folded into a gate card",
       (() => {
         const fleet = doc.querySelector("#sl2-fleet");
-        return !!fleet && !!fleet.closest("#sl2-fleet-card") && !fleet.closest(".sl2-gate");
+        return !!fleet && !!fleet.closest(".card") && !fleet.closest(".sl2-gate");
       })(), "fleet table is not in its own card");
 // THE DOMAIN CARD MUST NOT BORROW THE PACKET GATE'S NUMBERS. The 2026-11-18 rebuild moved the
 // packet state ("armed on eth1", rule counts) onto the Traffic card and left the Domain card with
@@ -7193,25 +7224,39 @@ check("the Domain Gate carries no packet/interface facts",
           .find((c) => /domain gate/i.test((c.querySelector("h2, h3") || {}).textContent || ""));
         return !!domain && !/packet state|packet rules|interfaces?/i.test(domain.textContent);
       })(), "DNS card still carries packet facts");
-const gateHeads =
-  [...doc.querySelectorAll("#sl2-fleet thead th")].map((th) => th.textContent.trim());
-check("the packet fleet table names interfaces, not one global interface",
-      gateHeads[2] === "Interfaces", gateHeads.join("|"));
-const slGateRows = [...doc.querySelectorAll("#sl2-fleet tbody tr")];
-check("five weirlings produce five packet-gate rows",
-      slGateRows.length === 5, `${slGateRows.length} rows`);
-const dualRow = slGateRows.find((r) => r.textContent.includes("weirvern-dual"));
-check("each fleet row carries its own rule counts",
-      !!dualRow && [...dualRow.querySelectorAll("td")][3].textContent === "2 / 3",
-      dualRow ? [...dualRow.querySelectorAll("td")][3].textContent : "no weirvern-dual row");
-const zeroRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
-check("a stopped gate's real zero still renders as 0",
-      !!zeroRow && [...zeroRow.querySelectorAll("td")][3].textContent === "0 / 3",
-      zeroRow ? [...zeroRow.querySelectorAll("td")][3].textContent : "no lab-west row");
-const openRow = slGateRows.find((r) => r.textContent.includes("weirvern-open"));
+// ── FLEET PACKET GATES ARE PER-SENSOR CARDS (2026-11-20) ─────────────────────────────────────
+//
+// The table's fifth column fell off a phone. Each sensor is now its own card: which sensor,
+// which interface, what it is dropping and when it last reported -- and a card that has caught
+// nothing says so in words instead of showing a column of zeros.
+const slGateCards = [...doc.querySelectorAll("#sl2-fleet .sl2-sensor")];
+check("five weirlings produce five packet-gate cards",
+      slGateCards.length === 5, `${slGateCards.length} cards`);
+check("every sensor card names its own interfaces, not one global interface",
+      slGateCards.length > 0
+      && slGateCards.every((c) => /eth\d/.test((c.querySelector(".sl2-sensor-meta") || {}).textContent || "")),
+      slGateCards.map((c) => (c.querySelector(".sl2-sensor-meta") || {}).textContent).join(" | "));
+const dualCard = slGateCards.find((c) => c.textContent.includes("weirvern-dual"));
+check("each fleet card carries its own installed/stored rule counts",
+      !!dualCard && /2 of 3 stored packet rules installed/.test(dualCard.textContent),
+      dualCard ? dualCard.textContent.slice(0, 140) : "no weirvern-dual card");
+const zeroCard = slGateCards.find((c) => c.textContent.includes("lab-west"));
+check("a stopped gate's real zero still renders as a real zero",
+      !!zeroCard && /0 of 3 stored packet rules installed/.test(zeroCard.textContent),
+      zeroCard ? zeroCard.textContent.slice(0, 140) : "no lab-west card");
+const openCard = slGateCards.find((c) => c.textContent.includes("weirvern-open"));
 check("a gate with no live rules reads open, not degraded",
-      !!openRow && /open/i.test(openRow.textContent) && !/degraded/i.test(openRow.textContent),
-      openRow ? openRow.textContent : "no weirvern-open row");
+      !!openCard && /open by choice/i.test(openCard.textContent)
+      && !/degraded/i.test(openCard.textContent),
+      openCard ? openCard.textContent.slice(0, 160) : "no weirvern-open card");
+check("every fleet card states what it has actually done",
+      slGateCards.length > 0
+      && slGateCards.every((c) => /packets? dropped|no packets matched/.test(c.textContent)),
+      slGateCards.map((c) => c.textContent.slice(-70)).join(" | "));
+check("a stale gate says so on its own card",
+      !!zeroCard && /stale/i.test(zeroCard.textContent)
+      && /stopped reporting/i.test(zeroCard.textContent),
+      zeroCard ? zeroCard.textContent.slice(0, 140) : "no lab-west card");
 
 check("a LIVE rule is distinguishable from an EXPIRED one",
       slText().includes("live") && slText().includes("expired"),
@@ -7224,6 +7269,34 @@ check("a REVOKED rule stays visible rather than disappearing",
 check("a detection-derived rule is attributed to the detection",
       slText().includes("detection"),
       "an operator must be able to tell a model's block from an analyst's");
+
+// THE PER-RULE EVIDENCE IS THE POINT OF THE REBUILD: a sentence, then what it has actually
+// done in the window on screen. The fixture gives one domain rule 12 DNS matches and one
+// traffic rule four flow matches with packets; the rest have none, and say so.
+{
+  const rows = [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")];
+  const byId = (id) => rows.find((r) => r.getAttribute("data-rule-id") === id);
+  check("a rule row carries its firing evidence, not just its text",
+        /12 DNS matches in the last 24h/.test((byId("r1") || {}).textContent || "")
+        && /last 6m ago/.test((byId("r1") || {}).textContent || ""),
+        byId("r1") ? byId("r1").textContent : "no r1 row");
+  check("a packet rule's evidence counts the packets it dropped",
+        /4 flow matches in the last 24h/.test((byId("r-live-1") || {}).textContent || "")
+        && /1,204 packets dropped/.test((byId("r-live-1") || {}).textContent || ""),
+        byId("r-live-1") ? byId("r-live-1").textContent : "no r-live-1 row");
+  check("a rule that has matched nothing says exactly that",
+        /no DNS matches in the last 24h/.test((byId("r2") || {}).textContent || ""),
+        byId("r2") ? byId("r2").textContent : "no r2 row");
+  check("a rule links into the surface that owns its evidence",
+        !!byId("r1") && /#v=blocked&bl\.domain=ads\.example\.com/.test(
+          (byId("r1").querySelector("a.link") || {}).getAttribute?.("href") || "")
+        && !!byId("r-live-1") && /#v=discover&dc\.addr=198\.51\.100\.7/.test(
+          (byId("r-live-1").querySelector("a.link") || {}).getAttribute?.("href") || ""),
+        "a rule row does not link to its blocks/flows");
+  check("the raw rule fields are out of the table and only the sheet holds them",
+        [...doc.querySelectorAll("#sl2-rules thead th")].length === 2,
+        [...doc.querySelectorAll("#sl2-rules thead th")].map((t) => t.textContent).join(" | "));
+}
 
 // The per-rule mode is where a policy lives now: the old policy cards are gone, so the check
 // follows the control that replaced them, and it still asserts the COST is named rather than
@@ -7243,22 +7316,11 @@ check("a rule with NO EXPIRY reads as 'until revoked', not as a date or a dash",
       "the operator set the duration to 0; the row must say what that means");
 
 // ── one rule store, many gates ───────────────────────────────────────────────────────────────
-//
-// The fleet's gates: this hub's own, a weirling enforcing on its own segment, and one that has
-// stopped. "The rule is live" and "the rule is blocking the segment that saw the traffic" are
-// different statements, and only this table tells them apart.
 check("every gate is listed, with the local one marked as this hub",
-      slText().includes("weirvern-eth2") && !!dualRow && /hub/.test(dualRow.textContent),
+      slText().includes("weirvern-eth2") && !!dualCard && /this hub/.test(dualCard.textContent),
       slText().slice(0, 240));
-check("a gate that STOPPED is called out, not merely listed",
-      /stale/i.test(slText()),
-      "a stale gate must not read like a covered segment");
-const labWestRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
-check("a stale gate's own row says stale, not merely degraded",
-      !!labWestRow && /stale/i.test(labWestRow.textContent),
-      labWestRow ? labWestRow.textContent : "no lab-west row");
-// The fleet table no longer carries an enforcement column; the reach line above the rule table
-// is where the console now says which sensors can actually act, and it must exclude a stale one.
+// The reach line is where the console says which sensors can actually act, and it must exclude
+// a stale one.
 check("the reach line names the sensors that can actually enforce",
       (() => {
         const reach = doc.getElementById("sl-reach");

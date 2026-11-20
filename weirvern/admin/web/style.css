@@ -1836,14 +1836,70 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 
 .legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }
 
-/* ── Sluice Gate (2026-11-06 rebuild) ─────────────────────────────────────────────────────── */
-.sl2-gates { align-items: stretch; }
-#view-sluice .card > h3 > .chip { margin-left: 8px; vertical-align: middle; }
+/* ── Sluice Gate (2026-11-20 re-engineer: evidence before action) ──────────────────────────
+ * Each gate reads top-down as: state chip -> what it enforces -> what it has measurably done ->
+ * the one control that changes it. Nothing here is a tile repeating a number already stated in
+ * a sentence; the only coloured surfaces are the severity chips the Alerts tab already uses. */
+.sl2-gates { align-items: start; }
+.sl2-gate { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sl2-gate > h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.sl2-gate-what { margin: 2px 0 0; color: var(--fg-2); overflow-wrap: anywhere; }
+.sl2-gate-why { margin: 2px 0 0; padding-left: 10px; border-left: 3px solid var(--sev-high);
+  color: var(--fg-2); overflow-wrap: anywhere; white-space: pre-line; }
+.sl2-gate-ev { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-2);
+  overflow-wrap: anywhere; }
+.sl2-gate-actions { margin-top: auto; padding-top: 4px; }
+.sl2-gate-actions .link { align-self: center; }
+
+/* The receipt for a write: the server's own `applied` value plus what the re-read now says.
+   A write is not "done" because the POST returned 200. */
+.sl2-receipt { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--ok);
+  background: var(--surface-2); color: var(--fg-2); overflow-wrap: anywhere; }
+.sl2-receipt.bad { border-left-color: var(--crit); }
+
+/* ── Fleet packet gates: one card per sensor. The old table's fifth column fell off a phone;
+   a card has no fixed columns to lose. */
+.sl2-fleet { display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.sl2-sensor { display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2); overflow-wrap: anywhere; }
+.sl2-sensor.clickable { cursor: pointer; }
+.sl2-sensor.clickable:hover { background: var(--hover); }
+.sl2-sensor:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sl2-sensor-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.sl2-sensor-name { font-family: var(--mono); font-size: var(--fs-2); color: var(--fg); }
+.sl2-sensor-meta { color: var(--muted); font-size: var(--fs-1); }
+.sl2-sensor-ev { color: var(--fg-2); font-size: var(--fs-2); }
+.sl2-sensor-cue { color: var(--accent); font-size: var(--fs-1); }
+
+/* ── Rules: a sentence and its evidence, then the state. The raw-field columns are gone. */
+.sl2-rules { table-layout: fixed; }
+.sl2-rules th:last-child, .sl2-rules td:last-child { width: 132px; }
+.sl2-rules td { vertical-align: top; }
+.sl2-rule-ev { margin-top: 3px; color: var(--muted); font-size: var(--fs-1);
+  overflow-wrap: anywhere; }
+.sl2-rule-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 3px; }
+.sl2-rule-links .link { font-size: var(--fs-1); }
+.sl2-rule-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sl2-rule-gate { color: var(--muted); font-size: var(--fs-1); }
+
+/* The rule sheet's facts are a definition list, not a row of stat tiles: a tile repeats a
+   number the sentence already carries, a fact row states it once with its label. */
+.sl2-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px; margin: 0 0 14px; padding: 10px 12px;
+  background: var(--surface-2); border-radius: var(--r-md); }
+.sl2-facts dt { color: var(--muted); font-size: var(--fs-1); }
+.sl2-facts dd { margin: 0; overflow-wrap: anywhere; }
+
 .sl2-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--bad) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--bad) 28%, var(--line)); }
 .sl2-rule-btn { display: block; width: 100%; text-align: left; padding: 0; border: 0;
-  background: none; color: var(--fg); font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+  background: none; color: var(--fg); font: inherit; cursor: pointer; overflow-wrap: anywhere;
+  /* THE GLOBAL button BASE IS white-space: nowrap. A rule sentence is prose: without this the
+     sentence is one 452px line and the whole document scrolls sideways on a phone. */
+  white-space: normal; }
 .sl2-rule-btn:hover { color: var(--accent); text-decoration: underline; }
 .sl2-rule-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* A CHECKBOX SITS ON ITS LABEL'S LINE. .controls label is a column (label above field) because
@@ -1852,11 +1908,40 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .sl2-show { display: inline-flex; flex-direction: row; align-items: center; gap: 6px;
   font-size: var(--fs-1); align-self: center; }
 .sl2-delete { margin-top: 8px; }
+.sl2-confirm { max-width: 520px; }
+.sl2-confirm label { display: block; margin: 12px 0; }
+.sl2-confirm input { width: 100%; }
 .flash-hit { animation: sl2-flash 1.8s ease-out; }
 @keyframes sl2-flash { 0% { background: color-mix(in srgb, var(--accent) 24%, transparent); } 100% { background: transparent; } }
+
+/* ── Sluice on a phone: every gate, sensor and rule is a stacked card with no horizontal
+   scroll. The rules table becomes one card per rule; the header row is not rendered because
+   there are no columns left to label. 44px is the floor on every control. */
 @media (max-width: 760px) {
   .sl2-gates { grid-template-columns: 1fr; }
 }
+@media (max-width: 720px) {
+  .sl2-gates .card { padding: 12px; }
+  /* The button system owns size: the phone floor is set on the base token for this section,
+     never as a height on a selector (BTN-1). Links are not buttons and take the floor directly. */
+  .sl2-gate-actions { flex-direction: column; align-items: stretch; }
+  .sl2-gate-actions button, .sl2-gate-actions .link {
+    width: 100%; display: flex; align-items: center; justify-content: center; }
+  .sl2-gate-actions .link { min-height: 44px; }
+  .sl2-rules-wrap { overflow-x: visible; }
+  .sl2-rules, .sl2-rules tbody, .sl2-rules tr, .sl2-rules td { display: block; width: 100%; }
+  .sl2-rules thead { display: none; }
+  .sl2-rules tr { margin: 0 0 10px; padding: 12px; min-width: 0;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-left: 3px solid var(--border-solid); border-radius: var(--r-md);
+    overflow-wrap: anywhere; }
+  .sl2-rules tr:last-child { margin-bottom: 0; }
+  .sl2-rules td { padding: 0; border: 0; min-width: 0; }
+  .sl2-rules td:last-child { margin-top: 8px; }
+  .sl2-rules .sl2-rule-links .link { min-height: 44px; display: inline-flex; align-items: center; }
+  .sl2-sensor { min-height: 44px; }
+}
+
 
 
 /* PR-1: a card status is read in words, never by colour alone. Production is the only

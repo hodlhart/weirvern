@@ -225,7 +225,9 @@ def test_the_gate_state_and_rule_counts_are_stated_once_with_their_owner():
     # appears exactly once on the page and not at all in the renderer.
     assert html.count("Fleet packet gates") == 1
     assert "Fleet packet gates" not in js
-    assert "rules in store" in js, "the Traffic Gate lost its store count"
+    # The stat tiles were deleted with the 2026-11-20 rebuild; the same fact is stated in the
+    # evidence sentence ("N of M stored packet rules installed") instead of a tile beside it.
+    assert "stored packet rule" in js, "the Traffic Gate lost its installed/stored rule count"
 
 
 def test_chart_colours_are_tokens_not_hex_in_javascript():

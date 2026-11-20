@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.23.109 — 2026-11-20
+
+THE SLUICE TAB NOW LEADS WITH WHAT THE GATES HAVE MEASURABLY DONE, NOT WITH THE CONTROLS THAT
+CHANGE THEM. Enforcement semantics are unchanged: the same DNS answer path, the same nft rules,
+the same routes and the same confirmations.
+
+- **State before action, and state from measurement.** Each gate card reads state chip → what it
+  enforces → what it has actually done → the one control. The packet gate's state comes from the
+  supervisor's own row (`armed + rules_active > 0` = enforcing, `armed + 0` = monitoring,
+  `disarmed` = off, `stale/degraded` = degraded); a disagreement between the setting and the
+  measurement is shown as degraded with both facts named, instead of trusting the flag. An armed
+  gate with no matches says "nothing has matched in the last 24h" rather than wearing a green
+  badge that implies activity.
+- **Per-rule firing evidence, from the event table.** `/api/sluice` now carries a grouped
+  `evidence` map for the selected window — events, DNS matches, flow matches, packets, bytes and
+  `last_age_s` — and each rule row states it ("12 DNS matches in the last 24h · last 6m ago",
+  "4 flow matches · 1,204 packets dropped", or "no packet matches in the last 24h"). An
+  unreadable event table is its own state: the rows say the evidence is unavailable rather than
+  rendering a confident zero.
+- **Rules are sentences with a door.** The six-column raw-field table is gone: each row is the
+  rule sentence, its evidence, and a link into the surface that owns the evidence (domain →
+  Blocks filtered to the name; address → Flows filtered to the address). Gate, state, expiry,
+  origin and reason live in the rule sheet, whose fact tiles became a definition list with the
+  firing record beside them.
+- **The fleet is per-sensor cards, honest when empty.** Each card names the sensor, its
+  interfaces and verified path, its installed/stored rules, the packets it has dropped and when
+  it last reported; a sensor that has caught nothing says so. No fleet state renders the old
+  empty table: the card says "No sensor has reported a packet gate yet" or names the read failure.
+  Reach still names only sensors with a verified in-path channel.
+- **Decoration deleted.** The six stat tiles that repeated numbers already in the sentence, the
+  green "on"/"armed" badge, the duplicated degraded paragraph (the server's detail was printed
+  verbatim twice) and the raw-field columns are gone. Gate state uses the Alerts `sev-*` chip
+  vocabulary (`enforcing` = low, `monitoring` = medium, `degraded` = critical, `off` = low) —
+  colour, glyph and word, never a new palette.
+- **Arming is one blocking question with a recorded reason, then a read-back.** Arm, disarm and
+  pause-auto-block open the shared modal, require a non-empty reason, POST it to
+  `/api/settings/apply` and then print the server's `applied` value beside the re-read value:
+  a write is reported as landed only when the read-back matches. A viewer sees a disabled control
+  and the stated reason; the server remains the enforcement point.
+- **390 verified in a real browser, not inferred.** At 390×844 the document is 390px wide, no
+  element in the view exceeds the viewport (max right = 378), every rule is a stacked card
+  (`display: block`, 346px), the rules wrapper has no horizontal scroll (`scrollWidth` 346 =
+  client width) and every gate control is 44px tall. At 1440 the same page is 1440/1440.
+- **Tests.** jsdom **1045 → 1055** checks (0 failed): the confirm-with-reason flow, the receipt,
+  the per-rule evidence sentences, the rule links, the severity chips and the per-sensor cards.
+  pytest adds seven source/contract pins for the same surface; the Sluice review pins that named
+  the deleted tiles were re-authored, not deleted.
+
 ## 0.23.108 — 2026-11-20
 
 THE COARSE SCALES CAN NOW SPEAK WITHOUT INVENTING A RESULT, AND THE TAB IS CALLED ALERTS.

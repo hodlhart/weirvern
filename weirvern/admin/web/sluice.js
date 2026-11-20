@@ -38,25 +38,86 @@ function sl2On(key) {
   return /^(1|true|on|yes|enabled|armed)$/i.test(sl2Setting(key));
 }
 
-function sl2Stat(label, value, action) {
-  const box = el("div", { class: action ? "stat clickable" : "stat" }, [
-    el("div", { class: "k", text: label }),
-    el("div", { class: "v", text: String(value === null || value === undefined || value === "" ? "—" : value) }),
-  ]);
-  if (action) {
-    // A TILE THAT COUNTS SOMETHING IS A DOOR TO THAT SOMETHING. Same idiom as the fleet's tiles
-    // (BF-7): pointer, hover ring, and the action is a filter or a view, never a dead number.
-    box.setAttribute("role", "button");
-    box.setAttribute("tabindex", "0");
-    // aria-label, not title: a hover-only affordance is exactly the debt the canon ratchet
-    // counts. The chevron is the visible cue; this is the accessible name.
-    box.setAttribute("aria-label", action.label || label);
-    box.addEventListener("click", action.run);
-    box.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); action.run(); }
-    });
+/* ── Evidence primitives ─────────────────────────────────────────────────────────────────────
+ *
+ * THE STATE CHIP IS THE ALERTS CHIP. Same `.rp-sev-chip` shape, same `sev-*` ramp, same
+ * colour+glyph+word grammar: a red chip means the same thing on this tab as on Alerts. Four
+ * states, and every one of them is derived from what the gate reports or from what is actually
+ * loaded -- never from the setting alone.
+ */
+const SL2_STATE_SEV = { enforcing: "low", monitoring: "medium", off: "low", degraded: "critical",
+                        unknown: "low" };
+
+function sl2StateWord(kind) {
+  return { enforcing: "enforcing", monitoring: "monitoring", off: "off",
+           degraded: "degraded", unknown: "unknown" }[kind] || "unknown";
+}
+
+function sl2StateChip(kind, extra) {
+  const sev = SL2_STATE_SEV[kind] || "low";
+  const glyph = (typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[sev]) || "";
+  const text = `${glyph ? glyph + " " : ""}${sl2StateWord(kind)}${extra ? " · " + extra : ""}`;
+  return el("span", { class: `rp-sev-chip sev-${sev}`, text });
+}
+
+/** Replace the chip in place, keeping its id: the markup owns one element, and the renderer
+ *  cannot leave the previous severity class behind on a re-render. */
+function sl2SetStateChip(id, kind) {
+  const old = document.getElementById(id);
+  if (!old) return;
+  const chip = sl2StateChip(kind);
+  chip.id = id;
+  old.replaceWith(chip);
+}
+
+/** A count with its noun, so a number never appears bare. */
+function sl2Count(n, one, many) {
+  const v = Number(n) || 0;
+  return `${v.toLocaleString()} ${v === 1 ? one : (many || one + "s")}`;
+}
+
+/** Ages come from the server as SECONDS. A null age is "not measured", never "just now". */
+function sl2Ago(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "";
+  const s = Math.max(0, Number(seconds));
+  if (s < 90) return `${Math.round(s)}s ago`;
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 172800) return `${(s / 3600).toFixed(1)}h ago`;
+  return `${(s / 86400).toFixed(1)}d ago`;
+}
+
+/** The window, in the reader's words: "24h" is a number, "the last 24h" is a sentence. */
+function sl2Window(hours) {
+  const h = Number(hours) || 24;
+  return h === 24 ? "the last 24h" : (h % 24 === 0 ? `the last ${h / 24}d` : `the last ${h}h`);
+}
+
+/** One rule's firing record, in the window that is on screen. */
+function sl2RuleEvidence(rule, d) {
+  const hours = Number((d && d.hits_hours) || 24);
+  const ev = rule && rule.evidence;
+  if (d && d.evidence_available === false) {
+    return "match evidence unavailable — the event table could not be read";
   }
-  return box;
+  if (!ev || !Number(ev.events)) {
+    return rule && rule.domain
+      ? `no DNS matches in ${sl2Window(hours)}`
+      : `no packet matches in ${sl2Window(hours)}`;
+  }
+  const when = sl2Ago(ev.last_age_s);
+  if (rule && rule.domain) {
+    return `${sl2Count(ev.dns || 0, "DNS match", "DNS matches")} in ${sl2Window(hours)}`
+      + (when ? ` · last ${when}` : "");
+  }
+  const packets = Number(ev.packets || 0);
+  return `${sl2Count(ev.flow || 0, "flow match", "flow matches")} in ${sl2Window(hours)}`
+    + (packets ? ` · ${sl2Count(packets, "packet")} dropped` : "")
+    + (when ? ` · last ${when}` : "");
+}
+
+/** Is this rule currently in the enforcement set? A parked, revoked or lapsed rule is not. */
+function sl2Enforces(rule) {
+  return Boolean(rule && rule.live && !rule.revoked && !rule.disabled);
 }
 
 function sl2GateOf(rule) {
@@ -64,14 +125,15 @@ function sl2GateOf(rule) {
 }
 
 function sl2StateOf(rule) {
-  if (!rule) return { text: "unknown", cls: "muted" };
-  if (rule.revoked) return { text: "revoked", cls: "muted" };
-  if (rule.disabled) return { text: "parked", cls: "warn" };
+  if (!rule) return { text: "unknown", sev: "low", kind: "unknown" };
+  if (rule.revoked) return { text: "revoked", sev: "low", kind: "off" };
+  if (rule.disabled) return { text: "parked", sev: "medium", kind: "off" };
   if (rule.expires_in_s !== null && rule.expires_in_s !== undefined && rule.expires_in_s < 0) {
-    return { text: "expired", cls: "muted" };
+    return { text: "expired", sev: "low", kind: "off" };
   }
-  if (rule.live) return { text: "live", cls: "ok" };
-  return { text: "not live", cls: "muted" };
+  if (rule.live) return { text: rule.mode === "alert" ? "live · alert only" : "live · blocking",
+                          sev: rule.mode === "alert" ? "medium" : "low", kind: "enforcing" };
+  return { text: "not live", sev: "low", kind: "off" };
 }
 
 function sl2Visible(rule) {
@@ -105,12 +167,6 @@ function sl2Chip(text, cls) {
   return el("span", { class: `chip ${cls || "muted"}`, text });
 }
 
-function sluiceStateChip(state, stale) {
-  const labels = { armed: "armed", disarmed: "open · no packet rules", degraded: "degraded", off: "off" };
-  const cls = state === "armed" ? "ok" : (state === "degraded" ? "bad" : "muted");
-  return sl2Chip(`${labels[state] || state || "unknown"}${stale ? " · stale" : ""}`, cls);
-}
-
 async function loadSluice() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   let d;
@@ -133,6 +189,85 @@ async function loadSluice() {
   renderSluiceRules(d);
 }
 
+/** Whether THIS caller may write, and why not. The settings read carries the server's answer;
+ *  a failed read must not silently ENABLE controls the server would refuse. */
+function sl2Writes() {
+  const w = SL2_STATE.settings && SL2_STATE.settings.writes;
+  if (w && typeof w.enabled === "boolean") {
+    return { enabled: w.enabled, reason: String(w.reason || "") };
+  }
+  if (typeof AUTH !== "undefined" && AUTH && !AUTH.accounts) return { enabled: true, reason: "" };
+  return { enabled: false,
+           reason: "write access could not be established; sign in as an admin" };
+}
+
+function sl2ApplyControls() {
+  const w = sl2Writes();
+  const note = document.getElementById("sl2-readonly");
+  if (note) {
+    note.classList.toggle("hidden", w.enabled);
+    note.textContent = w.enabled ? ""
+      : `Read-only — ${w.reason || "this account can read the gate but not change it."}`;
+  }
+  for (const id of ["sl2-dom-toggle", "sl2-traf-toggle", "sl2-new"]) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    // A control that appears and then refuses is worse than a disabled one that says why.
+    if (id === "sl2-new") { b.disabled = !w.enabled; } else { b.dataset.readonly = w.enabled ? "" : "1"; }
+  }
+  for (const id of ["sl2-create-submit", "sl2-mode-save", "sl2-park", "sl-rule-delete"]) {
+    const b = document.getElementById(id);
+    if (b && !w.enabled) b.disabled = true;
+  }
+  return w;
+}
+
+function sl2SetReceipt(text, bad) {
+  const box = document.getElementById("sl2-receipt");
+  if (!box) return;
+  box.textContent = text || "";
+  box.classList.toggle("hidden", !text);
+  box.classList.toggle("bad", Boolean(bad));
+  if (text) box.dataset.at = new Date().toISOString();
+}
+
+/** The Domain Gate's enforcement set and its measured record. */
+function sl2DomainFacts(d) {
+  const lists = (d.blocklists || []).filter((s) => s && s.enabled);
+  const names = lists.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
+  const rules = (d.rules || []).filter(
+    (r) => r.domain && sl2Enforces(r) && String(r.mode || "block") === "block");
+  const all = Object.values(d.evidence || {});
+  const dnsHits = all.reduce((n, e) => n + Number((e && e.dns) || 0), 0);
+  const ages = all.map((e) => e && e.last_age_s).filter((v) => v !== null && v !== undefined);
+  return {
+    lists, names, rules, dnsHits,
+    lastAge: ages.length ? Math.min.apply(null, ages) : null,
+    known: d.blocklists_available !== false,
+    reason: String(d.blocklists_reason || "").trim(),
+  };
+}
+
+/** The Traffic Gate's measured state. The supervisor's row is the evidence; the setting is only
+ *  a claim about it, and a disagreement is surfaced rather than smoothed over. */
+function sl2TrafficKind(gate, settingsOn) {
+  const state = String((gate && gate.state) || "").toLowerCase();
+  if (!gate || gate.available === false) return { kind: "unknown", mismatch: "" };
+  if (gate.stale || state === "degraded") return { kind: "degraded", mismatch: "" };
+  const live = Number(gate.rules_active || 0);
+  const measured = state === "armed" ? (live > 0 ? "enforcing" : "monitoring")
+    : (state === "disarmed" ? "off" : "unknown");
+  if (settingsOn !== null && (settingsOn === true) !== (state === "armed")
+      && measured !== "unknown") {
+    return {
+      kind: "degraded",
+      mismatch: `The setting says the gate is ${settingsOn ? "enabled" : "disabled"}, but the `
+        + `supervisor reports it ${state || "without a state"}. The measurement wins here.`,
+    };
+  }
+  return { kind: measured, mismatch: "" };
+}
+
 /* ── Gate state ─────────────────────────────────────────────────────────────────────────────── */
 function renderSluiceGates(d) {
   // ── A FAILED READ MUST NOT RENDER AS "off" (WV1-07) ─────────────────────────────────────────
@@ -143,179 +278,220 @@ function renderSluiceGates(d) {
   // packet is dropped." -- while the Rules panel ON THE SAME SCREEN said "Reach unavailable". One
   // screen claiming both that the gate is off and that its state is unknown.
   //
-  // Why this one matters more than the other conflations in this file: "the packet gate is off" is
-  // the single most reassuring sentence in the console, and it was reachable from a failure. The
-  // chips below derive from SETTINGS, which is a different read and can succeed while this payload
-  // fails, so nothing here is a measurement of the gate.
-  //
-  // The Domain Gate's on/off chip is left alone on purpose: it comes from SETTINGS, not from this
-  // payload, so it is still a real answer. Its COUNTS come from the failed payload, so they are
-  // suppressed rather than shown as zero.
+  // So a failed read gets its own state word, no numbers, and disabled controls: there is no
+  // measurement here to act on.
+  const settingsLoaded = Boolean(SL2_STATE.settings);
+  sl2ApplyControls();
   if (d.available === false) {
     const why = String(d.reason || "").trim() || "the gate state could not be read";
-    const trafChip = document.getElementById("sl2-traf-chip");
-    if (trafChip) {
-      trafChip.className = "chip bad";
-      trafChip.textContent = "unavailable";
-    }
+    sl2SetStateChip("sl2-traf-chip", "unknown");
+    sl2SetStateChip("sl2-dom-chip", "unknown");
     const trafLine = document.getElementById("sl2-traf-line");
-    if (trafLine) {
-      trafLine.textContent =
-        `Cannot read the gate state: ${why} This card makes no claim about whether traffic is ` +
-        `being blocked.`;
-    }
+    if (trafLine) trafLine.textContent = `Cannot read the gate state: ${why}`;
+    const trafEv = document.getElementById("sl2-traf-ev");
+    if (trafEv) trafEv.textContent = "This card makes no claim about whether traffic is being blocked.";
     const domLine = document.getElementById("sl2-dom-line");
-    if (domLine && domLine.textContent) {
-      domLine.textContent += " List counts are unavailable: the same read failed.";
-    }
+    if (domLine) domLine.textContent = "Cannot read the rule and blocklist store; no claim is made about DNS blocking.";
+    const domEv = document.getElementById("sl2-dom-ev");
+    if (domEv) domEv.textContent = why;
     const warning = document.getElementById("sl-gate-warning");
-    if (warning) {
-      warning.textContent = why;
-      warning.classList.remove("hidden");
-    }
-    for (const id of ["sl2-traf-stats", "sl2-dom-stats"]) {
-      const stats = document.getElementById(id);
-      if (stats) stats.replaceChildren();
-    }
+    if (warning) { warning.textContent = ""; warning.classList.add("hidden"); }
     for (const id of ["sl2-traf-toggle", "sl2-dom-toggle"]) {
       const btn = document.getElementById(id);
-      if (btn) {
-        btn.disabled = true;
-        btn.title = "the gate state could not be read, so this control would act blind";
-      }
+      if (btn) { btn.disabled = true; btn.title = "the gate state could not be read, so this control would act blind"; }
     }
-    const autoEl = document.getElementById("sl2-auto");
-    if (autoEl) autoEl.classList.add("hidden");
-    renderSluiceFleet(d.gates || []);
+    for (const id of ["sl2-auto", "sl2-receipt"]) {
+      const n = document.getElementById(id);
+      if (n) n.classList.add("hidden");
+    }
+    renderSluiceFleet(d.gates || [], d);
+    renderSluiceReach(d);
     return;
   }
 
   const gate = d.gate || {};
-  const gateOn = sl2On("SLUICE_ENABLED");
-  const domOn = sl2On("SLUICE_BLOCK_DOMAINS");
+  const gateOnSetting = settingsLoaded ? sl2On("SLUICE_ENABLED") : null;
+  const domOnSetting = settingsLoaded ? sl2On("SLUICE_BLOCK_DOMAINS") : null;
   const live = Number(gate.rules_active || 0) || 0;
   const total = Number(gate.rules_total || 0) || 0;
-  const state = String(gate.state || "").toLowerCase();
-  const stale = Boolean(gate.stale);
-  const degraded = state === "degraded" || stale;
-  const openByChoice = state === "disarmed";
+  const windowText = sl2Window(d.hits_hours);
 
-  // Domain Gate. Blocklist switches live in Settings; this card states what they add up to.
-  const lists = (d.blocklists || []).filter((s) => s && s.enabled);
-  const domains = lists.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
-  const domChip = document.getElementById("sl2-dom-chip");
-  if (domChip) {
-    domChip.className = `chip ${domOn ? "ok" : "muted"}`;
-    domChip.textContent = domOn ? "on" : "off";
+  // ── DOMAIN GATE ────────────────────────────────────────────────────────────────────────────
+  const dom = sl2DomainFacts(d);
+  let domKind = "off";
+  let domLine;
+  let domEv;
+  if (!dom.known) {
+    domKind = "degraded";
+    domLine = "Cannot read the blocklists, so no claim is made about what DNS is answering.";
+    domEv = dom.reason ? `The blocklist read failed: ${dom.reason}` : "The blocklist read failed.";
+  } else if (!domOnSetting) {
+    domKind = "off";
+    domLine = "Domain blocking is off: domain rules record matches, but DNS answers are not blocked.";
+    domEv = `${sl2Count(dom.names, "name")} would be covered by ${sl2Count(dom.lists.length, "enabled list")}`
+      + ` · ${sl2Count(dom.dnsHits, "DNS match", "DNS matches")} recorded in ${windowText}`;
+  } else if (dom.lists.length + dom.rules.length > 0) {
+    domKind = "enforcing";
+    domLine = `Names on ${sl2Count(dom.lists.length, "enabled blocklist")} and `
+      + `${sl2Count(dom.rules.length, "block-mode domain rule")} are answered with a block answer.`;
+    domEv = `${sl2Count(dom.names, "name")} covered`
+      + (dom.dnsHits
+        ? ` · ${sl2Count(dom.dnsHits, "DNS match", "DNS matches")} in ${windowText}`
+          + (dom.lastAge !== null ? ` · last ${sl2Ago(dom.lastAge)}` : "")
+        : ` · nothing has matched in ${windowText}`);
+  } else {
+    domKind = "monitoring";
+    domLine = "Domain blocking is on, but nothing is being blocked: there is no enabled blocklist "
+      + "and no block-mode domain rule.";
+    domEv = `0 names covered · ${sl2Count(dom.dnsHits, "DNS match", "DNS matches")} recorded in ${windowText}`;
   }
-  const domLine = document.getElementById("sl2-dom-line");
-  if (domLine) {
-    domLine.textContent = domOn
-      ? "Names on an enabled blocklist and block-mode domain rules are answered with a block answer in DNS. The traffic gate is separate."
-      : "Domain blocking is off: domain rules record and alert, but DNS answers are not blocked. The traffic gate is separate.";
-  }
-  const domStats = document.getElementById("sl2-dom-stats");
-  if (domStats) {
-    const hitHours = Number(d.hits_hours || 24);
-    const hits = Array.isArray(d.hits) ? d.hits.length : 0;
-    domStats.replaceChildren(
-      sl2Stat("enabled lists", lists.length,
-        { label: "open the blocklists in Settings", run: () => showView("settings") }),
-      sl2Stat("domains covered", domains ? domains.toLocaleString() : "0"),
-      sl2Stat(`DNS hits in ${hitHours}h`, hits,
-        { label: "see the recorded blocks", run: () => showView("blocked") }),
-    );
-  }
+  sl2SetStateChip("sl2-dom-chip", domKind);
+  const domLineEl = document.getElementById("sl2-dom-line");
+  if (domLineEl) domLineEl.textContent = domLine;
+  const domEvEl = document.getElementById("sl2-dom-ev");
+  if (domEvEl) domEvEl.textContent = domEv;
   const domBtn = document.getElementById("sl2-dom-toggle");
   if (domBtn) {
-    domBtn.textContent = domOn ? "Disable domain blocking" : "Enable domain blocking";
-    domBtn.onclick = () => applySluiceSetting("SLUICE_BLOCK_DOMAINS", domOn ? "0" : "1", domBtn,
-      document.getElementById("sl2-dom-line"));
+    const on = Boolean(domOnSetting);
+    domBtn.textContent = on ? "Turn domain blocking off" : "Turn domain blocking on";
+    domBtn.onclick = () => sl2AskSetting({
+      key: "SLUICE_BLOCK_DOMAINS", value: on ? "0" : "1",
+      heading: on ? "Turn domain blocking off?" : "Turn domain blocking on?",
+      what: on
+        ? "DNS answers for listed and block-mode domain rules stop being blocked. The rules stay "
+          + "and keep recording matches."
+        : "DNS answers for listed names and block-mode domain rules are blocked again.",
+      cost: "This changes what the Domain Gate does for every device using this resolver.",
+      verb: on ? "Turn it off" : "Turn it on",
+    });
+    domBtn.disabled = domBtn.dataset.readonly === "1";
   }
 
-  // Traffic Gate.
-  const trafChip = document.getElementById("sl2-traf-chip");
-  if (trafChip) {
-    let text = gateOn ? (live > 0 ? "armed" : "armed · no rules") : "off";
-    if (degraded && !openByChoice) text = "degraded";
-    trafChip.className = `chip ${degraded && !openByChoice ? "bad" : (gateOn && live ? "ok" : "muted")}`;
-    trafChip.textContent = text;
+  // ── TRAFFIC GATE ───────────────────────────────────────────────────────────────────────────
+  const traf = sl2TrafficKind(gate, gateOnSetting);
+  sl2SetStateChip("sl2-traf-chip", traf.kind);
+  const iface = ifaceList(gate.iface);
+  const trafLineEl = document.getElementById("sl2-traf-line");
+  const warning = document.getElementById("sl-gate-warning");
+  const why = String(gate.warning || gate.detail || "").trim();
+  let trafLine = "";
+  let showWhy = "";
+  if (traf.kind === "unknown") {
+    trafLine = "The gate has not reported a state yet, so no claim is made about whether packets are dropped.";
+  } else if (traf.kind === "degraded") {
+    // ONE STATEMENT OF THE FAULT. When the setting and the supervisor disagree, the line says
+    // so and the callout carries both readings; the "could not install" sentence would be a
+    // second, possibly wrong explanation of the same state.
+    trafLine = traf.mismatch
+      ? "Not enforcing: the setting and the supervisor disagree about whether this gate is armed."
+      : "Not enforcing: the gate could not install its rules and has opened, so traffic on this "
+        + "segment is not being blocked.";
+    showWhy = traf.mismatch || why;
+  } else if (traf.kind === "off") {
+    trafLine = "Disarmed: no packet is being dropped. Rules still record matches.";
+  } else if (traf.kind === "enforcing") {
+    trafLine = `Armed on ${iface}: the supervisor installed its packet rules and is dropping traffic.`;
+  } else {
+    trafLine = `Armed on ${iface}, but no packet rules are installed — nothing can be dropped.`;
   }
-  const trafLine = document.getElementById("sl2-traf-line");
-  if (trafLine) {
-    const backend = String(gate.backend || "").toLowerCase();
-    const why = String(gate.warning || gate.detail || "").trim();
-    if (!gateOn) {
-      trafLine.textContent = "The packet gate is off. Rules still record hits, but no packet is dropped.";
-    } else if (live > 0) {
-      trafLine.textContent = `${live} packet rule${live === 1 ? "" : "s"} installed on ${gate.iface || "this weirling"}.`;
-    } else {
-      trafLine.textContent = "The gate is armed, but no live packet rules exist; nothing is being dropped.";
-    }
-    if (degraded && !openByChoice && why) trafLine.textContent = why;
-    if (backend && backend !== "none" && gateOn) trafLine.textContent += ` Enforcement backend: ${backend}.`;
-    const warning = document.getElementById("sl-gate-warning");
-    if (warning) {
-      warning.textContent = degraded && !openByChoice ? why : "";
-      warning.classList.toggle("hidden", !(degraded && !openByChoice && why));
-    }
+  if (trafLineEl) trafLineEl.textContent = trafLine;
+  if (warning) {
+    // ONE REASON PER LINE. The supervisor joins the per-interface refusals with "; "; a single
+    // wall of text hides the second interface's failure behind the first.
+    warning.textContent = showWhy ? showWhy.split(/;\s*/).filter(Boolean).join("\n") : "";
+    warning.classList.toggle("hidden", !showWhy);
   }
-  const trafStats = document.getElementById("sl2-traf-stats");
-  if (trafStats) {
-    trafStats.replaceChildren(
-      sl2Stat("live packet rules", live,
-        { label: "show the traffic rules below", run: () => sl2SetGate("traffic") }),
-      sl2Stat("rules in store", total,
-        { label: "show the traffic rules below", run: () => sl2SetGate("traffic") }),
-      sl2Stat("packets blocked", Number(gate.packets_blocked || 0).toLocaleString(),
-        { label: "see the recorded blocks", run: () => showView("blocked") }),
-    );
+
+  const ev = d.evidence || {};
+  const flowMatches = Object.values(ev).reduce((n, e) => n + Number((e && e.flow) || 0), 0);
+  const ages = Object.values(ev).map((e) => e && e.last_age_s)
+    .filter((v) => v !== null && v !== undefined);
+  const lastAge = ages.length ? Math.min.apply(null, ages) : null;
+  const pkts = Number(gate.packets_blocked || 0);
+  const reported = gate.age_s === null || gate.age_s === undefined
+    ? "no report time" : `last reported ${sl2Ago(gate.age_s)}`;
+  let trafEv = "";
+  if (traf.kind === "unknown") {
+    trafEv = "No gate state has been recorded for this sensor.";
+  } else if (traf.kind === "degraded") {
+    trafEv = (total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
+                   : "no packet rules stored")
+      + ` · ${sl2Count(pkts, "packet")} dropped as of the last report`
+      + ` · ${reported}`;
+  } else if (traf.kind === "off") {
+    trafEv = `${sl2Count(total, "packet rule")} stored · ${sl2Count(pkts, "packet")} dropped as of `
+      + `the last report · ${reported}`;
+  } else {
+    trafEv = (total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
+                   : "no packet rules stored")
+      + ` · ${sl2Count(pkts, "packet")} dropped since the gate started`
+      + (flowMatches
+        ? ` · ${sl2Count(flowMatches, "rule match", "rule matches")} in ${windowText}`
+          + (lastAge !== null ? ` · last ${sl2Ago(lastAge)}` : "")
+        : ` · no rule matches in ${windowText}`)
+      + ` · ${reported}`;
   }
+  const trafEvEl = document.getElementById("sl2-traf-ev");
+  if (trafEvEl) trafEvEl.textContent = trafEv;
+
   const note = document.getElementById("sl2-traf-note");
   const trafBtn = document.getElementById("sl2-traf-toggle");
   if (trafBtn) {
+    const on = traf.kind === "enforcing" || traf.kind === "monitoring";
     const backend = String(gate.backend || "").toLowerCase();
-    const canArm = gateOn || (backend && backend !== "none" && total > 0);
-    trafBtn.textContent = gateOn ? "Disarm the gate" : "Arm the gate";
-    trafBtn.disabled = !canArm;
-    trafBtn.title = !gateOn && !canArm
+    const canArm = on || (backend && backend !== "none" && total > 0);
+    trafBtn.textContent = on ? "Disarm the gate" : "Arm the gate";
+    trafBtn.disabled = trafBtn.dataset.readonly === "1" || (!on && !canArm);
+    trafBtn.title = !on && !canArm
       ? (backend === "none" || !backend ? "No nft backend is running" : "File a rule before arming the gate")
       : "";
-    trafBtn.onclick = () => applySluiceSetting("SLUICE_ENABLED", gateOn ? "0" : "1", trafBtn, note);
+    if (note) note.textContent = trafBtn.disabled && !on && !canArm
+      ? (backend === "none" || !backend
+        ? "Arming is unavailable: no nft backend is running on this sensor."
+        : "Arming is unavailable: file a packet rule first.")
+      : "";
+    trafBtn.onclick = () => sl2AskSetting({
+      key: "SLUICE_ENABLED", value: on ? "0" : "1",
+      heading: on ? "Disarm the packet gate?" : "Arm the packet gate?",
+      what: on
+        ? "Packets stop being dropped on this sensor. The rules stay in the store and keep recording."
+        : "The supervisor installs the live packet rules and starts dropping matching traffic.",
+      cost: on
+        ? "Whatever this gate is blocking becomes reachable again until it is armed."
+        : "Arming restarts the worker and puts the packet rules in the path.",
+      verb: on ? "Disarm the gate" : "Arm the gate",
+    });
   }
-  if (note) note.textContent = !gateOn ? "Arming applies the packet rules and restarts the worker." : "";
 
   // The one automatic enforcement threshold; visible and stoppable.
   const auto = Number(sl2Setting("SLUICE_AUTO_SCORE") || 0) || 0;
-  // THE HEADER PILL IS THE OTHER HALF OF THIS CONTROL, and it used to refresh only at boot, so
-  // arming the threshold from Settings left the loud signal off screen until a reload. Passing the
-  // value here keeps the card and the pill in step, which is the contract the pill's own comment
-  // states.
   if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(auto);
   const autoEl = document.getElementById("sl2-auto");
   if (autoEl) {
     autoEl.classList.toggle("hidden", !(auto > 0));
     if (auto > 0) {
+      const pause = el("button", { class: "quiet", attrs: { type: "button" },
+                                   text: "Pause auto-block" });
+      pause.onclick = () => sl2AskSetting({
+        key: "SLUICE_AUTO_SCORE", value: "0",
+        heading: "Pause automatic blocking?",
+        what: `Detections at or above ${auto.toFixed(2)} stop being blocked without review.`,
+        cost: "The detections still alert; only the automatic block stops.",
+        verb: "Pause auto-block",
+      });
       autoEl.replaceChildren(
-        el("span", { class: "chip bad", text: "auto-block on" }),
+        el("span", { class: "rp-sev-chip sev-high", text: "▲ auto-block on" }),
         el("span", { class: "muted", text: `detections at or above ${auto.toFixed(2)} are blocked without review` }),
+        pause,
       );
-      // ── THE PAUSE NEEDED SOMEWHERE TO SPEAK (WV1-11) ───────────────────────────────────────
-      //
-      // This used to pass `autoEl` (a DIV built with replaceChildren) as the note element, and
-      // applySluiceSetting deliberately writes nothing when `note.tagName === "DIV"`. So the pause
-      // produced no confirmation, and after the POST neither the server's note nor an error was
-      // shown anywhere: a refused pause was indistinguishable from a slow one, and the banner
-      // stayed on screen either way. A dedicated span gives it a place to answer.
-      const pause = el("button", { class: "quiet", attrs: { type: "button" }, text: "Pause auto-block" });
-      const pauseNote = el("span", { class: "muted", text: "" });
-      pause.onclick = () => applySluiceSetting("SLUICE_AUTO_SCORE", "0", pause, pauseNote);
-      autoEl.appendChild(pause);
-      autoEl.appendChild(pauseNote);
+    } else {
+      autoEl.replaceChildren();
     }
   }
-  renderSluiceFleet(d.gates || []);
+  renderSluiceFleet(d.gates || [], d);
+  renderSluiceReach(d);
 }
+
 
 /** A NIC list, normalised: "eth1,eth2" and "eth1, eth2" are the same two interfaces. */
 function ifaceList(value) {
@@ -324,122 +500,236 @@ function ifaceList(value) {
   return names.length ? names.join(", ") : "—";
 }
 
-function renderSluiceFleet(gates) {
+/** Every recorded gate row, one card per sensor. Honest when there is nothing to list. */
+function renderSluiceFleet(gates, d) {
   const host = document.getElementById("sl2-fleet");
-  const card = document.getElementById("sl2-fleet-card");
+  const note = document.getElementById("sl2-fleet-note");
   if (!host) return;
-  if (!gates.length) {
-    if (card) card.classList.add("hidden");
-    host.replaceChildren();
+  const available = !d || d.gates_available !== false;
+  host.replaceChildren();
+  if (!available) {
+    if (note) note.textContent = "";
+    host.appendChild(el("p", { class: "empty",
+      text: `The fleet's gate state could not be read${d && d.gates_reason ? `: ${d.gates_reason}` : ""}. `
+        + "This is not a claim that no sensor is enforcing." }));
     return;
   }
-  if (card) card.classList.toggle("hidden", false);
-  host.replaceChildren();
-  const note = document.getElementById("sl2-fleet-note");
+  if (!gates.length) {
+    if (note) note.textContent = "";
+    host.appendChild(el("p", { class: "empty",
+      text: "No sensor has reported a packet gate yet. A gate row is written on every enforcement "
+        + "pass; until one arrives, no segment is known to be filtered." }));
+    return;
+  }
+  const stale = gates.filter((g) => g.stale).length;
+  const enforcing = gates.filter((g) => !g.stale
+    && String(g.state || "").toLowerCase() === "armed"
+    && Number(g.rules_active || 0) > 0).length;
   if (note) {
-    const stale = gates.filter((g) => g.stale).length;
-    note.textContent = `${gates.length} sensor${gates.length === 1 ? "" : "s"}` +
-      (stale ? ` · ${stale} stale` : "");
+    note.textContent = `${sl2Count(gates.length, "sensor")} · ${enforcing} enforcing`
+      + (stale ? ` · ${stale} stale` : "");
   }
-  const table = el("table");
-  table.appendChild(el("thead", {}, [el("tr", {}, [
-    el("th", { text: "Weirling" }), el("th", { text: "State" }), el("th", { text: "Interfaces" }),
-    el("th", { text: "Rules" }), el("th", { text: "Last check" }),
-  ])]));
-  const body = el("tbody");
   for (const g of gates) {
-    const state = String(g.state || "unknown");
-    // A ROW IS A SENSOR, SO IT OPENS THAT SENSOR. The gates table names weirlings; leaving the
-    // names inert made an operator copy them into the Weirlings tab to ask the next question.
-    const row = el("tr", {
-      class: g.sensor ? "clickable" : "",
-      attrs: g.sensor ? { "aria-label": `open ${g.sensor}` } : {},
-    }, [
-      el("td", {}, [el("span", { class: "mono", text: g.sensor || "—" }),
-        g.local ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
-      el("td", {}, [sluiceStateChip(g.state, g.stale)]),
-      // ONE JOIN FOR EVERY ROW. The hub reports "eth1, eth2" and a remote weirling reports
-      // "eth1,eth2"; printing each as it arrived made two identical rows look different.
-      el("td", { class: "mono", text: ifaceList(g.iface) }),
-      el("td", { text: `${Number(g.rules_active || 0)} / ${Number(g.rules_total || 0)}` }),
-      el("td", { class: "muted", text: g.age_s == null ? "—" : `${fmtAge(g.age_s)} ago` }),
-    ]);
-    if (g.sensor && typeof openWeirling === "function") {
-      row.addEventListener("click", () => openWeirling(g.sensor));
+    const state = String(g.state || "unknown").toLowerCase();
+    const live = Number(g.rules_active || 0) || 0;
+    const total = Number(g.rules_total || 0) || 0;
+    const pkts = Number(g.packets_blocked || 0) || 0;
+    let kind = "unknown";
+    if (g.stale || state === "degraded") kind = "degraded";
+    else if (state === "armed") kind = live > 0 ? "enforcing" : "monitoring";
+    else if (state === "disarmed") kind = "off";
+
+    let what;
+    if (kind === "degraded") {
+      what = g.stale
+        ? `Stopped reporting ${sl2Ago(g.age_s) || "some time ago"}; its last report said degraded. `
+          + "Nothing here is being enforced."
+        : "Its rules are not installed and the gate has opened; this segment is not filtered.";
+    } else if (kind === "off") {
+      what = "Open by choice: no packet is being dropped on this sensor.";
+    } else if (kind === "monitoring") {
+      what = "Armed, but no packet rules are installed: nothing can be dropped.";
+    } else if (kind === "enforcing") {
+      what = "Dropping packets for the rules it installed.";
+    } else {
+      what = "No state has been recorded for this sensor.";
     }
-    body.appendChild(row);
+    const bits = [];
+    if (g.iface) bits.push(ifaceList(g.iface));
+    if (g.enforcement && g.enforcement !== "none") bits.push(`${g.enforcement} path`);
+    else bits.push("no verified path");
+    bits.push(g.age_s === null || g.age_s === undefined
+      ? "no report time" : `last reported ${sl2Ago(g.age_s)}`);
+    if (g.stale) bits.push("stale");
+    const ev = [
+      total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
+            : "no packet rules stored",
+      pkts ? `${sl2Count(pkts, "packet")} dropped since it started` : "no packets matched since it started",
+    ].join(" · ");
+
+    const card = el("div", {
+      class: g.sensor && typeof openWeirling === "function" ? "sl2-sensor clickable" : "sl2-sensor",
+      attrs: g.sensor ? { role: "button", tabindex: "0", "aria-label": `open ${g.sensor}` } : {},
+    }, [
+      el("div", { class: "sl2-sensor-head" }, [
+        el("span", { class: "sl2-sensor-name", text: g.sensor || "unnamed sensor" }),
+        g.local ? el("span", { class: "muted", text: "· this hub" }) : null,
+        sl2StateChip(kind),
+      ].filter(Boolean)),
+      el("div", { class: "sl2-sensor-meta", text: bits.join(" · ") }),
+      el("div", { class: "sl2-sensor-ev", text: what }),
+      el("div", { class: "sl2-sensor-meta", text: ev }),
+      g.sensor && typeof openWeirling === "function"
+        ? el("span", { class: "sl2-sensor-cue", text: "Open sensor \u203a" }) : null,
+    ].filter(Boolean));
+    if (g.sensor && typeof openWeirling === "function") {
+      const open = () => openWeirling(g.sensor);
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+    }
+    host.appendChild(card);
   }
-  table.appendChild(body);
-  // The fleet table scrolls inside its card on a phone instead of widening the document.
-  const wrap = el("div", { class: "tablewrap" });
-  wrap.appendChild(table);
-  host.appendChild(wrap);
 }
 
-async function applySluiceSetting(key, value, btn, note) {
-  if (btn && !btn.dataset.confirm) {
-    btn.dataset.confirm = "1";
-    const previous = btn.textContent;
-    btn.textContent = "Confirm: apply";
-    if (note && note.tagName !== "DIV") note.textContent = `Changing ${key} restarts the worker. Click again to confirm.`;
-    setTimeout(() => {
-      if (document.body.contains(btn) && btn.textContent === "Confirm: apply") {
-        delete btn.dataset.confirm;
-        btn.textContent = previous;
-      }
-    }, 6000);
+/** WHERE A PACKET RULE CAN ACTUALLY BITE. Not "every registered weirling": a sensor with no
+ *  verified in-path channel cannot drop anything, and saying otherwise is the reassuring lie. */
+function renderSluiceReach(d) {
+  const box = document.getElementById("sl-reach");
+  if (!box) return;
+  box.replaceChildren();
+  if (d.gates_available === false) {
+    box.appendChild(el("span", { class: "muted",
+      text: "Reach unavailable — the fleet's gate state could not be read." }));
     return;
   }
-  if (btn) { delete btn.dataset.confirm; btn.disabled = true; }
+  const reach = (d.gates || []).filter((g) => g.enforcement && !g.stale).map((g) => g.sensor);
+  if (!reach.length) {
+    box.appendChild(el("span", { class: "muted",
+      text: "Packet rules can act on 0 sensors — no sensor has a verified in-path channel." }));
+    return;
+  }
+  box.appendChild(el("span", { class: "muted",
+    text: `Packet rules can act on ${reach.length} sensor${reach.length === 1 ? "" : "s"}: ` }));
+  for (const sen of reach) {
+    const chip = el("button", { class: "dc-chip", text: sen, attrs: { type: "button" } });
+    chip.addEventListener("click", () => {
+      if (typeof openWeirling === "function") openWeirling(sen);
+    });
+    box.appendChild(chip);
+  }
+}
+
+/* ── Confirm + reason, then a read-back that proves the write landed ───────────────────────── */
+let SL2_PENDING = null;
+
+function sl2AskSetting(spec) {
+  const w = sl2Writes();
+  if (!w.enabled) {
+    sl2SetReceipt(`Read-only — ${w.reason || "this account cannot change the gate."}`, true);
+    return;
+  }
+  const node = document.getElementById("sl2-confirm");
+  if (!node || typeof openModal !== "function") return;
+  SL2_PENDING = spec;
+  const set = (id, text) => { const e = document.getElementById(id); if (e) e.textContent = text; };
+  set("sl2-confirm-title", spec.heading || "Change the gate?");
+  set("sl2-confirm-what", spec.what || "");
+  set("sl2-confirm-cost", spec.cost || "");
+  set("sl2-confirm-note", "");
+  const reason = document.getElementById("sl2-confirm-reason");
+  if (reason) reason.value = "";
+  const go = document.getElementById("sl2-confirm-go");
+  if (go) { go.textContent = `Confirm: ${spec.verb || "apply"}`; go.disabled = false; }
+  openModal(node);
+  if (reason) setTimeout(() => reason.focus(), 30);
+}
+
+function sl2CancelSetting() {
+  SL2_PENDING = null;
+  const node = document.getElementById("sl2-confirm");
+  if (node && typeof closeModal === "function") closeModal(node);
+}
+
+async function sl2ApplyPending() {
+  const spec = SL2_PENDING;
+  if (!spec) return;
+  const reasonEl = document.getElementById("sl2-confirm-reason");
+  const note = document.getElementById("sl2-confirm-note");
+  const go = document.getElementById("sl2-confirm-go");
+  const reason = reasonEl ? reasonEl.value.trim() : "";
+  if (!reason) {
+    if (note) note.textContent = "A reason is required: it is recorded with your name and the time.";
+    if (reasonEl) reasonEl.focus();
+    return;
+  }
+  const label = go ? go.textContent : "Confirm";
+  if (go) { go.disabled = true; go.textContent = "Applying…"; }
   try {
-    const out = await postJSON("/api/settings/apply", { changes: { [key]: String(value) }, confirmed: true });
-    if (note && note.tagName !== "DIV") {
-      note.textContent = (out && (out.ok === false ? out.error : (out.note || "applied."))) || "applied.";
+    const out = await postJSON("/api/settings/apply", {
+      changes: { [spec.key]: String(spec.value) }, confirmed: true, reason,
+    });
+    if (out && out.ok === false && !out.applied) {
+      if (note) note.textContent = out.error || "the server refused the change";
+      if (go) { go.disabled = false; go.textContent = label; }
+      return;
     }
+    const applied = out && out.applied && Object.prototype.hasOwnProperty.call(out.applied, spec.key)
+      ? String(out.applied[spec.key]) : "";
+    const node = document.getElementById("sl2-confirm");
+    if (node && typeof closeModal === "function") closeModal(node);
+    SL2_PENDING = null;
     await loadSluice();
+    // THE READ-BACK IS THE PROOF. A 200 from the apply route is not the same statement as
+    // "the store now holds this value"; both are checked and the receipt says which one failed.
+    const readBack = sl2Setting(spec.key);
+    const landed = String(readBack) === String(spec.value);
+    const gate = (SL2_STATE.data && SL2_STATE.data.gate) || {};
+    const measured = String(gate.state || "unknown");
+    const at = new Date().toLocaleTimeString();
+    sl2SetReceipt(
+      `Applied ${spec.key}=${spec.value}`
+      + (applied !== "" ? `; the store writes ${applied}` : "")
+      + `; read back as ${readBack === "" ? "unknown" : readBack} at ${at}. `
+      + (landed
+        ? `The write landed. The gate's last measurement is "${measured}".`
+        : "THE RE-READ DOES NOT MATCH — treat the change as unconfirmed."),
+      !landed);
   } catch (err) {
-    if (note && note.tagName !== "DIV") note.textContent = (err && err.message) || String(err);
-  } finally {
-    if (btn) btn.disabled = false;
+    if (note) note.textContent = (err && err.message) || String(err);
+    if (go) { go.disabled = false; go.textContent = label; }
   }
 }
 
 /* ── Rules ──────────────────────────────────────────────────────────────────────────────────── */
+/** A link into the surface that owns the evidence behind this rule. */
+function sl2RuleLinks(rule) {
+  const links = [];
+  if (rule.domain) {
+    links.push({ href: `#v=blocked&bl.domain=${encodeURIComponent(rule.domain)}`,
+                 text: `Blocks for ${rule.domain}` });
+  } else {
+    const addr = String(rule.src_cidr || rule.dst_cidr || "").split("/")[0].trim();
+    if (addr) {
+      links.push({ href: `#v=discover&dc.addr=${encodeURIComponent(addr)}`,
+                   text: `Flows for ${addr}` });
+    }
+  }
+  return links;
+}
+
 function renderSluiceRules(d) {
   const rules = Array.isArray(d.rules) ? d.rules : [];
   const shown = rules.filter(sl2Visible);
-  const live = rules.filter((r) => r.live && !r.revoked && !r.disabled).length;
+  const live = rules.filter((r) => sl2Enforces(r) && String(r.mode || "block") === "block").length;
   const count = document.getElementById("sl2-count");
   if (count) count.textContent = `${live} live · ${rules.length} total`;
   const note = document.getElementById("sl2-rules-note");
-  if (note) note.textContent = `${shown.length} shown`;
-
-  // Where a packet rule can actually bite: a sensor with a verified in-path channel, not every
-  // registered weirling. Each chip opens that sensor's fleet sheet.
-  const reachBox = document.getElementById("sl-reach");
-  if (reachBox) {
-    reachBox.replaceChildren();
-    if (!d.gates_available) {
-      reachBox.appendChild(el("span", { class: "muted",
-        text: "Reach unavailable — the fleet's gate state could not be read." }));
-    } else {
-      const reach = (d.gates || [])
-        .filter((g) => g.enforcement && !g.stale).map((g) => g.sensor);
-      if (reach.length) {
-        reachBox.appendChild(el("span", { class: "muted",
-          text: `can act on ${reach.length} sensor${reach.length === 1 ? "" : "s"}: ` }));
-        for (const sen of reach) {
-          const chip = el("button", { class: "dc-chip", text: sen, attrs: { type: "button" } });
-          chip.addEventListener("click", () => {
-            if (typeof openWeirling === "function") openWeirling(sen);
-          });
-          reachBox.appendChild(chip);
-        }
-      } else {
-        reachBox.appendChild(el("span", { class: "muted",
-          text: "can act on 0 sensors — no sensor has a verified in-path channel." }));
-      }
-    }
+  const hiddenRevoked = rules.filter((r) => r.revoked && !SL2_STATE.showRevoked).length;
+  if (note) {
+    note.textContent = hiddenRevoked
+      ? `${sl2Count(hiddenRevoked, "revoked rule")} hidden` : "";
   }
 
   const tbody = document.querySelector("#sl2-rules tbody");
@@ -449,16 +739,18 @@ function renderSluiceRules(d) {
   if (!shown.length) {
     if (!d.available) {
       empty.textContent = d.reason || "The rule store could not be read.";
+    } else if (!rules.length) {
+      empty.textContent = "No rule has been filed. The gates have nothing to enforce; "
+        + "New rule files the first one.";
+    } else if (SL2_STATE.filter !== "all") {
+      const other = rules.filter((r) => (SL2_STATE.filter === "domain" ? !r.domain : r.domain)).length;
+      empty.textContent = `No ${SL2_STATE.filter} rule exists yet. `
+        + `${sl2Count(other, "rule")} in the other gate ${other === 1 ? "is" : "are"} still listed.`;
     } else {
-      const hiddenRevoked = rules.filter((r) => r.revoked).length;
-      const parts = [SL2_STATE.showRevoked
-        ? "No rules match this filter."
-        : "No live rules match this filter."];
-      if (hiddenRevoked) {
-        parts.push(`${hiddenRevoked} revoked rule${hiddenRevoked === 1 ? "" : "s"} hidden; tick 'show revoked' to see them.`);
-      }
-      parts.push("Domain blocking is a separate gate; read its state above.");
-      empty.textContent = parts.join(" ");
+      empty.textContent = "No rule matches this view.";
+    }
+    if (hiddenRevoked && d.available) {
+      empty.textContent += ` ${sl2Count(hiddenRevoked, "revoked rule")} hidden; tick "show revoked" to read them.`;
     }
     empty.classList.remove("hidden");
     return;
@@ -468,22 +760,35 @@ function renderSluiceRules(d) {
     const state = sl2StateOf(rule);
     const sentence = el("button", {
       class: "sl2-rule-btn", attrs: { type: "button" },
-      text: rule.describes || rule.domain || rule.rule_id || "unnamed rule",
+      // "(no predicate)" is a store artefact, not a sentence: say what it means.
+      text: (rule.describes && rule.describes !== "(no predicate)")
+        ? rule.describes
+        : (rule.domain || `rule ${rule.rule_id || "unknown"} has no predicate — it matches nothing`),
     });
     sentence.addEventListener("click", () => openRuleSheet(rule));
+    const evidence = el("div", { class: "sl2-rule-ev", text: sl2RuleEvidence(rule, d) });
+    const links = el("div", { class: "sl2-rule-links" });
+    for (const link of sl2RuleLinks(rule)) {
+      const a = el("a", { class: "link", text: link.text, attrs: { href: link.href } });
+      // THE ROW OPENS THE RULE; THE LINK LEAVES THE TAB. Without this the click did both.
+      a.addEventListener("click", (e) => e.stopPropagation());
+      links.appendChild(a);
+    }
+    const stateChip = sl2StateChip(state.kind);
+    stateChip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
+    stateChip.className = `rp-sev-chip sev-${state.sev}`;
     const tr = el("tr", {
       class: "sl2-rule-row",
       attrs: { "data-rule-id": rule.rule_id },
     }, [
-      el("td", {}, [sentence]),
-      el("td", {}, [sl2Chip(sl2GateOf(rule), rule.domain ? "ok" : "muted")]),
-      el("td", {}, [sl2Chip(state.text, state.cls)]),
-      el("td", { class: "muted", text: sluiceDuration(rule.expires_in_s) }),
-      el("td", { class: "muted", text: rule.origin || "manual" }),
-      el("td", { class: "muted", text: rule.reason || "" }),
+      el("td", {}, [sentence, evidence, links.children.length ? links : null].filter(Boolean)),
+      el("td", {}, [el("div", { class: "sl2-rule-state" }, [
+        el("span", { class: "sl2-rule-gate", text: sl2GateOf(rule) }),
+        stateChip,
+      ])]),
     ]);
     tr.addEventListener("click", (event) => {
-      if (event.target !== sentence) openRuleSheet(rule);
+      if (event.target !== sentence && !event.target.closest(".sl2-rule-links")) openRuleSheet(rule);
     });
     tbody.appendChild(tr);
   }
@@ -610,19 +915,28 @@ function sl2OpenCreate(domain, prefill) {
 function sl2Facts(rule) {
   const host = document.getElementById("sl2-facts");
   if (!host) return;
+  const windowText = sl2Window((SL2_STATE.data && SL2_STATE.data.hits_hours) || 24);
   const facts = [
     ["Rule", rule.describes || rule.rule_id || "—"],
     ["Gate", sl2GateOf(rule)],
     ["State", sl2StateOf(rule).text],
-    ["Origin", rule.origin || "—"],
+    ["Mode", rule.mode === "alert" ? "alert — records, blocks nothing" : "block"],
+    ["Origin", rule.origin || "manual"],
     ["Expires", sluiceDuration(rule.expires_in_s)],
-    ["Reason", rule.reason || "—"],
+    ["Firing evidence", sl2RuleEvidence(rule, SL2_STATE.data || {})],
+    ["Reason", rule.reason || "no reason was recorded"],
     ["Rule id", rule.rule_id || "—"],
   ];
   host.replaceChildren();
-  const stats = el("div", { class: "stats" });
-  for (const [k, v] of facts) stats.appendChild(sl2Stat(k, v));
-  host.appendChild(stats);
+  const dl = el("dl", { class: "sl2-facts" });
+  for (const [k, v] of facts) {
+    dl.appendChild(el("dt", { text: k }));
+    dl.appendChild(el("dd", { text: String(v) }));
+  }
+  host.appendChild(dl);
+  const note = el("p", { class: "muted",
+    text: `Matches are counted in ${windowText}, the same window as the Blocks ledger.` });
+  host.appendChild(note);
 }
 
 function sl2OpenDetail(rule) {
@@ -993,6 +1307,16 @@ document.addEventListener("DOMContentLoaded", () => {
   if (showRevoked) showRevoked.addEventListener("change", () => {
     SL2_STATE.showRevoked = Boolean(showRevoked.checked);
     renderSluiceRules(SL2_STATE.data || { available: false, reason: "not loaded" });
+  });
+  // The one confirm surface for arming, disarming and pausing. Every path into it carries the
+  // consequence and a required reason; the write then re-reads and reports what landed.
+  const cancel = document.getElementById("sl2-confirm-cancel");
+  if (cancel) cancel.addEventListener("click", sl2CancelSetting);
+  const go = document.getElementById("sl2-confirm-go");
+  if (go) go.addEventListener("click", () => sl2ApplyPending().catch(showError));
+  const why = document.getElementById("sl2-confirm-reason");
+  if (why) why.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); sl2ApplyPending().catch(showError); }
   });
 });
 

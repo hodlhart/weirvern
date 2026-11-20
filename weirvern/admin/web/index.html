@@ -1523,22 +1523,24 @@
        The gate fails open on purpose (a monitoring appliance must not take a network down when
        its supervisor dies), so state leads and explains its consequence. -->
   <section id="view-sluice" class="view">
-    <!-- THE HOUSE HEADER SUPPLIES THE TITLE, THE LIVE COUNT AND THE ONE PRIMARY VERB
-         (0.23.74). This page used to carry its own .sl2-head row holding only an info button;
-         once installViewHeaders moved New rule into the header, that row held a single orphan
-         icon floating between the title and the button. There is no page-specific header now. -->
+    <!-- THE HOUSE HEADER OWNS THE TITLE AND THE ONE PRIMARY VERB. `sl2-count` is the hidden
+         source installViewHeaders reads; `sl2-new` must already sit inside .view-head or a
+         hidden-at-boot section silently ends up with a second Refresh. -->
     <span id="sl2-count" class="hidden"></span>
-    <!-- THE HOUSE HEADER, DECLARED ONLY FOR THE ONE PRIMARY VERB. installViewHeaders adds the
-         title and count; the button must already be inside .view-head, because a section that is
-         hidden at boot is skipped when the header pass looks for a primary and the view would
-         silently end up with a second Refresh instead. -->
     <div class="view-head">
       <button id="sl2-new" class="primary" type="button">New rule</button>
     </div>
 
+    <p id="sl2-readonly" class="empty hidden"></p>
+
+    <!-- ── STATE, THEN EVIDENCE, THEN THE CONTROL ─────────────────────────────────────────────
+         Each gate answers three questions in this order and no others: is it enforcing (from
+         what the supervisor measured, never a hand-set flag), what has it actually done in the
+         selected window, and only then the control that changes it. The tiles that repeated the
+         sentence's numbers are gone; a count lives in the sentence it belongs to. -->
     <div class="grid2 sl2-gates">
-      <div class="card">
-        <h2>Domain gate <span class="muted">DNS</span> <span class="chip" id="sl2-dom-chip">loading&hellip;</span>
+      <div class="card sl2-gate">
+        <h2>Domain gate <span class="muted">DNS</span> <span class="rp-sev-chip sev-low" id="sl2-dom-chip">loading&hellip;</span>
           <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
                   aria-expanded="false" title="what this view shows">i</button>
         </h2>
@@ -1552,35 +1554,40 @@
   <p><strong>Where to see it.</strong> Blocks lists the recorded hits behind the Domain Gate, and
   Weirlings shows whether each sensor is still reporting.</p>
 </div>
-        <p class="muted" id="sl2-dom-line">loading&hellip;</p>
-        <!-- THE TILES ARE FILTERS, NOT DECORATION (the fleet's count tiles set the precedent):
-             lists open the blocklists, hits open Blocks. -->
-        <div class="stat-row" id="sl2-dom-stats"></div>
-        <div class="controls">
-          <button id="sl2-dom-toggle" type="button" class="quiet">&hellip;</button>
+        <p class="sl2-gate-what" id="sl2-dom-line">loading&hellip;</p>
+        <p class="sl2-gate-ev" id="sl2-dom-ev">loading&hellip;</p>
+        <div class="controls sl2-gate-actions">
+          <button id="sl2-dom-toggle" type="button" class="quiet" disabled>&hellip;</button>
           <a class="link" href="#v=blocked">View blocks</a>
           <a class="link" href="#v=settings">Blocklists in Settings</a>
         </div>
       </div>
 
-      <div class="card">
-        <h2>Traffic gate <span class="muted">packets</span> <span class="chip" id="sl2-traf-chip">loading&hellip;</span></h2>
-        <p class="muted" id="sl2-traf-line">loading&hellip;</p>
-        <p id="sl-gate-warning" class="muted hidden"></p>
-        <div class="stat-row" id="sl2-traf-stats"></div>
-        <div class="controls">
-          <button id="sl2-traf-toggle" type="button" class="quiet">&hellip;</button>
+      <div class="card sl2-gate">
+        <h2>Traffic gate <span class="muted">packets</span> <span class="rp-sev-chip sev-low" id="sl2-traf-chip">loading&hellip;</span></h2>
+        <p class="sl2-gate-what" id="sl2-traf-line">loading&hellip;</p>
+        <!-- THE REASON IS ITS OWN LINE, ONCE. The old card printed the server's detail in both
+             the sentence and the warning paragraph, verbatim, doubling the card. -->
+        <p class="sl2-gate-why hidden" id="sl-gate-warning"></p>
+        <p class="sl2-gate-ev" id="sl2-traf-ev">loading&hellip;</p>
+        <div class="controls sl2-gate-actions">
+          <button id="sl2-traf-toggle" type="button" class="quiet" disabled>&hellip;</button>
           <span class="muted" id="sl2-traf-note"></span>
+          <a class="link" href="#v=blocked">View blocks</a>
         </div>
         <div id="sl2-auto" class="sl2-auto hidden"></div>
       </div>
     </div>
 
-    <!-- FLEET PACKET GATES: the sibling card, full width. A row opens that weirling, because
-         "which sensor is enforcing" is a question about a sensor, not about this page. -->
-    <div class="card hidden" id="sl2-fleet-card">
+    <p id="sl2-receipt" class="sl2-receipt hidden" role="status"></p>
+
+    <!-- FLEET PACKET GATES: the sibling card, full width. Every row is a sensor that reports its
+         own gate state; a sensor with no matches says so in words rather than showing a table of
+         empty cells. `sl-reach` names where a packet rule can actually bite. -->
+    <div class="card">
       <h2>Fleet packet gates <span class="muted" id="sl2-fleet-note"></span></h2>
-      <div id="sl2-fleet"></div>
+      <div id="sl-reach" class="chips"></div>
+      <div id="sl2-fleet" class="sl2-fleet"></div>
     </div>
 
     <div class="card">
@@ -1594,11 +1601,13 @@
         <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
         <label class="muted sl2-show check"><input id="sl2-show-revoked" type="checkbox"> show revoked</label>
       </div>
-      <div id="sl-reach" class="chips"></div>
-      <div class="tablewrap">
-        <table id="sl2-rules">
+      <!-- ONE ROW PER RULE, READ AS A SENTENCE WITH ITS EVIDENCE. The raw-field columns -- gate,
+           expires, origin, reason -- are gone; the sheet holds them. At 390 each row is a
+           stacked card and the header row is not rendered. -->
+      <div class="tablewrap sl2-rules-wrap">
+        <table id="sl2-rules" class="sl2-rules">
           <thead>
-            <tr><th>Rule</th><th>Gate</th><th>State</th><th>Expires</th><th>Origin</th><th>Reason</th></tr>
+            <tr><th>Rule and what it has done</th><th>State</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -1684,6 +1693,24 @@
           <button id="sl-rule-delete" class="danger" type="button">Delete rule</button>
         </div>
         <p id="sl2-detail-note" class="muted"></p>
+      </div>
+    </div>
+
+    <!-- ONE BLOCKING QUESTION: arming or disarming a gate changes what is dropped, so it opens a
+         confirm that names the consequence and RECORDS A REASON. The modal shell supplies the
+         scrim, focus trap and Escape; this node only owns the question. -->
+    <div id="sl2-confirm" class="sl2-confirm hidden" data-modal-title>
+      <h2 id="sl2-confirm-title">Change the gate?</h2>
+      <p id="sl2-confirm-what"></p>
+      <p class="muted" id="sl2-confirm-cost"></p>
+      <label>reason (recorded with your name and the time)
+        <input id="sl2-confirm-reason" type="text" autocomplete="off"
+               placeholder="why is this changing?">
+      </label>
+      <p id="sl2-confirm-note" class="muted"></p>
+      <div class="controls">
+        <button id="sl2-confirm-cancel" class="quiet" type="button">Cancel</button>
+        <button id="sl2-confirm-go" class="primary" type="button">Confirm</button>
       </div>
     </div>
   </section>

@@ -63,7 +63,9 @@ def test_one_settings_landing_implementation():
 
 def test_the_rule_surface_states_its_reach():
     src = (WEB / "sluice.js").read_text()
-    seg = src.split('const reachBox = document.getElementById("sl-reach");', 1)[1].split("\n\n  const tbody", 1)[0]
+    # Re-authored with the 2026-11-20 rebuild: reach is its own renderer now, so the contract is
+    # read from that function rather than from a block inside the rules renderer.
+    seg = src.split("function renderSluiceReach(", 1)[1].split("\n}\n", 1)[0]
     assert "can act on" in seg
     assert "g.enforcement && !g.stale" in seg, \
         "reach must be the verified in-path sensors, not every sensor in the fleet"
