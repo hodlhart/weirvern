@@ -558,6 +558,58 @@ ARCHETYPES: list[dict[str, str]] = [
 ]
 
 
+def _seed_normalization(client, *, hosts: int = 22, seed: int = 1337) -> dict[str, Any]:
+    """Teach the console that one observed pattern is expected, which is a feature in its own right.
+
+    NORMALIZING IS THE OTHER HALF OF DETECTION. Every deployment accumulates values that are strange
+    once and ordinary forever: a backup job, a vendor's update service, a printer that only speaks one
+    ancient protocol. Left alone they fire on every pass and train the operator to ignore the page.
+    The console lets a value be marked expected, with a reason and a review date, and stops counting
+    it -- so a test drive without one never shows the mechanism at all.
+
+    THE VALUE IS READ FROM THE SEEDED TRAFFIC, not invented: `candidates` asks the source table the
+    same question the measurement asks, so the row names something this host actually sent. A made-up
+    value would be a signature that filters nothing while looking like it works.
+    """
+    from datetime import timedelta as _timedelta
+
+    from weirvern import ripple_signatures  # noqa: PLC0415
+    from weirvern.models import ripple_evidence as rev  # noqa: PLC0415
+
+    segment = _hosts(random.Random(seed), hosts)
+    host = segment[4 % len(segment)]
+    channels = ripple_signatures.channels_for(rev.SPECS)
+    now = utcnow()
+    start = now - _timedelta(hours=24)
+
+    for channel in sorted(channels):
+        spec = ripple_signatures.find_spec(rev.SPECS, channel)
+        if spec is None:
+            continue
+        try:
+            seen = ripple_signatures.candidates(client, spec, host=host, start=start, end=now)
+        except Exception:  # noqa: BLE001 - one unreadable source must not stop the seed
+            continue
+        if not seen:
+            continue
+        top = max(seen, key=lambda row: row["count"])
+        entry = ripple_signatures.new_signature(
+            host=host,
+            channel=channel,
+            value=top["value"],
+            reason=(
+                f"demo seed: {top['value']} is this host's routine pattern ({top['count']} times "
+                "in 24h), so it is expected here rather than novel"
+            ),
+            channels=channels,
+            actor="demo-seed",
+        )
+        if ripple_signatures.write(client, [entry]):
+            return {"host": host, "channel": channel, "value": top["value"],
+                    "review_after": str(entry["review_after"])}
+    return {}
+
+
 def _seed_identity(client, *, hosts: int = 22, seed: int = 1337) -> int:
     """Give the inventory something to inventory.
 
@@ -790,6 +842,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_enforcement:
             classified = _seed_identity(client, hosts=args.hosts, seed=args.seed)
             print(f"  inventory: {classified} host(s) classified for the Network and Assets views")
+        if not args.no_enforcement:
+            normalized = _seed_normalization(client, hosts=args.hosts, seed=args.seed)
+            if normalized:
+                print(f"  normalized: {normalized['channel']} on {normalized['host']}, "
+                      f"expected until {normalized['review_after']}")
         if not args.no_evidence:
             _run_evidence(client, hours=args.hours)
     return 0

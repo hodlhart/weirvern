@@ -255,10 +255,19 @@ reader opens first rather than only the traffic tables.
 | Approvals | One block proposal waiting for a decision, with its reason and evidence |
 | Blocklists | Five sources and the blocked name on the custom list |
 | Network and Assets | All 22 hosts classified, with MAC, vendor and an operating system guess |
+| Normalized | One value marked expected, with a reason and a review date |
 
 Both kinds of block matter. Blocking a host and blocking a name are different products: the first
 stops traffic to an address, the second removes the rendezvous, and a seed with only one of them
 leaves half the Sluice page empty.
+
+**The normalized entry is a reading, not an invention.** Detection's other half is teaching the
+console what is ordinary: a backup job, a vendor's update service, a printer that speaks one ancient
+protocol. Left alone those fire on every pass and teach the operator to ignore the page. The seeder
+asks each signature-capable channel for the exact values this host actually sent and marks the
+busiest one expected, so the row names something real. Measured on a seeded database: with the
+signature the host's destination diversity is 3 distinct values, and removing it makes the same
+measurement read 4.
 
 **The gate is armed in the record only.** Nothing here touches nftables or the kernel, so a seeded
 laptop cannot accidentally block its own network. What the gate row says is what the console reads.

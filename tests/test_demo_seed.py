@@ -585,3 +585,40 @@ def test_a_rerun_does_not_stack_a_second_block(monkeypatch):
 
     monkeypatch.setattr(sluice_store, "load_all_rules", lambda _c: [])
     assert demo_seed._enforcement_exists(object()) == 0
+
+def test_the_seed_normalizes_one_real_value(monkeypatch):
+    """The normalize surface needs a value the host actually sent, not an invented one.
+
+    A signature naming a value that never appeared filters nothing while looking like it works, and
+    the mechanism is the whole point of the surface. So the seeder asks `candidates` and takes the
+    most frequent value it is given.
+    """
+    from weirvern import ripple_signatures
+
+    written = []
+
+    monkeypatch.setattr(ripple_signatures, "candidates",
+                        lambda _c, _spec, *, host, start, end, **_k:
+                        [{"value": "198.51.100.23", "count": 9},
+                         {"value": "203.0.113.90", "count": 41}])
+    monkeypatch.setattr(ripple_signatures, "write",
+                        lambda _c, rows, **_k: (written.extend(rows), len(rows))[1])
+
+    made = demo_seed._seed_normalization(object(), hosts=6, seed=7)
+
+    assert made, "no signature was created"
+    assert len(written) == 1
+    entry = written[0]
+    assert entry["value"] == "203.0.113.90", "the busiest value is not the one that was taught"
+    assert entry["created_by"] == "demo-seed"
+    assert entry["reason"] and str(entry["review_after"])
+    assert entry["family"], "a signature without its family cannot be read on the page"
+    assert entry["host_addr"], "the signature does not name a host"
+
+
+def test_no_candidate_means_no_signature_rather_than_a_crash(monkeypatch):
+    """A channel with nothing to teach must be skipped, not turned into an empty claim."""
+    from weirvern import ripple_signatures
+
+    monkeypatch.setattr(ripple_signatures, "candidates", lambda *_a, **_k: [])
+    assert demo_seed._seed_normalization(object(), hosts=6, seed=7) == {}
