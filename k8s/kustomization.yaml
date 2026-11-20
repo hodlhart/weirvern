@@ -132,7 +132,7 @@ images:
   # image that is now running -- otherwise two people roll the same cluster and the pin names
   # whichever build finished last.
   - name: weirvern-worker
-    newTag: "sha-51f91a3"
+    newTag: "sha-3d5a72d"
   # THE SCANNER RUNS THE WORKER IMAGE. One codebase, different entrypoint -- there is no
   # `weirvern-scanner` image to pull. This entry used to name `0.14.14`, a tag nothing builds, so a
   # fresh `kubectl apply -k` would have rewritten the live scanner to a missing image: the object
@@ -140,4 +140,4 @@ images:
   # deployed. `newName` is what the live object already carries by hand.
   - name: weirvern-scanner
     newName: weirvern-worker
-    newTag: "sha-51f91a3"
+    newTag: "sha-3d5a72d"
