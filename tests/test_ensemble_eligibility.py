@@ -209,6 +209,10 @@ def test_the_card_registry_no_longer_vetoes_a_calibrated_detector(tmp_path, monk
     client = _Client(calibration=[_cal("LOF")], rates={"row": (500, 120, 100)})
     report = evaluate(client, settings, names=["LOF"])
     assert report.decisions["LOF"].state == STATE_ELIGIBLE
+    # AND IT WAS MEASURED, NOT SEEDED. An empty registry must not blanket-admit every detector:
+    # if LOF had been seeded as an incumbent the budget query would never run and windows would
+    # stay 0. This is the guard's contract ("an unreadable registry seeds nothing"), pinned.
+    assert report.windows == 500, "no card is not an incumbent seed: the budget was measured"
 
 
 def test_with_no_recorded_state_the_card_registry_seeds_only_the_migration(tmp_path):
