@@ -847,12 +847,18 @@ def _channel_capture_guard(proposed: dict[str, str]) -> None:
 
 
 def plan(changes: dict[str, str], current: dict[str, str], *,
-         retention_now_days: int | None = None) -> Plan:
+         retention_now_days: int | None = None,
+         retention_floor_days: int | None = None) -> Plan:
     """Compute what a set of changes would do. Touches nothing.
 
     `retention_now_days` is the cluster's CURRENT effective retention when the caller measured
     it; the plan route and the apply path pass it so a lowering is marked destructive against
     what the tables really hold, not only against the stored string.
+
+    `retention_floor_days` is the RATCHET. A value below the floor is a cut even when it is above
+    the window the tables happen to hold today (the disk may have shrunk since the floor was
+    set), and the UI must present the reason prompt for it rather than letting the server refuse
+    an apply the operator was never warned about.
 
     Raises ConfigError if any single change is unacceptable, so a multi-key apply is all-or-nothing
     -- a partial apply would leave the deployment in a state nobody chose.
@@ -873,6 +879,17 @@ def plan(changes: dict[str, str], current: dict[str, str], *,
             # comparison belongs here, where the current value and (when measurable) the
             # cluster's effective window are in hand.
             destructive, warning = _retention_destructive(value, was, retention_now_days)
+            from weirvern import retention  # noqa: PLC0415
+
+            if (retention_floor_days is not None and not retention.is_auto(value)):
+                want = retention.normalise_days(value)
+                if want < int(retention_floor_days):
+                    destructive = True
+                    warning = (
+                        f"LOWERING THE RATCHET FLOOR IS DESTRUCTIVE: the floor is "
+                        f"{int(retention_floor_days)} days and {want} days is below it. The "
+                        f"floor only falls by an explicit reset, which ClickHouse applies on "
+                        f"its next merge -- and that cannot be undone.")
         elif key == "DATA_RETENTION_RATIO":
             # The ratio only moves the window while retention is AUTO: 10% of free space
             # derives half the days 20% does, and the rows that fall outside expire on the

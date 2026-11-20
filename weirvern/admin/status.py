@@ -1071,6 +1071,71 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
     else:
         _probe_failed(report, "fingerprint_feed", err, ms)
 
+    # 9. THE RETENTION RATCHET. A floor is a promise about history; it is only keepable while the
+    #    volume can hold it. The Settings row and the worker log carry the same sentence, and this
+    #    probe is the third surface: a guard that refuses the floor must be visible where an
+    #    operator looks for faults, not only on the page they visit to change a number.
+    try:
+        from weirvern import retention as retention_mod  # noqa: PLC0415
+
+        state, ratchet_error = retention_mod.load_ratchet(getattr(settings, "model_dir", None))
+        ratio = getattr(settings, "data_retention_ratio", retention_mod.DEFAULT_RATIO_PERCENT)
+        if getattr(settings, "model_dir", None) is None:
+            report.add(Probe(
+                "retention_floor", ok=None,
+                detail=("not probed: this process has no model directory, so it cannot see the "
+                        "retention ratchet (the worker owns that file; the GUI mounts it "
+                        "read-only)"),
+            ))
+        elif state is None:
+            if ratchet_error:
+                report.add(Probe(
+                    "retention_floor", ok=False, value={"error": ratchet_error},
+                    detail=(f"the retention ratchet record is unreadable ({ratchet_error}), so "
+                            f"the floor the tables are supposed to hold is unknown. The window "
+                            f"may contract on the next derivation until this is repaired."),
+                ))
+            else:
+                status = retention_mod.auto_report(client, ratio)
+                if status.get("available"):
+                    report.add(Probe(
+                        "retention_floor", ok=True, value=status,
+                        detail=(f"no ratchet floor yet (fresh install); auto derives "
+                                f"{status['days']}d and the first pass will record it"),
+                    ))
+                else:
+                    report.add(Probe(
+                        "retention_floor", ok=None, value=status,
+                        detail=(f"no ratchet floor yet, and auto cannot derive one: "
+                                f"{status.get('reason') or 'the disk budget is unavailable'}"),
+                    ))
+        else:
+            status = retention_mod.auto_report(client, ratio, ratchet=state)
+            if status.get("ratchet_guard_blocked"):
+                report.add(Probe(
+                    "retention_floor", ok=False, value=status,
+                    detail=status.get("guard_sentence") or (
+                        f"the retention floor {state.floor_days}d is not affordable at the "
+                        f"current free space"),
+                ))
+            elif not status.get("available"):
+                report.add(Probe(
+                    "retention_floor", ok=None, value=status,
+                    detail=(f"floor {state.floor_days}d since {state.set_on}, but auto cannot be "
+                            f"measured right now: {status.get('reason')}"),
+                ))
+            else:
+                report.add(Probe(
+                    "retention_floor", ok=True, value=status,
+                    detail=(f"floor {state.floor_days}d since {state.set_on}; holding "
+                            f"{status['days']}d (disk supports {status.get('disk_days')}d)"),
+                ))
+    except Exception as exc:  # noqa: BLE001 - a health probe must never take out the report
+        report.add(Probe(
+            "retention_floor", ok=False,
+            detail=f"the retention ratchet could not be checked: {type(exc).__name__}: {exc}",
+        ))
+
     # ── THE ACCOUNT STORE (audit F090) ───────────────────────────────────────────────────────────
     #
     # THE HEALTH VIEW WAS BLIND TO THE LOGIN GATE. Nothing in this module read `user_store`,
@@ -1396,17 +1461,24 @@ _SETTINGS_HELP: dict[str, str] = {
         "ripple layer reads, and its own evidence store. 'Auto' (the default) works the number "
         "out from the free space on ClickHouse's disk and the ingest rate it has actually "
         "measured, and re-derives on every start and apply; the row shows that arithmetic. "
-        "An explicit 7-365 days overrides it, and is refused above what the disk can hold. "
-        "LOWERING IT IS DESTRUCTIVE: ClickHouse expires every older row on its next merge, and "
-        "that cannot be undone. The 24h ripple scale needs 30 days of history, so very small "
-        "disks cannot support it — the row says so rather than pretending."),
+        "The highest window ever derived becomes a RATCHET FLOOR: free space falling does not "
+        "shorten retention below it, because that would delete history nobody chose to delete. "
+        "The floor only falls when an apply explicitly asks to reset it and gives a reason. If "
+        "honouring the floor would need more than 85% of the volume, the control refuses it and "
+        "holds the longest window the disk can support, which the row states in the same "
+        "sentence. An explicit 7-365 days overrides auto, and is refused above what the disk "
+        "can hold. LOWERING IT IS DESTRUCTIVE: ClickHouse expires every older row on its next "
+        "merge, and that cannot be undone. The 24h ripple scale needs 30 days of history, so "
+        "very small disks cannot support it — the row says so rather than pretending."),
     "data_retention_ratio": (
         "The share of FREE ClickHouse disk space the retained tables may occupy. Default 40%. "
         "The rest is MERGE HEADROOM: ClickHouse needs room to compact parts and run mutations, "
         "and a table budgeted to the last byte stops accepting inserts exactly when it is "
         "biggest. Above 70% the next merge can fill the disk, so the control refuses it; below "
         "10% one busy hour moves the derived window by days. Only used while data retention is "
-        "'Auto' — an explicit day count ignores it, though it is still checked against it."),
+        "'Auto' — an explicit day count ignores it, though it is still checked against it. "
+        "Lowering it is an explicit decision: the ratchet floor keeps the old window until the "
+        "apply asks to reset the floor and gives a reason."),
     # -- sensor
     "sensor_mode": (
         "'loch' (default) watches traffic passively from a mirrored/SPAN port or TAP -- it "

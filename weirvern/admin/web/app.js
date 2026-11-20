@@ -1077,6 +1077,18 @@ function renderApplyInto(out) {
   // RETENTION READ-BACK: one line per managed table, with the EFFECTIVE TTL the cluster
   // reported. A table the ALTER could not change is named with its previous value still in
   // place, so "applied" never covers a table that is still on the old window.
+  if (R.retention && R.retention.ratchet && R.retention.ratchet.changed) {
+    // THE FLOOR CHANGE, IN THE RECEIPT: a reset is a destructive act and has to name both
+    // numbers and who asked for it, not only the table TTLs it produced.
+    const q = R.retention.ratchet;
+    const from = q.previous_floor_days == null ? "none" : `${q.previous_floor_days}d`;
+    out.appendChild(el("div", {
+      class: "stage-res-item muted",
+      text: `ratchet floor ${from} \u2192 ${q.floor_days}d`
+        + (q.by ? ` (${q.by}` : "") + (q.reason ? `: ${q.reason})` : (q.by ? ")" : "")),
+      attrs: { "data-retention-ratchet": "1" },
+    }));
+  }
   if (R.retention && (R.retention.tables || []).length) {
     for (const t of R.retention.tables) {
       const ok = t.ok === true;
@@ -1198,6 +1210,11 @@ async function applyStage(skipWarnConfirm, opts = {}) {
       // ordinary Settings tab keeps the BF-9 echo. The sheet records its own origin so the
       // write trail still says where the decision came from.
       reason: applyReason || opts.reason || "",
+      // A DESTRUCTIVE RETENTION CHANGE ALREADY ASKED, IN THE DIALOG ABOVE, FOR THE REASON
+      // AND THE CONSEQUENCE. That confirmation IS the explicit operator action the ratchet
+      // requires; without this flag the server would refuse the very change the operator just
+      // confirmed. No other apply sends it, so a floor can never fall from an ordinary save.
+      reset_ratchet: destructive.length > 0,
     });
 
     // Report the outcome in the server's terms. A saved-but-not-restarted change is INERT, so it

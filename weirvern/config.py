@@ -156,6 +156,11 @@ class Settings:
         default_factory=lambda: _env_str("DATA_RETENTION_DAYS", "auto"))
     data_retention_ratio: int = field(
         default_factory=lambda: _env_int("DATA_RETENTION_RATIO", 40))
+    # THE RATCHET RECORD, as the Settings apply path writes it (JSON: floor_days/set_at/by/
+    # reason). Not an editable Settings row: it is the audit trail of a reset or an explicit
+    # raise, read by the worker at start so its model-state file can consume it.
+    retention_ratchet: str = field(
+        default_factory=lambda: _env_str("RETENTION_RATCHET", ""))
 
     # Detection loop
     detect_interval_s: int = field(default_factory=lambda: _env_int("DETECT_INTERVAL_S", 300))

@@ -50,6 +50,35 @@ capped. An explicit override above the measured budget is **refused**, with the 
 (`the measured budget is 45 day(s)`); an explicit value at or below `max(7, budget)` is
 accepted, because 7 is the policy minimum.
 
+### The ratchet: the window does not silently contract
+
+Deriving from FREE space has one failure mode the arithmetic cannot avoid: a fuller disk
+derives a shorter window, so history started expiring without anyone choosing it (measured on
+the live deployment: the derived window moved 284 → 258 days with no settings change). The
+**highest window ever derived is persisted as a floor** in
+`$MODEL_DIR/retention_ratchet.json` (the same worker-owned volume as
+`detect_cursor.json`), with the day count and the date it was set. The effective window is
+`max(derived_from_disk, floor)`.
+
+- **It only rises on its own.** A larger derivation raises the floor and records the new date.
+  A smaller one never lowers it.
+- **It falls only by explicit operator action.** An apply that lowers the effective window —
+  an explicit day count below the floor, or a lower `DATA_RETENTION_RATIO` whose derived
+  window is below the floor — is refused unless the request carries `reset_ratchet: true` and
+  a reason. The record names the actor, the old floor and the new one. In the console, the
+  existing destructive-retention confirmation is that explicit action.
+- **Capacity wins over policy.** `ML_RETENTION_MAX_DISK_FRACTION` (**default 0.85**) is the
+  hard share of the VOLUME a held window may occupy. If honouring the floor would exceed it,
+  the floor is NOT honoured: the control holds the longest window that fits and says so on the
+  Settings row, in the worker log at WARNING, and in the Health checks —
+  `retention floor 284d needs 96% of the volume; holding 212d, the most the disk supports`.
+  The stored floor is not rewritten to the smaller number; it stays until an operator resets
+  it, so a temporary disk pressure does not destroy the promise permanently.
+
+The operator-side record of a reset or explicit raise lives in the `RETENTION_RATCHET`
+ConfigMap key; the worker consumes the newer of that record and its own file, so a reset takes
+effect immediately and a later derivation can still raise the floor.
+
 Why 7 days is the floor at all: the ripple layer measures a host against its own trailing
 history at 1h, 6h, 24h and 7d scales with a **30 non-overlapping window minimum**. Thirty 6h
 windows is 7.5 days and thirty 24h windows is 30 days, so a window shorter than 7 days cannot

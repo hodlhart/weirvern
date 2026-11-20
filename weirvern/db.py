@@ -223,6 +223,11 @@ def apply_schema(client: Client, settings: Settings) -> None:
         client,
         getattr(settings, "data_retention_days", retention.AUTO),
         getattr(settings, "data_retention_ratio", retention.DEFAULT_RATIO_PERCENT),
+        # THE RATCHET LIVES BESIDE THE OTHER MODEL STATE, and the operator's reset record rides
+        # in the ConfigMap-backed env. Both are optional: a process without a model directory or
+        # a record behaves exactly as this pass did before the ratchet existed.
+        model_dir=getattr(settings, "model_dir", None),
+        reset_record=getattr(settings, "retention_ratchet", ""),
     )
     try:
         client.command(

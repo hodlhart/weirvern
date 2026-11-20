@@ -468,8 +468,8 @@ def test_apply_schema_runs_the_migration_with_the_settings_values(monkeypatch, t
     (tmp_path / "001_probe.sql").write_text("CREATE TABLE IF NOT EXISTS probe (ts DateTime);")
     monkeypatch.setattr(db, "SCHEMA_DIR", tmp_path)
     seen: list[tuple] = []
-    monkeypatch.setattr(retention, "ensure", lambda client, days=None, ratio=None: (
-        seen.append((days, ratio)) or {
+    monkeypatch.setattr(retention, "ensure", lambda client, days=None, ratio=None, **kw: (
+        seen.append((days, ratio, kw)) or {
             "ok": True, "applied": True, "tables": [], "changed": [], "failed": [],
             "missing": [], "mismatched": [], "summary": "ok", "requested_days": 7}))
 
@@ -477,13 +477,18 @@ def test_apply_schema_runs_the_migration_with_the_settings_values(monkeypatch, t
         clickhouse_db = "weirvern"
         data_retention_days = "auto"
         data_retention_ratio = 55
+        model_dir = "/models"
+        retention_ratchet = ""
 
     class _Client:
         def command(self, sql, parameters=None):  # noqa: ANN001
             return None
 
     db.apply_schema(_Client(), _Settings())
-    assert seen == [("auto", 55)], f"apply_schema did not converge retention: {seen}"
+    assert seen and seen[0][:2] == ("auto", 55), (
+        f"apply_schema did not converge retention: {seen}")
+    assert seen[0][2] == {"model_dir": "/models", "reset_record": ""}, (
+        "apply_schema must hand the ratchet its model directory and the operator record")
 
 
 # ── 5. the statement and the read-back ───────────────────────────────────────────────────────
@@ -1084,3 +1089,288 @@ def test_days_in_force_never_raises_on_a_failed_read():
     assert info["days"] is None
     assert info["source"] == "unreadable"
     assert "ConnectionError" in info["reason"]
+
+
+# ── 8. the ratchet: a floor that falls only by explicit operator action ──────────────────────
+#
+# RETENTION WAS DERIVED, AND THEREFORE SHRANK BY ITSELF. Measured on the live box: 284 days
+# became 258 without anyone touching a setting, and every shrink expired history on the next
+# merge. The floor below is the fix; these tests pin the three ways it could go wrong -- a dip
+# that lowers it, a derivation that fails to raise it, and a guard that lets it fill the disk.
+
+
+def _ratchet_ctx(tmp_path, floor: int | None = None):
+    """An apply context whose model directory holds a floor, as the worker would leave it."""
+    ctx = _apply_ctx({"DATA_RETENTION_DAYS": "auto", "DATA_RETENTION_RATIO": "40"})
+    ctx.settings = SimpleNamespace(model_dir=str(tmp_path), retention_ratchet="",
+                                   data_retention_ratio=40)
+    if floor is not None:
+        retention.save_ratchet(tmp_path, retention.Ratchet(
+            floor_days=floor, set_at="2026-11-20T00:00:00+00:00",
+            by="operator", reason="the window that was in force before the ratchet"))
+    return ctx
+
+
+def _floor_on_disk(tmp_path) -> dict:
+    return json.loads((tmp_path / retention.RATCHET_FILE).read_text())
+
+
+def test_a_DIP_in_free_space_does_not_lower_the_effective_window_below_the_floor(tmp_path):
+    """THE DEFECT THIS FEATURE EXISTS FOR: a fuller disk must not expire history."""
+    ch = FakeCH({t.name: 7 for t in retention.RETENTION_TABLES},
+                free_bytes=200 * GB, total_bytes=400 * GB,
+                bytes_on_disk=200 * GB, span_days=100.0)
+    first = retention.ensure(ch, "auto", 40, model_dir=tmp_path)
+    assert first["requested_days"] == 40
+    assert _floor_on_disk(tmp_path)["floor_days"] == 40
+
+    # The disk fills: 40 GB free instead of 200. Free space alone now supports 8 days.
+    ch.free_bytes = 40 * GB
+    second = retention.ensure(ch, "auto", 40, model_dir=tmp_path)
+
+    assert second["derivation"]["disk_days"] == 8
+    assert second["requested_days"] == 40, (
+        "the derived window fell with the free space and took the floor with it: "
+        f"{second['derivation']['sentence']}")
+    assert second["ratchet"]["floor_days"] == 40
+    assert second["ratchet"]["raised"] is False
+    assert {row["effective_days"] for row in second["tables"]} == {40}
+
+
+def test_the_floor_RISES_when_a_larger_window_derives(tmp_path):
+    """A bigger disk is allowed to raise the promise; nothing has to ask it to."""
+    ch = FakeCH({t.name: 7 for t in retention.RETENTION_TABLES},
+                free_bytes=200 * GB, total_bytes=400 * GB,
+                bytes_on_disk=200 * GB, span_days=100.0)
+    retention.ensure(ch, "auto", 40, model_dir=tmp_path)
+    assert _floor_on_disk(tmp_path)["floor_days"] == 40
+
+    ch.free_bytes = 300 * GB          # 300 GB x 40% = 120 GB; at 2 GB/day = 60 days
+    report = retention.ensure(ch, "auto", 40, model_dir=tmp_path)
+
+    assert report["derivation"]["disk_days"] == 60
+    assert report["requested_days"] == 60
+    assert report["ratchet"]["raised"] is True
+    assert report["ratchet"]["previous_floor_days"] == 40
+    assert _floor_on_disk(tmp_path)["floor_days"] == 60
+    assert report["ratchet"]["set_on"], "the record must carry the date the floor was set"
+
+
+def test_an_explicit_lowering_WITHOUT_the_reset_flag_is_refused_with_both_numbers(tmp_path):
+    """A smaller number never becomes the floor because somebody typed it."""
+    ch = FakeCH({t.name: 50 for t in retention.RETENTION_TABLES})
+    ctx = _ratchet_ctx(tmp_path, floor=50)
+
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_days": "30"}, confirmed=True,
+        reason="trimming the window", revert=False, actor="sam")
+
+    assert code == 400, payload
+    assert "50 days" in payload["error"] and "30 days" in payload["error"], payload["error"]
+    assert "reset_ratchet" in payload["error"]
+    assert ctx.config_client.wrote == {}, "a refused lowering must not reach the ConfigMap"
+    assert ch.commands == [], "a refused lowering must not touch a table"
+    assert _floor_on_disk(tmp_path)["floor_days"] == 50
+
+
+def test_a_reset_with_a_reason_applies_and_records_the_OLD_and_NEW_floor_with_actor(tmp_path):
+    ch = FakeCH({t.name: 50 for t in retention.RETENTION_TABLES})
+    ctx = _ratchet_ctx(tmp_path, floor=50)
+
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_days": "30"}, confirmed=True,
+        reason="the audit only needs a month", revert=False, actor="sam",
+        reset_ratchet=True)
+
+    assert code == 200, payload
+    assert payload["retention"]["requested_days"] == 30
+    assert {row["effective_days"] for row in payload["retention"]["tables"]} == {30}
+    receipt = payload["retention"]["ratchet"]
+    assert receipt["previous_floor_days"] == 50
+    assert receipt["floor_days"] == 30
+    assert receipt["reset"] is True
+
+    record = json.loads(ctx.config_client.data[retention.RETENTION_RATCHET_KEY])
+    assert record["floor_days"] == 30
+    assert record["by"] == "sam"
+    assert record["reason"] == "the audit only needs a month"
+    assert record["set_at"]
+
+
+def test_the_floor_is_raised_by_an_explicit_value_too_and_the_receipt_says_so(tmp_path):
+    ch = FakeCH({t.name: 40 for t in retention.RETENTION_TABLES})
+    ctx = _ratchet_ctx(tmp_path, floor=40)
+
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_days": "30"}, confirmed=True,
+        reason="a month is enough", revert=False, actor="sam", reset_ratchet=True)
+    assert code == 200, payload
+    assert payload["retention"]["ratchet"]["floor_days"] == 30
+
+    # And switching back to auto immediately raises it to what the disk supports, not to 30.
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_days": "auto"}, confirmed=True,
+        reason="let the disk decide again", revert=False, actor="sam")
+    assert code == 200, payload
+    assert payload["retention"]["ratchet"]["floor_days"] == 40
+
+
+def test_LOWERING_THE_RATIO_is_a_lowering_and_needs_the_reset_flag(tmp_path):
+    """The floor must not be used to make a budget cut look like a no-op."""
+    ch = FakeCH({t.name: 50 for t in retention.RETENTION_TABLES})
+    ctx = _ratchet_ctx(tmp_path, floor=50)
+
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_ratio": "10"}, confirmed=True,
+        reason="the disk is shared now", revert=False, actor="sam")
+    assert code == 400, payload
+    assert "50 days" in payload["error"] and "10 days" in payload["error"], payload["error"]
+    assert ch.commands == []
+
+    code, payload = payloads.settings_apply(
+        ctx, _connect_to(ch), changes={"data_retention_ratio": "10"}, confirmed=True,
+        reason="the disk is shared now", revert=False, actor="sam", reset_ratchet=True)
+    assert code == 200, payload
+    assert payload["retention"]["requested_days"] == 10
+    assert payload["retention"]["ratchet"]["previous_floor_days"] == 50
+    assert payload["retention"]["ratchet"]["floor_days"] == 10
+
+
+def test_the_capacity_guard_REFUSES_a_floor_that_would_need_more_than_85_percent():
+    """The honest limit: capacity wins over policy. 87% projected -> hold the 10d that fits."""
+    m = retention.Measurement("default", 100 * GB, 20 * GB, 5 * GB, 100.0,
+                              rate_bytes_per_day=1 * GB)
+    report = retention.derive(m, 40, retention.Ratchet(12, "2026-11-20T00:00:00+00:00"))
+
+    assert report["ratchet_guard_blocked"] is True
+    assert report["ratchet_guard_percent"] == 87.0
+    assert report["capacity_max_days"] == 10
+    assert report["days"] == 10
+    assert report["guard_sentence"] == (
+        "retention floor 12d needs 87% of the volume; holding 10d, the most the disk supports")
+    assert report["ratchet_floor_days"] == 12, (
+        "the guard must hold a lower window, not rewrite the floor downward")
+
+
+def test_the_guard_condition_is_in_the_settings_payload_the_UI_renders():
+    m = retention.Measurement("default", 100 * GB, 20 * GB, 5 * GB, 100.0,
+                              rate_bytes_per_day=1 * GB)
+    report = retention.derive(m, 40, retention.Ratchet(12, "2026-11-20T00:00:00+00:00"))
+    row = _row("data_retention_days", retention_status=report)
+    carried = row["retention"]
+
+    assert carried["ratchet_guard_blocked"] is True
+    assert carried["ratchet_floor_days"] == 12
+    assert carried["ratchet_set_on"] == "2026-11-20"
+    assert "needs 87% of the volume" in carried["sentence"]
+    assert "holding 10d" in carried["sentence"]
+    assert "ratchet floor 12d since 2026-11-20" in carried["sentence"]
+    # The same sentence is on the ratio row, so the operator sees it beside the control that
+    # produced it -- not only on the day-count row.
+    assert "needs 87% of the volume" in _row(
+        "data_retention_ratio", retention_status=report)["retention"]["sentence"]
+
+
+def test_the_row_states_the_FLOOR_AND_ITS_DATE_when_the_floor_is_honoured():
+    m = retention.Measurement("default", 400 * GB, 40 * GB, 200 * GB, 100.0,
+                              rate_bytes_per_day=2 * GB)
+    report = retention.derive(m, 40, retention.Ratchet(50, "2026-11-20T00:00:00+00:00"))
+    sentence = report["sentence"]
+
+    assert report["days"] == 50 and report["disk_days"] == 8
+    assert "ratchet floor 50d since 2026-11-20" in sentence
+    assert "disk supports 8d" in sentence
+
+
+def test_a_fresh_install_with_no_ratchet_file_behaves_exactly_as_today(tmp_path):
+    """The old arithmetic, unchanged: no floor means the disk-derived number is the answer."""
+    m = retention.Measurement("default", 400 * GB, 200 * GB, 200 * GB, 100.0,
+                              rate_bytes_per_day=2 * GB)
+    with_no_ratchet = retention.derive(m, 40)
+    explicit_none = retention.derive(m, 40, None)
+
+    assert with_no_ratchet["days"] == 40
+    assert with_no_ratchet["disk_days"] == 40
+    assert with_no_ratchet["ratchet_floor_days"] is None
+    assert with_no_ratchet["ratchet_guard_blocked"] is False
+    assert with_no_ratchet["sentence"] == explicit_none["sentence"]
+    assert "40 days from 200 GB free" in with_no_ratchet["sentence"]
+
+    state, error = retention.load_ratchet(tmp_path)
+    assert state is None and error == ""
+    # And a pass with no model directory writes nothing and changes nothing about the answer.
+    ch = FakeCH({t.name: 7 for t in retention.RETENTION_TABLES})
+    report = retention.ensure(ch, "auto", 40)
+    assert report["requested_days"] == 40
+    assert not (tmp_path / retention.RATCHET_FILE).exists()
+
+
+def test_a_corrupt_ratchet_record_is_REPORTED_not_silently_treated_as_no_floor(tmp_path):
+    """Corruption must not read as 'fresh install' while the operator believes a floor holds."""
+    (tmp_path / retention.RATCHET_FILE).write_text("{not json")
+    state, error = retention.load_ratchet(tmp_path)
+    assert state is None
+    assert "usable ratchet record" in error
+
+
+def test_the_newest_record_wins_so_a_reset_is_not_outranked_by_an_OLD_file(tmp_path):
+    old_file = retention.Ratchet(284, "2026-10-01T00:00:00+00:00", "auto")
+    reset = retention.Ratchet(200, "2026-11-20T00:00:00+00:00", "sam", "audit scope")
+    assert retention.latest_ratchet(old_file, reset) == reset
+    # An equal timestamp never lowers the floor by accident.
+    assert retention.latest_ratchet(
+        retention.Ratchet(200, "2026-11-20T00:00:00+00:00"),
+        retention.Ratchet(284, "2026-11-20T00:00:00+00:00")).floor_days == 284
+
+
+
+def test_a_change_BELOW_THE_FLOOR_is_destructive_even_above_the_cut_the_TABLES_have():
+    """The floor, not today's TTL, is the promise. 260 is above 223 and below 284.
+
+    Without this the UI would show no warning (260 raises what the tables currently hold), the
+    apply would omit reset_ratchet, and the server would refuse a change the operator was never
+    warned about -- a plan and an apply that disagree about what is destructive.
+    """
+    proposal = cc.plan({"data_retention_days": "260"},
+                       {"DATA_RETENTION_DAYS": "auto"},
+                       retention_now_days=223, retention_floor_days=284).proposals[0]
+
+    assert proposal.destructive is True
+    assert "RATCHET FLOOR" in proposal.warning
+    assert "284" in proposal.warning and "260" in proposal.warning
+    # A raise to or above the floor is not a cut.
+    safe = cc.plan({"data_retention_days": "300"},
+                   {"DATA_RETENTION_DAYS": "auto"},
+                   retention_now_days=223, retention_floor_days=284).proposals[0]
+    assert safe.destructive is False
+
+
+def test_the_LIVE_settings_payload_carries_the_guard_and_the_floor(tmp_path):
+    """END TO END through `settings_payload`: the row the console renders, not a hand-made one."""
+    floor = retention.Ratchet(12, "2026-11-20T00:00:00+00:00", "operator", "baseline")
+    retention.save_ratchet(tmp_path, floor)
+    settings = SimpleNamespace(model_dir=str(tmp_path), retention_ratchet="",
+                               data_retention_days="auto", data_retention_ratio=40)
+    ch = FakeCH({t.name: 12 for t in retention.RETENTION_TABLES},
+                free_bytes=20 * GB, total_bytes=100 * GB,
+                bytes_on_disk=5 * GB, span_days=5.0)
+
+    class _Config:
+        def read(self):
+            return {"DATA_RETENTION_DAYS": "auto", "DATA_RETENTION_RATIO": "40",
+                    retention.RETENTION_RATCHET_KEY: floor.to_json()}
+
+        def configmap_annotation(self, name):  # noqa: ANN001
+            return ""
+
+    payload = payloads.settings_payload(
+        settings=settings, backend=None, config_client=_Config(), auth=None,
+        role="", via="", identity=None, accounts_on=False,
+        connect=lambda: _Conn(ch))
+    row = next(r for rows in payload["groups"].values() for r in rows
+               if r["key"] == "data_retention_days")
+
+    assert row["retention"]["ratchet_guard_blocked"] is True
+    assert row["retention"]["ratchet_floor_days"] == 12
+    assert "needs 87% of the volume" in row["retention"]["sentence"]
+    assert "holding 10d" in row["retention"]["sentence"]

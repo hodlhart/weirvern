@@ -2190,6 +2190,23 @@ def network_autofill_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
     return 500, {"error": f"could not auto-fill network scopes: {str(exc)[:200]}", "code": 500}
 
 
+def _retention_ratchet(settings: Any, configmap: dict | None) -> tuple[Any, str]:
+    """The effective ratchet: the NEWEST of the worker's file and the operator's record.
+
+    The GUI's /models is mounted read-only on purpose (the worker owns that volume), so the
+    apply path records a reset in the ConfigMap. Reading both and taking the newer one is what
+    makes a reset visible immediately while a later derivation can still raise the floor.
+    A missing file and an absent key are a fresh install: no floor, exactly the old behaviour.
+    """
+    from weirvern import retention as retention_mod  # noqa: PLC0415
+
+    loaded, error = retention_mod.load_ratchet(getattr(settings, "model_dir", None))
+    recorded = retention_mod.ratchet_from_json(
+        (configmap or {}).get(retention_mod.RETENTION_RATCHET_KEY)
+        or (getattr(settings, "retention_ratchet", "") if settings is not None else ""))
+    return retention_mod.latest_ratchet(loaded, recorded), error
+
+
 def _retention_now(ctx: Any, current: dict[str, str], changes: dict) -> int | None:
     """The cluster's CURRENT effective retention, when this change touches retention.
 
@@ -2197,6 +2214,10 @@ def _retention_now(ctx: Any, current: dict[str, str], changes: dict) -> int | No
     opens no database connection for an ordinary settings change, and inventing one would
     add a failure mode the console does not have. A failed measurement returns None, and the
     plan treats an explicit window as destructive rather than guessing it safe.
+
+    THE EFFECTIVE WINDOW INCLUDES THE RATCHET. Measuring without it would compare a proposed
+    value with the disk-derived number (239) while the tables actually hold the floor (284),
+    and a change to 260 would be called a raise when it is a cut.
     """
     from weirvern import retention as retention_mod  # noqa: PLC0415
     from weirvern.admin import cluster_config as cc  # noqa: PLC0415
@@ -2208,11 +2229,13 @@ def _retention_now(ctx: Any, current: dict[str, str], changes: dict) -> int | No
     if connect is None:
         return None
     try:
+        state, _error = _retention_ratchet(getattr(ctx, "settings", None), current)
         with connect(getattr(ctx, "settings", None)) as ch:
             days, _report = retention_mod.resolve(
                 ch,
                 current.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO),
                 current.get(retention_mod.RETENTION_RATIO_KEY, retention_mod.DEFAULT_RATIO_PERCENT),
+                ratchet=state,
             )
         return days
     except Exception as exc:  # noqa: BLE001 - unmeasured is a state the plan can express
@@ -2242,9 +2265,12 @@ def settings_plan(ctx: Any, changes: dict) -> tuple[int, dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         return 502, {"error": f"could not read the configuration: {exc}", "code": 502}
 
+    floor_state, _floor_error = _retention_ratchet(getattr(ctx, "settings", None), current)
     try:
         p = cc.plan({k: str(v) for k, v in changes.items()}, current,
-                    retention_now_days=_retention_now(ctx, current, changes))
+                    retention_now_days=_retention_now(ctx, current, changes),
+                    retention_floor_days=(floor_state.floor_days
+                                          if floor_state is not None else None))
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2278,7 +2304,8 @@ def _proposed_value(changes: dict, config_key: str, current: dict, default: Any)
 
 
 def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, reason: str,
-                   revert: bool, actor: str) -> tuple[int, dict[str, Any]]:
+                   revert: bool, actor: str,
+                   reset_ratchet: bool = False) -> tuple[int, dict[str, Any]]:
     """Write the configuration, then restart what reads it.
 
     THE WRITE IS VERIFIED BY READ-BACK inside ClusterConfig.apply, so a merge-patch that matched
@@ -2291,6 +2318,11 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     preserved: the in-path REASON (400), the plan's own validation (400), the explicit CONFIRMATION of
     any change carrying a warning (409 with the proposals), and the mode's own prerequisite gate (409),
     which is the same `mode.validate` the CLI runs. A GUI session must not be a way around it.
+
+    A FIFTH GATE IS THE RATCHET. Lowering the effective window -- by an explicit day count or by
+    lowering the ratio -- is refused unless the caller passes `reset_ratchet=True` AND a reason.
+    The floor never follows a smaller number on its own; the write records the old floor, the new
+    one, the actor and the reason, and the receipt carries both numbers.
     """
     from weirvern import apply_checks, fleet_store  # noqa: PLC0415
     from weirvern import retention as retention_mod  # noqa: PLC0415
@@ -2334,6 +2366,8 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
     current_days: int | None = None
     budget_report: dict[str, Any] | None = None
     measure_error = ""
+    ratchet_record: Any = None
+    old_floor: int | None = None
     if retention_touched:
         # VALIDATE FIRST, so a bad number is refused with its own sentence rather than
         # surfacing as a measurement failure. These are the same parsers `cc.plan` uses.
@@ -2348,12 +2382,21 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
         except ValueError as exc:
             return 400, {"ok": False, "error": str(exc)}
         try:
+            current_ratio = retention_mod.normalise_ratio(
+                current.get(retention_mod.RETENTION_RATIO_KEY,
+                            retention_mod.DEFAULT_RATIO_PERCENT))
+        except ValueError:
+            current_ratio = retention_mod.DEFAULT_RATIO_PERCENT
+        ratchet, ratchet_error = _retention_ratchet(getattr(ctx, "settings", None), current)
+        old_floor = int(ratchet.floor_days) if ratchet is not None else None
+        try:
             with connect() as ch:
                 current_days, _now = retention_mod.resolve(
                     ch, current.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO),
                     current.get(retention_mod.RETENTION_RATIO_KEY,
-                                retention_mod.DEFAULT_RATIO_PERCENT))
-                budget_report = retention_mod.auto_report(ch, ratio)
+                                retention_mod.DEFAULT_RATIO_PERCENT),
+                    ratchet=ratchet)
+                budget_report = retention_mod.auto_report(ch, ratio, ratchet=ratchet)
         except Exception as exc:  # noqa: BLE001 - an unmeasured disk is reported below
             measure_error = f"{type(exc).__name__}: {str(exc)[:160]}"
             logger.warning("settings: could not measure retention before applying: %s", exc)
@@ -2369,8 +2412,59 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
             if refusal:
                 return 400, {"ok": False, "error": refusal}
 
+        # ── THE RATCHET ONLY FALLS BY EXPLICIT ACTION ────────────────────────────────────────
+        # What would the number be after this change? For an explicit value it is that value;
+        # for auto it is the resolved window (which includes the floor, and the capacity guard
+        # when the floor no longer fits). If that is BELOW the floor, the request is a reset.
+        lowered_to: int | None = None
+        if old_floor is not None:
+            if want_days is not None and want_days < old_floor:
+                lowered_to = want_days
+            elif want_days is None:
+                effective = (budget_report or {}).get("days")
+                disk_days = (budget_report or {}).get("disk_days")
+                if isinstance(effective, int) and effective < old_floor:
+                    # The capacity guard is refusing part of the floor; the held window is a cut.
+                    lowered_to = int(effective)
+                elif (ratio < current_ratio and isinstance(disk_days, int)
+                      and disk_days < old_floor):
+                    # LOWERING THE BUDGET IS A LOWERING, even while the floor currently masks
+                    # it. Without the flag the operator is told what the reset would do and
+                    # that the floor is what stands between them and it.
+                    lowered_to = int(disk_days)
+        if lowered_to is not None:
+            if not reset_ratchet:
+                return 400, {"ok": False, "error": (
+                    f"the retention ratchet floor is {old_floor} days; lowering it to "
+                    f"{lowered_to} days requires reset_ratchet=true and a reason. The floor only "
+                    f"falls by explicit operator action -- without the flag nothing was written "
+                    f"and no table was changed.")}
+            if not reason:
+                return 400, {"ok": False, "error": (
+                    f"lowering the retention ratchet floor from {old_floor} days to {lowered_to} "
+                    f"days is destructive and requires a reason, recorded with your name and the "
+                    f"time.")}
+        # THE NEW FLOOR. An explicit value becomes the floor when it is a raise or an authorised
+        # reset; an auto window raises it to what the disk supports. A lower auto window is not a
+        # new floor -- the guard may hold less than the floor, but the floor itself stays until
+        # an operator resets it.
+        new_floor: int | None = None
+        if want_days is not None:
+            new_floor = want_days
+        elif isinstance((budget_report or {}).get("disk_days"), int):
+            disk_days = int(budget_report["disk_days"])
+            # NEVER QUIETLY LOWER THE FLOOR. A disk-derived number below the floor is normal
+            # (that is what the ratchet exists for), so it is NOT recorded unless the operator
+            # explicitly reset. A raise, a first record, or an authorised reset is recorded.
+            if old_floor is None or disk_days > old_floor or reset_ratchet:
+                new_floor = disk_days
+        if new_floor is not None and new_floor != old_floor:
+            ratchet_record = retention_mod.new_ratchet(
+                new_floor, by=actor or "operator", reason=reason)
+
     try:
-        p = cc.plan(raw_changes, current, retention_now_days=current_days)
+        p = cc.plan(raw_changes, current, retention_now_days=current_days,
+                    retention_floor_days=old_floor)
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
@@ -2422,7 +2516,8 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
             logger.warning("could not derive capture ports from intercept_plans: %s", exc)
     # The EFFECTIVE plan, including the reconciled keys, is what every later step uses.
     try:
-        p = cc.plan(raw_changes, current, retention_now_days=current_days)
+        p = cc.plan(raw_changes, current, retention_now_days=current_days,
+                    retention_floor_days=old_floor)
     except cc.ConfigError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2447,8 +2542,13 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
             "summary": checks.get("summary") or "",
         }
 
+    write_changes = dict(raw_changes)
+    if ratchet_record is not None:
+        # THE OPERATOR'S RECORD RIDES THE SAME PATCH as the settings. One write means a failed
+        # apply cannot leave a reset recorded that no setting reflects (or the reverse).
+        write_changes[retention_mod.RETENTION_RATCHET_KEY] = ratchet_record.to_json()
     try:
-        landed = client.apply(raw_changes, reason=reason, by=actor)
+        landed = client.apply(write_changes, reason=reason, by=actor)
     except cc.ConfigError as exc:
         # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT: the read-back raised, but a fresh read can
         # still say which values ARE there, and that beats a whole-batch error nobody can act on.
@@ -2486,9 +2586,14 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
         landing_window = landed.get(retention_mod.RETENTION_DAYS_KEY, retention_mod.AUTO)
         landing_ratio = landed.get(retention_mod.RETENTION_RATIO_KEY,
                                    retention_mod.DEFAULT_RATIO_PERCENT)
+        # THE STATE THE LANDED CONFIGMAP IMPLIES, not the one this request started with. A reset
+        # record written with the patch is the state; otherwise the existing floor still applies.
+        post_state, _post_error = _retention_ratchet(
+            getattr(ctx, "settings", None), landed)
         try:
             with connect() as ch:
-                days, derivation = retention_mod.resolve(ch, landing_window, landing_ratio)
+                days, derivation = retention_mod.resolve(ch, landing_window, landing_ratio,
+                                                         ratchet=post_state)
                 retention_report = (
                     retention_mod.not_derived_report(derivation) if days is None
                     else retention_mod.converge(ch, days, derivation=derivation,
@@ -2504,6 +2609,23 @@ def settings_apply(ctx: Any, connect: Any, *, changes: dict, confirmed: bool, re
                 "summary": ("the setting was saved, but the tables' TTLs could not be read or "
                             "changed: " + str(exc)[:160]),
             }
+        # THE RECEIPT NAMES BOTH FLOORS. A reset is only auditable if the number it replaced is
+        # in the same object as the number it installed.
+        effective_floor = (ratchet_record.floor_days if ratchet_record is not None
+                           else (post_state.floor_days if post_state is not None else None))
+        retention_report["ratchet"] = {
+            "previous_floor_days": old_floor,
+            "floor_days": effective_floor,
+            "set_at": (ratchet_record.set_at if ratchet_record is not None
+                       else (post_state.set_at if post_state is not None else "")),
+            "by": (ratchet_record.by if ratchet_record is not None
+                   else (post_state.by if post_state is not None else "")),
+            "reason": (ratchet_record.reason if ratchet_record is not None
+                       else (post_state.reason if post_state is not None else "")),
+            "reset": bool(reset_ratchet and old_floor is not None
+                          and effective_floor is not None and effective_floor < old_floor),
+            "changed": bool(ratchet_record is not None),
+        }
 
     # US-10: THE TRAIL GETS THE SETTINGS WRITE TOO, one row PER KEY so a multi-key apply stays
     # linkable from a single key's provenance row. A failed audit write does not fail the apply.
@@ -3035,8 +3157,13 @@ def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
                 ratio = ((configmap or {}).get(retention_mod.RETENTION_RATIO_KEY)
                          or os.environ.get(retention_mod.RETENTION_RATIO_KEY)
                          or retention_mod.DEFAULT_RATIO_PERCENT)
+                # THE FLOOR AND ITS DATE are part of the row: the sentence the console renders
+                # must state the ratchet beside the number, not hide it in a tooltip.
+                ratchet, ratchet_error = _retention_ratchet(settings, configmap)
                 with connect() as ch:
-                    retention_status = retention_mod.auto_report(ch, ratio)
+                    retention_status = retention_mod.auto_report(ch, ratio, ratchet=ratchet)
+                if ratchet_error:
+                    retention_status["ratchet_error"] = ratchet_error
             except Exception as exc:  # noqa: BLE001 - the tab still renders without it
                 retention_status = retention_mod.unavailable(
                     f"{type(exc).__name__}: {str(exc)[:160]}")

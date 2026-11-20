@@ -57,10 +57,14 @@ TTL expression.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -98,6 +102,30 @@ MAX_PLAUSIBLE_SPAN_DAYS = float(MAX_RETENTION_DAYS * 2)
 
 RETENTION_DAYS_KEY = "DATA_RETENTION_DAYS"
 RETENTION_RATIO_KEY = "DATA_RETENTION_RATIO"
+
+#: THE RATCHET, AND WHY IT EXISTS. The window above is derived from FREE space, so it SHRINKS
+#: whenever the disk gets fuller -- measured on the live box: 284 days became 258 without anyone
+#: touching a setting, and every shrink expired history on the next merge. A "high-water mark"
+#: floor is persisted beside the other model state (`MODEL_DIR/retention_ratchet.json`, the same
+#: place `detect_cursor.json` lives) and the derived window is held at `max(derived, floor)`.
+#:
+#: THE FLOOR ONLY RISES BY ITSELF. It falls only through an explicit operator reset (a
+#: `RETENTION_RATCHET` record with the actor and reason, written by the Settings apply path).
+#: A lower value never becomes the floor merely because the disk shrank.
+RATCHET_FILE = "retention_ratchet.json"
+
+#: THE OPERATOR'S RECORD, in the settings ConfigMap. A reset or an explicit raise is written
+#: here by the apply path (the GUI's /models is read-only, by design: the worker owns it). The
+#: effective floor is the NEWEST of this record and the worker's file, so a reset takes effect
+#: immediately and a later worker derivation can still raise it. Not an editable settings key.
+RETENTION_RATCHET_KEY = "RETENTION_RATCHET"
+
+#: THE HARD CAPACITY GUARD. Honouring a floor is only safe while the tables' projected share of
+#: the VOLUME stays below this fraction. A ratchet that fills the disk turns a safety feature
+#: into an outage, so past this line the floor is NOT honoured: the control holds the largest
+#: window that fits and says so on the Settings row, in the worker log, and in Health.
+DEFAULT_MAX_DISK_FRACTION = 0.85
+MAX_DISK_FRACTION_ENV = "ML_RETENTION_MAX_DISK_FRACTION"
 
 
 @dataclass(frozen=True)
@@ -281,6 +309,202 @@ def normalise_ratio(value: Any) -> int:
     return ratio
 
 
+def max_disk_fraction() -> float:
+    """The guarded share of the VOLUME a held window may occupy. Default 0.85.
+
+    Read from the environment each call rather than frozen at import: the worker, the schema Job
+    and the GUI all parse the ConfigMap-backed env, and a test must be able to move it without
+    reimporting the module. A nonsense value falls back to the default WITH a warning instead of
+    becoming an accidental 0% (which would refuse every floor) or 150% (which would guard nothing).
+    """
+    raw = os.environ.get(MAX_DISK_FRACTION_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_DISK_FRACTION
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("retention: %s=%r is not a number; using %.2f",
+                       MAX_DISK_FRACTION_ENV, raw, DEFAULT_MAX_DISK_FRACTION)
+        return DEFAULT_MAX_DISK_FRACTION
+    if not 0.0 < value <= 1.0:
+        logger.warning("retention: %s=%r must be in (0, 1]; using %.2f",
+                       MAX_DISK_FRACTION_ENV, raw, DEFAULT_MAX_DISK_FRACTION)
+        return DEFAULT_MAX_DISK_FRACTION
+    return value
+
+
+@dataclass(frozen=True)
+class Ratchet:
+    """The highest window this deployment has ever held, and who set it.
+
+    `floor_days` is a POLICY high-water mark, not a measurement. `set_at` is ISO-8601 UTC so two
+    records (the worker's file and the operator's ConfigMap record) can be ordered without
+    guessing which is newer. `by`/`reason` are the audit trail a reset must carry.
+    """
+
+    floor_days: int
+    set_at: str
+    by: str = "auto"
+    reason: str = ""
+
+    @property
+    def set_on(self) -> str:
+        """The date the floor was set, for the Settings sentence: `2026-11-20`."""
+        return str(self.set_at or "")[:10]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"floor_days": int(self.floor_days), "set_at": self.set_at,
+                "by": self.by, "reason": self.reason}
+
+    def to_json(self) -> str:
+        return json.dumps(self.as_dict(), sort_keys=True)
+
+
+def _parse_set_at(value: Any) -> datetime | None:
+    """A timezone-aware timestamp, or None. A naive stamp is read as UTC (the file is ours)."""
+    try:
+        parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(
+        UTC)
+
+
+def ratchet_from_json(raw: Any) -> Ratchet | None:
+    """One persisted/recorded ratchet, or None when it is absent or unusable.
+
+    Tolerant about the envelope (a dict or the JSON string the ConfigMap stores) and strict
+    about the number: a floor outside 7..365 is NOT silently clamped here, because a corrupt
+    record must not become a policy someone did not choose. `load_ratchet` reports the error.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("floor_days")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None
+    if days < MIN_RETENTION_DAYS or days > MAX_RETENTION_DAYS:
+        return None
+    when = _parse_set_at(raw.get("set_at"))
+    if when is None:
+        return None
+    return Ratchet(floor_days=days, set_at=when.isoformat(timespec="seconds"),
+                   by=str(raw.get("by") or "auto"), reason=str(raw.get("reason") or ""))
+
+
+def latest_ratchet(*records: Ratchet | None) -> Ratchet | None:
+    """The NEWEST record; on an equal timestamp the HIGHER floor wins.
+
+    Newest-wins is what lets an operator reset take effect immediately: a reset written today
+    outranks a file written last week even though its number is lower. The tie-break is upward
+    because "which record is this?" must never lower the floor by accident.
+    """
+    present = [r for r in records if r is not None]
+    if not present:
+        return None
+    return max(present, key=lambda r: (_parse_set_at(r.set_at) or datetime.min.replace(
+        tzinfo=UTC), int(r.floor_days)))
+
+
+def ratchet_path(model_dir: Any) -> Path | None:
+    """`MODEL_DIR/retention_ratchet.json`, or None when this process has no model directory."""
+    if not model_dir:
+        return None
+    return Path(str(model_dir)) / RATCHET_FILE
+
+
+def load_ratchet(model_dir: Any) -> tuple[Ratchet | None, str]:
+    """(record, error) from the model directory. A missing file is `(None, "")`.
+
+    A MISSING FILE IS A FRESH INSTALL and must behave exactly as before the ratchet existed.
+    A file that exists but cannot be understood is DIFFERENT: it returns the error so the report
+    can say the floor is unknown. Silently treating corruption as "no floor" would let the
+    window contract while the operator believes a floor is being held.
+    """
+    path = ratchet_path(model_dir)
+    if path is None:
+        return None, ""
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return None, ""
+    except OSError as exc:
+        return None, f"{path} could not be read: {exc}"
+    state = ratchet_from_json(raw)
+    if state is None:
+        return None, f"{path} does not hold a usable ratchet record"
+    return state, ""
+
+
+def save_ratchet(model_dir: Any, state: Ratchet) -> str:
+    """Persist one record atomically; returns "" on success, else the reason.
+
+    Written via a temporary file in the same directory and `os.replace`, so a reader (the GUI)
+    never sees a half-written record. A failed write is REPORTED to the caller, never raised:
+    the retention pass has already converged the tables, and bookkeeping must not undo that.
+    """
+    path = ratchet_path(model_dir)
+    if path is None:
+        return "this process has no model directory, so the ratchet cannot be persisted"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(state.to_json())
+        os.replace(tmp, path)
+        return ""
+    except OSError as exc:
+        return f"{path} could not be written: {exc}"
+
+
+def new_ratchet(days: int, *, by: str = "auto", reason: str = "",
+                at: datetime | None = None) -> Ratchet:
+    """A record stamped now (UTC), with a whole day count inside the control's bounds."""
+    want = normalise_days(days)
+    stamp = at or datetime.now(UTC)
+    return Ratchet(floor_days=want, set_at=stamp.isoformat(timespec="seconds"),
+                   by=by or "auto", reason=reason or "")
+
+
+def _capacity_max_days(measurement: Measurement, max_fraction: float) -> int | None:
+    """The longest window whose projected table footprint stays under the hard fraction.
+
+    THE PROJECTION REPLACES THE TABLES' CURRENT FOOTPRINT, it does not add to it: the managed
+    tables already hold `bytes_on_disk`, and a new window resizes that footprint rather than
+    stacking a second copy on top. `other` is everything else on the volume (the OS,
+    ClickHouse's own files, unmanaged tables), which does not move.
+    """
+    total = int(measurement.total_bytes)
+    rate = measurement.bytes_per_day
+    if total <= 0 or rate <= 0:
+        return None
+    used = max(0, total - int(measurement.free_bytes))
+    other = max(0, used - int(measurement.bytes_on_disk))
+    room = max_fraction * total - other
+    days = int(math.floor(room / rate))
+    return max(MIN_RETENTION_DAYS, min(MAX_RETENTION_DAYS, days))
+
+
+def _needed_fraction(measurement: Measurement, days: int) -> float | None:
+    """The projected share of the VOLUME used if the tables held `days`."""
+    total = int(measurement.total_bytes)
+    rate = measurement.bytes_per_day
+    if total <= 0 or rate <= 0:
+        return None
+    used = max(0, total - int(measurement.free_bytes))
+    other = max(0, used - int(measurement.bytes_on_disk))
+    return (other + max(0, int(days)) * rate) / float(total)
+
+
 def alter_sql(table: RetentionTable, days: int, *, max_days: int | None = None) -> str:
     """The statement that sets one table's TTL, never longer than `max_days`.
 
@@ -431,7 +655,9 @@ def _gb(value: float) -> str:
     return f"{number:,.0f}" if number >= 10 else f"{number:,.1f}"
 
 
-def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT) -> dict[str, Any]:
+def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT,
+           ratchet: Ratchet | None = None, *,
+           max_fraction: float | None = None) -> dict[str, Any]:
     """THE ARITHMETIC, pure and testable: budget / observed rate, held inside 7..365.
 
     Returns the fields the UI renders, not just the answer -- the operator is entitled to see
@@ -440,6 +666,13 @@ def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT)
     `available` is false when AUTO cannot honestly derive yet (less than a day of history, or
     no bytes observed). `budget_days` is still filled in whenever a rate was observed, because
     an EXPLICIT override is checked against it even on a young database.
+
+    THE RATCHET IS A SECOND, HIGHER FLOOR, AND IT IS GUARDED. With a persisted floor the answer
+    is `max(disk-derived, floor)` -- but only while honoring it keeps the tables' projected share
+    of the VOLUME under `max_fraction` (default 0.85). Past that the floor is NOT honored: the
+    answer becomes the largest window that fits, and `ratchet_guard_blocked` carries the sentence
+    the Settings row, the worker log and the health check all show. A ratchet that fills the disk
+    is an outage with a reassuring name, so capacity wins over policy at that line.
     """
     ratio = normalise_ratio(ratio_percent)
     free = int(measurement.free_bytes)
@@ -467,17 +700,41 @@ def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT)
     else:
         reason = ""
 
-    days: int | None = None
+    disk_days: int | None = None
     floored = False
     capped = False
     if available:
-        days = int(math.floor(raw_days or 0))
-        if days < MIN_RETENTION_DAYS:
-            days = MIN_RETENTION_DAYS
+        disk_days = int(math.floor(raw_days or 0))
+        if disk_days < MIN_RETENTION_DAYS:
+            disk_days = MIN_RETENTION_DAYS
             floored = True
-        elif days > MAX_RETENTION_DAYS:
-            days = MAX_RETENTION_DAYS
+        elif disk_days > MAX_RETENTION_DAYS:
+            disk_days = MAX_RETENTION_DAYS
             capped = True
+
+    guard_fraction = max_disk_fraction() if max_fraction is None else float(max_fraction)
+    capacity_max = _capacity_max_days(measurement, guard_fraction) if available else None
+    days = disk_days
+    ratchet_floor = int(ratchet.floor_days) if ratchet is not None else None
+    guard_blocked = False
+    guard_percent: float | None = None
+    guard_sentence = ""
+    if available and ratchet is not None and ratchet_floor is not None:
+        needed = _needed_fraction(measurement, ratchet_floor)
+        if ratchet_floor > int(disk_days or 0):
+            if needed is not None and needed > guard_fraction:
+                guard_blocked = True
+                guard_percent = round(needed * 100.0, 1)
+                # THE LARGER OF (DERIVED, PREVIOUS) THAT FITS. `capacity_max` is the most the
+                # volume supports under the guard; the floor itself is NOT rewritten downward.
+                fits = int(capacity_max or disk_days or MIN_RETENTION_DAYS)
+                days = max(int(disk_days or 0), min(ratchet_floor, fits))
+                days = max(MIN_RETENTION_DAYS, min(MAX_RETENTION_DAYS, days))
+                guard_sentence = (
+                    f"retention floor {ratchet_floor}d needs {guard_percent:.0f}% of the volume; "
+                    f"holding {days}d, the most the disk supports")
+            else:
+                days = max(int(disk_days or 0), ratchet_floor)
 
     report: dict[str, Any] = {
         "mode": AUTO,
@@ -493,24 +750,59 @@ def derive(measurement: Measurement, ratio_percent: Any = DEFAULT_RATIO_PERCENT)
         "budget_bytes": int(budget_bytes),
         "budget_days": budget_days,
         "raw_days": round(raw_days, 2) if raw_days is not None else None,
+        # `disk_days` is what free space alone supports (the old `days`); `days` is the EFFECTIVE
+        # window after the ratchet and its guard. Both are shipped because the row has to explain
+        # the difference, and an operator cannot check a number that has no counterfactual.
+        "disk_days": disk_days,
         "days": days,
         "floored": floored,
         "capped": capped,
         "min_days": MIN_RETENTION_DAYS,
         "max_days": MAX_RETENTION_DAYS,
+        # -- the ratchet and the capacity guard
+        "ratchet_floor_days": ratchet_floor,
+        "ratchet_set_at": ratchet.set_at if ratchet is not None else "",
+        "ratchet_set_on": ratchet.set_on if ratchet is not None else "",
+        "ratchet_by": ratchet.by if ratchet is not None else "",
+        "ratchet_reason": ratchet.reason if ratchet is not None else "",
+        "ratchet_active": bool(ratchet_floor is not None and days is not None
+                               and int(days) > int(disk_days or 0)),
+        "ratchet_guard_blocked": guard_blocked,
+        "ratchet_guard_percent": guard_percent,
+        "capacity_max_days": capacity_max,
+        "max_disk_fraction": guard_fraction,
+        "guard_sentence": guard_sentence,
     }
     report["sentence"] = _sentence(report)
     return report
 
 
 def _sentence(report: dict[str, Any]) -> str:
-    """The one line the Settings row shows. It states the arithmetic, not only the result."""
+    """The one line the Settings row shows. It states the arithmetic, not only the result.
+
+    WITH A RATCHET THE FLOOR AND ITS DATE RIDE IN THE SAME SENTENCE AS THE NUMBER -- not in a
+    tooltip and not on a second row. When the capacity guard refuses the floor, the sentence
+    says so there too: the operator must not have to infer a held window from a number that
+    silently stopped matching the stored floor.
+    """
     if not report["available"]:
         return f"Auto — not derived yet: {report['reason']}. The tables keep their current TTL."
     days = report["days"]
     free = _gb(report["free_bytes"])
     rate = _gb(report["bytes_per_day"])
     ratio = report["ratio_percent"]
+    floor = report.get("ratchet_floor_days")
+    if floor:
+        since = report.get("ratchet_set_on") or report.get("ratchet_set_at", "")[:10]
+        if report.get("ratchet_guard_blocked"):
+            note = (f"ratchet floor {floor}d since {since} needs "
+                    f"{report['ratchet_guard_percent']:.0f}% of the volume; holding {days}d, "
+                    f"the most the disk supports")
+        else:
+            note = (f"ratchet floor {floor}d since {since}; "
+                    f"disk supports {report['disk_days']}d")
+        return (f"Auto — {days} days ({note}). {free} GB free at {rate} GB/day "
+                f"({ratio}% budget). Merge headroom kept.")
     if report["floored"]:
         return (f"Auto — disk supports {report['raw_days']:.1f} days; holding the "
                 f"{MIN_RETENTION_DAYS}-day floor. ({free} GB free at {rate} GB/day, "
@@ -529,46 +821,72 @@ def unavailable(reason: str) -> dict[str, Any]:
         "mode": AUTO, "available": False, "reason": reason,
         "ratio_percent": None, "free_bytes": None, "total_bytes": None, "disk_name": "",
         "bytes_on_disk": None, "span_days": None, "bytes_per_day": None,
-        "budget_bytes": None, "budget_days": None, "raw_days": None, "days": None,
+        "budget_bytes": None, "budget_days": None, "raw_days": None,
+        "disk_days": None, "days": None,
         "floored": False, "capped": False,
         "min_days": MIN_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS,
+        "ratchet_floor_days": None, "ratchet_set_at": "", "ratchet_set_on": "",
+        "ratchet_by": "", "ratchet_reason": "", "ratchet_active": False,
+        "ratchet_guard_blocked": False, "ratchet_guard_percent": None,
+        "capacity_max_days": None, "max_disk_fraction": max_disk_fraction(),
+        "guard_sentence": "",
         "sentence": text,
     }
 
 
-def auto_report(client: Any, ratio_percent: Any = DEFAULT_RATIO_PERCENT) -> dict[str, Any]:
+def auto_report(client: Any, ratio_percent: Any = DEFAULT_RATIO_PERCENT,
+                ratchet: Ratchet | None = None) -> dict[str, Any]:
     """Measure, derive, and never raise: an unreadable disk is a state the UI can explain."""
     try:
-        return derive(measure(client), ratio_percent)
+        return derive(measure(client), ratio_percent, ratchet)
     except Exception as exc:  # noqa: BLE001 - a failed measurement is reported, not fatal
         logger.warning("retention: could not measure the disk budget: %s", exc)
         return unavailable(f"{type(exc).__name__}: {str(exc)[:160]}")
 
 
-def manual_report(days: int, ratio_percent: Any = DEFAULT_RATIO_PERCENT) -> dict[str, Any]:
-    """The report shape for an explicit value, so both modes render the same fields."""
+def manual_report(days: int, ratio_percent: Any = DEFAULT_RATIO_PERCENT,
+                  ratchet: Ratchet | None = None) -> dict[str, Any]:
+    """The report shape for an explicit value, so both modes render the same fields.
+
+    A MANUAL VALUE IS NOT HELD TO THE FLOOR -- the operator typed it, and the apply path has
+    already made them acknowledge a reset when it is below the floor. The row still NAMES the
+    floor, because switching back to auto will start from it and the operator should be able to
+    see that before they switch.
+    """
     want = normalise_days(days)
+    floor = ratchet.floor_days if ratchet is not None else None
+    sentence = f"Manual — {want} days, chosen rather than derived from free disk."
+    if ratchet is not None:
+        sentence = (f"Manual — {want} days (ratchet floor {floor}d since "
+                    f"{ratchet.set_on}); an explicit value is not held to it.")
     return {
         "mode": "manual", "available": True, "reason": "",
         "ratio_percent": normalise_ratio(ratio_percent),
         "free_bytes": None, "total_bytes": None, "disk_name": "",
         "bytes_on_disk": None, "span_days": None, "bytes_per_day": None,
-        "budget_bytes": None, "budget_days": None, "raw_days": None, "days": want,
+        "budget_bytes": None, "budget_days": None, "raw_days": None,
+        "disk_days": want, "days": want,
         "floored": False, "capped": False,
         "min_days": MIN_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS,
-        "sentence": f"Manual — {want} days, chosen rather than derived from free disk.",
+        "ratchet_floor_days": floor, "ratchet_set_at": ratchet.set_at if ratchet else "",
+        "ratchet_set_on": ratchet.set_on if ratchet else "",
+        "ratchet_by": ratchet.by if ratchet else "", "ratchet_reason": ratchet.reason if ratchet else "",
+        "ratchet_active": False, "ratchet_guard_blocked": False,
+        "ratchet_guard_percent": None, "capacity_max_days": None,
+        "max_disk_fraction": max_disk_fraction(), "guard_sentence": "",
+        "sentence": sentence,
     }
 
 
-def resolve(client: Any, setting: Any, ratio_percent: Any = DEFAULT_RATIO_PERCENT) -> tuple[
-        int | None, dict[str, Any]]:
+def resolve(client: Any, setting: Any, ratio_percent: Any = DEFAULT_RATIO_PERCENT,
+            ratchet: Ratchet | None = None) -> tuple[int | None, dict[str, Any]]:
     """(days to apply or None, the report the UI renders) for one setting value."""
     if is_auto(setting):
-        report = auto_report(client, ratio_percent)
+        report = auto_report(client, ratio_percent, ratchet)
         days = report["days"] if report.get("available") else None
         return days, report
     want = normalise_days(setting)
-    return want, manual_report(want, ratio_percent)
+    return want, manual_report(want, ratio_percent, ratchet)
 
 
 def budget_refusal(days: int, report: dict[str, Any]) -> str:
@@ -855,17 +1173,38 @@ def _summary(report: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
-def ensure(client: Any, setting: Any = None, ratio_percent: Any = None) -> dict[str, Any]:
+def ensure(client: Any, setting: Any = None, ratio_percent: Any = None, *,
+           model_dir: Any = None, reset_record: Any = None) -> dict[str, Any]:
     """The startup migration: derive from CURRENT disk/history, converge, and report.
 
     A retention pass must not be the reason a worker refuses to start -- a wrong TTL costs
     history, while a crash-looping detector costs every alert. Failures are logged loudly
     with the table named, and the returned report says what the cluster actually has.
+
+    THE RATCHET IS READ, RAISED AND WRITTEN HERE. `model_dir` names the worker-owned state
+    directory (`MODEL_DIR`); `reset_record` is the operator's ConfigMap record when the pod's
+    env carries one. A newer operator record wins, so a reset takes effect on the next start
+    even though this process cannot write the ConfigMap. A derived window ABOVE the floor is
+    persisted; a floor that the capacity guard refuses is NOT lowered -- the effective window
+    is held at what fits and the refusal is logged at WARNING.
     """
     raw_setting = AUTO if setting is None else setting
     raw_ratio = DEFAULT_RATIO_PERCENT if ratio_percent is None else ratio_percent
+
+    file_state, ratchet_error = load_ratchet(model_dir)
+    operator_state = ratchet_from_json(reset_record)
+    state = latest_ratchet(file_state, operator_state)
+    previous_floor = state.floor_days if state is not None else None
+    # A NEWER OPERATOR RECORD IS CONSUMED INTO THE FILE, so deleting the ConfigMap key later
+    # cannot resurrect a floor the operator explicitly reset.
+    if (model_dir is not None and state is not None and file_state != state):
+        error = save_ratchet(model_dir, state)
+        if error:
+            ratchet_error = ratchet_error or error
+            logger.warning("retention: could not record the ratchet: %s", error)
+
     try:
-        days, derivation = resolve(client, raw_setting, raw_ratio)
+        days, derivation = resolve(client, raw_setting, raw_ratio, ratchet=state)
     except ValueError as exc:
         logger.warning("retention: %s; leaving every table's TTL unchanged", exc)
         report = unavailable(str(exc))
@@ -874,11 +1213,69 @@ def ensure(client: Any, setting: Any = None, ratio_percent: Any = None) -> dict[
         report = not_derived_report(derivation)
         logger.info("retention: %s", report["summary"])
         return report
+
+    # ── THE FLOOR RISES HERE, AND ONLY HERE, ON ITS OWN ──────────────────────────────────────
+    # A fresh deployment with no file SEEDS from what the tables already keep, so upgrading to
+    # the ratchet cannot shorten the window on the very pass that introduces it. From then on
+    # a larger derivation raises the floor; a smaller one never lowers it.
+    raised: Ratchet | None = None
+    if model_dir is not None:
+        desired: int | None = None
+        if state is None:
+            if is_auto(raw_setting):
+                # The tables' own TTL is the best evidence of the window that was in force
+                # before this version. Reading it is optional: a failed read seeds from the
+                # derivation alone rather than inventing history.
+                in_force: int | None = None
+                try:
+                    in_force = days_in_force(client).get("days")
+                except Exception as exc:  # noqa: BLE001 - seeding is best-effort
+                    logger.debug("retention: could not read the tables' current TTL: %s", exc)
+                disk_days = derivation.get("disk_days")
+                desired = max(int(disk_days or days),
+                              int(in_force) if isinstance(in_force, int) else 0)
+            else:
+                desired = int(days)
+            raised = new_ratchet(desired, by="auto")
+        elif is_auto(raw_setting):
+            disk_days = derivation.get("disk_days")
+            if isinstance(disk_days, int) and disk_days > int(state.floor_days):
+                raised = new_ratchet(disk_days, by="auto")
+        elif int(days) > int(state.floor_days):
+            raised = new_ratchet(int(days), by="auto")
+        if raised is not None:
+            error = save_ratchet(model_dir, raised)
+            if error:
+                ratchet_error = ratchet_error or error
+                logger.warning("retention: the floor rose to %sd but could not be recorded: %s",
+                               raised.floor_days, error)
+            else:
+                logger.info("retention: ratchet floor %s -> %sd (set %s)",
+                            previous_floor if previous_floor is not None else "none",
+                            raised.floor_days, raised.set_on)
+                state = raised
+
+    if derivation.get("ratchet_guard_blocked"):
+        # A VISIBLE CONDITION, not a quiet clamp: the Settings row, this log and the health
+        # check all carry the same sentence.
+        logger.warning("retention: %s", derivation.get("guard_sentence"))
+
     try:
         result = converge(client, days, derivation=derivation, bound_days=days)
     except Exception as exc:  # noqa: BLE001 - see the docstring
         logger.warning("retention: the migration could not run: %s", exc)
         return not_derived_report(unavailable(str(exc))) | {"ok": False, "error": str(exc)}
+    result["ratchet"] = {
+        "previous_floor_days": previous_floor,
+        "floor_days": state.floor_days if state is not None else None,
+        "set_at": state.set_at if state is not None else "",
+        "set_on": state.set_on if state is not None else "",
+        "by": state.by if state is not None else "",
+        "reason": state.reason if state is not None else "",
+        "raised": raised is not None,
+        "guard_blocked": bool(derivation.get("ratchet_guard_blocked")),
+        "error": ratchet_error,
+    }
     if result["ok"]:
         logger.info("retention: %s (%s)", result["summary"], derivation.get("sentence", ""))
     else:
@@ -886,12 +1283,13 @@ def ensure(client: Any, setting: Any = None, ratio_percent: Any = None) -> dict[
     return result
 
 
-__all__ = ["AUTO", "DEFAULT_RATIO_PERCENT", "MAX_RATIO_PERCENT", "MAX_RETENTION_DAYS",
-           "MIN_OBSERVATION_DAYS", "MIN_RATIO_PERCENT", "MIN_RETENTION_DAYS", "NEVER_EXPIRE",
-           "RETENTION_DAYS_KEY", "RETENTION_RATIO_KEY", "RETENTION_TABLES", "UNMANAGED",
-           "EffectiveTTL", "Measurement", "RetentionTable", "alter_sql", "auto_report",
-           "budget_refusal", "converge", "days_in_force", "derive", "effective_ttls", "ensure",
-           "is_auto",
-           "manual_report", "measure", "normalise_days", "normalise_ratio", "not_derived_report",
-           "parse_ttl",
-           "resolve", "table_names", "unavailable"]
+__all__ = ["AUTO", "DEFAULT_MAX_DISK_FRACTION", "DEFAULT_RATIO_PERCENT", "MAX_DISK_FRACTION_ENV",
+           "MAX_RATIO_PERCENT", "MAX_RETENTION_DAYS", "MIN_OBSERVATION_DAYS", "MIN_RATIO_PERCENT",
+           "MIN_RETENTION_DAYS", "NEVER_EXPIRE", "RATCHET_FILE", "RETENTION_DAYS_KEY",
+           "RETENTION_RATCHET_KEY", "RETENTION_RATIO_KEY", "RETENTION_TABLES", "Ratchet",
+           "UNMANAGED", "EffectiveTTL", "Measurement", "RetentionTable", "alter_sql",
+           "auto_report", "budget_refusal", "converge", "days_in_force", "derive",
+           "effective_ttls", "ensure", "is_auto", "latest_ratchet", "load_ratchet",
+           "manual_report", "max_disk_fraction", "measure", "new_ratchet", "normalise_days",
+           "normalise_ratio", "not_derived_report", "parse_ttl", "ratchet_from_json",
+           "ratchet_path", "resolve", "save_ratchet", "table_names", "unavailable"]

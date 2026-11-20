@@ -572,7 +572,7 @@ def test_no_observations_at_all_is_TRI_STATE_not_a_failure():
 # `collect_health` outright, and a probe that fell through EVERY branch and added no row.
 
 _ALL_PROBES = ("clickhouse", "tables", "ingest_freshness", "zeek_freshness", "models",
-               "detect_loop", "alerts_24h", "fingerprint_feed")
+               "detect_loop", "alerts_24h", "fingerprint_feed", "retention_floor")
 
 
 def _report_with(monkeypatch_fragment=None, by_fragment=None):
@@ -1110,3 +1110,68 @@ def test_under_SIPHON_the_volume_baseline_is_not_the_test():
         _StubClient(_feed_with_history(35, 9_359_326, today_hosts=11, age=400)),
         SimpleNamespace(sensor_mode="siphon"))
     assert stale.ok is False and stale.value["state"] == "stale", stale.value
+
+
+# ── THE RETENTION RATCHET'S GUARD, WHERE AN OPERATOR LOOKS FOR FAULTS ────────────────────────
+
+GB = 1_000_000_000
+
+
+def test_the_capacity_guard_that_refuses_the_floor_is_a_RED_health_check(tmp_path):
+    """A floor the disk cannot afford is a condition, not a number silently clamped.
+
+    The Settings row and the worker log already carry the sentence; this is the third surface.
+    A guard that only appears on the page an operator visits to change a number is invisible to
+    the person reading health at 3am.
+    """
+    from weirvern import retention
+
+    retention.save_ratchet(tmp_path, retention.Ratchet(
+        floor_days=12, set_at="2026-11-20T00:00:00+00:00", by="operator",
+        reason="the window that was in force"))
+
+    client = _StubClient({
+        "FROM system.disks": [("default", 100 * GB, 20 * GB)],
+        "DISTINCT disk_name": [("default",)],
+        "sum(bytes_on_disk)": [("flows", 5 * GB, 5 * 86400)],
+    })
+    report = status.collect_health(
+        client, _settings(model_dir=str(tmp_path), data_retention_ratio=40))
+    probe = next((p for p in report.probes if p.name == "retention_floor"), None)
+
+    assert probe is not None, [p.name for p in report.probes]
+    assert probe.ok is False, probe.detail
+    assert probe.detail == (
+        "retention floor 12d needs 87% of the volume; holding 10d, the most the disk supports")
+    assert probe.value["ratchet_guard_blocked"] is True
+    assert probe.value["capacity_max_days"] == 10
+
+
+def test_the_ratchet_probe_is_GREEN_when_the_floor_is_affordable(tmp_path):
+    from weirvern import retention
+
+    retention.save_ratchet(tmp_path, retention.Ratchet(
+        floor_days=10, set_at="2026-11-20T00:00:00+00:00"))
+
+    client = _StubClient({
+        "FROM system.disks": [("default", 100 * GB, 20 * GB)],
+        "DISTINCT disk_name": [("default",)],
+        "sum(bytes_on_disk)": [("flows", 5 * GB, 5 * 86400)],
+    })
+    probe = next((p for p in status.collect_health(
+        client, _settings(model_dir=str(tmp_path), data_retention_ratio=40)).probes
+        if p.name == "retention_floor"), None)
+
+    assert probe is not None
+    assert probe.ok is True, probe.detail
+    assert "floor 10d since 2026-11-20" in probe.detail
+    assert "holding 10d" in probe.detail
+
+
+def test_with_no_model_directory_the_probe_says_WHY_it_cannot_answer():
+    """The CLI's status path has no model directory; an absent row is not a passing one."""
+    report = status.collect_health(_StubClient({}), _settings())
+    probe = next((p for p in report.probes if p.name == "retention_floor"), None)
+    assert probe is not None
+    assert probe.ok is None
+    assert "no model directory" in probe.detail

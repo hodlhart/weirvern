@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.23.107 — 2026-11-20
+
+HISTORY SHOULD NOT SILENTLY CONTRACT BECAUSE THE DISK GOT FULLER.
+
+- **Retention is a ratchet now.** The window is derived from free space, so it shrank whenever the
+  disk filled — measured live: 284 → 258 → 239 days with nobody touching a setting, and every
+  shrink expired rows on the next merge. The highest window ever derived is persisted beside the
+  other model state in `$MODEL_DIR/retention_ratchet.json` (day count plus the date it was set),
+  and the effective window is `max(derived_from_disk, floor)`. A dip in free space no longer
+  lowers it.
+- **The floor only falls by explicit operator action.** An apply that lowers the effective window
+  — an explicit day count below the floor, or a lower `DATA_RETENTION_RATIO` whose derived window
+  is below it — is refused unless the request carries `reset_ratchet: true` and a reason. The
+  receipt names the old floor, the new floor, the actor and the reason; the record lives in the
+  `RETENTION_RATCHET` ConfigMap key and is consumed by the worker on its next start. The console's
+  existing destructive-retention confirmation is that explicit action. A lower number can never
+  quietly become the new floor.
+- **A hard capacity guard, because a ratchet that fills the disk is an outage.** If honouring the
+  floor would need more than `ML_RETENTION_MAX_DISK_FRACTION` (default **0.85**) of the volume,
+  the floor is NOT honoured: the control holds the longest window that fits and says so in one
+  sentence on the Settings row, at WARNING in the worker log, and as a red `retention_floor` row
+  in Health — `retention floor 284d needs 96% of the volume; holding 212d, the most the disk
+  supports`. The stored floor is not rewritten downward.
+- **The Settings sentence states the floor and its date**, e.g. `Auto — 239 days (ratchet floor
+  239d since 2026-11-20; disk supports 239d)`. The guard's refusal is in the same sentence as the
+  number, not a tooltip.
+- **Fresh installs are unchanged.** No ratchet file means the old arithmetic exactly; the first
+  pass seeds the floor from what the tables already keep, so adopting the ratchet cannot shorten
+  the window on the pass that introduces it. `derive` never writes — `ensure` owns persistence.
+- **Measured.** 138 retention/health tests (17 new) cover a free-space dip holding the floor, the
+  floor rising on a larger derivation, a lower value refused with both numbers named, a reset
+  applying with actor+reason, the 85% guard holding the max affordable window, the guard sentence
+  in the Settings payload, and the fresh-install path. jsdom `1047 passed, 0 failed` adds the
+  reset flag on a destructive apply and its absence on ordinary applies.
+
 ## 0.23.106 — 2026-11-20
 
 A PERMANENT CHANGE SHOULD NOT RIPPLE EVERY DAY UNTIL THE BASELINE CATCHES UP.

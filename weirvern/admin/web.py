@@ -1113,7 +1113,10 @@ def settings_apply_args(body: dict) -> dict:
         raise ValueError("a non-empty 'changes' object is required")
     return {"changes": changes, "confirmed": bool(body.get("confirmed")),
             "reason": str(body.get("reason") or "").strip(),
-            "revert": bool(body.get("revert"))}
+            "revert": bool(body.get("revert")),
+            # THE RATCHET'S EXPLICIT ACTION. Absent/false is the safe direction: without it a
+            # lower number is refused rather than becoming the new floor.
+            "reset_ratchet": bool(body.get("reset_ratchet"))}
 
 
 def sensor_caps(ctx) -> tuple[bool, bool]:

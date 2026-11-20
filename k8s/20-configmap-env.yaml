@@ -262,6 +262,11 @@ data:
   # Share of FREE space the retained tables may occupy: 40% default, 10-70 bounds. The rest
   # is merge headroom -- ClickHouse must be able to compact, so >70% is refused.
   DATA_RETENTION_RATIO: "40"
+  # THE RATCHET'S HARD CAPACITY GUARD. The highest window ever derived is held as a floor, but
+  # only while holding it keeps the tables' projected share of the VOLUME below this fraction.
+  # Past it the floor is refused and the control holds the longest window that fits; a ratchet
+  # that fills the disk would turn a safety feature into an outage.
+  ML_RETENTION_MAX_DISK_FRACTION: "0.85"
   BASE_THRESHOLD: "0.35"
   MIN_AGREEMENT: "0.33"
   # Local-learning warm-up: a new deployment records detections but does not page until the

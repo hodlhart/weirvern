@@ -3676,6 +3676,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         retBody.changes && retBody.changes.data_retention_days === "7"
           && /24h baseline/.test(retBody.reason || ""),
         JSON.stringify(retBody).slice(0, 180));
+  // THE RATCHET'S EXPLICIT ACTION. The destructive echo above is the operator's consent; the
+  // request has to SAY so, or the server refuses the very change that was just confirmed.
+  check("the destructive retention apply is an explicit ratchet reset",
+        retBody.reset_ratchet === true,
+        `reset_ratchet=${retBody.reset_ratchet} in ${JSON.stringify(retBody).slice(0, 160)}`);
+  {
+    const ordinary = POSTED.filter((r) => r.url.includes("/api/settings/apply"))
+      .map((r) => { try { return JSON.parse(r.body || "{}"); } catch (_e) { return {}; } })
+      .filter((b) => !((b.changes || {}).data_retention_days));
+    check("an ordinary apply never resets the retention floor",
+          ordinary.length > 0 && ordinary.every((b) => !b.reset_ratchet),
+          `${ordinary.filter((b) => b.reset_ratchet).length} of ${ordinary.length} ordinary `
+            + "apply request(s) carried reset_ratchet");
+  }
   const receipt = needEl("st-apply-results").textContent;
   check("the receipt reports the cluster's EFFECTIVE TTL, not the requested one",
         /flows_window — TTL 7 days \(read back\)/.test(receipt),
