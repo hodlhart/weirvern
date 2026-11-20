@@ -559,6 +559,94 @@ function renderChips() {
   }
 }
 
+/* ── Ripple presence on the Network view ─────────────────────────────────────
+ *
+ * THE BANDS COME FROM THE SERVER. `/api/graph` carries `ripples` (the same rows
+ * `/api/ripples` grouped) and `severity_bands`; `rippleBand()` in app.js resolves a row's
+ * band from its server-computed `severity` (or, for an older payload, the shipped table).
+ * Nothing here restates a threshold: a second mapping would drift from the Ripples tab.
+ */
+const NW_RIPPLE_RANK = { low: 1, medium: 2, high: 3 };
+
+function networkRipples() {
+  return ((ASSETS_STATE.graph || {}).ripples) || [];
+}
+
+function networkRipple(host) {
+  const addr = String(host || "");
+  if (!addr) return null;
+  return networkRipples().find((r) => String(r.host || "") === addr) || null;
+}
+
+/** The ripple behind an edge: the HIGHER band when both endpoints have one. */
+function networkEdgeRipple(edge) {
+  const a = networkRipple(edge && edge.source);
+  const b = networkRipple(edge && edge.target);
+  if (!a) return b;
+  if (!b) return a;
+  const bands = (ASSETS_STATE.graph || {}).severity_bands;
+  const ra = NW_RIPPLE_RANK[rippleBand(a, bands)] || 0;
+  const rb = NW_RIPPLE_RANK[rippleBand(b, bands)] || 0;
+  return rb > ra ? b : a;
+}
+
+/** A ripple chip, or an EMPTY cell when the host has no ripple (never a zero chip). */
+function networkRippleCell(row) {
+  const cell = el("td", { class: "nw-ripple-cell" });
+  if (!row) return cell;
+  const bands = (ASSETS_STATE.graph || {}).severity_bands;
+  const band = rippleBand(row, bands);
+  const families = (row.families || []).join(" / ") || "no family named";
+  const chip = el("span", {
+    class: "rp-sev-chip nw-ripple-chip clickable sev-" + band,
+    text: sevText(band),
+    attrs: {
+      role: "button", tabindex: "0",
+      "aria-label": `open the ripple evidence for ${row.host}`,
+    },
+  });
+  chip.setAttribute("title", `ripple on ${row.host}: score ${Number(row.score || 0).toFixed(2)} ` +
+    `(${families}) — ${band}`);
+  const open = (ev) => { ev.stopPropagation(); openRippleSheet(row, chip); };
+  chip.addEventListener("click", open);
+  chip.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(ev); }
+  });
+  cell.appendChild(chip);
+  return cell;
+}
+
+function renderNetworkRippleLine(nodes, d) {
+  const line = document.getElementById("nw-ripple-line");
+  if (!line) return;
+  line.replaceChildren();
+  if (!d || d.available === false) {
+    line.appendChild(el("span", { text: "Ripple presence is unavailable because the graph did not load." }));
+    return;
+  }
+  if (d.ripple_available === false) {
+    line.appendChild(el("span", {
+      text: `Ripple presence could not be read: ${d.ripple_reason || "the ripple read failed"} — ` +
+        "that is not the same as no host rippling.",
+    }));
+    return;
+  }
+  const hours = d.ripple_window_hours || d.hours || ASSETS_STATE.hours;
+  const rows = d.ripples || [];
+  const inView = (nodes || []).filter((n) => networkRipple(n.id));
+  const btn = el("button", {
+    class: "rp-link", text: "open Ripples",
+    attrs: { type: "button" },
+  });
+  btn.setAttribute("title", "open the Ripples tab on this same window");
+  btn.addEventListener("click", () => showView("anomalies"));
+  const text = rows.length
+    ? `${inView.length} of ${nodes.length} host${nodes.length === 1 ? "" : "s"} in view have ` +
+      `${rows.length} ripple${rows.length === 1 ? "" : "s"} in this ${hours}h window.`
+    : `0 hosts in view have a ripple in this ${hours}h window — no host met the ripple bar.`;
+  line.append(el("span", { text }), el("span", { text: " " }), btn);
+}
+
 function renderNetwork() {
   const host = document.getElementById("nw-graph");
   const caption = document.getElementById("nw-caption");
@@ -571,9 +659,13 @@ function renderNetwork() {
   table.replaceChildren();
 
   if (d.available === false) {
-    caption.textContent = "";
+    // A FAILED GRAPH READ IS NOT AN EMPTY NETWORK. This branch used to print the same
+    // "No edges to show." as a genuinely quiet window, which is precisely how the Ripples
+    // tab could list hosts while this table looked calm.
+    caption.textContent = `The connection graph could not be read: ${d.reason || "no reason was reported"}.`;
     host.appendChild(chartEmpty(`Cannot draw the graph: ${d.reason}.`));
-    emptyRow(table, 5, "No edges to show.");
+    renderNetworkRippleLine([], d);
+    emptyRow(table, 6, "The graph read failed — no edges were read.");
     return;
   }
 
@@ -615,7 +707,8 @@ function renderNetwork() {
     if (d.status_available === false) {
       caption.textContent = `Host status is unavailable: ${d.status_reason || "the source could not be read"}.`;
       host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed."));
-      emptyRow(table, 5, "Host status is unavailable; no edges are listed under this filter.");
+      renderNetworkRippleLine(nodes, d);
+      emptyRow(table, 6, "Host status is unavailable; no edges are listed under this filter.");
       return;
     }
     statusMatches = nodes.filter((n) => n.status === status);
@@ -624,7 +717,8 @@ function renderNetwork() {
       caption.textContent = `No ${label} hosts in this window.`;
       host.appendChild(chartEmpty(`No host has a live block rule` +
         (status === "alerted" ? " or an anomaly window" : "") + ` in this range. Use All to see the map.`));
-      emptyRow(table, 5, `No ${label} hosts to draw.`);
+      renderNetworkRippleLine(statusMatches, d);
+      emptyRow(table, 6, `No ${label} hosts to draw.`);
       return;
     }
     const matchIds = new Set(statusMatches.map((n) => n.id));
@@ -647,7 +741,8 @@ function renderNetwork() {
       `in this window, no connections above ${ASSETS_STATE.minEdges} flow${ASSETS_STATE.minEdges === 1 ? "" : "s"}.`;
     host.appendChild(chartEmpty(`The ${label} host${statusMatches.length === 1 ? " has" : "s have"} no drawn ` +
       `connection above the flows filter. Lower the filter or use All.`));
-    emptyRow(table, 5, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
+    renderNetworkRippleLine(nodes, d);
+    emptyRow(table, 6, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
     return;
   }
   // A filter that hides everything must say so -- the tracked-only chip with nothing tracked is
@@ -657,7 +752,8 @@ function renderNetwork() {
     caption.textContent = `${nodes0.length} hosts in this window, none tracked yet \u2014 `
       + "click a dot or a row to track one.";
     host.appendChild(chartEmpty("The tracked-only filter is on and no host is tracked."));
-    emptyRow(table, 5, "No tracked hosts to draw.");
+    renderNetworkRippleLine(nodes, d);
+    emptyRow(table, 6, "No tracked hosts to draw.");
     return;
   }
   if (!nodes.length || !edges.length) {
@@ -666,7 +762,8 @@ function renderNetwork() {
         + `no connections among them in the last ${d.hours || ASSETS_STATE.hours}h.`;
       host.appendChild(chartEmpty("The tracked hosts did not talk to each other in this "
         + "window. Track more hosts, widen the window, or turn the filter off."));
-      emptyRow(table, 5, "No connections among the tracked hosts.");
+      renderNetworkRippleLine(nodes, d);
+      emptyRow(table, 6, "No connections among the tracked hosts.");
       return;
     }
     // THREE states, not two (review round 2026-10-15). This branch used to collapse "the
@@ -686,7 +783,8 @@ function renderNetwork() {
         : ASSETS_STATE.tracked.length
           ? "These hosts did not talk to each other in this window. Widen the window or clear the selection."
           : "No host-to-host traffic was recorded. Broadcast and self-directed traffic is excluded."));
-    emptyRow(table, 5, hidden ? "No edges above the flows filter." : "No edges to show.");
+    emptyRow(table, 6, hidden ? "No edges above the flows filter." : "No edges to show.");
+    renderNetworkRippleLine(nodes, d);
     return;
   }
 
@@ -712,6 +810,7 @@ function renderNetwork() {
   }
   caption.textContent = bits.join(" · ");
 
+  renderNetworkRippleLine(nodes, d);
   drawGraph(host, nodes, edges, d.truncated);
 
   // The busiest edges, clickable to track either endpoint.
@@ -743,6 +842,7 @@ function renderNetwork() {
     const tr = el("tr", {}, [
       el("td", { class: "link mono", text: e.source }),
       el("td", { class: "link mono", text: e.target }),
+      networkRippleCell(networkEdgeRipple(e)),
       el("td", { class: "mono", text: fmtBytes(e.bytes) }),
       el("td", { class: "mono", text: String(e.flows) }),
       el("td", {}, [el("span", { class: "muted", text: "track →" })]),
@@ -988,6 +1088,12 @@ function nodeTitle(n) {
   const out = [`${n.name ? n.name + " · " : ""}${n.id}`, `${n.degree} peers`, fmtBytes(n.bytes)];
   if (n.blocked) out.push("blocked by a live block rule");
   if (n.alerted) out.push(`alerted: ${n.anomaly_count || 0} anomaly window${(n.anomaly_count || 0) === 1 ? "" : "s"}`);
+  const rip = typeof networkRipple === "function" ? networkRipple(n.id) : null;
+  if (rip) {
+    const band = rippleBand(rip, (ASSETS_STATE.graph || {}).severity_bands);
+    out.push(`ripple: score ${Number(rip.score || 0).toFixed(2)}, ` +
+      `${(rip.families || []).join(" / ") || "no family named"} (${band})`);
+  }
   if (n.hops !== null && n.hops !== undefined) {
     out.push(`${n.hops} ${n.hops === 1 ? "hop" : "hops"} from the sensor (ttl ${n.ttl})`);
   }
@@ -1219,10 +1325,21 @@ function drawGraph(host, nodes, edges, truncated) {
     const p = pos.get(n.id);
     const selected = ASSETS_STATE.tracked.includes(n.id);
     const r = 5 + 9 * Math.sqrt((n.bytes || 0) / maxBytes);
+    const rip = networkRipple(n.id);
+    const rband = rip ? rippleBand(rip, (ASSETS_STATE.graph || {}).severity_bands) : "";
     const g = svgEl("g", {
-      class: "node" + (selected ? " selected" : "") + (n.status ? " " + n.status : ""),
+      class: "node" + (selected ? " selected" : "") + (n.status ? " " + n.status : "") +
+        (rip ? " has-ripple rp-sev-" + rband : ""),
       transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
     });
+    // A RIPPLE RING, DRAWN UNDER THE NODE so it reads as a halo, in the SAME band colour the
+    // Ripples tab uses. Colour is reinforcement: the title carries score, families and band.
+    if (rip) {
+      g.appendChild(svgEl("circle", {
+        r: (r + 3.5).toFixed(1), class: "node-ripple-ring rp-sev-" + rband,
+        fill: "none", "pointer-events": "none",
+      }));
+    }
     // STATUS OUTRANKS THE NORMAL/SELECTED FILL. A blocked host must not turn blue just because
     // it is a busy node, and a tracked blocked host keeps its tracked stroke without losing
     // the reason it is red. Normal selected nodes keep the green tracking fill.
@@ -1250,6 +1367,10 @@ function drawGraph(host, nodes, edges, truncated) {
       }));
     }
     g.appendChild(svgEl("title", {}, nodeTitle(n)));
+    // THE ACCESSIBLE NAME IS THE HOVER CARD, so a screen reader gets the same score/families
+    // the eye gets from the ring; the SVG group is the click target, not a decorative image.
+    g.setAttribute("aria-label", nodeTitle(n));
+    g.setAttribute("role", "button");
     // CLICK LEADS WITH DATA. It used to toggle tracking only, which the user could not infer
     // from anything on screen -- "i dont understand what clicking down". The detail panel now
     // opens on the host's connections, and tracking is an explicit button inside it.
@@ -1286,6 +1407,9 @@ function drawGraph(host, nodes, edges, truncated) {
     ];
     if (layout.rings.length) {
       items.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
+    }
+    if (nodes.some((n) => networkRipple(n.id))) {
+      items.push(["var(--sev-high)", "ripple ring on this host (low / medium / high)"]);
     }
     for (const [colour, label] of items) {
       const swatch = colour === "ring"
@@ -1437,6 +1561,7 @@ function showEdgeDetail(edge) {
   const tr = el("tr", {}, [
     el("td", { class: "link mono", text: edge.source }),
     el("td", { class: "link mono", text: edge.target }),
+    networkRippleCell(networkEdgeRipple(edge)),
     el("td", { class: "mono", text: ports }),
     el("td", { class: "mono", text: fmtBytes(edge.bytes) }),
     el("td", { class: "mono", text: String(edge.flows) }),
@@ -1506,7 +1631,7 @@ function showNodeDetail(node) {
 
   if (!touching.length) {
     table.appendChild(el("tr", {}, [
-      el("td", { class: "empty", attrs: { colspan: "6" },
+      el("td", { class: "empty", attrs: { colspan: "7" },
                  text: "This host has no drawn connections in the current selection." }),
     ]));
     return;
@@ -1517,12 +1642,12 @@ function showNodeDetail(node) {
   const rows = [];
   if (outbound.length) {
     rows.push(el("tr", {}, [el("td", {
-      class: "muted", attrs: { colspan: "6" }, text: `outbound (${outbound.length})` })]));
+      class: "muted", attrs: { colspan: "7" }, text: `outbound (${outbound.length})` })]));
     rows.push(...outbound.map(edgeRow));
   }
   if (inbound.length) {
     rows.push(el("tr", {}, [el("td", {
-      class: "muted", attrs: { colspan: "6" }, text: `inbound (${inbound.length})` })]));
+      class: "muted", attrs: { colspan: "7" }, text: `inbound (${inbound.length})` })]));
     rows.push(...inbound.map(edgeRow));
   }
   table.replaceChildren(...rows);
@@ -1534,6 +1659,7 @@ function edgeRow(e) {
   const tr = el("tr", { class: "clickable" }, [
     el("td", { class: "mono", text: e.source }),
     el("td", { class: "mono", text: e.target }),
+    networkRippleCell(networkEdgeRipple(e)),
     el("td", { class: "mono", text: ports }),
     el("td", { class: "mono", text: fmtBytes(e.bytes) }),
     el("td", { class: "mono", text: String(e.flows) }),

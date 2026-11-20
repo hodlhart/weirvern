@@ -295,6 +295,10 @@
 </div>
 
       <p class="muted" id="nw-caption">loading…</p>
+      <!-- THE RIPPLE SIGNPOST: how many hosts ON THIS MAP have a ripple in the same window,
+           with the count and bands attached to the graph payload. It opens the Ripples tab at
+           the same global range; it never changes the window. -->
+      <p class="muted" id="nw-ripple-line"></p>
       <div id="nw-selected" class="chips"></div>
       <!-- The legend sits ABOVE the canvas: at 900px the canvas pushes a foot-of-card legend
            below the fold, and a colour key nobody scrolls to is not a key. -->
@@ -315,7 +319,7 @@
       <div id="nw-detail"></div>
       <table id="nw-detail-table">
         <thead><tr>
-          <th>Source</th><th>Destination</th><th>Ports</th><th>Bytes</th><th>Flows</th><th></th>
+          <th>Source</th><th>Destination</th><th>Ripple</th><th>Ports</th><th>Bytes</th><th>Flows</th><th></th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -341,7 +345,7 @@
   <p><strong>Where to see it.</strong> Sort and click rows here for the version that goes into a ticket.</p>
 </div>
       <table id="nw-table">
-        <thead><tr><th>Source</th><th>Target</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
+        <thead><tr><th>Source</th><th>Target</th><th>Ripple</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -563,21 +567,36 @@
     <div class="card">
       <div class="view-head">
         <h2>Ripple evidence <button class="info-btn" data-info="rp-info" aria-label="what a ripple is and how its score is built" aria-expanded="false">i</button></h2>
-        <span id="rp-count" class="muted"></span>
+        <div class="rp-head-right">
+          <span id="rp-count" class="muted"></span>
+          <!-- THE ML SIGNPOST (operator, 2026-11-20): the model detections are below the
+               ripples and were invisible on a phone; this line is drawn from the SAME
+               /api/anomalies payload the list uses, so the two counts cannot disagree. -->
+          <button id="rp-ml" class="rp-ml hidden" type="button"></button>
+        </div>
       </div>
       <p class="muted" id="rp-note">Reading the ripple evidence…</p>
+      <!-- THE CRITICALITY LEGEND IS PAYLOAD-DRIVEN: the thresholds printed here come from
+           `severity_bands` in /api/ripples, never from constants in app.js. -->
+      <div id="rp-legend" class="rp-legend hidden" aria-label="ripple severity legend"></div>
       <!-- THE EMPTY STATE IS THE COMMON CASE TODAY, so it is a real block: which scales the
            engine can measure, how many baseline windows exist, and what the next scale needs.
            It is filled from the payload's `baseline` report, never from a hardcoded scale list. -->
       <div id="rp-empty" class="rp-empty hidden"></div>
-      <table id="ripples-table">
-        <colgroup>
-          <col style="width: 132px"><col style="width: 150px"><col style="width: 66px">
-          <col><col style="width: 132px">
-        </colgroup>
-        <thead><tr><th>Host</th><th>Window</th><th>Score</th><th>What moved</th><th>Families</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <!-- ABOVE THE PHONE BREAKPOINT: the table. Below it, #ripples-cards replaces it; the
+           fixed columns summed to 480px and collapsed the explanation column to zero width,
+           which made one row thousands of pixels tall instead of letting the list read. -->
+      <div class="tablewrap">
+        <table id="ripples-table">
+          <colgroup>
+            <col style="width: 132px"><col style="width: 150px"><col style="width: 70px">
+            <col style="width: 96px"><col><col style="width: 132px">
+          </colgroup>
+          <thead><tr><th>Host</th><th>Window</th><th>Score</th><th>Severity</th><th>What moved</th><th>Families</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="ripples-cards" class="rp-cards" aria-label="Ripples"></div>
       <div id="rp-pager" class="pager"></div>
       <div class="info-text hidden" id="rp-info">
   <p><strong>What it is.</strong> A ripple is one host and one hour in which several independent measurements moved together, each against that host's own trailing history. The sentence on the row names the channel, the value, the baseline median it was ranked against, the scale, and the p-value over the number of baseline windows behind it.</p>
@@ -590,7 +609,7 @@
     <!-- MODEL ANOMALIES: still here, still reachable, and now explicitly secondary. This is the
          pre-existing queue (filters, review, evidence drill, episodes, detectors) unchanged;
          only its place on the page and its framing moved. -->
-    <div class="card">
+    <div class="card" id="an-card">
       <div class="view-head">
         <h2>Model anomalies <span class="muted">corroboration, not the finding</span>
           <button class="info-btn" data-info="an-info" aria-label="how a model anomaly is scored and what the chips do" aria-expanded="false">i</button>
@@ -598,6 +617,10 @@
         <div id="an-sev" class="sev-tiles"></div>
       </div>
       <p class="muted" id="an-queue-note">The model's fused-score detections across this window. A model alone is usually noise; these corroborate a ripple, and they are never the ripple itself.</p>
+      <!-- THE FUSED-SCORE STATUS, in numbers: the list's own rows plus the configured
+           strong-signal target. It is what stops "135 medium detections" reading as 135
+           incidents. Filled from the same /api/anomalies payload as the rows. -->
+      <p class="muted" id="an-fused-line"></p>
       <div class="controls">
         <!-- THE DEFAULT IS THE FULL OBSERVATION LIST, which is what the Network graph's
              "alerted" badge counts. Incidents and Leads are opt-in views over the same data;

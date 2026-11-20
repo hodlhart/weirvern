@@ -21,6 +21,8 @@ from weirvern.models.ripple import (
     empirical_pvalue_two_sided,
     group_evidence,
     pvalue_floor,
+    severity_band,
+    severity_bands,
 )
 
 NOW = datetime(2026, 11, 19, 14, 0, tzinfo=UTC)
@@ -760,3 +762,51 @@ def test_the_thirty_window_floor_and_the_family_rule_are_untouched():
     dns = _evidence("dns_volume", "dns", 0.005, samples=103)
     conn = _evidence("conn_volume", "conn", 0.005, samples=103)
     assert len(group_evidence([dns, conn], monitored=NETS)) == 1
+
+
+# ── CRITICALITY: the bar's own arithmetic, defined once ─────────────────────────────────────
+
+
+def test_severity_bands_are_the_ripple_bars_own_arithmetic():
+    """Every threshold is derived from the grouping constants, not invented for the UI."""
+    bands = severity_bands()
+
+    assert bands["low"] == {"min_score": 3.0, "min_families": 1}
+    # two families at p=0.01 -> 2 * -log10(0.01) = 4.0
+    assert bands["medium"]["min_score"] == 4.0
+    assert bands["medium"]["min_families"] == 2
+    # three families at p=0.01 -> 6.0, which is also two at the 0.001 extreme bar
+    assert bands["high"]["min_score"] == 6.0
+    assert bands["high"]["min_families"] == 3
+    assert bands["bar"] == {
+        "family_max_p": 0.01, "extreme_p": 0.001,
+        "min_score": 3.0, "min_families": 2,
+    }
+
+
+def test_severity_band_uses_score_and_distinct_families():
+    assert severity_band(3.0, ["dns"]) == "low"
+    assert severity_band(3.99, ["dns"]) == "low"
+    assert severity_band(4.0, ["dns"]) == "medium"
+    assert severity_band(4.29, ["conn", "dns"]) == "medium"
+    assert severity_band(5.99, ["conn", "dns"]) == "medium"
+    assert severity_band(6.0, ["conn", "dns"]) == "high"
+    assert severity_band(5.0, ["conn", "dns", "tls"]) == "high"
+    assert severity_band(7.11, ["conn", "dns", "tls"]) == "high"
+    # A row below the bar is never decorated up: the grouping contract should refuse it.
+    assert severity_band(2.9, ["conn", "dns"]) == "low"
+    # Duplicate names are one family, not two votes.
+    assert severity_band(3.42, ["flow", "flow"]) == "low"
+
+
+def test_a_grouped_ripple_ships_the_band_the_page_renders():
+    ripples = group_evidence(
+        [_evidence("dns_volume", "dns", 0.006, samples=103),
+         _evidence("conn_volume", "conn", 0.005, samples=103)],
+        monitored=NETS,
+    )
+    assert len(ripples) == 1
+    row = ripples[0].as_dict()
+
+    assert row["severity"] == "medium"
+    assert row["severity"] == severity_band(row["score"], row["families"])

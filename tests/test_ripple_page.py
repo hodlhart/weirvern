@@ -160,3 +160,52 @@ def test_an_empty_window_keeps_the_payloads_window_and_the_scale_report():
     assert out["baseline"]["6h"]["baseline_windows"] == 27
     assert out["evidence"]["rows"] == 0
     assert out["monitored_networks"] == ["198.51.100.0/24"]
+    # THE BANDS TRAVEL EVEN WHEN THERE ARE NO ROWS: the legend is part of the page, and the
+    # page must not need a second source for the thresholds.
+    assert out["severity_bands"] == ripple_evidence.severity_bands()
+
+
+def test_the_graph_payload_carries_the_same_ripple_rows_and_bands(monkeypatch):
+    """The Network tab joins the SAME grouping the Ripples tab renders, at the graph's window."""
+    from weirvern.admin import assets
+
+    graph = {"available": True, "reason": "", "hours": 12, "nodes": [{"id": "198.51.100.5"}],
+             "edges": [], "total_edges": 0, "truncated": False}
+    rows = [{"host": "198.51.100.5", "window_start": "2026-11-20T09:00:00",
+             "score": 4.29, "families": ["conn", "dns"], "severity": "medium",
+             "single_family": False, "explanation": "ripple", "evidence": []}]
+    seen = {}
+
+    def fake_overview(client, *, hours):
+        seen["hours"] = hours
+        return {"available": True, "reason": "", "window_hours": hours, "ripples": rows,
+                "severity_bands": ripple_evidence.severity_bands()}
+
+    monkeypatch.setattr(assets, "connection_graph", lambda client, hours: dict(graph))
+    monkeypatch.setattr(ripple_evidence, "overview", fake_overview)
+
+    out = payloads.graph(object(), hours=24, tracked=[])
+
+    assert seen["hours"] == 12, "the graph's narrowed window must drive the ripple read"
+    assert out["ripples"] == rows
+    assert out["ripple_available"] is True
+    assert out["ripple_window_hours"] == 12
+    assert out["severity_bands"] == ripple_evidence.severity_bands()
+    assert out["severity_bands"]["medium"]["min_score"] == 4.0
+    assert out["severity_bands"]["high"]["min_score"] == 6.0
+
+
+def test_the_anomaly_payload_ships_the_fused_status_the_header_prints():
+    """The ML signpost's numbers ride with the rows, so the page never recomputes them."""
+    from weirvern.admin import web_api
+
+    out = web_api.anomalies_payload(
+        [{"severity": "medium", "anomaly_score": 0.91}],
+        fused={"score": 0.91, "target": 0.85, "detectors": ["DBSCAN", "Isolation Forest"]},
+    )
+
+    assert out["fused"] == {"score": 0.91, "target": 0.85,
+                            "detectors": ["DBSCAN", "Isolation Forest"]}
+    # No fused block supplied (an older caller) is a NAMED empty, not a missing key.
+    assert web_api.anomalies_payload([])["fused"] == {
+        "score": None, "target": None, "detectors": []}

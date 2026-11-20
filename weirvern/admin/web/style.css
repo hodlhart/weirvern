@@ -446,6 +446,71 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 #ripples-table { table-layout: fixed; }
 #ripples-table td { vertical-align: top; }
 #ripples-table td.rp-why { overflow-wrap: anywhere; }
+/* THE ROW'S RANK IS AN EDGE, NOT A RECOLOURED ROW: the score and the chip carry the hue; the
+   inset line makes the order scannable without turning the explanation into orange prose. */
+tr.rp-sev-high { box-shadow: inset 3px 0 0 var(--sev-high); }
+tr.rp-sev-medium { box-shadow: inset 3px 0 0 var(--sev-medium); }
+tr.rp-sev-low { box-shadow: inset 3px 0 0 var(--muted); }
+#ripples-table td.rp-score { font-family: var(--mono); font-weight: 600; }
+#ripples-table td.rp-sevcell { white-space: nowrap; }
+
+/* RIPPLES ON A PHONE (2026-11-20). Below the phone breakpoint the six fixed columns cannot
+ * fit, and the old five-column table summed to 480px inside a 346px box: the explanation
+ * column collapsed to 0px, which made ONE row 4,497px tall and pushed the other rows below
+ * an apparently empty page. The table is replaced by one stacked card per ripple; nothing in
+ * the card has a fixed width, so the explanation wraps instead of being clipped. */
+.rp-cards { display: none; }
+.rp-card {
+  display: flex; flex-direction: column; gap: 6px;
+  min-height: 44px; min-width: 0; padding: 12px;
+  margin: 0 0 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--border-solid); border-radius: var(--r-md);
+  overflow-wrap: anywhere;
+}
+.rp-card.clickable { cursor: pointer; }
+.rp-card:last-child { margin-bottom: 0; }
+.rp-card:hover { background: var(--hover); }
+.rp-card:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.rp-card.rp-sev-high { border-left-color: var(--sev-high); }
+.rp-card.rp-sev-medium { border-left-color: var(--sev-medium); }
+.rp-card.rp-sev-low { border-left-color: var(--muted); }
+.rp-card-head, .rp-card-meta, .rp-card-foot {
+  display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; min-width: 0;
+}
+.rp-card-head { justify-content: space-between; align-items: flex-start; }
+.rp-card-foot { justify-content: space-between; }
+.rp-card-host { font-family: var(--mono); font-size: var(--fs-3); color: var(--fg);
+  overflow-wrap: anywhere; min-width: 0; }
+.rp-card-when { color: var(--muted); }
+.rp-card-score { font-family: var(--mono); font-size: var(--fs-4); font-weight: 600; }
+.rp-card-fams { color: var(--muted); font-size: var(--fs-1); }
+.rp-card-why { margin: 0; color: var(--fg-2); overflow-wrap: anywhere; }
+.rp-card-cue { color: var(--accent); font-size: var(--fs-1); white-space: nowrap; }
+/* THE SEVERITY CHIP IS THE HOUSE GRAMMAR: colour + glyph + word, the class names the anomaly
+   tab already uses (sev-high / sev-medium / sev-low), and a border that inherits the hue. */
+.rp-sev-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  padding: 4px 8px; border: 1px solid currentColor; border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: var(--fs-1); line-height: 1; white-space: nowrap;
+}
+.rp-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  margin: 8px 0 12px; padding: 8px 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md);
+  font-size: var(--fs-1); color: var(--muted);
+}
+.rp-legend-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.rp-legend-text { overflow-wrap: anywhere; }
+.rp-legend-note { flex: 1 1 220px; min-width: 0; }
+/* THE ML SIGNPOST beside the ripple count: a quiet chip, not a second heading. */
+.rp-head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.rp-ml { height: auto; min-height: 24px; padding: 3px 9px; border: 1px solid var(--border-solid);
+  background: var(--surface-2); color: var(--muted); font-size: var(--fs-1); font-weight: 400; }
+.rp-ml:hover { color: var(--fg); border-color: var(--accent); }
+#an-fused-line { margin: 2px 0 10px; }
+
 #rp-empty { margin: 4px 0 10px; padding: 10px 12px; border-left: 3px solid var(--accent);
             background: var(--surface-2); }
 #rp-empty p { margin: 0 0 6px; }
@@ -1011,6 +1076,19 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .graph .node text { font-family: var(--mono); font-size: var(--fs-1); fill: var(--muted); }
 .graph .node.selected circle { stroke: var(--accent); stroke-width: 3; }
 .graph .node.selected text { fill: var(--fg); }
+/* THE RIPPLE HALO (2026-11-20). A second circle under the node, in the same severity tokens
+   the Ripples tab uses; the title/aria-label carries the score and families, so the ring is
+   never the only encoding. */
+.graph .node .node-ripple-ring { stroke-width: 2; stroke-dasharray: 3 2; opacity: .95; }
+.graph .node .node-ripple-ring.rp-sev-high { stroke: var(--sev-high); }
+.graph .node .node-ripple-ring.rp-sev-medium { stroke: var(--sev-medium); }
+.graph .node .node-ripple-ring.rp-sev-low { stroke: var(--muted); }
+/* The Network table's Ripple column. A cell with no ripple is EMPTY, never a zero chip. */
+.nw-ripple-cell { white-space: nowrap; width: 92px; }
+.nw-ripple-chip.clickable { cursor: pointer; }
+.rp-link { background: none; border: 0; padding: 0; height: auto; color: var(--accent);
+  font: inherit; }
+.rp-link:hover { text-decoration: underline; }
 /* The map is draggable: grab/grabbing is the affordance, and touch-action keeps a touch
  * drag from scrolling the page instead. */
 .graph .node { cursor: grab; touch-action: none; }
@@ -1277,6 +1355,19 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 #nf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 #nf-chips:empty { display: none; }
 nav { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+/* The strip's overflow cue (see wireTabOverflow): fade only the edge that still hides tabs. */
+#tabs.tab-more-right {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 26px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 26px), transparent);
+}
+#tabs.tab-more-left {
+  -webkit-mask-image: linear-gradient(to right, transparent, black 26px);
+  mask-image: linear-gradient(to right, transparent, black 26px);
+}
+#tabs.tab-more-left.tab-more-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, black 26px, black calc(100% - 26px), transparent);
+  mask-image: linear-gradient(to right, transparent, black 26px, black calc(100% - 26px), transparent);
+}
 nav::-webkit-scrollbar { height: 6px; }
 nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 nav::-webkit-scrollbar-track { background: transparent; }
@@ -1781,3 +1872,13 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
 .nz-field select, .nz-field input { width: 100%; }
 .nz-field-hint { display: block; margin-top: 4px; }
+
+/* RIPPLES ON A PHONE (2026-11-20). Below the phone breakpoint the six fixed columns cannot
+ * fit, and the old five-column table summed to 480px inside a 346px box: the explanation
+ * column collapsed to 0px, which made ONE row 4,497px tall and pushed the other rows below
+ * an apparently empty page. Hiding JUST the table leaves the wrapper at zero height; the
+ * cards below it are the phone reading. Above the breakpoint the table is unchanged. */
+@media (max-width: 720px) {
+  #ripples-table { display: none; }
+  .rp-cards { display: block; }
+}

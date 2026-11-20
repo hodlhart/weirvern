@@ -116,7 +116,8 @@ def health_payload(report) -> dict:
 def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
                       discipline: dict | None = None,
                       watch_error: str | None = None,
-                      total_unfiltered: int | None = None) -> dict:
+                      total_unfiltered: int | None = None,
+                      fused: dict | None = None) -> dict:
     """Serialise anomaly rows plus the severity tiles' counts.
 
     An OBJECT now, not a bare list (2026-10-16): the page's header needs how many anomalies carry
@@ -152,6 +153,9 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
             # None when the read failed -- the line then omits the "of Y" rather than inventing it.
             "total_unfiltered": total_unfiltered,
             "watch_error": watch_error,
+            # THE FUSED-SCORE STATUS: the strongest row, the configured bar, and every detector
+            # that contributed to the rows. One sentence on the page, not a second derivation.
+            "fused": fused or {"score": None, "target": None, "detectors": []},
             "discipline": discipline or {
                 "available": False, "reason": "fired/acted-on counts were not read"},
             "severity_counts": severity_counts or {

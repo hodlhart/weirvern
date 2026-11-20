@@ -2465,6 +2465,68 @@ function anRenderSeverity(sc) {
   }
 }
 
+/** THE ML SIGNPOST IN THE RIPPLES HEADER (operator, 2026-11-20).
+ *
+ * The model list sits below the ripples; on a phone the old clipped table buried it, so the
+ * tab read as "only ripples". The line is drawn from the SAME `/api/anomalies` payload the
+ * list renders, which is why its count and severity breakdown cannot disagree with the rows.
+ * It is PRESENT AT ZERO: a silent engine must look silent, not absent.
+ */
+function anRenderMlLine(payload) {
+  const btn = document.getElementById("rp-ml");
+  if (!btn) return;
+  const rows = (payload && payload.rows) || [];
+  const counts = {};
+  for (const row of rows) {
+    const sev = String(row.severity || "unknown").toLowerCase();
+    counts[sev] = (counts[sev] || 0) + 1;
+  }
+  const order = ["critical", "high", "medium", "low", "unknown"];
+  const parts = order.filter((s) => counts[s]).map((s) => `${counts[s]} ${s}`);
+  if (payload && payload.available === false) {
+    btn.textContent = `model detections unavailable — ${payload.reason || "the read failed"}`;
+  } else if (!rows.length) {
+    btn.textContent = "0 model detections — the ML engine returned no scored rows in this window";
+  } else {
+    btn.textContent = `${rows.length} model detection${rows.length === 1 ? "" : "s"}` +
+      (parts.length ? ` (${parts.join(", ")})` : "");
+  }
+  btn.classList.remove("hidden");
+  btn.setAttribute("title", "scroll to the model anomalies list");
+}
+
+/** The fused-score sentence above the list. Numbers, not a mood. */
+function anRenderFusedLine(payload) {
+  const box = document.getElementById("an-fused-line");
+  if (!box) return;
+  const rows = (payload && payload.rows) || [];
+  const fused = (payload && payload.fused) || {};
+  const hasTarget = fused.target !== null && fused.target !== undefined
+    && Number.isFinite(Number(fused.target));
+  const hasScore = fused.score !== null && fused.score !== undefined
+    && Number.isFinite(Number(fused.score));
+  const target = hasTarget ? Number(fused.target).toFixed(2) : null;
+  const score = hasScore ? Number(fused.score).toFixed(3) : null;
+  const detectors = Array.isArray(fused.detectors) ? fused.detectors : [];
+  if (payload && payload.available === false) {
+    box.textContent = `The model list could not be read: ${payload.reason || "no reason was reported"}.`;
+    return;
+  }
+  if (!rows.length) {
+    box.textContent = `No fused-score detection in this window` +
+      (target ? `; the strong-signal target is ${target}.` : ".") +
+      " That is a quiet ML read, not an absent one.";
+    return;
+  }
+  box.textContent = `Strongest fused score ${score || "—"}` +
+    (target ? ` against the ${target} strong-signal target` : "") + `; ` +
+    (detectors.length
+      ? `${detectors.length} detector${detectors.length === 1 ? "" : "s"} contributed: ${detectors.join(", ")}.`
+      : "no detector name was carried.") +
+    ` The ${rows.length} grouped row${rows.length === 1 ? "" : "s"} below are corroboration, ` +
+    `not ${rows.length} incident${rows.length === 1 ? "" : "s"}.`;
+}
+
 function anSetFilter(field, value) {
   AN_FILTERS[field] = String(value || "");
   anRenderChips();
@@ -2498,7 +2560,7 @@ function anClearAllFilters() {
  * any kind. The list is paginated with the house pager because the window can hold a day of
  * ripples, and every empty answer names the measurement that produced it.
  */
-const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25 };
+const RIPPLES_STATE = { data: null, hours: null, page: 1, pageSize: 25, bands: null };
 let RIPPLE_SHEET = null;
 
 /** A server timestamp in milliseconds. Naive ISO strings are UTC, like the server's clock. */
@@ -2543,6 +2605,89 @@ function rippleP(value, atFloor) {
   const p = Number(value);
   if (!Number.isFinite(p)) return "not measured";
   return atFloor ? `<= ${p.toPrecision(3)} (floor)` : p.toPrecision(3);
+}
+
+/** THE ONE BAND RESOLVER FOR A ROW: the server's band, or one derived from the payload's table.
+ *
+ * The server computes `severity` with `ripple.severity_band()` from the same score and family
+ * list it ships; this function never restates a threshold. The fallback exists only for an
+ * older payload that carries `severity_bands` but no per-row band, and it reads those numbers.
+ */
+function rippleBand(row, bands) {
+  const carried = String((row && row.severity) || "").toLowerCase();
+  if (carried === "low" || carried === "medium" || carried === "high") return carried;
+  const score = Number(row && row.score);
+  const families = Array.isArray(row && row.families) ? row.families.length : 0;
+  const b = bands || {};
+  const high = b.high || {};
+  const medium = b.medium || {};
+  if (!Number.isFinite(score)) return "low";
+  if ((high.min_families !== undefined && families >= Number(high.min_families)) ||
+      (high.min_score !== undefined && score >= Number(high.min_score))) return "high";
+  if ((medium.min_families !== undefined && families >= Number(medium.min_families)) ||
+      (medium.min_score !== undefined && score >= Number(medium.min_score))) return "medium";
+  return "low";
+}
+
+/** One ripple as a stacked card, used below the phone breakpoint where the table cannot fit.
+ * The whole card is the tap target (>=44px, see .rp-card) and the only control it carries. */
+function rippleCard(row, band) {
+  const label = `open the evidence for the ripple on ${row.host || "this host"}`;
+  const rippleClass = "rp-sev-" + band;
+  const card = el("article", {
+    class: "rp-card clickable " + rippleClass,
+    attrs: { tabindex: "0", role: "button", "aria-label": label },
+  }, [
+    el("div", { class: "rp-card-head" }, [
+      el("span", { class: "rp-card-host mono", text: row.host || "—" }),
+      el("span", { class: "rp-sev-chip sev-" + band, text: sevText(band) }),
+    ]),
+    el("div", { class: "rp-card-meta" }, [
+      el("span", { class: "rp-card-when mono", text: fmtCompactTime(row.window_start) }),
+      el("span", { class: "rp-card-score sev-" + band, text: Number(row.score || 0).toFixed(2) }),
+      el("span", { class: "rp-card-fams mono", text: (row.families || []).join(" / ") || "no family named" }),
+    ]),
+    el("p", { class: "rp-card-why", text: row.explanation || "—" }),
+    el("div", { class: "rp-card-foot" }, [
+      el("span", { class: "muted", text: "score = sum of -log10 p" }),
+      el("span", { class: "rp-card-cue", text: "Evidence \u203a" }),
+    ]),
+  ]);
+  card.addEventListener("click", () => openRippleSheet(row, card));
+  card.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openRippleSheet(row, card); }
+  });
+  return card;
+}
+
+/** The criticality key. Every threshold is read from the payload's `severity_bands`. */
+function renderRippleLegend(data, rows) {
+  const box = document.getElementById("rp-legend");
+  if (!box) return;
+  box.replaceChildren();
+  const bands = (data && data.severity_bands) || null;
+  if (!rows.length || !bands) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const score = (v) => Number.isFinite(Number(v)) ? Number(v).toFixed(1) : "—";
+  const count = (v) => Number.isFinite(Number(v)) ? String(Number(v)) : "—";
+  const bar = bands.bar || {};
+  const low = bands.low || {};
+  const medium = bands.medium || {};
+  const high = bands.high || {};
+  const items = [
+    ["low", `${count(low.min_families)} family, score ${score(low.min_score)}–${score(medium.min_score)}`],
+    ["medium", `${count(medium.min_families)} families at p≤${bar.family_max_p}, or score ${score(medium.min_score)}–${score(high.min_score)}`],
+    ["high", `${count(high.min_families)}+ families, or score ≥${score(high.min_score)}`],
+  ];
+  for (const [name, text] of items) {
+    box.appendChild(el("span", { class: "rp-legend-item" }, [
+      el("span", { class: "rp-sev-chip sev-" + name, text: sevText(name) }),
+      el("span", { class: "rp-legend-text", text }),
+    ]));
+  }
+  box.appendChild(el("span", { class: "rp-legend-note",
+    text: `Score = sum of -log10 p over the strongest member of each family; the ripple bar is ` +
+      `${score(bar.min_score)}.` }));
 }
 
 /** One scale's baseline, in the engine's own terms: windows it has, minimum it needs. */
@@ -2656,29 +2801,38 @@ function renderRippleEmpty(data) {
 
 function renderRippleRows(rows) {
   const body = document.querySelector("#ripples-table tbody");
-  if (!body) return;
-  body.replaceChildren();
+  const cards = document.getElementById("ripples-cards");
+  if (!body && !cards) return;
+  if (body) body.replaceChildren();
+  if (cards) cards.replaceChildren();
   const size = RIPPLES_STATE.pageSize;
   const pages = Math.max(1, Math.ceil(rows.length / size));
   if (RIPPLES_STATE.page > pages) RIPPLES_STATE.page = pages;
   if (RIPPLES_STATE.page < 1) RIPPLES_STATE.page = 1;
   const from = (RIPPLES_STATE.page - 1) * size;
   for (const r of rows.slice(from, from + size)) {
-    const tr = el("tr", { class: "clickable",
-      attrs: { "aria-label": `open the evidence for the ripple on ${r.host || "this host"}` } }, [
-      el("td", { class: "mono", text: r.host || "—" }),
-      el("td", { class: "mono", text: fmtCompactTime(r.window_start) }),
-      el("td", { class: "num", text: Number(r.score || 0).toFixed(2) }),
-      el("td", { class: "rp-why", text: r.explanation || "—" }),
-      el("td", { class: "muted", text: (r.families || []).join(" / ") || "—" }),
-    ]);
-    tr.tabIndex = 0;
-    tr.setAttribute("role", "button");
-    tr.addEventListener("click", () => openRippleSheet(r, tr));
-    tr.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openRippleSheet(r, tr); }
-    });
-    body.appendChild(tr);
+    const band = rippleBand(r, RIPPLES_STATE.bands);
+    if (body) {
+      const tr = el("tr", { class: `clickable rp-sev-${band}`,
+        attrs: { "aria-label": `open the evidence for the ripple on ${r.host || "this host"}` } }, [
+        el("td", { class: "mono", text: r.host || "—" }),
+        el("td", { class: "mono", text: fmtCompactTime(r.window_start) }),
+        el("td", { class: "num" }, [
+          el("span", { class: "rp-score sev-" + band, text: Number(r.score || 0).toFixed(2) }),
+        ]),
+        el("td", { class: "rp-sevcell" }, [sevCell(band)]),
+        el("td", { class: "rp-why", text: r.explanation || "—" }),
+        el("td", { class: "muted", text: (r.families || []).join(" / ") || "—" }),
+      ]);
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.addEventListener("click", () => openRippleSheet(r, tr));
+      tr.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openRippleSheet(r, tr); }
+      });
+      body.appendChild(tr);
+    }
+    if (cards) cards.appendChild(rippleCard(r, band));
   }
   renderPager("rp-pager", rows.length, RIPPLES_STATE.page, pages, (next) => {
     RIPPLES_STATE.page = next;
@@ -2688,6 +2842,7 @@ function renderRippleRows(rows) {
 
 function renderRipplePage(data) {
   RIPPLES_STATE.data = data || null;
+  RIPPLES_STATE.bands = (data && data.severity_bands) || null;
   const nextHours = Number((data && data.window_hours) || 0) || null;
   // THE PAGE IS KEPT ACROSS REFRESHES, and reset only when the window changed: a 15-second
   // refresh must not throw an operator off page 3 of the same window.
@@ -2696,11 +2851,15 @@ function renderRipplePage(data) {
   const note = document.getElementById("rp-note");
   const count = document.getElementById("rp-count");
   const body = document.querySelector("#ripples-table tbody");
+  const cards = document.getElementById("ripples-cards");
+  const legend = document.getElementById("rp-legend");
   const empty = document.getElementById("rp-empty");
   const pager = document.getElementById("rp-pager");
   if (pager) pager.replaceChildren();
-  if (!body) return;
-  body.replaceChildren();
+  if (legend) { legend.replaceChildren(); legend.classList.add("hidden"); }
+  if (!body && !cards) return;
+  if (body) body.replaceChildren();
+  if (cards) cards.replaceChildren();
   if (empty) { empty.replaceChildren(); empty.classList.add("hidden"); }
   if (!data) {
     if (note) note.textContent = "Ripple evidence unavailable: no payload was returned. That is not the same as a quiet network.";
@@ -2712,7 +2871,7 @@ function renderRipplePage(data) {
     if (note) note.textContent = "Ripple evidence unavailable: " + (data.reason || "the read failed") +
       " — that is not the same as a quiet network. The model anomalies below are stored detections, not a substitute for this read.";
     if (count) count.textContent = "unavailable";
-    body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 5 },
+    if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
       text: "The ripple store could not be read. Read the named reason above, not this empty table." })]));
     if (empty) {
       empty.appendChild(el("p", {}, [
@@ -2732,12 +2891,13 @@ function renderRipplePage(data) {
       : `No ripple formed in the last ${hours}h. The scales and baseline counts below say what the engine could measure. Read-only: this page does not alert.`;
   }
   if (!rows.length) {
-    body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 5 },
+    if (body) body.appendChild(el("tr", {}, [el("td", { class: "empty", attrs: { colspan: 6 },
       text: `No ripple formed in the last ${hours}h — the scale and baseline detail is above.` })]));
     renderRippleEmpty(data);
     if (empty) empty.classList.remove("hidden");
   } else {
     renderRippleRows(rows);
+    renderRippleLegend(data, rows);
   }
   if (typeof syncViewHeaderCounts === "function") syncViewHeaderCounts();
 }
@@ -2958,6 +3118,8 @@ async function loadAnomalies() {
   const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly, hours) + anQuery()
     + (watchedOnly ? "&watched=1" : ""));
   anRenderSeverity(payload.severity_counts);
+  anRenderMlLine(payload);
+  anRenderFusedLine(payload);
   anRenderDiscipline(payload.discipline);
   await loadDetectors();
   // THE FILTER'S HONESTY RIDES THE PAYLOAD: when the watch store could not be read, the
@@ -5173,6 +5335,24 @@ function lockTabsToTop() {
   window.addEventListener("resize", set);
 }
 
+/** THE TAB STRIP'S OVERFLOW CUE. The strip already scrolls horizontally, but on a phone the
+ * scrollbar is an overlay that appears only while dragging -- a tab cut at the edge (measured:
+ * "Flo…" at 390px) looked like a truncated label, not the next tab. A fade at the edge that
+ * still has content is the same strip behaviour with a visible affordance; it toggles itself
+ * off at the end and is absent at widths where every tab fits. */
+function wireTabOverflow() {
+  const nav = document.getElementById("tabs");
+  if (!nav) return;
+  const sync = () => {
+    const moreRight = nav.scrollWidth - nav.clientWidth - nav.scrollLeft > 2;
+    nav.classList.toggle("tab-more-right", moreRight);
+    nav.classList.toggle("tab-more-left", nav.scrollLeft > 2);
+  };
+  nav.addEventListener("scroll", sync, { passive: true });
+  window.addEventListener("resize", sync);
+  sync();
+}
+
 function wrapTables() {
   for (const table of document.querySelectorAll("main table")) {
     const parent = table.parentElement;
@@ -6089,6 +6269,18 @@ function installViewHeaders() {
       refresh.addEventListener("click", () => refreshAll());
       head.appendChild(refresh);
     }
+    // THE ML SIGNPOST BELONGS IN THE PAGE HEADER, beside the ripple count. The card's
+    // view-head is nested inside the card, so it is not the generated view header; move the
+    // button into the real one rather than duplicating its text. The card keeps #rp-count,
+    // which syncViewHeaderCounts already copies into the header's own count.
+    if (key === "anomalies") {
+      const ml = document.getElementById("rp-ml");
+      const primary = head.querySelector("button.primary");
+      if (ml && ml.parentElement !== head) {
+        if (primary) head.insertBefore(ml, primary);
+        else head.appendChild(ml);
+      }
+    }
     for (const h2 of view.querySelectorAll("h2")) vhDemote(h2);
     // settingsAccordion() wired the card headings before they were demoted; its listeners
     // stayed on the removed <h2>. Re-wire the settings h3.acc headings it created.
@@ -6132,6 +6324,26 @@ function scheduleViewHeaderSync() {
     VH_SYNC_TIMER = null;
     syncViewHeaderCounts();
   }, 40);
+}
+
+/** The ML signpost's click: land on the model list, never change the window. If the queue is
+ * showing Incidents/Leads, switch it back to All anomalies so the list the signpost counts is
+ * the list the operator sees. */
+function wireMlSignpost() {
+  const btn = document.getElementById("rp-ml");
+  if (!btn || btn.__wired) return;
+  btn.__wired = true;
+  btn.addEventListener("click", () => {
+    const card = document.getElementById("an-card");
+    if (card && card.scrollIntoView) {
+      try { card.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_e) { /* jsdom */ }
+    }
+    const mode = document.getElementById("f-queue-mode");
+    if (mode && mode.value !== "raw") {
+      mode.value = "raw";
+      loadAnomalies().catch(() => {});
+    }
+  });
 }
 
 async function boot() {
@@ -6191,6 +6403,8 @@ function showSessionNote() {
 async function bootAuthed() {
   showSessionNote();
   installViewHeaders();
+  wireTabOverflow();
+  wireMlSignpost();
   if (window.MutationObserver && !window.__vhObserver) {
     window.__vhObserver = new MutationObserver(scheduleViewHeaderSync);
     window.__vhObserver.observe(document.body, { subtree: true, childList: true, characterData: true });

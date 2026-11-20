@@ -64,6 +64,62 @@ DEFAULT_FAMILY_MAX_P = 0.01
 DEFAULT_EXTREME_P = 0.001
 DEFAULT_MIN_RIPPLE_SCORE = 3.0
 
+
+#: THE CRITICALITY BANDS (2026-11-20). THE BAR THEY DESCRIBE IS THE RIPPLE BAR ABOVE:
+#: two DISTINCT families at p <= `DEFAULT_FAMILY_MAX_P` (0.01), or ONE family at
+#: `DEFAULT_EXTREME_P` (0.001), with `score = sum(-log10 p) >= DEFAULT_MIN_RIPPLE_SCORE` (3.0).
+#: Every threshold below is that bar's own arithmetic, not a new number:
+#:
+#:   * two families at the family bar score 2 * -log10(0.01) = 4.0;
+#:   * three families at the family bar score 3 * -log10(0.01) = 6.0, which is also two
+#:     families at the extreme bar.
+#:
+#: So a single family that only just clears the 3.0 bar is LOW; the standard two-family ripple
+#: is MEDIUM (as is one family whose own surprise reaches 4.0); three or more families, or a
+#: score at/above 6.0, is HIGH. `severity_bands()` is the ONE definition; the API exposes its
+#: return value and the page renders those numbers rather than restating them in JavaScript.
+def severity_bands() -> dict[str, dict[str, Any]]:
+    """The ripple bar as criticality bands, in the engine's own numbers.
+
+    The returned table is serialised into `/api/ripples` as `severity_bands`; a UI that prints
+    a threshold reads it from there. `bar` repeats the grouping constants so the legend can
+    name the family p-value the bar uses without importing them into the browser.
+    """
+    family_score = -math.log10(DEFAULT_FAMILY_MAX_P)
+    return {
+        "low": {"min_score": DEFAULT_MIN_RIPPLE_SCORE, "min_families": 1},
+        "medium": {"min_score": round(2 * family_score, 6),
+                   "min_families": DEFAULT_MIN_FAMILIES},
+        "high": {"min_score": round(3 * family_score, 6), "min_families": 3},
+        "bar": {"family_max_p": DEFAULT_FAMILY_MAX_P,
+                "extreme_p": DEFAULT_EXTREME_P,
+                "min_score": DEFAULT_MIN_RIPPLE_SCORE,
+                "min_families": DEFAULT_MIN_FAMILIES},
+    }
+
+
+def severity_band(score: float, families: Iterable[str] | None = None) -> str:
+    """One band for one ripple, from `score` and the distinct `families` behind it.
+
+    A row whose score is below the bar is LOW rather than decorated: the grouping contract
+    should have refused it, and a display must not promote a number the engine would not.
+    The band names match the console's existing severity classes (`sev-low`/`medium`/`high`).
+    """
+    bands = severity_bands()
+    count = len(set(families or ()))
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return "low"
+    if not math.isfinite(value) or value + 1e-9 < bands["low"]["min_score"]:
+        return "low"
+    if count >= bands["high"]["min_families"] or value + 1e-9 >= bands["high"]["min_score"]:
+        return "high"
+    if count >= bands["medium"]["min_families"] or value + 1e-9 >= bands["medium"]["min_score"]:
+        return "medium"
+    return "low"
+
+
 #: CHANNEL -> FAMILY. A family is ONE collection pipeline observing ONE population of events.
 #: `flow_bytes` and `flow_volume` are the byte sum and the row count of the SAME flow records;
 #: they are two units for one measurement, so they can never corroborate each other. The same
@@ -414,6 +470,7 @@ class Ripple:
             "channels": list(self.channels),
             "families": list(self.families),
             "single_family": self.single_family,
+            "severity": severity_band(self.score, self.families),
             "explanation": self.explanation,
             "evidence": [item.as_dict() for item in self.evidence],
         }
@@ -611,4 +668,4 @@ __all__ = ["CHANNEL_FAMILIES", "ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_
            "MIN_BASELINE_SAMPLES", "RIPPLE_WINDOW_S", "Ripple", "RippleResult", "SCALES",
            "channel_family", "empirical_pvalue", "empirical_pvalue_two_sided",
            "evidence_from_shadow", "fisher_combined_p", "fuse", "group_evidence",
-           "min_baseline_samples", "pvalue_floor"]
+           "min_baseline_samples", "pvalue_floor", "severity_band", "severity_bands"]
