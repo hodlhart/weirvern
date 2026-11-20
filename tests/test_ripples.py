@@ -272,7 +272,7 @@ def test_one_family_at_the_floor_is_not_a_ripple_when_it_cannot_reach_the_bar():
 def test_flow_bytes_and_flow_volume_are_one_family_and_cannot_corroborate():
     """The exact 2026-11-19 defect: two units for the same flows counted as two channels."""
     events = {
-        "weirvern.flows_window_endpoint": _series("flow", counts={0: 6}, bytes_for={0: 5000.0}),
+        "weirvern.flows_window": _series("flow", counts={0: 6}, bytes_for={0: 5000.0}),
     }
     items = ripple_evidence.compute(FakeClient(events), now=NOW)
     significant = [item for item in items if item.pvalue <= 0.01]
@@ -310,7 +310,10 @@ def test_an_inbound_only_host_now_has_flow_evidence():
 
 def test_a_host_that_only_sends_is_not_double_counted():
     """One flow, one outbound row. The inbound channel must stay empty for a send-only host."""
-    events = {"weirvern.flows_window_endpoint": _series("flow", counts={0: 6}, base=6)}
+    events = {
+        "weirvern.flows_window": _series("flow", counts={0: 6}, base=6),
+        "weirvern.flows_window_endpoint": _series("flow", counts={0: 6}, base=6),
+    }
     items = ripple_evidence.compute(FakeClient(events), now=NOW)
 
     volume = [item for item in items if item.channel == "flow_volume" and item.scale == "1h"]

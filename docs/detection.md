@@ -158,12 +158,15 @@ information rather than a recount. The directions are one FAMILY in the ripple l
 volume cannot corroborate outbound volume, because they are the same flow records seen from
 opposite ends.
 
-The ripple flow channels read it through `flow_windows.folded_endpoint()` (merge states plus the
-time predicate in one select, the rule that keeps part pruning working). The **detection sweep,
-candidate matrix, specialists, scope profiling and host-hour detector stay on `flows_window`**:
-their unit is the per-host outbound window their models were fitted on, and changing that
-population mid-flight would reshape every baseline and score. The endpoint table is a ripple and
-Network-view source, and its retention is on the same derived window as everything else.
+The ripple **inbound** channels read it through `flow_windows.folded_endpoint()` (merge states plus
+the time predicate in one select, the rule that keeps part pruning working). The three original
+flow channels stay on `flows_window`: it holds the same outbound population with a longer retained
+history, and moving them to the younger endpoint table would cut their baseline and silently stop
+their evidence. The **detection sweep, candidate matrix, specialists, scope profiling and
+host-hour detector also stay on `flows_window`**: their unit is the per-host outbound window their
+models were fitted on, and changing that population mid-flight would reshape every baseline and
+score. The endpoint table is a ripple and Network-view source, and its retention is on the same
+derived window as everything else.
 
 ### Shadow calibration and challengers
 

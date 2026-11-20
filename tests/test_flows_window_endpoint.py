@@ -210,13 +210,18 @@ def test_the_flow_channels_declare_both_directions_and_the_old_names_survive():
     by_name = {spec.channel: spec for spec in ripple_evidence.FLOW_SPECS}
     assert set(by_name) == {"flow_volume", "flow_bytes", "flow_dst_diversity",
                             "flow_in_volume", "flow_in_bytes", "flow_in_peer_diversity"}
+    # THE ORIGINAL THREE DO NOT MOVE. `flows_window` holds the same outbound population with a
+    # longer retained history; moving them to the younger endpoint table would cut their baseline
+    # and silently stop their evidence (measured on the live box: 7 days of window history
+    # against 3.4 days of raw flows).
     for name in ("flow_volume", "flow_bytes", "flow_dst_diversity"):
-        assert by_name[name].direction == "out"
-        assert by_name[name].host_column == "host_addr"
-        assert by_name[name].table == TABLE
+        assert by_name[name].direction is None
+        assert by_name[name].host_column == "src_addr"
+        assert by_name[name].table == "weirvern.flows_window"
     for name in ("flow_in_volume", "flow_in_bytes", "flow_in_peer_diversity"):
         assert by_name[name].direction == "in"
         assert by_name[name].table == TABLE
+
     # One family: an inbound and an outbound view of the same flow records cannot corroborate.
     assert {CHANNEL_FAMILIES[name] for name in by_name} == {"flow"}
 

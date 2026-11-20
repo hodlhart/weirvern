@@ -63,9 +63,9 @@ SOURCE endpoint of a flow. `flows_window_endpoint` (schema 061) is the parallel 
 (window_start, host_addr, direction): 'out' rows describe a flow's source (the same population as
 `flows_window`), 'in' rows describe its destination. That second direction is what lets an inbound
 flow be attributed to the internal host that received it, instead of being dropped. The two tables
-have the same aggregate-state shapes and the same retention policy; the endpoint table is the one
-the flow channels below read, and a channel declares its direction so the two directions are never
-summed into a number that corresponds to nothing.
+have the same aggregate-state shapes and the same retention policy. The OUTBOUND channels stay on
+`flows_window` -- it holds the same population with a longer retained history -- and the inbound
+channels read the new table, with `direction = 'in'` spliced into the same select as the merge.
 
 WHAT THIS IS NOT. 'in' and 'out' are the two ENDS of one flow record, not two flows. A flow between
 two monitored hosts appears in both directions because each host's behaviour is a different fact. A
@@ -181,28 +181,27 @@ ADDITIVE_KINDS = frozenset({"count", "sum", "ratio"})
 # the reason the other groups are drawn where they are.
 #
 # `flows_window_endpoint` has ONE row per (window, host, direction): 'out' is the source endpoint
-# and 'in' the destination. The three original flow channels keep their names and their exact
-# outbound population, so a stored score and a new one mean the same thing. The three `flow_in_*`
-# channels are the half that did not exist: a host that only receives traffic now has flow
-# evidence instead of nothing.
+# and 'in' the destination. The three ORIGINAL flow channels stay on `flows_window`, which holds
+# the same outbound population with a longer retained history -- moving them to the new table would
+# have cut their baseline to the raw-flow retention and silently stopped their evidence. The three
+# `flow_in_*` channels are the half that did not exist: a host that only receives traffic now has
+# flow evidence instead of nothing.
 FLOW_SPECS: tuple[ChannelSpec, ...] = (
-    # flows_window_endpoint is an AggregatingMergeTree. Reading it with plain `count()` would sum
-    # partial states as if they were values; the `-Merge` combinators are mandatory. The `direction`
-    # declaration puts `direction = 'out'` INSIDE the same select as the merge.
-    ChannelSpec("flow_volume", "flow", "weirvern.flows_window_endpoint", "host_addr",
+    # flows_window is an AggregatingMergeTree. Reading it with plain `count()` would sum partial
+    # states as if they were values; the `-Merge` combinators are mandatory.
+    ChannelSpec("flow_volume", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="count", count_state="flow_count",
-                direction="out",
-                required_columns=("window_start", "host_addr", "direction", "flow_count"),
+                required_columns=("window_start", "src_addr", "flow_count"),
                 scales=EVIDENCE_SCALES, retention_days=7),
-    ChannelSpec("flow_bytes", "flow", "weirvern.flows_window_endpoint", "host_addr",
+    ChannelSpec("flow_bytes", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="sum", count_state="flow_count",
-                sum_state="total_bytes", direction="out",
-                required_columns=("window_start", "host_addr", "direction", "total_bytes"),
+                sum_state="total_bytes",
+                required_columns=("window_start", "src_addr", "total_bytes"),
                 scales=EVIDENCE_SCALES, retention_days=7),
-    ChannelSpec("flow_dst_diversity", "flow", "weirvern.flows_window_endpoint", "host_addr",
+    ChannelSpec("flow_dst_diversity", "flow", "weirvern.flows_window", "src_addr",
                 time_column="window_start", kind="diversity", count_state="flow_count",
-                uniq_state="unique_peer_ips", direction="out",
-                required_columns=("window_start", "host_addr", "direction", "unique_peer_ips"),
+                uniq_state="unique_dst_ips",
+                required_columns=("window_start", "src_addr", "unique_dst_ips"),
                 scales=EVIDENCE_SCALES, retention_days=7),
     # INBOUND. The subject is the destination endpoint, and the peer counted by the diversity
     # channel is the set of senders. Named `flow_in_*` rather than folded into the channels above:

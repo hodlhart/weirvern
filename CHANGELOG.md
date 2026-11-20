@@ -20,11 +20,14 @@ THE OTHER HALF OF THE NETWORK WAS INVISIBLE: A HOST THAT ONLY RECEIVES TRAFFIC H
   as `'in'` with `uniqState(src_addr)`. Each flow reaches the aggregate exactly once per
   direction, so the outbound side is the same population as `flows_window` — the property the
   live parity check uses — and inbound is new information, not a recount.
-- **Six flow channels, two directions.** `flow_volume`, `flow_bytes` and `flow_dst_diversity` now
-  read the endpoint table's `'out'` rows with their names and meaning unchanged; `flow_in_volume`,
-  `flow_in_bytes` and `flow_in_peer_diversity` read the `'in'` rows and attribute them to the
-  receiving host. All six are one FAMILY, so inbound volume cannot corroborate outbound volume —
-  they are one measurement seen from opposite ends.
+- **Six flow channels, two directions — and the old three do not move.** `flow_volume`,
+  `flow_bytes` and `flow_dst_diversity` stay on `flows_window` with their names, population and
+  retained history unchanged; `flow_in_volume`, `flow_in_bytes` and `flow_in_peer_diversity` read
+  the endpoint table's `'in'` rows and attribute them to the receiving host. All six are one
+  FAMILY, so inbound volume cannot corroborate outbound volume — they are one measurement seen
+  from opposite ends. The outbound channels were deliberately NOT moved to the new table: measured
+  on the box, the window table held 7 days while raw flows held 3.4, so moving them would have cut
+  their baseline and stopped their evidence.
 - **The Network tab attributes both endpoints.** No second mapping was added: `/api/graph` already
   carries the `/api/ripples` rows, and the edge chip already takes the higher band of its two
   ends. What was missing was a ripple ROW on the receiving endpoint; the jsdom harness now pins
