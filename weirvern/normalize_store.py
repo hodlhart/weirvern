@@ -15,6 +15,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern import normalize
 from weirvern.admin import timewindow
+from weirvern.models import ripple as _ripple
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +63,19 @@ def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) 
     errors: dict[str, str] = {}
     try:
         res = client.query(
-            "SELECT DISTINCT src_addr, channel, window_start "
+            "SELECT DISTINCT src_addr, channel, family, window_start "
             "FROM weirvern.ml_ripple_evidence FINAL "
             "WHERE window_start >= %(since)s AND window_start <= %(until)s",
             parameters=params,
         )
         for r in getattr(res, "result_rows", None) or []:
-            ripples.add((str(r[0] or ""), str(r[1] or "").lower(), _hour_key(r[2])))
+            # THE EVIDENCE ROW IS KEYED BY CHANNEL, THE FEED LANE BY FAMILY. A stored channel is
+            # `conn_volume`, `dns_nxdomain_ratio`, `flow_bytes` -- not the lane name the feed
+            # uses. Comparing them literally matched NOTHING on the live box (measured
+            # 2026-11-20: 4,225 evidence keys, 0 matches), so every row claimed no ripple. The
+            # canonical map is `ripple.CHANNEL_FAMILIES`, not a second table here.
+            family = _ripple.channel_family(str(r[1] or "").lower(), str(r[2] or "").lower())
+            ripples.add((str(r[0] or ""), family, _hour_key(r[3])))
     except Exception as exc:  # noqa: BLE001 - one source, never the feed
         logger.warning("normalize alert join (ripples) failed: %s", exc)
         errors["ripples"] = f"{type(exc).__name__}: {str(exc)[:120]}"

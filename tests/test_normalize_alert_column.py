@@ -52,7 +52,7 @@ def _row(**over):
 def test_a_ripple_evidence_row_makes_the_row_say_ripple():
     rows = [_row()]
     out = normalize_store._annotate_alerts(
-        _Client(ripples=[("192.0.2.40", "conn", _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
+        _Client(ripples=[("192.0.2.40", "conn_volume", "conn", _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
     assert out["available"] is True
     assert rows[0]["alert_kind"] == "Ripple"
     assert rows[0]["alert_ref"]["ripple_window"].startswith("2026-11-20 08:00")
@@ -70,7 +70,7 @@ def test_a_model_detection_makes_the_row_say_anomaly_with_its_band():
 def test_both_sources_make_the_row_say_both_ripple_first():
     rows = [_row()]
     normalize_store._annotate_alerts(
-        _Client(ripples=[("192.0.2.40", "conn", _dt.datetime(2026, 11, 20, 8))],
+        _Client(ripples=[("192.0.2.40", "conn_volume", "conn", _dt.datetime(2026, 11, 20, 8))],
                 models=[("192.0.2.40", _dt.datetime(2026, 11, 20, 8), "critical")]), rows, hours=24)
     assert rows[0]["alert_kind"] == "Ripple + Anomaly"
     assert rows[0]["alert_band"] == "critical"
@@ -87,11 +87,11 @@ def test_a_row_with_neither_says_a_measured_em_dash():
 def test_a_dns_row_matches_the_dns_channel_only():
     rows = [_row(source="dns", dns_name="example.test", dst_port=0)]
     normalize_store._annotate_alerts(
-        _Client(ripples=[("192.0.2.40", "conn", _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
+        _Client(ripples=[("192.0.2.40", "conn_volume", "conn", _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
     assert rows[0]["alert_kind"] == "—", "a conn ripple is not evidence for a DNS row"
     rows2 = [_row(source="dns", dns_name="example.test", dst_port=0)]
     normalize_store._annotate_alerts(
-        _Client(ripples=[("192.0.2.40", "dns", _dt.datetime(2026, 11, 20, 8))]), rows2, hours=24)
+        _Client(ripples=[("192.0.2.40", "dns_nxdomain_ratio", "dns", _dt.datetime(2026, 11, 20, 8))]), rows2, hours=24)
     assert rows2[0]["alert_kind"] == "Ripple"
 
 
@@ -123,3 +123,31 @@ def test_an_aware_datetime_and_its_iso_string_produce_the_same_hour_key():
     assert rows[0]["alert_kind"] == "Anomaly", (
         "an aware timestamp from ClickHouse did not match the row's ISO string")
     assert rows[0]["alert_band"] == "high"
+
+
+def test_a_real_evidence_channel_matches_through_its_family():
+    """The evidence table stores `conn_volume` / `dns_nxdomain_ratio`, never the lane name.
+
+    MEASURED LIVE 2026-11-20: 4,225 distinct evidence keys and 0 matches, because the join
+    compared the stored channel with the feed's lane ("conn"/"dns") literally. The canonical
+    family map is the one the Alerts ripple page uses.
+    """
+    rows = [_row()]
+    out = normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "conn_volume", "conn",
+                          _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
+    assert out["available"] is True
+    assert rows[0]["alert_kind"] == "Ripple"
+    assert rows[0]["alert_ref"]["ripple_window"].startswith("2026-11-20 08:00")
+
+    dns_rows = [_row(source="dns", dns_name="example.test", dst_port=0)]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "dns_nxdomain_ratio", "dns",
+                          _dt.datetime(2026, 11, 20, 8))]), dns_rows, hours=24)
+    assert dns_rows[0]["alert_kind"] == "Ripple"
+
+    other = [_row()]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "dns_volume", "dns",
+                          _dt.datetime(2026, 11, 20, 8))]), other, hours=24)
+    assert other[0]["alert_kind"] == "—", "a DNS ripple is not evidence for a flow row"
