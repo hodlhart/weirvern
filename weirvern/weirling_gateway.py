@@ -299,6 +299,164 @@ class Gateway:
         finally:
             client.close()
 
+    # ── FLEET SCANNING: capability, claim, result ────────────────────────────────────────────
+    #
+    # Scanning is executed by the weirlings themselves. Three calls, one contract:
+    #   capability: what this unit measured about its own Nmap (and its OS, for the install line)
+    #   next:       claim ONE job that is inside this unit's declared networks
+    #   result:     the measured services/observations, written by the hub's own recorder
+    #
+    # THE SCOPE IS ENFORCED HERE, not on the unit: a compromised or misconfigured agent cannot
+    # claim a segment it does not monitor, because the hub reads the registration and refuses.
+
+    def scan_capability(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            from weirvern import scanner as scanner_mod  # noqa: PLC0415
+
+            status = {
+                "sensor_id": sensor_id,
+                "profile": str(body.get("profile") or "basic")[:16],
+                "nmap_available": bool(body.get("nmap_available")),
+                "nmap_version": str(body.get("nmap_version") or "")[:300],
+                "nmap_path": str(body.get("nmap_path") or "")[:300],
+                "nse_available": bool(body.get("nse_available")),
+                "os_id": str(body.get("os_id") or "")[:64],
+                "os_version": str(body.get("os_version") or "")[:64],
+                "detail": str(body.get("detail") or "")[:500],
+                "privileged": bool(body.get("privileged")),
+                "scan_mode": str(body.get("scan_mode") or "")[:16],
+                "can_install": bool(body.get("can_install")),
+                "sudo_state": str(body.get("sudo_state") or "")[:16],
+            }
+            scanner_mod.write_scanner_status(client, status)
+            return 200, {"ok": True, "sensor_id": sensor_id,
+                         "nmap_available": status["nmap_available"]}
+        finally:
+            client.close()
+
+    def _scan_networks(self, client, sensor_id: str) -> list[str]:
+        rows = client.query(
+            "SELECT networks, segment, plan_segment FROM weirvern.weirlings FINAL "
+            "WHERE sensor_id = %(s)s LIMIT 1",
+            parameters={"s": sensor_id},
+        ).result_rows
+        if not rows:
+            return []
+        from weirvern import scanner as scanner_mod  # noqa: PLC0415
+
+        row = rows[0]
+        return scanner_mod.declared_networks(
+            row[0], row[1] if len(row) > 1 else "", row[2] if len(row) > 2 else "")
+
+    def scan_next(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            from weirvern import scan_jobs  # noqa: PLC0415
+            from weirvern import scanner as scanner_mod
+
+            capability = scanner_mod.fleet_capability(client, ip="")
+            mine = next((item for item in capability["capable"]
+                         if item["sensor_id"] == sensor_id), None)
+            if mine is None:
+                reason = next((item["reason"] for item in capability["unknown"]
+                               + capability["incapable"] if item["sensor_id"] == sensor_id),
+                              "this weirling has not reported a fresh Nmap capability")
+                return 200, {"job": None, "reason": reason}
+            networks = self._scan_networks(client, sensor_id)
+            lease_s = int(getattr(self.settings, "scan_job_lease_s", 900) or 900)
+            job = scan_jobs.claim_next_job(client, owner=sensor_id, lease_s=lease_s,
+                                           networks=networks)
+            if job is None:
+                queued = client.query(
+                    "SELECT count() FROM weirvern.scan_jobs FINAL WHERE state = 'queued'"
+                ).result_rows
+                waiting = int((queued[0][0] if queued else 0) or 0)
+                reason = ("" if not waiting else
+                          f"{waiting} queued job(s) are outside this weirling's declared "
+                          "networks")
+                return 200, {"job": None, "reason": reason}
+            return 200, {"job": {
+                "job_id": str(job["job_id"]), "ip": str(job["ip"]),
+                "asset_key": str(job["asset_key"]),
+                "requested_at": (job["requested_at"].isoformat()
+                                 if hasattr(job.get("requested_at"), "isoformat") else ""),
+            }}
+        finally:
+            client.close()
+
+    def scan_cancel(self, sensor_id: str, job_id: str) -> tuple[int, dict[str, Any]]:
+        """Has the hub asked THIS weirling to stop this job? Polled while Nmap runs."""
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            from weirvern import scan_jobs  # noqa: PLC0415
+
+            if not str(job_id or "").strip():
+                return 400, {"error": "job_id is required"}
+            return 200, {"cancel": scan_jobs.cancel_requested(client, job_id, sensor_id)}
+        finally:
+            client.close()
+
+    def scan_result(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            import uuid as _uuid  # noqa: PLC0415
+
+            from weirvern import scan_jobs  # noqa: PLC0415
+            from weirvern import scanner as scanner_mod
+
+            job_id = str(body.get("job_id") or "").strip()
+            if not job_id:
+                return 400, {"error": "job_id is required"}
+            job = scan_jobs.get_job(client, job_id)
+            if job is None:
+                return 404, {"error": "unknown scan job"}
+            if str(job.get("state") or "") not in ("claimed", "cancel_requested"):
+                return 409, {"error": f"the job is {job.get('state') or 'unknown'}, not claimed"}
+            if str(job.get("lease_owner") or "") != sensor_id:
+                return 403, {"error": "the job is claimed by a different weirling"}
+            result = body.get("result")
+            if not isinstance(result, dict):
+                return 400, {"error": "result must be a JSON object"}
+            if bool(result.get("cancelled")):
+                # THE WEIRLING CONFIRMED IT STOPPED. Only now is the row removed; the audit row
+                # is the surviving record of the request and of the stop.
+                from weirvern import fleet_store  # noqa: PLC0415
+
+                fleet_store.write_audit(
+                    client, scope="scan", action="scan_cancelled_confirmed",
+                    target=f"{job.get('ip')} job {job_id}",
+                    reason="the weirling confirmed it stopped the scan", actor=sensor_id)
+                scan_jobs.delete_job(client, job_id)
+                return 200, {"ok": True, "job_id": job_id, "state": "cancelled"}
+            asset = scan_jobs.find_asset(client, str(job.get("ip") or ""))
+            if asset is None:
+                scan_jobs.finish_job(client, job, ok=False,
+                                     error="the host is no longer in the asset registry")
+                return 200, {"ok": True, "job_id": job_id, "state": "error"}
+            ok = scanner_mod.record_scan_result(
+                client, asset, result, scan_id=str(_uuid.uuid4()))
+            error = ""
+            if not ok:
+                refreshed = scan_jobs.find_asset(client, str(job.get("ip") or ""))
+                error = str((refreshed or {}).get("scan_error") or "the scan failed")
+            scan_jobs.finish_job(client, job, ok=ok, error=error)
+            return 200, {"ok": True, "job_id": job_id, "state": "done" if ok else "error"}
+        finally:
+            client.close()
+
     def plan(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
         client = self.client()
         try:
@@ -630,6 +788,20 @@ def _make_handler(gateway: Gateway):
                 if not sid:
                     return
                 return self._json(*gateway.probe_next(sid))
+            if path == "/v1/scan/next":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.scan_next(sid))
+            if path == "/v1/scan/cancel":
+                sid = self._sensor()
+                if not sid:
+                    return
+                job_id = (urlparse(self.path).query.split("job_id=", 1)[1].split("&", 1)[0]
+                          if "job_id=" in urlparse(self.path).query else "")
+                from urllib.parse import unquote  # noqa: PLC0415
+
+                return self._json(*gateway.scan_cancel(sid, unquote(job_id)))
             if path == "/v1/gate/rules":
                 sid = self._sensor()
                 if not sid:
@@ -669,6 +841,10 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.sonar_result(sid, body))
             if path == "/v1/probe/result":
                 return self._json(*gateway.probe_result(sid, body))
+            if path == "/v1/scan/capability":
+                return self._json(*gateway.scan_capability(sid, body))
+            if path == "/v1/scan/result":
+                return self._json(*gateway.scan_result(sid, body))
             if path == "/v1/gate/state":
                 return self._json(*gateway.gate_write_state(sid, body))
             if path == "/v1/gate/events":

@@ -17,11 +17,10 @@ refuse to proceed, and how to upgrade or remove it.
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated): the
-shipped workloads total **2.24 CPU / 4.09 GiB of requests** and **12.25 CPU /
-19.38 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
+shipped workloads total **1.99 CPU / 3.84 GiB of requests** and **11.25 CPU /
+15.38 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
 its header states the inclusion rule (every container -- init containers included
--- of every rendered workload: worker, GUI, ClickHouse, goflow2, the scanner,
-the Zeek DaemonSet -- capture, both init containers and the flow tap sidecar --
+-- of every rendered workload: worker, GUI, ClickHouse, goflow2, the Zeek DaemonSet -- capture, both init containers and the flow tap sidecar --
 the schema Job and the prune CronJob). The earlier totals here were
 unreproducible because no method was stated; rerun the script after any manifest
 change.
@@ -80,6 +79,26 @@ to that cable.
 
 ---
 
+
+## Asset scanning and Nmap
+
+Scanning is executed by **weirlings**, not by a central Deployment. Each unit's agent measures
+its own Nmap, reports that capability with its distro/version, and claims manual scan jobs from
+the hub queue only inside the networks it declares. A host with no capable, in-scope weirling is
+refused at job creation with the measured reason rather than queued forever.
+
+The hub builds two images from this tree:
+
+```bash
+docker build -t weirvern-worker:sha-<commit> -f Containerfile .
+docker build -t weirvern-scan:sha-<commit>   -f Containerfile.scanner .
+```
+
+`weirvern-scan` is the Nmap-capable image `scripts/deploy-weirling.sh` ships to each sensor's
+agent container. If it is absent, the unit still deploys and reports `nmap missing`; the console
+renders the exact install command for that host's OS and a **Prepare this weirling** button that
+copies it (there is no shell channel from the hub to a sensor). Full detail, per-distro commands
+and the queue's derived states: [scanner.md](scanner.md).
 
 ## Deployment
 
@@ -297,14 +316,15 @@ kubectl apply -k k8s/
 > workloads exist that is fine too — what matters is that nothing in `k8s/`
 > defines it.
 
-### Verify the roll — five workloads, not two
+### Verify the roll — every workload, not two
 
 A release is not one image swap. `deploy/weirvern-worker`, `deploy/weirvern-gui`,
-`deploy/weirvern-ingest` (the weirling gateway), `deploy/weirvern-scanner` and the `tap` container of
-`ds/zeek` all run the release image, and each is set separately. On 2026-11-18 two of them were found
-days behind (`weirvern-ingest` at `sha-cd0f002`, `weirvern-scanner` at `sha-283033a`, two releases
-old) and the tap was a commit behind — with nothing in the console saying so, because it reports
-only its own image.
+`deploy/weirvern-ingest` (the weirling gateway) and the `tap` container of `ds/zeek` all run the
+release image, and each is set separately; the prune CronJob is a fifth workload that `set image`
+on the Deployments does not touch. On 2026-11-18 two of them were found days behind
+(`weirvern-ingest` at `sha-cd0f002`, `weirvern-scanner` at `sha-283033a`, two releases old) and
+the tap was a commit behind — with nothing in the console saying so, because it reports only its
+own image.
 
 After any deploy, run the check against the tag you meant to ship:
 

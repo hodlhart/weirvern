@@ -1,16 +1,15 @@
-/* THE SCAN SHEET: watching one manual scan from queued to its recorded findings.
+/* THE SCAN SHEET: watching one manual scan from queued to its recorded result.
  *
  * WHY THIS EXISTS. Pressing "Scan now" filed a request and then said nothing: the operator had
- * no way to tell a queued job from one the scanner had claimed, no elapsed time, and no place
- * where a finding appeared as the scan recorded it. The queue already carries the truth -- a row
- * keyed by job_id, written again on every state change -- so this file reads that row and says
- * only what it says.
+ * no way to tell a queued job from one a weirling had claimed, no elapsed time, and no place
+ * where the outcome appeared. The queue already carries the truth -- a row keyed by job_id,
+ * written again on every state change -- so this file reads that row and says only what it says.
  *
  * HONEST PROGRESS. `weirvern.scan_jobs` has no phase and no percentage: states are queued,
- * claimed, done and error. So the sheet never draws a bar or a percentage. It shows the state,
- * the timestamps, elapsed time derived from those timestamps, and the findings the scanner has
- * recorded for the host since the job was queued. The sentence saying so is in the sheet, not
- * just in a comment.
+ * claimed, done and error, and the console derives `abandoned`/`stale` from the lease and the
+ * claim. So the sheet never draws a bar or a percentage. It shows the state, the timestamps,
+ * elapsed time derived from those timestamps, the measured services the weirling recorded, and
+ * the server's own sentence when nothing will claim the job.
  *
  * ONE DETAIL SURFACE (docs/design/sheets.md): this is a sheet, built by sheets.js -- one scrim,
  * one Escape, focus returns to the control that opened it.
@@ -20,15 +19,28 @@ const SCAN_STATE = {
   jobId: "",
   ip: "",
   job: null,
-  findings: [],
-  findingsState: "waiting",   // waiting | ok | failed
-  findingsReason: "",
   missingPolls: 0,
   timedOut: "",
   pollTimer: null,
   tickTimer: null,
   inFlight: false,
   renderedKey: "",
+  cancelling: false,
+  renderNote: "",
+};
+
+/* THE FLEET'S CAPABILITY, NOT A SETTING. Who can scan is measured by each weirling's own agent
+ * and reported to the hub; the button and the refusal read the same answer. `loaded` starts
+ * false so a control built before the read is disabled with "checking", never enabled on hope. */
+const SCAN_READY = {
+  loaded: false,
+  available: true,
+  enabled: false,
+  sentence: "",
+  reason_unavailable: "",
+  docs_url: "",
+  ip: "",
+  error: "",
 };
 
 const SCAN_POLL_MS = 2500;                 // bounded: one read per 2.5s while the sheet is open
@@ -40,7 +52,72 @@ const SCAN_WORDS = {
   claimed: "Running",
   done: "Done",
   error: "Failed",
+  cancelled: "Cancelled",
+  abandoned: "Abandoned",
+  stale: "Stale",
 };
+
+/** Read the fleet's scan capability for one target (or the fleet as a whole).
+ *
+ *  A FAILED READ IS NOT "NOBODY CAN SCAN": it leaves `enabled` true and carries the error, so a
+ *  transient database failure cannot disable a control that would have worked. The POST still
+ *  checks the same facts server-side and refuses with a sentence if it disagrees. */
+async function loadScanReadiness(ip) {
+  const target = String(ip || "").trim();
+  if (SCAN_READY.loaded && SCAN_READY.ip === target) return SCAN_READY;
+  const qs = target ? `?ip=${encodeURIComponent(target)}` : "";
+  try {
+    const d = await getJSON(`/api/scan-readiness${qs}`);
+    Object.assign(SCAN_READY, {
+      loaded: true, ip: target,
+      available: d.available !== false,
+      enabled: d.available === false ? true : d.enabled === true,
+      sentence: String(d.sentence || ""),
+      reason_unavailable: String(d.reason_unavailable || (d.available === false ? d.reason : "") || ""),
+      docs_url: String(d.docs_url || ""),
+      error: d.available === false ? String(d.reason || "readiness could not be read") : "",
+    });
+  } catch (err) {
+    Object.assign(SCAN_READY, {
+      loaded: true, ip: target, available: false, enabled: true,
+      sentence: "", reason_unavailable: "", docs_url: "",
+      error: `scanner readiness could not be read: ${err && err.message ? err.message : err}`,
+    });
+  }
+  return SCAN_READY;
+}
+
+/** Make ONE control honest about whether a scan can run, with the reason in text BESIDE it.
+ *
+ *  `note` is a real element, not a tooltip: a disabled button with only a `title` is a mystery
+ *  to a keyboard or touch user. When readiness has not landed the control stays disabled and
+ *  says it is checking, so there is never a moment where it invites a click it cannot honour. */
+function scanApplyButton(btn, note, ip) {
+  if (!btn) return;
+  const st = SCAN_READY;
+  const pending = !st.loaded || (st.ip !== String(ip || "").trim() && Boolean(ip));
+  btn.disabled = pending ? true : !st.enabled;
+  if (note) {
+    let text = "";
+    if (pending) text = "checking whether a weirling can scan this host…";
+    else if (!st.enabled) text = st.reason_unavailable || "no weirling can scan";
+    else if (st.error) text = st.error;
+    note.textContent = text;
+    note.classList.toggle("hidden", !text);
+    if (text && note.id) btn.setAttribute("aria-describedby", note.id);
+  }
+  if (!btn.disabled) btn.removeAttribute("aria-describedby");
+}
+
+/** The ready-to-use wiring: apply the cached answer, and re-apply when a read lands. */
+function scanGate(btn, note, ip) {
+  scanApplyButton(btn, note, ip);
+  const target = String(ip || "").trim();
+  if (!SCAN_READY.loaded || (target && SCAN_READY.ip !== target)) {
+    loadScanReadiness(target).then(() => scanApplyButton(btn, note, ip)).catch(() => {});
+  }
+}
+
 
 function scanMs(value) {
   const s = String(value || "").trim();
@@ -62,12 +139,16 @@ function scanClock(ms) {
   return `${s}s`;
 }
 
-/** The state word the operator reads. `timedOut` is a client-side fact about the queue, and it
- *  never replaces a terminal state the server recorded. */
+/** The state word the operator reads. The SERVER'S derived state wins over the raw column:
+ *  a queued row past its lease is Abandoned, not "Queued" forever. `timedOut` is a client-side
+ *  fact about the queue, and it never replaces a terminal state the server recorded. */
 function scanWord(job) {
   if (!job) return "Reading the queue…";
+  if (job.derived_state === "abandoned") return "Abandoned";
+  if (job.derived_state === "stale") return "Stale";
   if (job.state === "error") return "Failed";
   if (job.state === "done") return "Done";
+  if (job.state === "cancelled") return "Cancelled";
   if (SCAN_STATE.timedOut) return "Timed out";
   return SCAN_WORDS[job.state] || `State ${job.state || "unknown"}`;
 }
@@ -77,8 +158,10 @@ function scanElapsed(job) {
   const requested = scanMs(job.requested_at);
   const started = scanMs(job.started_at);
   const finished = scanMs(job.finished_at);
-  if (job.state === "queued") {
-    return { label: "waiting", text: scanClock(Date.now() - requested) };
+  if (job.state === "queued" || job.state === "cancelled") {
+    const to = Number.isFinite(finished) ? finished : Date.now();
+    return { label: job.state === "cancelled" ? "cancelled after" : "waiting",
+             text: scanClock(to - requested) };
   }
   if (job.state === "claimed") {
     const from = Number.isFinite(started) ? started : requested;
@@ -106,7 +189,7 @@ function scanSheetEls() {
     body: document.getElementById("scan-body"),
     retry: document.getElementById("scan-retry"),
     check: document.getElementById("scan-check"),
-    findings: document.getElementById("scan-findings"),
+    cancelJob: document.getElementById("scan-cancel-job"),
     close: document.getElementById("scan-close"),
     cancel: document.getElementById("scan-cancel"),
   };
@@ -127,18 +210,17 @@ function openScanSheet(jobId, opts = {}) {
   SCAN_STATE.jobId = id;
   SCAN_STATE.ip = String(opts.ip || SCAN_STATE.ip || "").trim();
   SCAN_STATE.job = null;
-  SCAN_STATE.findings = [];
-  SCAN_STATE.findingsState = "waiting";
-  SCAN_STATE.findingsReason = "";
   SCAN_STATE.missingPolls = 0;
   SCAN_STATE.timedOut = "";
   SCAN_STATE.renderedKey = "";
+  SCAN_STATE.cancelling = false;
   els.card.dataset.jobId = id;
   if (els.subject) els.subject.textContent = SCAN_STATE.ip || "";
   if (els.stateLine) els.stateLine.textContent = "Reading the queue…";
   scanRenderBody();
   openSheet(els.card, { initialFocus: "scan-close" });
   scanURLSync();
+  loadScanReadiness(SCAN_STATE.ip).catch(() => {});
   scanPollOnce();
   scanStartTimers();
 }
@@ -170,7 +252,14 @@ function closeScanSheet() {
 }
 
 function scanTerminal(job) {
-  return Boolean(job) && (job.state === "done" || job.state === "error");
+  return Boolean(job) && (job.state === "done" || job.state === "error"
+                          || job.state === "cancelled");
+}
+
+/** Nothing will move this row again: terminal, or the server derived abandoned/stale. */
+function scanSettled(job) {
+  return scanTerminal(job) || Boolean(job && (job.derived_state === "abandoned"
+                                              || job.derived_state === "stale"));
 }
 
 function scanTimedOut(job) {
@@ -196,8 +285,7 @@ async function scanPollOnce() {
   try {
     const q = await scanGet(`/api/scan-jobs?job=${encodeURIComponent(SCAN_STATE.jobId)}`);
     if (q.available === false) {
-      SCAN_STATE.findingsState = "failed";
-      SCAN_STATE.findingsReason = q.reason || "the scan-job table is not readable";
+      SCAN_STATE.renderNote = q.reason || "the scan-job table is not readable";
       scanRenderBody();
       scanScheduleNext();
       return;
@@ -216,18 +304,16 @@ async function scanPollOnce() {
     SCAN_STATE.job = job;
     if (!SCAN_STATE.ip && job.ip) SCAN_STATE.ip = String(job.ip);
     SCAN_STATE.timedOut = scanTimedOut(job);
-    await scanLoadFindings(job);
     scanRenderBody();
     if (previous && previous.state !== job.state) scanURLSync();
-    if (scanTerminal(job) || SCAN_STATE.timedOut) {
+    if (scanSettled(job) || SCAN_STATE.timedOut) {
       scanStopTimers();
       if (SCAN_STATE.tickTimer) { clearInterval(SCAN_STATE.tickTimer); SCAN_STATE.tickTimer = null; }
       return;
     }
     scanScheduleNext();
   } catch (err) {
-    SCAN_STATE.findingsState = "failed";
-    SCAN_STATE.findingsReason = err && err.message ? err.message : String(err);
+    SCAN_STATE.renderNote = err && err.message ? err.message : String(err);
     scanRenderBody();
     scanScheduleNext();
   } finally {
@@ -239,33 +325,6 @@ function scanScheduleNext() {
   if (SCAN_STATE.pollTimer) clearTimeout(SCAN_STATE.pollTimer);
   if (!SCAN_STATE.jobId) return;
   SCAN_STATE.pollTimer = setTimeout(() => { scanPollOnce(); }, SCAN_POLL_MS);
-}
-
-async function scanLoadFindings(job) {
-  const ip = String(job.ip || SCAN_STATE.ip || "").trim();
-  if (!ip) { SCAN_STATE.findingsState = "waiting"; return; }
-  try {
-    const d = await scanGet(`/api/findings?ip=${encodeURIComponent(ip)}`);
-    if (d.available === false) {
-      SCAN_STATE.findingsState = "failed";
-      SCAN_STATE.findingsReason = d.reason || "the findings table could not be read";
-      SCAN_STATE.findings = [];
-      return;
-    }
-    const since = scanMs(job.requested_at);
-    const rows = d.findings || [];
-    SCAN_STATE.findings = Number.isFinite(since)
-      ? rows.filter((f) => {
-          const seen = scanMs(f.last_seen);
-          return !Number.isFinite(seen) || seen >= since;
-        })
-      : rows;
-    SCAN_STATE.findingsState = "ok";
-    SCAN_STATE.findingsReason = "";
-  } catch (err) {
-    SCAN_STATE.findingsState = "failed";
-    SCAN_STATE.findingsReason = err && err.message ? err.message : String(err);
-  }
 }
 
 function scanTick() {
@@ -298,14 +357,17 @@ function scanRenderBody() {
     const differs = job && job.state && job.state.toLowerCase() !== word.toLowerCase();
     const raw = differs ? ` · queue says ${job.state}` : "";
     els.stateLine.textContent = word + raw;
-    els.stateLine.className = "scan-state-line" + (job && job.state === "error" ? " bad" : "");
+    const bad = Boolean((job && job.state === "error") || (job && job.derived_state === "abandoned"));
+    els.stateLine.className = "scan-state-line" + (bad ? " bad" : "");
   }
   if (els.subject) els.subject.textContent = SCAN_STATE.ip || (job && job.ip) || "";
 
   const key = JSON.stringify([
-    SCAN_STATE.jobId, job && job.state, job && job.finished_at, job && job.error,
-    SCAN_STATE.timedOut, SCAN_STATE.findingsState, SCAN_STATE.findings.length,
-    SCAN_STATE.findingsReason, SCAN_STATE.missingPolls >= 6,
+    SCAN_STATE.jobId, job && job.state, job && job.derived_state,
+    job && job.state_reason, job && job.finished_at, job && job.error,
+    SCAN_STATE.timedOut, SCAN_STATE.missingPolls >= 6, SCAN_STATE.cancelling,
+    SCAN_READY.loaded, SCAN_READY.enabled, SCAN_READY.reason_unavailable,
+    SCAN_STATE.renderNote,
   ]);
   if (key === SCAN_STATE.renderedKey) return;
   SCAN_STATE.renderedKey = key;
@@ -322,12 +384,12 @@ function scanRenderBody() {
     const elapsed = scanElapsed(job);
     const dd = scanFact(dl, elapsed.label, elapsed.text);
     dd.id = "scan-elapsed";
-    scanFact(dl, "scanner", job.lease_owner || "no scanner has claimed it");
+    scanFact(dl, "claimer", job.lease_owner || "no weirling has claimed it");
     scanFact(dl, "requested by", job.requested_by || "unknown");
     scanFact(dl, "scanner evidence",
       job.error ? `error: ${job.error}`
         : job.result ? job.result
-          : "nothing recorded yet — the scanner writes its result when it finishes");
+          : "nothing recorded yet — the weirling writes its result when it finishes");
   }
   els.body.appendChild(dl);
 
@@ -336,12 +398,27 @@ function scanRenderBody() {
   els.body.appendChild(el("p", {
     class: "muted scan-honest",
     text: "The queue records state, not percentage: queued, running (claimed), done or failed. "
-      + "Elapsed time and recorded findings are the only progress it can prove, so there is "
-      + "no progress bar and no percentage here.",
+      + "Elapsed time is the only progress it can prove, so there is no progress bar and no "
+      + "percentage here. Nmap measures services and identity facts; it does not prove a host "
+      + "is patched.",
   }));
 
+  if (job && job.derived_state === "abandoned") {
+    els.body.appendChild(el("p", {
+      class: "warn",
+      text: `Abandoned: ${job.state_reason || "no weirling has claimed it"}. `
+        + "Nothing will run this job; Cancel it to clear it from the queue.",
+    }));
+  } else if (job && job.derived_state === "stale") {
+    els.body.appendChild(el("p", { class: "warn", text: `Stale: ${job.state_reason}` }));
+  }
   if (SCAN_STATE.timedOut) {
     els.body.appendChild(el("p", { class: "warn", text: SCAN_STATE.timedOut }));
+  }
+  if (SCAN_STATE.renderNote) {
+    els.body.appendChild(el("p", {
+      class: "warn", text: `The queue could not be read: ${SCAN_STATE.renderNote}.`,
+    }));
   }
   if (missing) {
     els.body.appendChild(el("p", {
@@ -353,65 +430,53 @@ function scanRenderBody() {
   if (job && job.state === "error") {
     els.body.appendChild(el("p", {
       class: "bad",
-      text: `The scan failed: ${job.error || "the scanner recorded no reason"}. `
+      text: `The scan failed: ${job.error || "the weirling recorded no reason"}. `
         + "Retry queues the same host again; nothing about the failure is hidden.",
     }));
   }
-
-  els.body.appendChild(el("h3", { class: "scan-findings-title", text: "Findings recorded by this scan" }));
-  // THE COUNT IS PART OF THE TERMINAL ANSWER, not only the list. "Done" without a number
-  // leaves the operator to count rows; zero is a measurement and is stated as one.
-  if (SCAN_STATE.findingsState === "ok") {
-    const n = SCAN_STATE.findings.length;
-    els.body.appendChild(el("p", {
-      class: "scan-findings-count",
-      text: `${n} finding${n === 1 ? "" : "s"} recorded on or after this job was queued.`,
-    }));
-  }
-  if (SCAN_STATE.findingsState === "failed") {
+  if (!SCAN_READY.loaded) {
+    els.body.appendChild(el("p", { class: "muted", text: "Checking whether a weirling can scan this host…" }));
+  } else if (!SCAN_READY.enabled) {
     els.body.appendChild(el("p", {
       class: "warn",
-      text: `Findings could not be read: ${SCAN_STATE.findingsReason}. This is a failed read, `
-        + "not a clean host.",
+      text: `No weirling can scan this host: ${SCAN_READY.reason_unavailable || "no capable weirling"}.`,
     }));
-  } else if (SCAN_STATE.findingsState === "waiting") {
-    els.body.appendChild(el("p", { class: "muted", text: "Waiting for the queue to name the address." }));
-  } else if (!SCAN_STATE.findings.length) {
-    els.body.appendChild(el("p", {
-      class: "muted",
-      text: job && job.state === "done"
-        ? "No finding was recorded on or after this job was queued. A clear scan is not proof "
-          + "the host is patched; it is the absence of a recorded finding."
-        : "No finding recorded since this job was queued yet. Findings appear here as the "
-          + "scanner records them.",
-    }));
-  } else {
-    const list = el("ul", { class: "scan-findings-list" });
-    for (const f of SCAN_STATE.findings.slice(0, 12)) {
-      list.appendChild(el("li", { class: "scan-finding" }, [
-        el("span", { class: `bubble state sev-${String(f.severity || "low").toLowerCase()}`,
-          text: String(f.severity || "unknown") }),
-        el("span", { class: "scan-finding-name", text: f.name || f.template_id || "unnamed finding" }),
-        el("span", { class: "muted mono scan-finding-when",
-          text: f.last_seen ? fmtTime(f.last_seen) : "" }),
-      ]));
-    }
-    els.body.appendChild(list);
-    if (SCAN_STATE.findings.length > 12) {
-      els.body.appendChild(el("p", {
-        class: "muted",
-        text: `Showing 12 of ${SCAN_STATE.findings.length}. Open the findings drill for the rest.`,
-      }));
-    }
+  }
+
+  // THE CANCEL OFFER is only for a row nothing has claimed. A claimed job is refused
+  // server-side with its own sentence; offering the button would imply it can be stopped.
+  if (els.cancelJob) {
+    const cancellable = Boolean(job) && String(job.state) === "queued";
+    els.cancelJob.classList.toggle("hidden", !cancellable);
+    els.cancelJob.disabled = Boolean(SCAN_STATE.cancelling);
+    els.cancelJob.textContent = SCAN_STATE.cancelling ? "Cancelling…" : "Cancel this job";
+    els.cancelJob.onclick = () => scanCancelJob();
   }
 
   if (els.retry) {
     const retryable = Boolean(job) && (job.state === "error" || Boolean(SCAN_STATE.timedOut) || missing);
     els.retry.classList.toggle("hidden", !retryable);
+    els.retry.disabled = !SCAN_READY.loaded || !SCAN_READY.enabled;
+    els.retry.title = els.retry.disabled
+      ? (SCAN_READY.reason_unavailable || "checking whether a weirling can scan")
+      : "";
   }
-  if (els.findings) {
-    const hasIp = Boolean((job && job.ip) || SCAN_STATE.ip);
-    els.findings.classList.toggle("hidden", !hasIp);
+}
+
+/** Cancel a queued job: one POST, and the sheet re-reads the row the server wrote. */
+async function scanCancelJob() {
+  const id = String(SCAN_STATE.jobId || "").trim();
+  if (!id || SCAN_STATE.cancelling) return;
+  SCAN_STATE.cancelling = true;
+  scanRenderBody();
+  try {
+    await postJSON(`/api/scan-jobs/${encodeURIComponent(id)}/cancel`, {});
+    SCAN_STATE.cancelling = false;
+    await scanPollOnce();
+  } catch (err) {
+    SCAN_STATE.cancelling = false;
+    SCAN_STATE.renderNote = err && err.message ? err.message : String(err);
+    scanRenderBody();
   }
 }
 
@@ -421,6 +486,14 @@ async function scanRetry() {
   const els = scanSheetEls();
   const ip = String((SCAN_STATE.job && SCAN_STATE.job.ip) || SCAN_STATE.ip || "").trim();
   if (!ip) return;
+  if (!SCAN_READY.loaded || !SCAN_READY.enabled) {
+    if (els.stateLine) {
+      els.stateLine.textContent = `The retry is refused: ${SCAN_READY.reason_unavailable
+        || "no weirling can scan this host"}`;
+      els.stateLine.className = "scan-state-line bad";
+    }
+    return;
+  }
   if (els.retry) { els.retry.disabled = true; els.retry.textContent = "Queueing…"; }
   try {
     const data = await postJSON("/api/scan-jobs", { ip });
@@ -435,27 +508,23 @@ async function scanRetry() {
   }
 }
 
-function scanOpenFindings() {
-  const ip = String((SCAN_STATE.job && SCAN_STATE.job.ip) || SCAN_STATE.ip || "").trim();
-  if (!ip || typeof openFindings !== "function") return;
-  closeScanSheet();
-  openFindings(ip);
-}
-
 /* ── the queue list: where a running job is found again after the sheet is closed ─────────── */
 
 let SCAN_QUEUE_TIMER = null;
 
 function scanQueueRow(job) {
-  const word = SCAN_WORDS[job.state] || job.state || "unknown";
+  const state = job.derived_state || job.state || "unknown";
+  const word = SCAN_WORDS[state] || SCAN_WORDS[job.state] || job.state || "unknown";
+  const evidence = job.state_reason
+    || (job.error ? `error: ${job.error}` : (job.result || ""));
   const button = el("button", {
-    class: "scan-queue-row" + (job.state === "error" ? " bad" : ""),
+    class: "scan-queue-row" + (state === "error" || state === "abandoned" ? " bad" : ""),
     attrs: { type: "button", "aria-label": `open scan ${job.job_id} for ${job.ip || "unknown address"}` },
   }, [
-    el("span", { class: `bubble state scan-state-${job.state || "unknown"}`, text: word }),
+    el("span", { class: `bubble state scan-state-${state}`, text: word }),
     el("span", { class: "mono scan-queue-ip", text: job.ip || "—" }),
     el("span", { class: "muted scan-queue-when", text: job.requested_at ? `queued ${fmtTime(job.requested_at)}` : "" }),
-    el("span", { class: "muted scan-queue-evidence", text: job.error ? `error: ${job.error}` : (job.result || "") }),
+    el("span", { class: "muted scan-queue-evidence", text: evidence }),
   ]);
   button.addEventListener("click", () => openScanSheet(job.job_id, { ip: job.ip }));
   return button;
@@ -497,9 +566,12 @@ async function loadScanQueue() {
   }
   box.replaceChildren(...jobs.slice(0, 6).map(scanQueueRow));
   if (note) {
-    const active = jobs.filter((j) => j.state === "queued" || j.state === "claimed").length;
+    const active = jobs.filter((j) => (j.derived_state || j.state) === "queued"
+      || (j.derived_state || j.state) === "claimed").length;
+    const abandoned = jobs.filter((j) => j.derived_state === "abandoned").length;
     note.textContent = `${jobs.length} recent job${jobs.length === 1 ? "" : "s"}`
-      + (active ? ` · ${active} still active` : " · none active");
+      + (active ? ` · ${active} still active` : " · none active")
+      + (abandoned ? ` · ${abandoned} abandoned` : "");
   }
   // A RUNNING JOB STAYS DISCOVERABLE. While any job is active the list refreshes on a bounded
   // interval; when every job is terminal it stops, so a quiet console makes no requests.
@@ -529,5 +601,4 @@ document.addEventListener("DOMContentLoaded", () => {
   if (els.cancel) els.cancel.addEventListener("click", () => closeScanSheet());
   if (els.retry) els.retry.addEventListener("click", () => { scanRetry(); });
   if (els.check) els.check.addEventListener("click", () => { scanPollOnce(); });
-  if (els.findings) els.findings.addEventListener("click", () => scanOpenFindings());
 });

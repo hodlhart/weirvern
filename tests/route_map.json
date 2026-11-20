@@ -1,342 +1,338 @@
 {
   "_anomalies": {
-    "verb": "GET",
-    "path": "/api/anomalies"
+    "path": "/api/anomalies",
+    "verb": "GET"
   },
   "_asset_changes": {
-    "verb": "GET",
-    "path": "/api/asset-changes"
+    "path": "/api/asset-changes",
+    "verb": "GET"
   },
   "_asset_posture": {
-    "verb": "GET",
-    "path": "/api/asset-posture"
+    "path": "/api/asset-posture",
+    "verb": "GET"
   },
   "_assets": {
-    "verb": "GET",
-    "path": "/api/assets"
+    "path": "/api/assets",
+    "verb": "GET"
   },
   "_audit": {
-    "verb": "GET",
-    "path": "/api/audit"
+    "path": "/api/audit",
+    "verb": "GET"
   },
   "_baselines": {
-    "verb": "GET",
-    "path": "/api/baselines"
+    "path": "/api/baselines",
+    "verb": "GET"
   },
   "_blocked": {
-    "verb": "GET",
-    "path": "/api/blocked"
+    "path": "/api/blocked",
+    "verb": "GET"
   },
   "_blocklists_custom": {
-    "verb": "POST",
-    "path": "/api/blocklists/custom"
+    "path": "/api/blocklists/custom",
+    "verb": "POST"
   },
   "_blocklists_enable": {
-    "verb": "POST",
-    "path": "/api/blocklists/enable"
+    "path": "/api/blocklists/enable",
+    "verb": "POST"
   },
   "_blocklists_get": {
-    "verb": "GET",
-    "path": "/api/blocklists"
+    "path": "/api/blocklists",
+    "verb": "GET"
   },
   "_blocklists_source": {
-    "verb": "POST",
-    "path": "/api/blocklists/source"
+    "path": "/api/blocklists/source",
+    "verb": "POST"
   },
   "_blocklists_sync": {
-    "verb": "POST",
-    "path": "/api/blocklists/sync"
+    "path": "/api/blocklists/sync",
+    "verb": "POST"
   },
   "_detectors": {
-    "verb": "GET",
-    "path": "/api/detectors"
+    "path": "/api/detectors",
+    "verb": "GET"
   },
   "_discover": {
-    "verb": "GET",
-    "path": "/api/discover"
+    "path": "/api/discover",
+    "verb": "GET"
   },
   "_discover_trends": {
-    "verb": "GET",
-    "path": "/api/discover/trends"
+    "path": "/api/discover/trends",
+    "verb": "GET"
   },
   "_dns": {
-    "verb": "GET",
-    "path": "/api/dns"
+    "path": "/api/dns",
+    "verb": "GET"
   },
   "_dns_reverse": {
-    "verb": "GET",
-    "path": "/api/dns/reverse"
+    "path": "/api/dns/reverse",
+    "verb": "GET"
   },
   "_episodes": {
-    "verb": "GET",
-    "path": "/api/episodes"
+    "path": "/api/episodes",
+    "verb": "GET"
   },
   "_evidence": {
-    "verb": "GET",
-    "path": "/api/evidence"
-  },
-  "_findings": {
-    "verb": "GET",
-    "path": "/api/findings"
+    "path": "/api/evidence",
+    "verb": "GET"
   },
   "_fingerprints": {
-    "verb": "GET",
-    "path": "/api/fingerprints"
+    "path": "/api/fingerprints",
+    "verb": "GET"
   },
   "_flows": {
-    "verb": "GET",
-    "path": "/api/flows"
+    "path": "/api/flows",
+    "verb": "GET"
   },
   "_graph": {
-    "verb": "GET",
-    "path": "/api/graph"
+    "path": "/api/graph",
+    "verb": "GET"
   },
   "_health": {
-    "verb": "GET",
-    "path": "/api/health"
+    "path": "/api/health",
+    "verb": "GET"
   },
   "_host": {
-    "verb": "GET",
-    "path": "/api/host"
+    "path": "/api/host",
+    "verb": "GET"
   },
   "_host_identity": {
-    "verb": "GET",
-    "path": "/api/identity"
+    "path": "/api/identity",
+    "verb": "GET"
   },
   "_incident": {
-    "verb": "GET",
-    "path": "/api/incident"
+    "path": "/api/incident",
+    "verb": "GET"
   },
   "_login": {
-    "verb": "POST",
-    "path": "/api/login"
+    "path": "/api/login",
+    "verb": "POST"
   },
   "_logout": {
-    "verb": "POST",
-    "path": "/api/logout"
+    "path": "/api/logout",
+    "verb": "POST"
   },
   "_ml_coverage": {
-    "verb": "GET",
-    "path": "/api/ml/coverage"
+    "path": "/api/ml/coverage",
+    "verb": "GET"
   },
   "_ml_data_contract": {
-    "verb": "GET",
-    "path": "/api/ml/data-contract"
+    "path": "/api/ml/data-contract",
+    "verb": "GET"
   },
   "_ml_eval_report": {
-    "verb": "GET",
-    "path": "/api/ml/eval-report"
+    "path": "/api/ml/eval-report",
+    "verb": "GET"
   },
   "_ml_ledger": {
-    "verb": "GET",
-    "path": "/api/ml/ledger"
+    "path": "/api/ml/ledger",
+    "verb": "GET"
   },
   "_ml_review": {
-    "verb": "GET",
-    "path": "/api/ml/review"
+    "path": "/api/ml/review",
+    "verb": "GET"
   },
   "_ml_ripple": {
-    "verb": "GET",
-    "path": "/api/ml/ripple"
-  },
-  "_ripples": {
-    "verb": "GET",
-    "path": "/api/ripples"
+    "path": "/api/ml/ripple",
+    "verb": "GET"
   },
   "_ml_slo": {
-    "verb": "GET",
-    "path": "/api/ml/slo"
+    "path": "/api/ml/slo",
+    "verb": "GET"
   },
   "_model_retrain": {
-    "verb": "GET",
-    "path": "/api/models/retrain"
+    "path": "/api/models/retrain",
+    "verb": "GET"
   },
   "_models": {
-    "verb": "GET",
-    "path": "/api/models"
+    "path": "/api/models",
+    "verb": "GET"
   },
   "_models_calibration": {
-    "verb": "GET",
-    "path": "/api/models/calibration"
+    "path": "/api/models/calibration",
+    "verb": "GET"
   },
   "_models_shadow": {
-    "verb": "GET",
-    "path": "/api/models/shadow"
+    "path": "/api/models/shadow",
+    "verb": "GET"
   },
   "_netflow": {
-    "verb": "GET",
-    "path": "/api/netflow"
+    "path": "/api/netflow",
+    "verb": "GET"
   },
   "_networks": {
-    "verb": "GET",
-    "path": "/api/networks"
+    "path": "/api/networks",
+    "verb": "GET"
   },
   "_networks_delete": {
-    "verb": "POST",
-    "path": "/api/networks/delete"
-  },
-  "network_host": {
-    "verb": "GET",
-    "path": "/api/network/host"
+    "path": "/api/networks/delete",
+    "verb": "POST"
   },
   "_networks_save": {
-    "verb": "POST",
-    "path": "/api/networks/save"
+    "path": "/api/networks/save",
+    "verb": "POST"
   },
   "_overview": {
-    "verb": "GET",
-    "path": "/api/overview"
+    "path": "/api/overview",
+    "verb": "GET"
   },
   "_password": {
-    "verb": "POST",
-    "path": "/api/password"
+    "path": "/api/password",
+    "verb": "POST"
   },
   "_review": {
-    "verb": "POST",
-    "path": "/api/review"
+    "path": "/api/review",
+    "verb": "POST"
+  },
+  "_ripples": {
+    "path": "/api/ripples",
+    "verb": "GET"
   },
   "_scan_job_create": {
-    "verb": "POST",
-    "path": "/api/scan-jobs"
+    "path": "/api/scan-jobs",
+    "verb": "POST"
   },
   "_scan_jobs": {
-    "verb": "GET",
-    "path": "/api/scan-jobs"
+    "path": "/api/scan-jobs",
+    "verb": "GET"
   },
   "_scanner": {
-    "verb": "GET",
-    "path": "/api/scanner"
+    "path": "/api/scanner",
+    "verb": "GET"
   },
   "_session": {
-    "verb": "GET",
-    "path": "/api/session"
+    "path": "/api/session",
+    "verb": "GET"
   },
   "_settings": {
-    "verb": "GET",
-    "path": "/api/settings"
+    "path": "/api/settings",
+    "verb": "GET"
   },
   "_settings_apply": {
-    "verb": "POST",
-    "path": "/api/settings/apply"
+    "path": "/api/settings/apply",
+    "verb": "POST"
   },
   "_settings_plan": {
-    "verb": "POST",
-    "path": "/api/settings/plan"
+    "path": "/api/settings/plan",
+    "verb": "POST"
   },
   "_settings_sonar": {
-    "verb": "POST",
-    "path": "/api/settings/sonar"
+    "path": "/api/settings/sonar",
+    "verb": "POST"
   },
   "_settings_test": {
-    "verb": "POST",
-    "path": "/api/settings/test"
+    "path": "/api/settings/test",
+    "verb": "POST"
   },
   "_sluice": {
-    "verb": "GET",
-    "path": "/api/sluice"
+    "path": "/api/sluice",
+    "verb": "GET"
   },
   "_sluice_block": {
-    "verb": "POST",
-    "path": "/api/sluice/block"
+    "path": "/api/sluice/block",
+    "verb": "POST"
   },
   "_sluice_revoke": {
-    "verb": "POST",
-    "path": "/api/sluice/revoke"
+    "path": "/api/sluice/revoke",
+    "verb": "POST"
   },
   "_sluice_rule_disabled": {
-    "verb": "POST",
-    "path": "/api/sluice/rule/disabled"
+    "path": "/api/sluice/rule/disabled",
+    "verb": "POST"
   },
   "_sluice_rule_domain": {
-    "verb": "POST",
-    "path": "/api/sluice/rule/domain"
+    "path": "/api/sluice/rule/domain",
+    "verb": "POST"
   },
   "_sluice_rule_mode": {
-    "verb": "POST",
-    "path": "/api/sluice/rule/mode"
+    "path": "/api/sluice/rule/mode",
+    "verb": "POST"
   },
   "_sluice_state": {
-    "verb": "GET",
-    "path": "/api/sluice/state"
+    "path": "/api/sluice/state",
+    "verb": "GET"
   },
   "_system": {
-    "verb": "GET",
-    "path": "/api/system"
+    "path": "/api/system",
+    "verb": "GET"
   },
   "_update": {
-    "verb": "GET",
-    "path": "/api/update"
+    "path": "/api/update",
+    "verb": "GET"
   },
   "_users_create": {
-    "verb": "POST",
-    "path": "/api/users/create"
+    "path": "/api/users/create",
+    "verb": "POST"
   },
   "_users_delete": {
-    "verb": "POST",
-    "path": "/api/users/delete"
+    "path": "/api/users/delete",
+    "verb": "POST"
   },
   "_users_list": {
-    "verb": "GET",
-    "path": "/api/users"
+    "path": "/api/users",
+    "verb": "GET"
   },
   "_users_reset": {
-    "verb": "POST",
-    "path": "/api/users/reset"
+    "path": "/api/users/reset",
+    "verb": "POST"
   },
   "_users_role": {
-    "verb": "POST",
-    "path": "/api/users/role"
+    "path": "/api/users/role",
+    "verb": "POST"
   },
   "_watch": {
-    "verb": "POST",
-    "path": "/api/watch"
+    "path": "/api/watch",
+    "verb": "POST"
   },
   "_weirlings": {
-    "verb": "GET",
-    "path": "/api/weirlings"
+    "path": "/api/weirlings",
+    "verb": "GET"
   },
   "_weirlings_apply": {
-    "verb": "POST",
-    "path": "/api/weirlings/apply"
+    "path": "/api/weirlings/apply",
+    "verb": "POST"
   },
   "_weirlings_detail": {
-    "verb": "GET",
-    "path": "/api/weirlings/detail"
+    "path": "/api/weirlings/detail",
+    "verb": "GET"
   },
   "_weirlings_enable": {
-    "verb": "POST",
-    "path": "/api/weirlings/enable"
+    "path": "/api/weirlings/enable",
+    "verb": "POST"
   },
   "_weirlings_plan": {
-    "verb": "POST",
-    "path": "/api/weirlings/plan"
+    "path": "/api/weirlings/plan",
+    "verb": "POST"
   },
   "_weirlings_probe_get": {
-    "verb": "GET",
-    "path": "/api/weirlings/probe"
+    "path": "/api/weirlings/probe",
+    "verb": "GET"
   },
   "_weirlings_probe_post": {
-    "verb": "POST",
-    "path": "/api/weirlings/probe"
+    "path": "/api/weirlings/probe",
+    "verb": "POST"
   },
   "_weirlings_register": {
-    "verb": "POST",
-    "path": "/api/weirlings/register"
+    "path": "/api/weirlings/register",
+    "verb": "POST"
   },
   "_weirlings_revoke": {
-    "verb": "POST",
-    "path": "/api/weirlings/revoke"
+    "path": "/api/weirlings/revoke",
+    "verb": "POST"
   },
   "_write_trail": {
-    "verb": "GET",
-    "path": "/api/write-trail"
+    "path": "/api/write-trail",
+    "verb": "GET"
   },
   "_zeek": {
-    "verb": "GET",
-    "path": "/api/zeek"
+    "path": "/api/zeek",
+    "verb": "GET"
   },
   "_zeeklog": {
-    "verb": "GET",
-    "path": "/api/zeeklog"
+    "path": "/api/zeeklog",
+    "verb": "GET"
+  },
+  "network_host": {
+    "path": "/api/network/host",
+    "verb": "GET"
   }
 }

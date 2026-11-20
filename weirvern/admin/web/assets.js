@@ -67,16 +67,22 @@ const ASSETS_STATE = {
 
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 
-/** Queue a manual Nmap scan. The scanner owns execution; this only files the request.
+/** Queue a manual Nmap scan. A WEIRLING owns execution; this only files the request.
  *
  *  THE SHEET IS THE FEEDBACK (operator, 2026-11-20). A queued job used to leave the button on
- *  "Queued" and nothing else: no state, no elapsed time, no findings. The POST's answer is the
- *  job id, so the sheet opens on that id and polls the queue row the server just wrote. */
-function requestScan(ip, btn) {
+ *  "Queued" and nothing else: no state, no elapsed time, no result. The POST's answer is the job
+ *  id, so the sheet opens on that id and polls the queue row the server just wrote.
+ *
+ *  A REFUSAL IS SHOWN WHERE THE SHEET WOULD HAVE OPENED (operator, 2026-11-20). The server
+ *  refuses a job no weirling can reach or execute; that sentence goes in `note`, beside the
+ *  button, not into a title or a console log.
+ */
+function requestScan(ip, btn, note) {
   if (!btn || btn.disabled) return;
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Queueing…";
+  if (note) { note.textContent = ""; note.classList.add("hidden"); }
   btn.setAttribute("aria-label", `queueing a manual scan of ${ip}`);
   fetch("/api/scan-jobs", {
     method: "POST",
@@ -101,8 +107,12 @@ function requestScan(ip, btn) {
     .catch((err) => {
       btn.disabled = false;
       btn.textContent = original;
-      btn.setAttribute("aria-label", `scan request failed: ${err.message}`);
+      btn.setAttribute("aria-label", `scan request refused: ${err.message}`);
       btn.classList.add("bad");
+      if (note) {
+        note.textContent = err && err.message ? err.message : String(err);
+        note.classList.remove("hidden");
+      }
     });
 }
 
@@ -325,6 +335,22 @@ function renderAssets() {
             "those cells say unknown, not clear.",
     }));
   }
+  // WHO CAN SCAN, BEFORE THE CLICK. The table's "Scan now" buttons are disabled per row when
+  // no capable weirling declares that host's network; this sentence names the fleet-level
+  // reason (and the install step) so the disabled control is not a mystery.
+  const cap = d.scan_capability || null;
+  if (cap && cap.available === false) {
+    note.appendChild(el("p", {
+      class: "warn", attrs: { id: "assets-scan-off" },
+      text: "Scan capability could not be read, so the Scan buttons are disabled. "
+        + "This is a failed read, not a fleet with no scanner.",
+    }));
+  } else if (cap && cap.enabled === false) {
+    note.appendChild(el("p", {
+      class: "warn", attrs: { id: "assets-scan-off" },
+      text: `Scanning is unavailable: ${cap.reason_unavailable || "no weirling can scan"}`,
+    }));
+  }
 
   tbody.replaceChildren();
   if (!rows.length) {
@@ -385,43 +411,46 @@ function renderAssets() {
         if (!scan) {
           cell.className = "muted";
           cell.textContent = "—";
-          cell.title = "scanner status is not attached to this row";
+          cell.title = "no scan record is attached to this row";
           return cell;
         }
         const band = String(scan.exposure || "unknown");
-        const cls = ["critical", "high"].includes(band) ? "bad"
-          : band === "medium" ? "warn" : "muted";
-        const total = scan.findings && Number(scan.findings.total || 0);
-        const chip = el("span", {
-          class: `bubble state ${cls}`,
-          text: total ? `${band} · ${total}` : band,
-        });
-        cell.appendChild(chip);
-        cell.classList.add("dcell");
-        cell.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          if (typeof openFindings === "function") openFindings(h.addr);
-        });
+        // NO VULNERABILITY VERDICT. Nmap measures services; the chip says whether a weirling
+        // scanned the host, never that the host is clear of anything.
+        const cls = band === "failed" ? "bad" : band === "scanning" ? "warn" : "muted";
+        const services = scan.services === null || scan.services === undefined
+          ? "" : ` · ${scan.services}svc`;
+        cell.appendChild(el("span", { class: `bubble state ${cls}`, text: band + services }));
         const bits = [];
         if (scan.state) bits.push(`scan ${scan.state}`);
-        if (scan.services !== null && scan.services !== undefined) {
-          bits.push(`${scan.services} service${Number(scan.services) === 1 ? "" : "s"}`);
-        }
         if (scan.last_scan) bits.push(`last ${fmtTime(scan.last_scan)}`);
         if (scan.error) bits.push(`error: ${scan.error}`);
-        cell.title = bits.concat(["open recorded findings"]).join(" · ");
+        cell.title = bits.join(" · ");
         return cell;
       })(),
       (() => {
+        const scan = h.scan || {};
+        const noteId = `scan-note-${String(h.addr || "").replace(/[^a-z0-9]/gi, "_")}`;
+        const note = el("span", { class: "muted scan-refusal hidden", attrs: { id: noteId } });
         const btn = el("button", {
           class: "scan-now", text: "Scan now",
           attrs: { type: "button", title: `queue a manual Nmap scan of ${h.addr}` },
         });
+        const cap = (ASSETS_STATE.inventory && ASSETS_STATE.inventory.scan_capability) || {};
+        const canScan = scan.can_scan !== false;
+        btn.disabled = !canScan;
+        if (!canScan) {
+          note.textContent = Number(cap.capable_count || 0) === 0
+            ? "no weirling can scan"
+            : "no weirling that can scan declares this network";
+          note.classList.remove("hidden");
+          btn.setAttribute("aria-describedby", noteId);
+        }
         btn.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          requestScan(h.addr, btn);
+          requestScan(h.addr, btn, note);
         });
-        return el("td", {}, [btn]);
+        return el("td", {}, [btn, note]);
       })(),
     ]);
     tr.addEventListener("click", (ev) => {

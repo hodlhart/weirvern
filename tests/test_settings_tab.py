@@ -154,7 +154,11 @@ def test_every_write_route_consults_A_GATE():
     allowed = set()
     for rule in app.url_map.iter_rules():
         allowed |= set(rule.methods or ())
-    for unsafe in ("PUT", "DELETE", "PATCH"):
+    # PUT AND PATCH ARE STILL BANNED OUTRIGHT -- nothing here needs them, and an accepted one would
+    # be an unaudited write path. DELETE is legitimate now (`/api/scan-jobs/<id>` takes a queued
+    # scan back), so it is not banned by verb: it is DRIVEN below with every other write route and
+    # has to refuse an anonymous caller like the rest.
+    for unsafe in ("PUT", "PATCH"):
         assert unsafe not in allowed, f"{unsafe} would be an unaudited write path"
 
     client = app.test_client()
@@ -162,14 +166,16 @@ def test_every_write_route_consults_A_GATE():
     for rule in app.url_map.iter_rules():
         if not rule.rule.startswith("/api/"):
             continue
-        if not (set(rule.methods or ()) - {"GET", "HEAD", "OPTIONS"}):
+        verbs = set(rule.methods or ()) - {"GET", "HEAD", "OPTIONS"}
+        if not verbs:
             continue
         # A parameterised rule is driven with a concrete value so it reaches its view; the body is
         # empty because the gate must answer BEFORE the body is read.
         path = re.sub(r"<[^>]+>", "probe", rule.rule)
-        got = client.post(path, json={})
-        if got.status_code not in (401, 403):
-            unrefused.append(f"{path} -> {got.status_code}: {got.data[:100]!r}")
+        for verb in sorted(verbs):
+            got = client.open(path, method=verb, json={})
+            if got.status_code not in (401, 403):
+                unrefused.append(f"{verb} {path} -> {got.status_code}: {got.data[:100]!r}")
     assert not unrefused, (
         f"these write routes answered an anonymous caller without refusing: {unrefused}. Each one "
         f"must consult requestauth.write_refusal (or the _gate_write/_write_json helper that is "

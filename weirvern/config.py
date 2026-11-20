@@ -498,12 +498,10 @@ class Settings:
     pushover_cooldown_s: int = field(default_factory=lambda: _env_int("PUSHOVER_COOLDOWN_S", 1800))
     pushover_max_per_hour: int = field(default_factory=lambda: _env_int("PUSHOVER_MAX_PER_HOUR", 20))
 
-    # ── Active asset scanner (Nmap + Nuclei) ──────────────────────────────────────────────────
-    # This is a separate process (weirvern.scanner), not the worker. It is OFF by default for the
-    # same reason Sluice is: an appliance that starts probing the LAN because it was installed is
-    # a surprise. The scope comes from the enabled weirlings' declared CIDR segments; with none,
-    # the scanner idles rather than guessing that the whole RFC1918 space belongs to it.
-    scan_enabled: bool = field(default_factory=lambda: _env_bool("SCAN_ENABLED", False))
+    # ── Asset scanning (Nmap, executed by weirlings) ──────────────────────────────────────────
+    # THERE IS NO CENTRAL SCANNER SETTING. Scanning is a capability of the weirling fleet: each
+    # agent measures its own Nmap and claims manual jobs only when it can run one. The scope
+    # comes from the enabled weirlings' declared CIDR segments.
     scan_interval_s: int = field(default_factory=lambda: _env_int("SCAN_INTERVAL_S", 60))
     # THE LOOP IS CHEAP; THE SWEEP IS NOT. A passive pass is one ClickHouse read of recent flows
     # and catches any host that has spoken. An active `nmap -sn` sweep sends ARP/ICMP probes to
@@ -525,67 +523,11 @@ class Settings:
     )
     scan_timeout_s: int = field(default_factory=lambda: _env_int("SCAN_TIMEOUT_S", 600))
     scan_max_hosts: int = field(default_factory=lambda: _env_int("SCAN_MAX_HOSTS", 16))
-    # Nuclei is OFF for now. The active-inventory layer is Nmap + NSE: it is portable to any
-    # network, has no template-update lifecycle, and cannot run a community template that turns
-    # out to be destructive. Keep the code path for a future reviewed exposure layer, but do not
-    # require the binary or the template download in the default image.
-    scan_nuclei_enabled: bool = field(
-        default_factory=lambda: _env_bool("SCAN_NUCLEI_ENABLED", False)
-    )
-    scan_nuclei_severity: str = field(
-        default_factory=lambda: os.environ.get("SCAN_NUCLEI_SEVERITY", "critical,high,medium")
-    )
-    scan_nuclei_templates: str = field(
-        default_factory=lambda: os.environ.get("SCAN_NUCLEI_TEMPLATES", "")
-    )
-    # ── SAFETY AND SIZE OF THE NUCLEI PASS ────────────────────────────────────────────────
-    # The template ecosystem includes destructive checks. A network CVE tagged `dos` (SLP,
-    # CVE-2019-5544) is a live example: it sends a heap-overflow payload, not a read-only probe.
-    # A vulnerability scanner on a home network must never run those by accident, so dangerous
-    # tags are excluded explicitly rather than trusting the template repository's default ignore
-    # file (which can change between releases).
-    scan_nuclei_exclude_tags: str = field(
-        default_factory=lambda: os.environ.get(
-            "SCAN_NUCLEI_EXCLUDE_TAGS", "dos,intrusive,fuzz,brute-force,headless,code"
-        )
-    )
-    # An optional allowlist. Empty means "all non-excluded templates"; a comma-separated tag
-    # list can narrow a deployment to cve,exposure,misconfig without forking the image.
-    scan_nuclei_tags: str = field(default_factory=lambda: os.environ.get("SCAN_NUCLEI_TAGS", ""))
-    scan_nuclei_exclude_ids: str = field(
-        default_factory=lambda: os.environ.get("SCAN_NUCLEI_EXCLUDE_IDS", "")
-    )
-    # MEASURED: default concurrency with 10k templates peaked near 2 GiB on the test box. These
-    # defaults keep the scanner within its 4 GiB limit and shorten the tail of slow hosts.
-    scan_nuclei_concurrency: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_CONCURRENCY", 25)
-    )
-    scan_nuclei_bulk_size: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_BULK_SIZE", 25)
-    )
-    scan_nuclei_rate_limit: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_RATE_LIMIT", 150)
-    )
-    scan_nuclei_timeout_s: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_TIMEOUT_S", 10)
-    )
-    scan_nuclei_retries: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_RETRIES", 1)
-    )
-    scan_nuclei_max_host_error: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_MAX_HOST_ERROR", 5)
-    )
-    scan_nuclei_response_size: int = field(
-        default_factory=lambda: _env_int("SCAN_NUCLEI_RESPONSE_SIZE", 1_048_576)
-    )
-    # Interactsh sends callbacks to a third-party OAST service. This scanner is a LAN appliance;
-    # keep it outbound-free unless an operator explicitly wants OAST.
-    scan_nuclei_no_interactsh: bool = field(
-        default_factory=lambda: _env_bool("SCAN_NUCLEI_NO_INTERACTSH", True)
-    )
     scan_nmap_binary: str = field(default_factory=lambda: os.environ.get("SCAN_NMAP_BINARY", "nmap"))
-    scan_nuclei_binary: str = field(
-        default_factory=lambda: os.environ.get("SCAN_NUCLEI_BINARY", "nuclei")
+    # How often a weirling asks the hub for one manual job. Small enough that an operator's
+    # click is felt, large enough that an idle fleet is not a request storm.
+    scan_claim_interval_s: int = field(
+        default_factory=lambda: _env_int("SCAN_CLAIM_INTERVAL_S", 10)
     )
 
 

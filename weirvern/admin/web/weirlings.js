@@ -2639,15 +2639,22 @@ async function loadScannerStatus() {
     return;
   }
   const sensors = d.sensors || [];
-  const ready = sensors.filter((x) => x.profile === "nmap").length;
-  summary.textContent = `${ready} of ${sensors.length} Nmap-ready`;
-  note.textContent = ready === sensors.length && sensors.length
-    ? "Every reporting node has Nmap. Identity scans use the deeper profile automatically."
-    : "Basic identity is active everywhere. Install Nmap on a node from its own package manager; Weirvern detects it on the next pass and never installs it for you.";
+  const cap = d.capability || {};
+  // CAPABILITY, NOT HEALTH. The summary counts weirlings that can actually run Nmap; a node
+  // that is merely alive is not a scanner.
+  if (cap.enabled) {
+    summary.textContent = `${cap.capable_count ?? 0} of ${cap.count ?? sensors.length} can scan`;
+  } else {
+    summary.textContent = "no weirling can scan";
+  }
+  note.textContent = cap.sentence || (cap.enabled
+    ? "Every capable weirling claims manual scans inside the networks it declares."
+    : "Manual scans are unavailable until a weirling reports Nmap. Each row's setup sheet "
+      + "carries the exact command for that host's own OS.");
   list.replaceChildren();
   loadScanQueue().catch(() => {});
   if (!sensors.length) {
-    list.appendChild(el("p", { class: "muted", text: "No scanner has reported yet." }));
+    list.appendChild(el("p", { class: "muted", text: "No weirling is registered yet." }));
     return;
   }
   const table = el("table", { class: "scanner-table" });
@@ -2660,7 +2667,45 @@ async function loadScannerStatus() {
     const setupId = `scanner-setup-${item.sensor_id.replace(/[^a-z0-9_-]/gi, "_")}`;
     const setup = el("div", { class: "scanner-setup hidden", attrs: { id: setupId } });
     const command = item.install_command || "";
-    setup.appendChild(el("p", { class: "muted", text: "Install Nmap on this node with its own package manager. Weirvern does not download or install it." }));
+    const hasNmap = Boolean(item.nmap_available);
+    // THE INSTALL LINE COMES FROM THE HOST'S OWN OS. The agent reports /etc/os-release with its
+    // capability; the hub renders the command for that distro. An unrecognised OS says so and
+    // shows the generic instruction rather than guessing a package manager.
+    const osLabel = [item.os_id, item.os_version].filter(Boolean).join(" ") || "unknown OS";
+    setup.appendChild(el("p", {
+      class: "muted",
+      text: `Scan capability on ${osLabel}: ${item.scan_mode_sentence || "unknown"}.`,
+    }));
+    setup.appendChild(el("p", { class: "muted",
+      text: hasNmap
+        ? "This weirling can claim manual scans inside the networks it declares."
+        : "This weirling cannot claim a manual scan until Nmap is installed and the agent "
+          + "re-reports (it re-measures every few minutes, so a restart is not always needed)." }));
+    // THE ANSWER TO "CAN WEIRVERN INSTALL IT?", for THIS host. The agent measures whether it
+    // could install without a privilege escalation; the hub never assumes it can.
+    setup.appendChild(el("p", {
+      class: item.install_privileged ? "muted" : "warn",
+      text: item.install_answer
+        || (hasNmap ? "Nmap is already installed here."
+                    : "Weirvern cannot install nmap here — run this as root"),
+    }));
+    if (!hasNmap && item.setcap_command) {
+      // THE SECOND HALF OF THE INSTALL. A bare package install gives connect scans only; the
+      // setcap is what makes SYN/UDP available, and the sheet states both commands.
+      setup.appendChild(el("p", { class: "muted",
+        text: "Then grant raw-socket capability so SYN/UDP scans work without root:" }));
+      const capsCode = el("code", { class: "mono", text: item.setcap_command });
+      const capsCopy = el("button", { class: "quiet", attrs: { type: "button" },
+                                      text: "Copy setcap" });
+      capsCopy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(item.setcap_command);
+          capsCopy.textContent = "Copied";
+          setTimeout(() => { capsCopy.textContent = "Copy setcap"; }, 1600);
+        } catch (_e) { capsCopy.textContent = "Select the command"; }
+      });
+      setup.appendChild(el("div", { class: "scanner-command" }, [capsCode, capsCopy]));
+    }
     if (command) {
       const code = el("code", { class: "mono", text: command });
       const copy = el("button", { class: "quiet", attrs: { type: "button" }, text: "Copy command" });
@@ -2672,14 +2717,44 @@ async function loadScannerStatus() {
         } catch (_e) { copy.textContent = "Select the command"; }
       });
       setup.appendChild(el("div", { class: "scanner-command" }, [code, copy]));
-    } else {
-      setup.appendChild(el("p", { class: "muted", text: "Use the official Nmap download page for this platform." }));
+    }
+    if (!hasNmap) {
+      // "PREPARE THIS WEIRLING" — A COPY, NOT A REMOTE COMMAND, AND IT SAYS WHY.
+      //
+      // The agent container is not root and has no package manager it may mutate: anything
+      // installed inside it would vanish on the next restart. There is no privileged channel
+      // from the hub to a weirling by design (a hub that can run shell commands on every sensor
+      // is a much larger attack surface than a queue of scans). So this button copies the one
+      // allowlisted command for the operator to run on the host, and the sentence below says
+      // exactly that instead of implying a remote install that cannot happen.
+      const prepare = el("button", { class: "quiet", attrs: { type: "button" },
+                                     text: "Prepare this weirling" });
+      const status = el("p", { class: "muted hidden" });
+      prepare.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(command);
+          status.textContent = `Copied: ${command} — run it on ${item.sensor_id}, then click Check again.`;
+        } catch (_e) {
+          status.textContent = `Run this on ${item.sensor_id}: ${command}`;
+        }
+        status.classList.remove("hidden");
+      });
+      setup.appendChild(el("div", { class: "controls" }, [prepare]));
+      setup.appendChild(status);
+      setup.appendChild(el("p", { class: "muted",
+        text: "It copies the command; it cannot be sent. The hub has no shell channel to a "
+          + "weirling, and an install inside the agent container would not survive a restart." }));
     }
     setup.appendChild(el("p", { class: "muted" }, [
-      el("a", { attrs: { href: item.install_url || "https://nmap.org/download.html", target: "_blank", rel: "noopener" }, text: "Official Nmap download" }),
-      el("span", { text: " · then click Check again." }),
+      el("a", { attrs: { href: item.install_url || "https://nmap.org/download.html",
+                         target: "_blank", rel: "noopener" }, text: "Official Nmap download" }),
+      el("span", { text: " · the install steps are documented in " }),
+      el("a", { attrs: { href: "/docs/deployment.md", target: "_blank", rel: "noopener" },
+                text: "docs/deployment.md" }),
+      el("span", { text: " (in the repository, under Asset scanning and Nmap)." }),
     ]));
-    const toggle = el("button", { class: "quiet", attrs: { type: "button" }, text: item.profile === "nmap" ? "Details" : "Set up" });
+    const toggle = el("button", { class: "quiet", attrs: { type: "button" },
+                                   text: hasNmap ? "Details" : "Set up" });
     toggle.addEventListener("click", () => setup.classList.toggle("hidden"));
     const row = el("tr", {}, [
       el("td", {}, [el("span", { class: "mono", text: item.sensor_id }),

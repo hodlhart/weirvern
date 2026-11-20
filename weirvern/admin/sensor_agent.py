@@ -52,6 +52,7 @@ import signal
 import threading
 import time
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -594,6 +595,110 @@ def _flow_shipper(settings, stop: threading.Event) -> None:
         stop.wait(FLOW_SHIP_INTERVAL_S)
 
 
+def _report_scan_capability(client, sid: str, capability: dict) -> bool:
+    """Publish this unit's measured Nmap/OS capability. Never raises.
+
+    A capability report that fails is a log line, not a dead sensor: the hub will treat the
+    unit as `unknown` and the Scan button will say so, which is the honest outcome.
+    """
+    from weirvern import scanner  # noqa: PLC0415
+
+    try:
+        if getattr(client, "is_gateway", False):
+            return bool(client.scan_capability(capability))
+        scanner.write_scanner_status(client, capability)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan: capability report failed: %s", exc)
+        return False
+
+
+SCAN_CAPABILITY_REPORT_S = 300
+
+
+def _scan_worker(settings, sid: str, stop: threading.Event) -> None:
+    """Claim and run manual scan jobs — ONLY when this unit can actually run one.
+
+    THE LOCAL CHECK IS THE FIRST GATE. Nmap is measured at startup and re-measured on the
+    report interval; a unit without it reports `nmap missing` with the exact install command
+    and never asks the hub for work, so a queued job cannot be held by a node that cannot run
+    it. The hub enforces the same capability rule AND the network scope at claim time.
+
+    ONE JOB AT A TIME, in this thread: a scan is minutes of Nmap, and running two would make
+    the lease the only thing bounding the unit's load.
+    """
+    from weirvern import scanner  # noqa: PLC0415
+
+    interval = max(5, int(getattr(settings, "scan_claim_interval_s", 10)))
+    lease_s = max(30, int(getattr(settings, "scan_job_lease_s", 900) or 900))
+    capability = scanner.detect_scanner(settings, sid)
+    if capability["nmap_available"]:
+        logger.info("scan: this weirling can scan (%s; %s)", capability["nmap_version"],
+                    scanner.scan_mode_sentence(capability.get("scan_mode", "connect")))
+    else:
+        install = scanner.nmap_install_command(capability["os_id"], capability["os_version"])
+        logger.warning("scan: Nmap is not installed on this weirling; it will NOT claim manual "
+                       "scans. Install it with: %s", install["command"])
+
+    client = None
+    last_report = 0.0
+    while not stop.is_set():
+        try:
+            if client is None:
+                client = connect(settings)
+            now = time.monotonic()
+            if last_report == 0.0 or now - last_report >= SCAN_CAPABILITY_REPORT_S:
+                # RE-MEASURE, not just re-send: an operator who installs Nmap while the unit
+                # runs should become claimable without a restart.
+                capability = scanner.detect_scanner(settings, sid)
+                _report_scan_capability(client, sid, capability)
+                last_report = now
+            if not capability["nmap_available"]:
+                stop.wait(max(60, SCAN_CAPABILITY_REPORT_S))
+                continue
+            if getattr(client, "is_gateway", False):
+                job, reason = client.scan_next()
+                if job:
+                    job_id = str(job.get("job_id") or "")
+                    # THE HUB IS POLLED WHILE NMAP RUNS. Without this the operator's
+                    # `cancel_requested` would only be noticed when the scan finished, which is
+                    # a cancel that does not cancel -- the row would stay claimed and the probe
+                    # would keep running until it was done anyway.
+                    result = scanner.run_service_scan(
+                        settings, str(job.get("ip") or ""),
+                        raw=capability.get("scan_mode") == "raw",
+                        cancel_check=partial(client.scan_cancel, job_id))
+                    client.scan_result(job_id, result)
+                    logger.info("scan: job %s for %s -> %s", job.get("job_id"),
+                                job.get("ip"), "done" if result.get("ok") else "error")
+                elif reason:
+                    logger.info("scan: no job for this weirling: %s", reason)
+            else:
+                from weirvern import scan_jobs  # noqa: PLC0415
+
+                rows = client.query(
+                    "SELECT networks, segment, plan_segment FROM weirvern.weirlings FINAL "
+                    "WHERE sensor_id = %(s)s LIMIT 1", parameters={"s": sid},
+                ).result_rows
+                networks = scanner.declared_networks(
+                    rows[0][0] if rows else [], rows[0][1] if rows else "",
+                    rows[0][2] if rows else "") if rows else []
+                job = scan_jobs.claim_next_job(client, owner=sid, lease_s=lease_s,
+                                               networks=networks)
+                if job:
+                    scanner.run_claimed_job(
+                        client, settings, job,
+                        raw=capability.get("scan_mode") == "raw",
+                        # THE DATABASE IS THE HUB HERE: a claimer with a direct connection
+                        # polls the same `cancel_requested` row the console wrote.
+                        cancel_check=partial(scan_jobs.cancel_requested, client,
+                                             str(job.get("job_id") or ""), sid))
+        except Exception as exc:  # noqa: BLE001 — the heartbeat must survive a bad scan pass
+            logger.warning("scan: claim/run pass failed: %s", exc)
+            client = None
+        stop.wait(interval)
+
+
 def required_iface() -> str:
     """ZEEK_IFACE, or refuse: a unit without its capture port is a unit without a job."""
     iface = (os.environ.get("ZEEK_IFACE") or "").strip()
@@ -1025,6 +1130,12 @@ def main() -> None:
             not in ("0", "false", "no", "off")):
         threading.Thread(target=_zeek_shipper, args=(settings, stop), daemon=True,
                          name="zeek-shipper").start()
+
+    # SCANNING IS THIS UNIT'S JOB TOO (operator, 2026-11-20: "Any weirling should be able to
+    # scan"). It has its OWN thread and connection so a minutes-long Nmap run cannot delay the
+    # heartbeat, and it claims nothing unless its own Nmap measurement says it can.
+    threading.Thread(target=_scan_worker, args=(settings, sid, stop), daemon=True,
+                     name="scan-worker").start()
 
     # THE UNIT'S OWN INTERCEPT, FROM ITS OWN PLAN. Nothing is armed until a plan says so: this
     # object starts inert and `refresh_plan` (below, once per PLAN_REFRESH_S) is the only thing

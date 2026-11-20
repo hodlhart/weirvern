@@ -1,16 +1,17 @@
-# Weirvern scanner image: Nmap + safe NSE identity scripts on top of the Python package.
+# Weirvern SCAN image: Nmap + safe NSE identity scripts on top of the Python package.
 #
-# A SEPARATE IMAGE, not the worker image. The worker must not carry a network scanner's binaries
-# or its attack surface, and the scanner must be replaceable without restarting the detection
-# pipeline. It is still a workload in the existing cluster -- no new LXC, no new host.
+# WHY A SEPARATE IMAGE. Scanning is executed by WEIRLINGS, not by a central Deployment: the hub
+# ships this image to each unit, whose agent runs `weirvern.admin.sensor_agent`, measures its own
+# Nmap at startup, and claims manual jobs from the hub queue inside the networks it declares.
+# Keeping Nmap out of the detection worker means the worker carries no network scanner's
+# binaries or attack surface.
 #
-# NUCLEI IS NOT INSTALLED. The identity layer is Nmap -sV plus bundled safe NSE scripts
-# (http-title, ssl-cert, smb-os-discovery, snmp-sysdescr, ...). That keeps the appliance portable
-# to any network: no template tree, no update lifecycle, no community exploit template that can
-# turn out to be destructive. Nuclei remains an opt-in future exposure layer, not a dependency.
+# The identity layer is Nmap -sV plus bundled safe NSE scripts (http-title, ssl-cert,
+# smb-os-discovery, snmp-sysdescr, ...). There is no template tree, no update lifecycle and no
+# vulnerability verdict: nothing here invents a finding.
 #
-# BUILD (the tag is a deployment decision; the default is the same pattern as the worker):
-#   podman build -t weirvern-scanner -f Containerfile.scanner .
+# BUILD (the tag follows the worker's; install.sh builds both):
+#   podman build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
 FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 RUN apt-get update \
@@ -30,4 +31,7 @@ RUN pip install --no-cache-dir .
 RUN useradd --system --uid 10001 --create-home weirvern
 USER weirvern
 
-ENTRYPOINT ["python", "-m", "weirvern.scanner"]
+# The agent, not the removed central scanner loop. deploy-weirling.sh overrides this
+# with python3 anyway; a bare run still starts the sensor agent, which is the only
+# process this image exists to run.
+ENTRYPOINT ["python", "-m", "weirvern.admin.sensor_agent"]

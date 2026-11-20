@@ -39,7 +39,6 @@ resources:
   # the log directory. See the file's header for why it is a CronJob and not a loop
   # inside the sensor or the worker.
   - 35-prune-cronjob.yaml
-  - 36-scanner.yaml
   - 50-schema-job.yaml
   - 60-rbac.yaml
   # THE mTLS INGEST EDGE IS NOT OPTIONAL. Every adopted weirling talks to this gateway, and
@@ -133,11 +132,6 @@ images:
   # whichever build finished last.
   - name: weirvern-worker
     newTag: "sha-17b04bb"
-  # THE SCANNER RUNS THE WORKER IMAGE. One codebase, different entrypoint -- there is no
-  # `weirvern-scanner` image to pull. This entry used to name `0.14.14`, a tag nothing builds, so a
-  # fresh `kubectl apply -k` would have rewritten the live scanner to a missing image: the object
-  # would still exist, the pod would sit in ImagePullBackOff, and the API would report it as
-  # deployed. `newName` is what the live object already carries by hand.
-  - name: weirvern-scanner
-    newName: weirvern-worker
-    newTag: "sha-17b04bb"
+  # THERE IS NO SCANNER IMAGE ENTRY. Scanning runs inside each weirling's agent: the hub ships
+  # the worker image to weirlings, and the agent measures its own Nmap. The old central
+  # central scanner Deployment (and its image transformer entry) is removed.

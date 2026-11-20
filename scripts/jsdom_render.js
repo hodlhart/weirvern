@@ -195,6 +195,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                   openModal, closeModal, markFilterCells,
                    emptyState, emptyStateCell, activeFilterLabels,
                    openScanSheet, closeScanSheet, loadScanQueue, scanPollOnce, SCAN_STATE,
+                   SCAN_READY, loadScanReadiness, scanGate, scanCancelJob,
                    openSheet, closeSheet, sheetIsOpen, requestScan,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    showSessionNote, refreshAccountCard,
@@ -10703,20 +10704,23 @@ check("...a contradicted segment names BOTH segments on the issues list",
       job_id: "job-scan-1", asset_key: "a-1", ip: "192.0.2.10", requested_by: "operator",
       requested_at: at(SCAN_T0), state: "queued", lease_owner: "",
       lease_until: null, started_at: null, finished_at: null, result: "", error: "",
+      derived_state: "queued", abandoned: false, state_reason: "",
     };
-    let SCAN_FINDINGS = [];
-    const scanFindingsOverride = (u) => {
-      if (!String(u).includes("/api/findings")) return null;
-      return { available: true, reason: "", findings: SCAN_FINDINGS,
-               count: SCAN_FINDINGS.length, counts: { total: SCAN_FINDINGS.length } };
-    };
+    // THE HUB'S OWN ANSWER, which the button and the sheet read. It says one weirling can scan
+    // this host, so the sheet must not imply otherwise.
+    let SCAN_READY_REPLY = { available: true, enabled: true, count: 1, capable_count: 1,
+                             ip: "192.0.2.10", lease_s: 900,
+                             sentence: "1 of 1 weirling can scan 192.0.2.10 (nmap 7.95)",
+                             reason_unavailable: "" };
+    let scanPosts = [];
     fetchOverride = (u, o) => {
-      // THE POST STAYS ON THE DEFAULT STUB (it answers with a job id); only the reads are
-      // stateful, so the check watches the queue change the way the real sheet does.
-      if (String((o || {}).method || "").toUpperCase() === "POST") return null;
-      const reply = String(u).includes("/api/scan-jobs")
-        ? { available: true, reason: "", jobs: [SCAN_JOB], count: 1 }
-        : scanFindingsOverride(u);
+      const method = String((o || {}).method || "GET").toUpperCase();
+      if (method === "POST") { scanPosts.push(String(u)); return null; }
+      let reply = null;
+      if (String(u).includes("/api/scan-readiness")) reply = SCAN_READY_REPLY;
+      else if (String(u).includes("/api/scan-jobs")) {
+        reply = { available: true, reason: "", jobs: [SCAN_JOB], count: 1 };
+      }
       if (!reply) return null;
       // fetchOverride answers a RESPONSE, not a payload: the dispatcher returns whatever is
       // truthy straight to the caller, and scanGet reads res.ok/res.json like the real fetch.
@@ -10741,36 +10745,31 @@ check("...a contradicted segment names BOTH segments on the issues list",
           && !doc.querySelector("#scan-body progress"),
           needEl("scan-body").textContent.slice(0, 90));
 
-    // RUNNING: the scanner claimed it; the state word changes and elapsed starts at started_at.
+    // RUNNING: a weirling claimed it; the state word changes and elapsed starts at started_at.
     SCAN_JOB = Object.assign({}, SCAN_JOB, {
-      state: "claimed", lease_owner: "scanner-1", started_at: at(SCAN_T0 + 2000) });
-    SCAN_FINDINGS = [{
-      ip: "192.0.2.10", hostname: "workstation.lan", severity: "high",
-      name: "SMB signing not required", template_id: "smb-signing", cve: "",
-      last_seen: at(SCAN_T0 + 20000), remediation: "require signing",
-    }];
+      state: "claimed", derived_state: "claimed", lease_owner: "wl-lab",
+      started_at: at(SCAN_T0 + 2000) });
     await H.scanPollOnce();
     await new Promise((r) => setTimeout(r, 30));
     check("the sheet reflects queued -> running from the queue row",
           /Running/.test(needEl("scan-state-line").textContent)
-          && /scanner-1/.test(needEl("scan-body").textContent)
-          && /SMB signing not required/.test(needEl("scan-body").textContent),
+          && /wl-lab/.test(needEl("scan-body").textContent)
+          && /no scanner has claimed it|claimer/.test(needEl("scan-body").textContent),
           needEl("scan-state-line").textContent);
 
-    // DONE: terminal, with the count and the link into the findings drill.
+    // DONE: terminal, with the measured evidence the weirling recorded.
     SCAN_JOB = Object.assign({}, SCAN_JOB, {
-      state: "done", finished_at: at(SCAN_T0 + 60000), result: "scan completed",
-      lease_until: null });
+      state: "done", derived_state: "done", finished_at: at(SCAN_T0 + 60000),
+      result: "scan completed", lease_until: null });
     await H.scanPollOnce();
     await new Promise((r) => setTimeout(r, 30));
     check("the sheet reflects running -> done and names the recorded evidence",
           /Done/.test(needEl("scan-state-line").textContent)
           && /scan completed/.test(needEl("scan-body").textContent),
           needEl("scan-body").textContent.slice(0, 120));
-    check("...the terminal state names the finding count", /1 finding recorded/.test(
-          needEl("scan-body").textContent), needEl("scan-body").textContent.slice(0, 120));
-    check("...the findings drill is one control away", !!needEl("scan-findings")
-          && !needEl("scan-findings").classList.contains("hidden"));
+    check("...and the removed Findings drill is not offered",
+          !needEl("scan-sheet").querySelector("#scan-findings")
+          && !/recorded findings/i.test(needEl("scan-body").textContent));
     // A SHEET IS AN OVERLAY, NOT A VIEW: moving to another tab must not close it, and coming
     // back must find it still showing the same job.
     H.showView("network");
@@ -10798,6 +10797,30 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("no percentage is rendered anywhere in the sheet",
           !/\d\s*%/.test(needEl("scan-sheet").textContent)
           && !doc.querySelector("#scan-sheet progress, #scan-sheet [role=\"progressbar\"]"));
+
+    // ABANDONED (server-derived from the lease and the claim, never hand-set). The sheet must
+    // say why nothing will run it and offer cancellation, not sit on "Queued" forever.
+    SCAN_JOB = Object.assign({}, SCAN_JOB, {
+      state: "queued", derived_state: "abandoned", abandoned: true, error: "",
+      result: "", finished_at: null, started_at: null, lease_owner: "",
+      state_reason: "no scanner claimed this job in 31m00s; its 900s lease ran out with no claim, "
+        + "so nothing is working on it",
+    });
+    await H.scanPollOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    check("a queued job past its lease renders as Abandoned, not Queued",
+          /Abandoned/.test(needEl("scan-state-line").textContent)
+          && /ran out with no claim/.test(needEl("scan-body").textContent),
+          needEl("scan-state-line").textContent);
+    check("...and the sheet offers to cancel it",
+          !needEl("scan-cancel-job").classList.contains("hidden"),
+          needEl("scan-cancel-job").className);
+    scanPosts = [];
+    await H.scanCancelJob();
+    await new Promise((r) => setTimeout(r, 60));
+    check("...and cancelling talks to that job's cancel route",
+          scanPosts.some((u) => u.includes("/api/scan-jobs/job-scan-1/cancel")),
+          scanPosts.join(" | "));
 
     H.closeScanSheet();
     await new Promise((r) => setTimeout(r, 260));

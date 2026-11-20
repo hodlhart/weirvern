@@ -24,7 +24,6 @@ sketches and look for somewhere else to start.
 | `33-worker.yaml` | Ingest + detection worker (Deployment) |
 | `34-gui.yaml` | The console — Deployment and the NodePort Service it is reached through |
 | `35-prune-cronjob.yaml` | The retention CronJob that bounds the Zeek log directory |
-| `36-scanner.yaml` | The asset scanner Deployment (Nmap inventory, change ledger, shadow posture) |
 | `50-schema-job.yaml` | Applies `weirvern/schema/*.sql` — runs the same code path as `weirvern init-db` |
 | `60-rbac.yaml` | The role the control plane uses to read workload state |
 | `70-networkpolicy.yaml` | Pod-to-pod traffic restrictions |

@@ -16,6 +16,7 @@ import json
 import os
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -217,6 +218,27 @@ class GatewayClient:
         return bool(self._request("POST", "/v1/probe/result",
                                   {"request_id": request_id, "result": result,
                                    "error": error}).get("ok"))
+
+    def scan_capability(self, status: dict) -> bool:
+        """Report this unit's measured Nmap/OS capability to the hub."""
+        return bool(self._request("POST", "/v1/scan/capability", status).get("ok"))
+
+    def scan_next(self) -> tuple[dict | None, str]:
+        """Claim one manual scan inside this unit's declared networks, or explain why not."""
+        payload = self._request("GET", "/v1/scan/next")
+        job = payload.get("job")
+        reason = str(payload.get("reason") or "")
+        return (job if isinstance(job, dict) else None), reason
+
+    def scan_cancel(self, job_id: str) -> bool:
+        """Has the hub asked this unit to stop this job? Polled during a scan."""
+        return bool(self._request(
+            "GET", f"/v1/scan/cancel?job_id={urllib.parse.quote(str(job_id))}").get("cancel"))
+
+    def scan_result(self, job_id: str, result: dict) -> bool:
+        """Hand the hub a measured scan; the hub writes it with its own recorder."""
+        return bool(self._request("POST", "/v1/scan/result",
+                                  {"job_id": job_id, "result": result}).get("ok"))
 
     def gate_rules(self) -> dict:
         return self._request("GET", "/v1/gate/rules")

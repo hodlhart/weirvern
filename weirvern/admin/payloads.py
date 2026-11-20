@@ -263,7 +263,13 @@ def assets(client: Client, *, hours: int, scope: str = "all") -> dict[str, Any]:
     asset we are responsible for), so `all` and `monitored` return the same monitored set -- but
     the counts below are COUNTED from the rows, not aliased from one number, and an unsupported
     scope is rejected by the route instead of being answered with the full set.
+
+    THE SCAN AFFORDANCE TRAVELS WITH THE ROWS. One fleet-capability read annotates every host
+    with whether a weirling that can scan also DECLARES its network, so the Assets table can
+    disable "Scan now" per row with the reason instead of offering work nothing can claim.
     """
+    from weirvern import scan_jobs as scan_jobs_mod  # noqa: PLC0415
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
     from weirvern.admin import assets as assets_mod  # noqa: PLC0415
 
     payload = assets_mod.asset_inventory(client, hours=hours)
@@ -276,6 +282,30 @@ def assets(client: Client, *, hours: int, scope: str = "all") -> dict[str, Any]:
         "all": len(hosts),
         "monitored": sum(1 for h in hosts if str(h.get("scope") or "") == "monitored"),
         "external": sum(1 for h in hosts if str(h.get("scope") or "") == "external"),
+    }
+    try:
+        capability = scanner_mod.fleet_capability(client)
+    except Exception as exc:  # noqa: BLE001 - the inventory must not fail with the annotation
+        logger.warning("asset scan capability unavailable: %s", exc)
+        capability = scanner_mod.capability_failure(exc)
+    for host in hosts:
+        scan = host.get("scan") or {}
+        addr = str(host.get("addr") or "")
+        reach = [item["sensor_id"] for item in capability.get("capable") or []
+                 if scan_jobs_mod.ip_allowed(addr, item.get("networks") or [])]
+        scan["can_scan"] = bool(reach)
+        scan["scan_weirlings"] = reach
+        scan["scan_refusal"] = "" if reach else (
+            capability.get("reason_unavailable")
+            or "no weirling that can scan declares this host's network")
+        host["scan"] = scan
+    payload["scan_capability"] = {
+        "enabled": capability.get("enabled", False),
+        "sentence": capability.get("sentence", ""),
+        "reason_unavailable": capability.get("reason_unavailable", ""),
+        "count": capability.get("count", 0),
+        "capable_count": capability.get("capable_count", 0),
+        "available": capability.get("available", False),
     }
     return payload
 
@@ -304,13 +334,42 @@ def asset_changes_failure(exc: BaseException) -> dict[str, Any]:
             "data_error": str(exc)}
 
 
-def scan_jobs(client: Client, *, ip: str, job: str = "") -> dict[str, Any]:
+def scan_readiness(client: Client, *, ip: str = "", lease_s: int = 900) -> dict[str, Any]:
+    """Whether the FLEET can execute a manual scan, and who can reach this target.
+
+    THE FACT IS CAPABILITY, NOT CONFIGURATION. A weirling's own agent measures Nmap and reports
+    it; the hub counts only fresh, registered, capable rows, and (for one address) only the
+    weirlings whose declared networks contain it. The Scan button, the refusal and the claim all
+    read this one shape, so the console cannot promise a scan no node can claim.
+    """
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
+
+    payload = scanner_mod.fleet_capability(client, ip=ip)
+    payload["lease_s"] = max(30, int(lease_s or 900))
+    payload["docs_url"] = "docs/deployment.md#asset-scanning-and-nmap"
+    return payload
+
+
+def scan_readiness_failure(exc: BaseException) -> dict[str, Any]:
+    """A failed capability read is an UNKNOWN answer, never "nobody can scan"."""
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
+
+    return scanner_mod.capability_failure(exc)
+
+
+def scan_jobs(client: Client, *, ip: str, job: str = "", lease_s: int = 900,
+              scanning_enabled: bool = True, unavailable_reason: str = "") -> dict[str, Any]:
     """The manual-scan queue: recent requests, optionally for one address or one job.
 
     The row timestamps are serialised here, through the console's own `_iso`, so a job's
     `requested_at` is the same string on both surfaces. `job` is the sheet's subject: a URL
     that names one job reads that job even after it has left the 20-row recent list. An
     unknown id is an empty list, never a fabricated row.
+
+    `derived_state`/`abandoned`/`state_reason` are computed from the lease and the claim by
+    `scan_jobs.derive` BEFORE serialisation -- the lease math needs datetimes, and `_iso`
+    would turn them into strings the comparison cannot read. The row's own `state` stays
+    exactly what the scanner wrote.
     """
     from weirvern import scan_jobs as scan_jobs_mod  # noqa: PLC0415
     from weirvern.admin.web import _iso  # noqa: PLC0415
@@ -322,7 +381,9 @@ def scan_jobs(client: Client, *, ip: str, job: str = "") -> dict[str, Any]:
         rows = scan_jobs_mod.list_jobs(client, ip=ip, limit=20)
     out = []
     for row in rows:
-        item = dict(row)
+        item = scan_jobs_mod.derive(
+            dict(row), lease_s=lease_s, scanning_enabled=scanning_enabled,
+            unavailable_reason=unavailable_reason)
         for key in ("requested_at", "lease_until", "started_at", "finished_at"):
             item[key] = _iso(item.get(key))
         out.append(item)
@@ -522,17 +583,22 @@ def models_failure(exc: BaseException) -> dict[str, Any]:
 
 
 def scanner(client: Client) -> dict[str, Any]:
-    """Scanner readiness for the hub and every registered sensor.
+    """Scanner readiness for every REGISTERED weirling, plus the fleet's one-line verdict.
 
-    A SENSOR WITH NO ROW IS NOT "basic". It is "not_reported", which is a different fact and needs
-    the setup sheet rather than a clean-looking profile, so the missing rows are filled with that
-    state and the install command for the OS the sensor reported.
+    A SENSOR WITH NO ROW IS NOT "basic". It is "not_reported", which is a different fact and
+    needs the setup sheet rather than a clean-looking profile, so the missing rows are filled
+    with that state and the install command for the OS the weirling reported.
+
+    ONLY REGISTERED, ENABLED WEIRLINGS ARE THE FLEET. A status row left behind by a removed
+    workload is not a scanner the operator can use, and listing it would inflate the count.
     """
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
     from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
 
     status_rows = client.query(
         "SELECT sensor_id, profile, nmap_available, nmap_version, nmap_path, "
-        "nse_available, os_id, os_version, detail, last_check "
+        "       nse_available, os_id, os_version, detail, last_check, "
+        "       privileged, scan_mode, can_install, sudo_state "
         "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
     ).result_rows
     registered = client.query(
@@ -542,7 +608,9 @@ def scanner(client: Client) -> dict[str, Any]:
 
     status: dict[str, dict[str, Any]] = {}
     for row in status_rows:
-        sid = str(row[0] or "")
+        sid = str(row[0] or "").strip().lower()
+        if not sid or sid in status:
+            continue
         status[sid] = {
             "sensor_id": sid,
             "profile": str(row[1] or "basic"),
@@ -555,37 +623,67 @@ def scanner(client: Client) -> dict[str, Any]:
             "detail": str(row[8] or ""),
             "last_check": (row[9].isoformat() if hasattr(row[9], "isoformat")
                            else str(row[9] or "")),
+            "privileged": bool(row[10]) if len(row) > 10 else False,
+            "scan_mode": str(row[11] if len(row) > 11 else "") or (
+                "raw" if bool(row[2]) else "none"),
+            "can_install": bool(row[12]) if len(row) > 12 else False,
+            "sudo_state": str(row[13]) if len(row) > 13 else "",
             "state": "reported",
         }
-    for row in registered:
-        sid = str(row[0] or "")
-        status.setdefault(sid, {
-            "sensor_id": sid, "profile": "unknown", "nmap_available": False,
-            "nmap_version": "", "nmap_path": "", "nse_available": False,
-            "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
-            "last_check": "", "state": "not_reported",
-        })
 
-    commands = {
-        "debian": "sudo apt-get update && sudo apt-get install -y nmap",
-        "ubuntu": "sudo apt-get update && sudo apt-get install -y nmap",
-        "linuxmint": "sudo apt-get update && sudo apt-get install -y nmap",
-        "fedora": "sudo dnf install -y nmap",
-        "rhel": "sudo dnf install -y nmap",
-        "centos": "sudo dnf install -y nmap",
-        "rocky": "sudo dnf install -y nmap",
-        "almalinux": "sudo dnf install -y nmap",
-        "alpine": "sudo apk add nmap",
-        "arch": "sudo pacman -S --noconfirm nmap",
-        "darwin": "brew install nmap",
-    }
-    for item in status.values():
-        item["install_command"] = commands.get(str(item.get("os_id") or "").lower(), "")
+    sensors: list[dict[str, Any]] = []
+    for row in registered:
+        sid = str(row[0] or "").strip().lower()
+        item = status.get(sid)
+        if item is None:
+            item = {
+                "sensor_id": sid, "profile": "unknown", "nmap_available": False,
+                "nmap_version": "", "nmap_path": "", "nse_available": False,
+                "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
+                "last_check": "", "privileged": False, "scan_mode": "unknown",
+                "can_install": False, "sudo_state": "unknown", "state": "not_reported",
+            }
+        install = scanner_mod.nmap_install_command(item.get("os_id", ""),
+                                                   item.get("os_version", ""))
+        item["install_command"] = install["command"]
+        item["install_manager"] = install["manager"]
+        item["install_known"] = install["known"]
+        item["setcap_command"] = "sudo setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap"
+        item["scan_mode_sentence"] = scanner_mod.scan_mode_sentence(item["scan_mode"])
+        # THE ANSWER TO "CAN WEIRVERN INSTALL IT?" IS THE AGENT'S OWN MEASUREMENT, never a
+        # hopeful assumption at the hub. Root, or the one scoped sudoers entry the installer
+        # created, makes it yes; everything else is copy-and-instruct with the reason.
+        item["install_privileged"] = bool(item.get("can_install"))
+        sudo_state = str(item.get("sudo_state") or "unknown")
+        if item.get("can_install"):
+            item["install_answer"] = "Weirvern can install nmap here (privileged installer path)"
+        elif sudo_state == "password":
+            item["install_answer"] = (
+                "Weirvern cannot install nmap here — the weirling's user has a sudo password, "
+                "but this build has no secret channel from the console to an agent. Run the "
+                "command below as root, or create the scoped sudoers entry.")
+        elif sudo_state == "none":
+            item["install_answer"] = (
+                "Weirvern cannot install nmap here — the weirling's user is not in sudoers; "
+                "run the command below as root")
+        else:
+            item["install_answer"] = (
+                "Weirvern cannot install nmap here — run this as root")
         item["install_url"] = "https://nmap.org/download.html"
-    sensors = sorted(status.values(),
-                     key=lambda item: (item["state"] != "reported", item["sensor_id"]))
-    return {"available": True, "reason": "", "sensors": sensors, "count": len(sensors),
-            "local_sensor": _gate_sensor_name()}
+        item["docs_url"] = "docs/deployment.md#asset-scanning-and-nmap"
+        sensors.append(item)
+
+    capability = scanner_mod.fleet_capability(client)
+    return {
+        "available": True, "reason": "", "sensors": sensors, "count": len(sensors),
+        "local_sensor": _gate_sensor_name(),
+        "capability": {
+            "enabled": capability["enabled"],
+            "sentence": capability["sentence"],
+            "count": capability["count"],
+            "capable_count": capability["capable_count"],
+        },
+    }
 
 
 def scanner_failure(exc: BaseException) -> dict[str, Any]:
@@ -787,31 +885,6 @@ def incident(client: Client, *, addr: str, start: str) -> dict[str, Any]:
 def fingerprints(client: Client, *, ja4: str) -> dict[str, Any]:
     """Which hosts have presented a given JA4 fingerprint -- the hunting pivot."""
     return status_mod.fingerprint_hosts(client, ja4)
-
-
-def findings(client: Client, *, ip: str, severity: str, limit: int) -> dict[str, Any]:
-    """Recorded scanner findings for the Findings drill.
-
-    Findings are historical evidence, so the global time window does not hide them: a finding
-    observed last week is still a fact about the host today. `limit` is NOT clamped here, which is
-    the console's contract; the value is bounded by the caller, not by this layer.
-    """
-    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
-
-    try:
-        payload = assets_mod.asset_findings_list(
-            client, ip=ip, severity=severity, limit=limit)
-    except Exception as exc:  # noqa: BLE001
-        return findings_failure(exc)
-    payload["filter"] = {"ip": ip, "severity": severity}
-    return payload
-
-
-def findings_failure(exc: BaseException) -> dict[str, Any]:
-    """The console's own failure shape for /api/findings: a FIXED sentence, not `read_failure`."""
-    logger.warning("findings unavailable: %s", exc)
-    return {"available": False, "findings": [], "count": 0, "counts": {},
-            "reason": "the data could not be read"}
 
 
 def normalized_seeds(client: Client) -> dict[str, Any]:
@@ -1614,30 +1687,159 @@ def password_change(ctx: Any, ident: Any, *, current: str,
                  "note": "password changed; sign in again with the new one"}
 
 
-def scan_job_create(client: Client, *, ip: str) -> tuple[int, dict[str, Any]]:
-    """Queue one host scan for the scanner to claim under a lease.
+def scan_job_create(client: Client, *, ip: str, readiness: dict[str, Any] | None = None,
+                    lease_s: int = 900) -> tuple[int, dict[str, Any]]:
+    """Queue one host scan for a weirling that can REACH and EXECUTE it.
 
-    THE TABLE MAY NOT EXIST YET, and that is a named condition rather than a fault: a deployment on
-    an older scanner answers 503 with the version that introduced the table. An ACTIVE job is not an
-    error either -- it answers `already: true` with the job that is running, so a double click does
-    not queue a second scan.
+    THE REFUSAL IS THE FEATURE. A job is only worth filing when some weirling both monitors the
+    target's network and reports Nmap; otherwise the row can only sit in the queue while the
+    console implies work is happening. So the three predicates are checked BEFORE a row exists:
+
+      * the capability read worked            (else 503: an unknown answer is not a yes)
+      * some registered weirling monitors it  (else 409, naming the declared networks)
+      * one of those can scan (nmap present)  (else 409, naming the install step)
+
+    AN ACTIVE JOB IS NOT AN ERROR either -- it answers `already: true` with the job that is
+    running, so a double click does not queue a second scan.
     """
     from weirvern import scan_jobs  # noqa: PLC0415
+    from weirvern import scanner as scanner_mod  # noqa: PLC0415
 
+    try:
+        capability = readiness if readiness is not None else scanner_mod.fleet_capability(
+            client, ip=ip)
+    except Exception as exc:  # noqa: BLE001
+        return scan_job_failure(exc)
+    if capability.get("available") is False:
+        return 503, {"ok": False, "code": 503, "refused": "capability_unreadable",
+                     "error": str(capability.get("reason") or
+                                  "weirling scan capability could not be read")}
+    if not capability.get("enabled"):
+        refused = "no_weirling_can_scan" if capability.get("reachable_count") else \
+            "target_not_monitored"
+        return 409, {"ok": False, "code": 409, "refused": refused,
+                     "error": str(capability.get("reason_unavailable") or
+                                  scan_jobs.SCAN_UNAVAILABLE),
+                     "eligibility": capability}
     try:
         asset = scan_jobs.find_asset(client, ip)
         if asset is None:
-            return 404, {"error": f"{ip} is not in the asset registry", "code": 404}
+            return 404, {"ok": False, "code": 404, "error": f"{ip} is not in the asset registry"}
         active = scan_jobs.active_for_asset(client, str(asset["asset_key"]))
         if active is not None:
             return 200, {"ok": True, "job_id": str(active["job_id"]), "ip": ip,
-                         "state": str(active["state"]), "already": True}
+                         "state": str(active["state"]), "already": True,
+                         "eligibility": capability.get("sentence", "")}
         job = scan_jobs.create_job(client, asset, requested_by="operator")
     except Exception as exc:  # noqa: BLE001
         return scan_job_failure(exc)
     logger.info("manual scan queued for %s (%s)", ip, job["job_id"])
     return 200, {"ok": True, "job_id": str(job["job_id"]), "ip": ip,
-                 "state": "queued", "already": False}
+                 "state": "queued", "already": False,
+                 "eligibility": capability.get("sentence", ""),
+                 "eligible_weirlings": [item["sensor_id"]
+                                        for item in capability.get("eligible") or []]}
+
+
+def _scan_audit(client: Client, *, action: str, job: dict[str, Any], reason: str,
+                actor: str) -> None:
+    """The FACT of a cancellation, kept after the job row is gone.
+
+    The scan record is the operator's to remove; the evidence that they queued and cancelled
+    one is not. One append-only row, with the original job id in `target` so a deleted scan
+    cannot be used to erase that it was ever requested.
+    """
+    from weirvern import fleet_store  # noqa: PLC0415
+
+    target = f"{job.get('ip') or 'unknown target'} job {job.get('job_id') or 'unknown'}"
+    fleet_store.write_audit(client, scope="scan", action=action, target=target,
+                            reason=reason, actor=actor)
+
+
+def scan_job_cancel(client: Client, *, job_id: str, reason: str, actor: str = "operator",
+                    lease_s: int = 900, scanning_enabled: bool = True,
+                    unavailable_reason: str = "") -> tuple[int, dict[str, Any]]:
+    """Remove a QUEUED job from the record; ask a RUNNING one to stop, and do not pretend.
+
+    THE THREE ANSWERS ARE DIFFERENT ON PURPOSE:
+      * queued          -> the row is DELETED (and audited), so the queue reflects the removal
+      * claimed/running -> `cancel_requested`, 202, and the row STAYS until the weirling
+                           confirms it killed its child. A running scan that vanishes from the
+                           record while still probing the network is a lie.
+      * finished        -> 409, nothing to remove.
+    A reason is required for every path: months later the audit is the only answer to "why".
+    """
+    from weirvern import scan_jobs  # noqa: PLC0415
+
+    why = str(reason or "").strip()
+    if not why:
+        return 400, {"ok": False, "code": 400, "refused": "reason_required",
+                     "error": "a reason is required to cancel a scan; it is kept in the audit trail"}
+    try:
+        job = scan_jobs.get_job(client, job_id)
+        if job is None:
+            return 404, {"ok": False, "code": 404, "error": "no scan job with that id"}
+        derived = scan_jobs.derive(job, lease_s=lease_s, scanning_enabled=scanning_enabled,
+                                   unavailable_reason=unavailable_reason)
+        state = str(derived.get("state") or "")
+        if state in ("claimed", "cancel_requested"):
+            if state != "cancel_requested":
+                scan_jobs.request_cancel(client, derived, actor=actor)
+            _scan_audit(client, action="scan_cancel_requested", job=derived, reason=why,
+                        actor=actor)
+            return 202, {
+                "ok": False, "confirmed": False, "job_id": job_id,
+                "ip": str(derived.get("ip") or ""), "state": "cancel_requested",
+                "error": ("cancel requested; the weirling has not confirmed — the job stays "
+                          "visible until it does"),
+            }
+        if state in scan_jobs.TERMINAL_STATES:
+            return 409, {"ok": False, "code": 409, "refused": "already_finished",
+                         "error": f"this job already finished ({state}); there is nothing to cancel"}
+        _scan_audit(client, action="scan_cancel", job=derived, reason=why, actor=actor)
+        scan_jobs.delete_job(client, job_id)
+    except Exception as exc:  # noqa: BLE001
+        return scan_job_failure(exc)
+    logger.info("scan job %s removed from the queue by %s", job_id, actor)
+    return 200, {
+        "ok": True, "removed": True, "job_id": job_id,
+        "ip": str(derived.get("ip") or ""), "reason": why,
+        "note": f"removed job {job_id} for {derived.get('ip') or 'the target'}; "
+                "the cancellation is recorded in the audit trail",
+    }
+
+
+def scan_jobs_cancel(client: Client, *, job_ids: list[str], reason: str,
+                     actor: str = "operator", lease_s: int = 900,
+                     scanning_enabled: bool = True,
+                     unavailable_reason: str = "") -> tuple[int, dict[str, Any]]:
+    """Cancel several jobs in one action, with the SAME reason and ONE audit row per job.
+
+    Per-job outcomes, not one aggregate "ok": a batch where two rows vanished and one is still
+    running must say which is which. The HTTP status is 200 when at least one row was removed,
+    409 when none were, so a caller cannot read a total failure as success.
+    """
+    ids = [str(job_id or "").strip() for job_id in (job_ids or []) if str(job_id or "").strip()]
+    if not ids:
+        return 400, {"ok": False, "code": 400, "error": "no job ids were given"}
+    if len(ids) > 100:
+        return 400, {"ok": False, "code": 400, "error": "at most 100 jobs per cancellation"}
+    removed, unconfirmed, failed = [], [], []
+    for job_id in dict.fromkeys(ids):
+        code, result = scan_job_cancel(
+            client, job_id=job_id, reason=reason, actor=actor, lease_s=lease_s,
+            scanning_enabled=scanning_enabled, unavailable_reason=unavailable_reason)
+        entry = {"job_id": job_id, "status": code, "result": result}
+        if result.get("removed"):
+            removed.append(entry)
+        elif code == 202:
+            unconfirmed.append(entry)
+        else:
+            failed.append(entry)
+    return (200 if removed else 409), {
+        "ok": bool(removed), "removed": removed, "unconfirmed": unconfirmed, "failed": failed,
+        "count": len(removed),
+    }
 
 
 def sluice_block(client: Client, *, by: str, src_cidr: str, dst_cidr: str, domain: str,
@@ -1675,13 +1877,14 @@ def sluice_block(client: Client, *, by: str, src_cidr: str, dst_cidr: str, domai
 
 
 def scan_job_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
-    """The console's own failure shape: a table that is not there yet is a NAMED condition.
+    """The console's own failure shape: an unreadable queue is a NAMED condition.
 
     Used both inside the fetcher and by a surface whose CONNECTION failed -- the console wraps the
     connection in the same try, so an unreachable cluster has always answered this sentence.
     """
     logger.warning("scan job request failed: %s", exc)
-    return 503, {"error": "the scan-job table is not ready; deploy scanner 0.14.13", "code": 503}
+    return 503, {"ok": False, "error": "the scan-job table is not readable; no job was queued",
+                 "code": 503}
 
 
 def sluice_block_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:

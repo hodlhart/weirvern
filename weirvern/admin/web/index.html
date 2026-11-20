@@ -834,8 +834,8 @@
   <div id="scan-body"></div>
   <div class="controls sheet-actions">
     <button id="scan-retry" class="quiet hidden" type="button">Retry this scan</button>
+    <button id="scan-cancel-job" class="quiet hidden" type="button">Cancel this job</button>
     <button id="scan-check" class="quiet" type="button">Check now</button>
-    <button id="scan-findings" class="quiet hidden" type="button">Open findings</button>
     <button id="scan-cancel" class="quiet" type="button">Close</button>
   </div>
 </div>
@@ -1364,41 +1364,6 @@
         <h2>Anomalies for this host</h2>
         <table id="hp-anoms"><thead><tr><th>detected</th><th>score</th><th>severity</th><th>why</th></tr></thead><tbody></tbody></table>
       </div>
-    </div>
-  </section>
-
-  <!-- ── Findings drill (the scanner's recorded evidence) ───────────────────────────── -->
-  <!-- FINDINGS ARE A DRILL, NOT A TAB. The Assets exposure cell and the host scanner card open
-       this surface; the Assets tab stays lit behind it. The view is reachable as #v=findings
-       and keeps the host filter in the URL so a shared finding link is reproducible. -->
-  <section id="view-findings" class="view">
-    <div class="view-head has-back">
-      <button id="fd-back" class="quiet" type="button">Back to Assets</button>
-      <h2 id="fd-title">Findings</h2>
-      <span id="fd-summary" class="muted"></span>
-    </div>
-    <div class="card">
-      <div id="fd-stats" class="stat-row"></div>
-      <div class="controls">
-        <label>severity
-          <select id="fd-severity">
-            <option value="">all severities</option>
-            <option value="critical">critical</option>
-            <option value="high">high</option>
-            <option value="medium">medium</option>
-            <option value="low">low</option>
-            <option value="info">info</option>
-            <option value="unknown">unknown</option>
-          </select>
-        </label>
-        <label id="fd-host-filter" class="muted hidden"></label>
-      </div>
-      <div id="fd-note"></div>
-      <div class="tablewrap"><table id="fd-table">
-        <thead><tr><th>Severity</th><th>Host</th><th>Finding</th><th>Template</th><th>Last seen</th></tr></thead>
-        <tbody></tbody>
-      </table></div>
-      <div id="fd-empty" class="empty-host"></div>
     </div>
   </section>
 

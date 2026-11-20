@@ -1,117 +1,112 @@
 {
   "/api/asset-changes": {
-    "verb": "GET",
     "fetcher": "asset_changes",
-    "target": "weirvern.admin.assets.asset_changes"
+    "target": "weirvern.admin.assets.asset_changes",
+    "verb": "GET"
   },
   "/api/asset-posture": {
-    "verb": "GET",
     "fetcher": "asset_posture",
-    "target": "weirvern.admin.assets.asset_posture_overview"
+    "target": "weirvern.admin.assets.asset_posture_overview",
+    "verb": "GET"
   },
   "/api/assets": {
-    "verb": "GET",
     "fetcher": "assets",
-    "target": "weirvern.admin.assets.asset_inventory"
+    "target": "weirvern.admin.assets.asset_inventory",
+    "verb": "GET"
   },
   "/api/audit": {
-    "verb": "GET",
     "fetcher": "audit",
-    "target": "weirvern.admin.status.pipeline_audit"
+    "target": "weirvern.admin.status.pipeline_audit",
+    "verb": "GET"
   },
   "/api/baselines": {
-    "verb": "GET",
     "fetcher": "baselines",
-    "target": "weirvern.admin.status.baselines_overview"
+    "target": "weirvern.admin.status.baselines_overview",
+    "verb": "GET"
   },
   "/api/blocked": {
-    "verb": "GET",
     "fetcher": "blocked",
-    "target": "weirvern.admin.soc.blocked_view"
+    "target": "weirvern.admin.soc.blocked_view",
+    "verb": "GET"
   },
   "/api/detectors": {
-    "verb": "GET",
     "fetcher": "detectors",
-    "target": "weirvern.admin.status.detectors_overview"
+    "target": "weirvern.admin.status.detectors_overview",
+    "verb": "GET"
   },
   "/api/discover/trends": {
-    "verb": "GET",
     "fetcher": "discover_trends",
-    "target": "weirvern.admin.soc.discover_trends"
+    "target": "weirvern.admin.soc.discover_trends",
+    "verb": "GET"
   },
   "/api/dns": {
-    "verb": "GET",
     "fetcher": "dns",
-    "target": "weirvern.admin.soc.dns_rows"
+    "target": "weirvern.admin.soc.dns_rows",
+    "verb": "GET"
   },
   "/api/dns/reverse": {
-    "verb": "GET",
     "fetcher": "dns_reverse",
-    "target": "weirvern.admin.soc.dns_reverse_for"
+    "target": "weirvern.admin.soc.dns_reverse_for",
+    "verb": "GET"
   },
   "/api/episodes": {
-    "verb": "GET",
     "fetcher": "episodes",
-    "target": "weirvern.admin.status.episodes_recent"
+    "target": "weirvern.admin.status.episodes_recent",
+    "verb": "GET"
   },
   "/api/evidence": {
-    "verb": "GET",
     "fetcher": "evidence",
-    "target": "weirvern.admin.status.alert_evidence"
-  },
-  "/api/findings": {
-    "verb": "GET",
-    "fetcher": "findings",
-    "target": "weirvern.admin.assets.asset_findings_list"
+    "target": "weirvern.admin.status.alert_evidence",
+    "verb": "GET"
   },
   "/api/fingerprints": {
-    "verb": "GET",
     "fetcher": "fingerprints",
-    "target": "weirvern.admin.status.fingerprint_hosts"
+    "target": "weirvern.admin.status.fingerprint_hosts",
+    "verb": "GET"
   },
   "/api/flows": {
-    "verb": "GET",
     "fetcher": "flows",
-    "target": "weirvern.admin.soc.flows_matching"
+    "target": "weirvern.admin.soc.flows_matching",
+    "verb": "GET"
   },
   "/api/identity": {
-    "verb": "GET",
     "fetcher": "host_identity",
-    "target": "weirvern.admin.status.host_identity_view"
+    "target": "weirvern.admin.status.host_identity_view",
+    "verb": "GET"
   },
   "/api/incident": {
-    "verb": "GET",
     "fetcher": "incident",
-    "target": "weirvern.admin.status.incident_detail"
+    "target": "weirvern.admin.status.incident_detail",
+    "verb": "GET"
   },
   "/api/ml/ripple": {
-    "verb": "GET",
     "fetcher": "ml_ripple",
-    "target": "weirvern.admin.status.ripple_overview"
+    "target": "weirvern.admin.status.ripple_overview",
+    "verb": "GET"
   },
   "/api/models/calibration": {
-    "verb": "GET",
     "fetcher": "models_calibration",
-    "target": "weirvern.admin.status.calibration_overview"
+    "target": "weirvern.admin.status.calibration_overview",
+    "verb": "GET"
   },
   "/api/models/shadow": {
-    "verb": "GET",
     "fetcher": "models_shadow",
-    "target": "weirvern.admin.status.shadow_overview"
+    "target": "weirvern.admin.status.shadow_overview",
+    "verb": "GET"
   },
   "/api/scan-jobs": {
-    "verb": "GET",
     "fetcher": "scan_jobs",
-    "target": "weirvern.scan_jobs.list_jobs"
+    "target": "weirvern.scan_jobs.list_jobs",
+    "verb": "GET"
   },
   "/api/settings": {
-    "verb": "GET",
     "fetcher": "settings_payload",
-    "target": "weirvern.admin.status.settings_overview"
+    "target": "weirvern.admin.status.settings_overview",
+    "verb": "GET"
   },
   "/api/zeeklog": {
-    "verb": "GET",
     "fetcher": "zeeklog",
-    "target": "weirvern.admin.soc.zeek_log_hosts"
+    "target": "weirvern.admin.soc.zeek_log_hosts",
+    "verb": "GET"
   }
 }

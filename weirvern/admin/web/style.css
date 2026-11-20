@@ -1003,6 +1003,19 @@ svg.spark rect.cur { fill: var(--accent); }
 /* ── THE SCAN SHEET: facts before findings, and no invented progress ──────────────────────── */
 .scan-state-line { margin: 0 0 10px; font-weight: 600; color: var(--fg-2); }
 .scan-state-line.bad { color: var(--crit); }
+
+/* THE REASON BESIDE A DISABLED SCAN CONTROL. A block, not a tooltip: it wraps under the button
+   so a keyboard or touch user reads WHY without hovering, and it stays short enough not to
+   stretch the inventory's Scan column. */
+.scan-refusal {
+  display: block;
+  margin-top: 4px;
+  max-width: 30ch;
+  font-size: var(--fs-1);
+  line-height: 1.25;
+  color: var(--warn, var(--fg-2));
+  overflow-wrap: anywhere;
+}
 .scan-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 14px; margin: 12px 0 14px; font-size: var(--fs-2); }
 .scan-facts dt { color: var(--muted); }

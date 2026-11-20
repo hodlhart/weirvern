@@ -1,0 +1,15 @@
+-- 049_drop_nuclei.sql
+--
+-- NUCLEI IS REMOVED. The identity layer is Nmap -sV plus safe NSE scripts; a template
+-- vulnerability scan is not part of it. `asset_findings` had exactly one producer (the Nuclei
+-- pass), so leaving the table behind would leave a dormant surface whose rows the console can
+-- no longer refresh -- an old match would read as a current finding forever.
+--
+-- THE ROWS ARE NOT RECOVERABLE. A Nuclei match cannot be re-derived without the template set
+-- and the binary this deployment deliberately does not carry, so this is a real deletion, not
+-- an archive. That is the operator's call (2026-11-20: "Nuclei should be removed everywhere"),
+-- and the reason it is a migration rather than a code path nobody runs.
+--
+-- `asset_scans` is NOT dropped: it is the audit of every invocation, including Nmap service
+-- scans that still run, and its `kind` column is a generic label.
+DROP TABLE IF EXISTS weirvern.asset_findings;

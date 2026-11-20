@@ -1,44 +1,43 @@
-"""Active asset inventory with Nmap and Nuclei.
+"""Asset scanning: Nmap service and NSE identity measurements, executed by weirlings.
 
-WHY THIS IS A SEPARATE PROCESS
-------------------------------
-The worker's job is to watch traffic and train models; it must not block on a network scan or
-hold a scanner's child process. This module is the scanner side of the same package and runs as
-its own Deployment in the existing cluster (no new LXC, no new host):
+WHERE IT RUNS
+-------------
+Scanning is a FLEET job. There is no central scanner Deployment: every registered
+weirling runs `weirvern.admin.sensor_agent`, which measures its own Nmap at startup
+and claims manual jobs from the hub's queue only when it can actually run one
+(`claim_next_job`). A weirling without Nmap reports that fact and never claims, so a
+queued job is never held by a node that cannot execute it.
 
-    discovery -> registry (pending) -> Nmap services -> Nuclei templates -> findings
+WHAT A SCAN IS
+--------------
+    Nmap services + safe NSE identity scripts -> registry, services, observations
 
-THE NEW-HOST PROMISE
---------------------
-Every discovery pass unions two views of the LAN:
+Nmap contributes services and identity facts. Nothing here invents a vulnerability
+finding: an NSE script's output is an OBSERVATION (what the device calls itself), not
+proof of a missing patch. `vuln`, `intrusive`, `brute` and `dos` script categories are
+deliberately excluded.
 
-  * Nmap's active sweep, for hosts that answer; and
-  * the last few minutes of Weirvern's own `flows`, for hosts that were seen passively.
-
-A host that is not in `asset_registry` is inserted with `scan_state='pending'` and is scanned in
-the same pass, not on the next scheduled sweep. A first run is treated as a BASELINE, not as a
-wave of new devices: existing hosts are recorded as `known` unless SCAN_BOOTSTRAP=1. After that,
-a genuinely new address or MAC is pending immediately.
+THE NEW-HOST PROMISE (hub-side inventory)
+-----------------------------------------
+Discovery helpers below union Nmap's active sweep with hosts seen passively, so a
+device that never answers a probe is still inventoried. A first run is treated as a
+BASELINE, not a wave of new devices: existing hosts are recorded as `known` unless
+SCAN_BOOTSTRAP=1. After that, a genuinely new address or MAC is pending immediately.
 
 DESIGN RULES
 ------------
-* The scanner never invents a vulnerability finding. Nmap contributes services; Nuclei
-  contributes template matches. The two are stored separately and with their evidence.
-* Registry keys prefer `mac:` when a MAC is available and fall back to `ip:`. Addresses move
-  under DHCP, so the MAC is the better long-lived key when one exists.
-* Every invocation is recorded in `asset_scans`, including failures. "No findings" and "the
-  scanner did not run" must not look the same in the UI.
-* Scanning is opt-in (`SCAN_ENABLED`), scoped by the weirling registry, and never scans the whole
-  internet.
+* Registry keys prefer `mac:` when a MAC is available and fall back to `ip:`. Addresses
+  move under DHCP, so the MAC is the better long-lived key when one exists.
+* Every invocation is recorded in `asset_scans`, including failures. "No services" and
+  "the scan did not run" must not look the same in the UI.
+* Scanning is scoped by the weirling registry and never scans the whole internet.
 """
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import json
 import logging
 import os
-import shlex
 import shutil
 import socket
 import subprocess
@@ -50,7 +49,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from weirvern import db, scan_jobs
+from weirvern import scan_jobs
 from weirvern.asset_changes import detect_service_changes
 from weirvern.asset_posture import AssetPostureModel
 from weirvern.config import Settings
@@ -64,10 +63,6 @@ REGISTRY_COLUMNS = [
 SERVICE_COLUMNS = [
     "asset_key", "ip", "port", "protocol", "service", "product", "version", "cpe", "observed_at",
 ]
-FINDING_COLUMNS = [
-    "asset_key", "ip", "scanner", "finding_key", "template_id", "name", "severity", "cve",
-    "matched_at", "description", "remediation", "first_seen", "last_seen",
-]
 OBSERVATION_COLUMNS = [
     "asset_key", "ip", "port", "script", "key", "value", "observed_at",
 ]
@@ -77,6 +72,8 @@ SCAN_COLUMNS = [
 SCANNER_STATUS_COLUMNS = [
     "sensor_id", "profile", "nmap_available", "nmap_version", "nmap_path",
     "nse_available", "os_id", "os_version", "detail", "last_check",
+    # Appended (never reordered): a pre-capability reader stays aligned.
+    "privileged", "scan_mode", "can_install", "sudo_state",
 ]
 HISTORY_COLUMNS = [
     "asset_key", "ip", "scan_id", "port", "protocol", "service", "product", "version",
@@ -90,8 +87,6 @@ POSTURE_COLUMNS = [
     "asset_key", "change_key", "score", "band", "reasons", "features", "model_version",
     "scored_at", "review_state",
 ]
-HTTP_SERVICES = {"http", "http-proxy", "http-alt", "https", "https-alt", "ssl/http"}
-HTTP_PORTS = {80, 443, 8000, 8080, 8443, 8888, 9000}
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
@@ -111,18 +106,6 @@ class Service:
     product: str = ""
     version: str = ""
     cpe: str = ""
-
-
-@dataclass(frozen=True)
-class Finding:
-    finding_key: str
-    template_id: str
-    name: str
-    severity: str
-    cve: str
-    matched_at: str
-    description: str
-    remediation: str
 
 
 @dataclass(frozen=True)
@@ -148,6 +131,10 @@ NSE_IDENTITY_SCRIPTS = ",".join((
 
 class ScanError(RuntimeError):
     """A scanner invocation failed in a way the operator needs to see."""
+
+
+class ScanCancelled(ScanError):
+    """The operator asked the weirling to stop, and it did."""
 
 
 def _now() -> datetime:
@@ -295,72 +282,40 @@ def parse_script_xml(text: str) -> list[Observation]:
     return observations
 
 
-def nuclei_targets(ip: str, services: Iterable[Service]) -> list[str]:
-    """URLs worth giving to Nuclei, derived only from services Nmap actually saw open."""
-    targets: list[str] = []
-    for service in services:
-        if service.protocol != "tcp":
-            continue
-        name = service.service.lower()
-        if name not in HTTP_SERVICES and service.port not in HTTP_PORTS:
-            continue
-        scheme = "https" if name in {"https", "https-alt", "ssl/http"} or service.port in {443, 8443} else "http"
-        host = f"[{ip}]" if ":" in ip else ip
-        if (scheme == "http" and service.port == 80) or (scheme == "https" and service.port == 443):
-            targets.append(f"{scheme}://{host}")
-        else:
-            targets.append(f"{scheme}://{host}:{service.port}")
-    # A host may expose both an HTTP and an HTTPS service; keep both, but do not let one
-    # host with hundreds of virtual-host ports produce an unbounded Nuclei command.
-    return sorted(set(targets))[:32]
-
-
-def _cve_value(value: object) -> str:
-    if isinstance(value, list):
-        return ",".join(str(item).strip() for item in value if str(item).strip())
-    return str(value or "").strip()
-
-
-def parse_nuclei_jsonl(text: str) -> list[Finding]:
-    """Parse Nuclei's `-jsonl` output into stable, deduplicated findings."""
-    findings: list[Finding] = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            logger.warning("nuclei emitted a non-JSON line: %s", line[:160])
-            continue
-        info = item.get("info") if isinstance(item.get("info"), dict) else {}
-        raw_classification = info.get("classification")
-        classification: dict[str, Any] = raw_classification if isinstance(raw_classification, dict) else {}
-        template_id = str(item.get("template-id") or item.get("templateID") or "").strip()
-        matched_at = str(item.get("matched-at") or item.get("host") or "").strip()
-        matcher = str(item.get("matcher-name") or "").strip()
-        name = str(info.get("name") or template_id or "Nuclei match").strip()
-        severity = str(info.get("severity") or "unknown").strip().lower()
-        cve = _cve_value(classification.get("cve-id") or classification.get("cve_id") or item.get("cve-id"))
-        finding_key = hashlib.sha1(
-            f"{template_id}|{matched_at}|{matcher}|{cve}".encode()
-        ).hexdigest()
-        findings.append(Finding(
-            finding_key=finding_key,
-            template_id=template_id,
-            name=name,
-            severity=severity,
-            cve=cve,
-            matched_at=matched_at,
-            description=_clip(info.get("description"), 1600),
-            remediation=_clip(info.get("remediation"), 1200),
-        ))
-    return findings
-
-
-def _run(cmd: list[str], timeout_s: int) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], timeout_s: int,
+         cancel_check: Any = None) -> subprocess.CompletedProcess[str]:
     if shutil.which(cmd[0]) is None:
         raise ScanError(f"scanner binary not found: {cmd[0]}")
+    if cancel_check is not None:
+        # A CANCELLABLE SCAN IS A SCAN THAT CAN BE STOPPED. The hub's `cancel_requested` is
+        # polled while Nmap runs; a cancel that only deletes a row would leave the probe live.
+        deadline = time.monotonic() + max(1, int(timeout_s))
+        process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            while True:
+                try:
+                    out, err = process.communicate(timeout=1.0)
+                    break
+                except subprocess.TimeoutExpired:
+                    try:
+                        stop = bool(cancel_check())
+                    except Exception:  # noqa: BLE001 - a failed check is not a stop
+                        stop = False
+                    if stop:
+                        process.kill()
+                        out, err = process.communicate()
+                        raise ScanCancelled("cancelled by the operator") from None
+                    if time.monotonic() >= deadline:
+                        process.kill()
+                        process.communicate()
+                        raise ScanError("the scan timed out") from None
+        finally:
+            if process.poll() is None:
+                process.kill()
+        if process.returncode != 0:
+            raise ScanError((err or out or "the scan failed").strip()[:500])
+        return subprocess.CompletedProcess(cmd, process.returncode, out, err)
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell
             cmd, capture_output=True, text=True, timeout=max(5, int(timeout_s)), check=False,
@@ -486,12 +441,13 @@ def _os_release() -> tuple[str, str]:
     return values.get("ID", ""), values.get("VERSION_ID", "")
 
 
-def detect_scanner(settings: Settings) -> dict[str, Any]:
-    """What this node can actually do, measured rather than assumed.
+def detect_scanner(settings: Settings, sensor_id: str = "") -> dict[str, Any]:
+    """What THIS node can actually do, measured rather than assumed.
 
-    Nmap is optional. A node with Nmap gets the deeper identity profile; a node without it
-    stays on passive/basic discovery and never marks assets as clean. The same function runs
-    on the hub and, when an agent carries it, on a weirling.
+    Runs on any weirling before it claims a job: Nmap is the capability, not a setting. A node
+    without Nmap reports `nmap missing` and never claims, so a queued job cannot be held by a
+    node that cannot run it. `sensor_id` is the fleet identity that makes the row join the
+    registered weirling; it defaults to the configured sensor name for hub-side callers.
     """
     path = shutil.which(settings.scan_nmap_binary) or ""
     version = ""
@@ -507,11 +463,28 @@ def detect_scanner(settings: Settings) -> dict[str, Any]:
     nse_available = os.path.isdir("/usr/share/nmap/scripts")
     os_id, os_version = _os_release()
     available = bool(path and version)
+    ident = (sensor_id or settings.sensor_name or socket.gethostname() or "weirling").strip().lower()
+    privilege = sudo_state()
+    privileged = privilege == "root"
+    caps = nmap_has_caps(path)
+    mode = scan_mode(available, privileged, caps)
+    install = nmap_install_command(os_id, os_version)
+    can_install = can_install_without_a_secret()
+    detail = ""
+    if not available:
+        detail = (
+            f"Nmap is not installed; install it with: {install['command']}, then "
+            f"setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap. This unit cannot claim a scan "
+            f"until then."
+        )
+    elif mode == "connect":
+        detail = (
+            "Nmap is present but this process has no raw-socket capability, so only TCP connect "
+            "scans are available. Grant SYN/UDP with: "
+            "sudo setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap"
+        )
     return {
-        # SENSOR_ID is the same identity the heartbeat and fleet registry use. Normalise it so
-        # this row joins the registered weirling instead of appearing as a second sensor with a
-        # different capitalisation.
-        "sensor_id": (settings.sensor_name or socket.gethostname() or "scanner").strip().lower(),
+        "sensor_id": ident,
         "profile": "nmap" if available else "basic",
         "nmap_available": available,
         "nmap_version": version,
@@ -519,9 +492,390 @@ def detect_scanner(settings: Settings) -> dict[str, Any]:
         "nse_available": nse_available,
         "os_id": os_id,
         "os_version": os_version,
-        "detail": "" if available else (
-            "Nmap is not installed; passive discovery continues and active service scans wait."
-        ),
+        "privileged": privileged,
+        "scan_mode": mode,
+        "can_install": can_install,
+        "sudo_state": privilege,
+        "detail": detail,
+    }
+
+
+def nmap_short_version(version: str) -> str:
+    """`Nmap version 7.95 ( https://nmap.org )` -> `7.95`; empty when the line names none.
+
+    The card has one line per weirling. Pasted whole, the vendor URL crowds out the fact the
+    operator is reading for; a version that cannot be parsed stays empty rather than becoming a
+    plausible-looking number.
+    """
+    text = str(version or "")
+    marker = text.lower().find("version ")
+    if marker < 0:
+        return ""
+    tail = text[marker + len("version "):].strip()
+    if not tail:
+        return ""
+    token = tail.split()[0].strip("(),")
+    # A REAL VERSION STARTS WITH A DIGIT. `not a version line` contains the words but names no
+    # version; returning "line" would put a plausible-looking value in the card.
+    return token if token[:1].isdigit() else ""
+
+
+CAPABILITY_MAX_AGE_S = 900
+
+
+def _parse_networks(values: object) -> list[Network]:
+    out: list[Network] = []
+    for raw in values if isinstance(values, list) else []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            out.append(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            logger.warning("scanner: ignoring a malformed weirling network %r", text[:80])
+    return out
+
+
+def target_in_networks(ip: str, networks: Iterable[Network]) -> bool:
+    """Is this target inside a weirling's declared monitored networks?
+
+    EMPTY MEANS "NOT DECLARED", NEVER "COVERS NOTHING". A weirling with no networks cannot
+    prove it can reach the target, so it is not eligible; the operator fixes that by declaring
+    the network on the weirling, not by the hub guessing an RFC1918 range.
+
+    Delegates to `scan_jobs.ip_allowed`, the definition the CLAIM uses. Two implementations
+    would let the console promise a scan the claim then refuses.
+    """
+    return scan_jobs.ip_allowed(ip, [str(network) for network in networks])
+
+
+def declared_networks(networks: object, segment: object = "", plan_segment: object = "") -> list[str]:
+    """The CIDRs a registration actually declares, from every place it may declare one.
+
+    `networks` is the explicit list; `segment` is free text by design ("third floor IDF") and
+    `plan_segment` is the in-path plan's own field. Only values that PARSE as a CIDR count, in
+    that order, deduplicated. This is the same rule `monitored_networks` has always used, so the
+    claim, the eligibility count and the discovery scope cannot disagree about who covers what.
+    """
+    out: list[str] = []
+    for raw in [
+        *(list(networks) if isinstance(networks, list) else []),
+        segment, plan_segment,
+    ]:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            network = str(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            continue
+        if network not in out:
+            out.append(network)
+    return out
+
+
+def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
+                     max_age_s: int = CAPABILITY_MAX_AGE_S) -> dict[str, Any]:
+    """WHO can scan, from the fleet's own capability rows — never from a deployment setting.
+
+    A registered weirling is counted only when its last `scanner_status` row is BOTH fresh and
+    says Nmap is available. A stale row is not capability: the central scanner's last row can
+    sit in the table for days after that workload is gone, and counting it would promise a scan
+    nothing can execute (the exact class of lie this queue is being taught to stop telling).
+
+    `ip` narrows the answer to ONE target: a weirling is eligible only when the address is
+    inside the networks it declared in its own registration. Returns one shape for the card,
+    the button, the POST refusal and the claim, so the four cannot drift.
+    """
+    moment = now or _now()
+    age_limit = max(60, int(max_age_s))
+    rows = client.query(
+        "SELECT sensor_id, profile, nmap_available, nmap_version, detail, last_check, "
+        "       scan_mode "
+        "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
+    ).result_rows
+    registered = client.query(
+        "SELECT sensor_id, networks, segment, plan_segment FROM weirvern.weirlings FINAL "
+        "WHERE revoked_at IS NULL AND enabled = 1 ORDER BY sensor_id"
+    ).result_rows
+
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        sid = str(row[0] or "").strip().lower()
+        if not sid or sid in latest:
+            continue
+        checked = row[5]
+        when = None
+        if isinstance(checked, datetime):
+            when = checked.replace(tzinfo=UTC) if checked.tzinfo is None else checked.astimezone(UTC)
+        latest[sid] = {
+            "sensor_id": sid,
+            "nmap_available": bool(row[2]),
+            "nmap_version": nmap_short_version(str(row[3] or "")),
+            "detail": str(row[4] or ""),
+            "last_check": when,
+            "scan_mode": str(row[6] if len(row) > 6 else "") or
+                         ("raw" if bool(row[2]) else "none"),
+        }
+
+    capable: list[dict[str, Any]] = []
+    incapable: list[dict[str, Any]] = []
+    unknown: list[dict[str, Any]] = []
+    names: list[str] = []
+    networks_by_sensor: dict[str, list[Network]] = {}
+    for item in registered:
+        sid = str(item[0] or "").strip().lower()
+        if not sid:
+            continue
+        names.append(sid)
+        declared = declared_networks(item[1], item[2] if len(item) > 2 else "",
+                                     item[3] if len(item) > 3 else "")
+        networks_by_sensor[sid] = _parse_networks(declared)
+    for sid in names:
+        seen = latest.get(sid)
+        declared = [str(n) for n in networks_by_sensor.get(sid, [])]
+        base = {"sensor_id": sid, "nmap_version": "", "networks": declared,
+                "scan_mode": "unknown"}
+        if seen is None:
+            unknown.append({**base, "reason": "no capability report has ever arrived from this weirling"})
+            continue
+        when = seen["last_check"]
+        age_s = (moment - when).total_seconds() if when is not None else None
+        if age_s is None or age_s > age_limit:
+            unknown.append({**base, "nmap_version": seen["nmap_version"],
+                            "reason": (f"no capability report in {_ago(age_s)}" if age_s is not None
+                                       else "its capability report carries no timestamp")})
+            continue
+        if seen["nmap_available"]:
+            capable.append({**base, "nmap_version": seen["nmap_version"],
+                            "scan_mode": seen.get("scan_mode") or "connect",
+                            "last_check": when.isoformat() if when else ""})
+        else:
+            incapable.append({**base, "reason": "nmap missing"})
+
+    total = len(names)
+    noun = "weirling" if total == 1 else "weirlings"
+
+    eligible: list[dict[str, Any]] = []
+    out_of_scope: list[dict[str, Any]] = []
+    if ip:
+        for item in capable:
+            if target_in_networks(ip, networks_by_sensor.get(item["sensor_id"], [])):
+                eligible.append(item)
+            else:
+                out_of_scope.append(item)
+    else:
+        eligible = list(capable)
+    reachable = [sid for sid in names if not ip
+                 or target_in_networks(ip, networks_by_sensor.get(sid, []))]
+    enabled = bool(eligible) if ip else bool(capable)
+
+    if enabled:
+        versions = sorted({item["nmap_version"] for item in capable if item["nmap_version"]})
+        detail = f" (nmap {', '.join(versions)})" if versions else ""
+        modes = {item["scan_mode"] for item in eligible if item.get("scan_mode")}
+        mode_note = ""
+        if modes == {"connect"}:
+            mode_note = " — connect scans only: no raw-socket capability on the scanning weirling"
+        elif "raw" in modes:
+            mode_note = " — SYN/UDP available"
+        if ip:
+            sentence = (f"{len(eligible)} of {len(reachable)} weirling"
+                        f"{'s' if len(reachable) != 1 else ''} can scan {ip}{detail}{mode_note}")
+            if total > len(reachable):
+                sentence += f"; {total - len(reachable)} cannot reach it"
+        else:
+            sentence = f"{len(capable)} of {total} {noun} can scan{detail}{mode_note}"
+        if incapable:
+            sentence += ", " + ", ".join(f"{x['sensor_id']} cannot ({x['reason']})" for x in incapable)
+        if unknown:
+            sentence += ", " + ", ".join(f"{x['sensor_id']} unknown ({x['reason']})" for x in unknown)
+        reason = ""
+    elif total == 0:
+        sentence = "no weirling is registered, so no node can run a scan"
+        reason = sentence
+    elif ip and not reachable:
+        sentence = (f"no registered weirling monitors {ip}: "
+                    + ", ".join(f"{sid} declares {', '.join(str(n) for n in networks_by_sensor[sid]) or 'no networks'}"
+                                for sid in names)
+                    + ". Add the network to a weirling's registration first.")
+        reason = sentence
+    elif ip and not eligible:
+        bits = []
+        for sid in reachable:
+            if sid in {x["sensor_id"] for x in incapable}:
+                bits.append(f"{sid} cannot (nmap missing)")
+            elif sid in {x["sensor_id"] for x in unknown}:
+                match = next(x for x in unknown if x["sensor_id"] == sid)
+                bits.append(f"{sid} unknown ({match['reason']})")
+        sentence = (f"{len(reachable)} weirling{'s' if len(reachable) != 1 else ''} can reach {ip}, "
+                    "but none can scan: " + "; ".join(bits)
+                    + ". Install Nmap on a weirling ('sudo apt-get install -y nmap' or the "
+                      "command for its OS) and restart its agent.")
+        reason = sentence
+    else:
+        bits = []
+        for item in incapable:
+            bits.append(f"{item['sensor_id']} cannot ({item['reason']})")
+        for item in unknown:
+            bits.append(f"{item['sensor_id']} unknown ({item['reason']})")
+        sentence = (f"0 of {total} {noun} can scan: " + "; ".join(bits)
+                    + ". Install Nmap on a weirling ('sudo apt-get install -y nmap' or the "
+                      "command for its OS) and restart its agent.")
+        reason = sentence
+    return {
+        "available": True, "reason": "",
+        "enabled": enabled, "count": total,
+        "capable_count": len(capable),
+        "capable": capable, "incapable": incapable, "unknown": unknown,
+        "ip": ip, "reachable_count": len(reachable),
+        "eligible": eligible, "out_of_scope": out_of_scope,
+        "max_age_s": age_limit,
+        "sentence": sentence,
+        "reason_unavailable": reason,
+    }
+
+
+def _ago(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    total = max(0, int(seconds))
+    days, hours, minutes = total // 86400, (total % 86400) // 3600, (total % 3600) // 60
+    if days:
+        return f"{days}d"
+    if hours:
+        return f"{hours}h"
+    if minutes:
+        return f"{minutes}m"
+    return f"{total}s"
+
+
+def capability_failure(exc: BaseException) -> dict[str, Any]:
+    """A failed capability read is NOT "no weirling can scan" — it is an unknown answer."""
+    logger.warning("scanner capability unavailable: %s", exc)
+    return {"available": False, "reason": f"weirling scan capability could not be read: {str(exc)[:200]}",
+            "enabled": True, "count": 0, "capable_count": 0,
+            "capable": [], "incapable": [], "unknown": [], "max_age_s": CAPABILITY_MAX_AGE_S,
+            "sentence": "", "reason_unavailable": ""}
+
+
+SUDOERS_ENTRY = "/etc/sudoers.d/weirvern-nmap"
+
+
+def scan_mode(available: bool, privileged: bool, caps: bool) -> str:
+    """What kind of scan this node can ACTUALLY run: `none` | `connect` | `raw`.
+
+    THE DISTINCTION IS NOT COSMETIC. Unprivileged Nmap can only complete a TCP connection
+    (`--unprivileged`, connect scan); SYN and UDP scans need CAP_NET_RAW/CAP_NET_ADMIN (or
+    root). Reporting "can scan" without saying which would promise a scan type the node cannot
+    perform, so readiness carries the mode and the console prints it.
+    """
+    if not available:
+        return "none"
+    return "raw" if (privileged or caps) else "connect"
+
+
+def scan_mode_sentence(mode: str) -> str:
+    return {
+        "none": "nmap missing",
+        "connect": "nmap present, unprivileged (connect scan only)",
+        "raw": "nmap present with raw-socket capabilities (SYN/UDP available)",
+    }.get(str(mode or ""), "scan capability unknown")
+
+
+def nmap_has_caps(path: str) -> bool:
+    """Does this Nmap binary carry the raw-socket file capabilities set by the installer?
+
+    `getcap` is part of libcap2-bin; when it is absent the answer is a conservative False,
+    because claiming raw scans from an unproven capability is the failure mode this exists to
+    prevent. Root needs no capability and is handled by the caller.
+    """
+    if not path:
+        return False
+    getcap = shutil.which("getcap")
+    if not getcap:
+        return False
+    try:
+        out = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [getcap, path], capture_output=True, text=True, timeout=5, check=False,
+        ).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "cap_net_raw" in out and "cap_net_admin" in out
+
+
+def sudo_state() -> str:
+    """What sudo says about THIS user: root | passwordless | password | none | unknown.
+
+    MEASURED, not assumed. `sudo -n -l` succeeds for a passwordless rule, asks for a password
+    ("a password is required") when the user is in sudoers, and says "not in the sudoers file"
+    when they are not. The distinction matters: a password can fix the middle case and cannot
+    fix the last one, so the console must not offer a prompt that cannot succeed.
+    """
+    if os.geteuid() == 0:
+        return "root"
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return "none"
+    try:
+        probe = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sudo, "-n", "-l"], capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if probe.returncode == 0:
+        return "passwordless"
+    err = ((probe.stderr or "") + (probe.stdout or "")).lower()
+    if "password is required" in err:
+        return "password"
+    if "not in the sudoers" in err:
+        return "none"
+    return "unknown"
+
+
+def can_install_without_a_secret() -> bool:
+    """Could this process install nmap with NO password prompt?
+
+    Root, or a passwordless scoped sudoers entry. A user who *has* a sudo password is not
+    counted: this build has no secret channel from the console to an agent, so offering a
+    password field would be a UI that cannot deliver. That case is told plainly instead.
+    """
+    if os.geteuid() == 0:
+        return True
+    return os.access(SUDOERS_ENTRY, os.R_OK)
+
+
+def nmap_install_command(os_id: str, os_version: str = "") -> dict[str, Any]:
+    """The exact Nmap install command for a host's own OS, from the agent's report.
+
+    ONE TABLE, keyed by `/etc/os-release` ID. An unknown distro gets a GENERIC instruction and
+    `known: false` -- never a guessed package manager: running the wrong one is a failure the
+    operator has to debug on a host they may not be sitting at.
+    """
+    ident = str(os_id or "").strip().lower()
+    version = str(os_version or "").strip()
+    apt = ("debian", "ubuntu", "linuxmint", "pop", "raspbian", "kali", "devuan", "elementary")
+    dnf = ("fedora", "rocky", "almalinux", "ol", "rhel", "centos")
+    if ident in apt:
+        return {"manager": "apt", "known": True,
+                "command": "sudo apt-get update && sudo apt-get install -y nmap"}
+    if ident in dnf:
+        major = version.split(".")[0]
+        if ident in {"centos", "rhel"} and major.isdigit() and int(major) < 8:
+            return {"manager": "yum", "known": True, "command": "sudo yum install -y nmap"}
+        return {"manager": "dnf", "known": True, "command": "sudo dnf install -y nmap"}
+    if ident == "alpine":
+        return {"manager": "apk", "known": True,
+                "command": "sudo apk add --no-cache nmap"}
+    if ident in {"arch", "manjaro", "endeavouros", "garuda"}:
+        return {"manager": "pacman", "known": True,
+                "command": "sudo pacman -S --noconfirm nmap"}
+    if ident in {"opensuse-leap", "opensuse-tumbleweed", "opensuse", "sles", "suse"}:
+        return {"manager": "zypper", "known": True, "command": "sudo zypper install -y nmap"}
+    return {
+        "manager": "", "known": False,
+        "command": ("install nmap with this host's package manager "
+                    "(apt-get / dnf / apk / pacman / zypper), then restart the weirling agent"),
     }
 
 
@@ -531,6 +885,8 @@ def write_scanner_status(client: Any, status: dict[str, Any]) -> None:
         status["sensor_id"], status["profile"], int(bool(status["nmap_available"])),
         status["nmap_version"], status["nmap_path"], int(bool(status["nse_available"])),
         status["os_id"], status["os_version"], status["detail"], _now(),
+        int(bool(status.get("privileged"))), str(status.get("scan_mode") or ""),
+        int(bool(status.get("can_install"))), str(status.get("sudo_state") or ""),
     ]])
 
 
@@ -709,68 +1065,103 @@ def recover_incomplete(client: Any) -> int:
     return recovered
 
 
-def nuclei_arguments(settings: Settings, targets: list[str]) -> list[str]:
-    """The Nuclei argv, with the safety and resource flags applied in ONE place.
+def service_scan_argv(settings: Settings, ip: str, *, raw: bool = False) -> list[str]:
+    """The one Nmap invocation a scan is, as argv. Fixed argv, no shell, no user input.
 
-    THE EXCLUSIONS ARE NOT OPTIONAL STYLE. A template tagged `dos` performs the attack it names
-    (CVE-2019-5544 sends an SLP heap-overflow payload); a scanner whose job is inventory must not
-    run that against an appliance just because the template repository shipped it. `intrusive`,
-    `fuzz`, `brute-force`, `headless` and `code` are excluded for the same reason. The flags are
-    explicit here rather than trusting `.nuclei-ignore`, which changes between releases.
+    `raw=True` omits `--unprivileged` so Nmap uses SYN/UDP where the installer granted
+    CAP_NET_RAW/CAP_NET_ADMIN. The command is recorded in asset_scans, so which mode ran is
+    auditable rather than implied.
     """
-    args = [
-        settings.scan_nuclei_binary, "-jsonl", "-silent", "-nc", "-duc",
-        "-severity", settings.scan_nuclei_severity,
-        "-timeout", str(max(1, settings.scan_nuclei_timeout_s)),
-        "-retries", str(max(0, settings.scan_nuclei_retries)),
-        "-c", str(max(1, settings.scan_nuclei_concurrency)),
-        "-bs", str(max(1, settings.scan_nuclei_bulk_size)),
-        "-rl", str(max(1, settings.scan_nuclei_rate_limit)),
-        "-rsr", str(max(65536, settings.scan_nuclei_response_size)),
-        "-mhe", str(max(1, settings.scan_nuclei_max_host_error)),
+    lead = [settings.scan_nmap_binary] + ([] if raw else ["--unprivileged"])
+    return [
+        *lead, "-sV", "--version-intensity", "5",
+        "-Pn", "-T3", "--max-retries", "2", "--host-timeout", "120s",
+        "--script", NSE_IDENTITY_SCRIPTS, "--script-timeout", "30s",
+        "-p", settings.scan_ports, "-oX", "-", ip,
     ]
-    if settings.scan_nuclei_no_interactsh:
-        args.append("-ni")
-    if settings.scan_nuclei_exclude_tags.strip():
-        args.extend(["-etags", settings.scan_nuclei_exclude_tags.strip()])
-    if settings.scan_nuclei_exclude_ids.strip():
-        args.extend(["-eid", settings.scan_nuclei_exclude_ids.strip()])
-    if settings.scan_nuclei_tags.strip():
-        args.extend(["-tags", settings.scan_nuclei_tags.strip()])
-    if settings.scan_nuclei_templates:
-        args.extend(["-t", settings.scan_nuclei_templates])
-    for target in targets:
-        args.extend(["-u", target])
-    return args
 
 
-def scan_asset(client: Any, settings: Settings, asset: dict[str, Any]) -> bool:
-    """Nmap the host's services and safe identity scripts, then optionally run Nuclei.
+def run_service_scan(settings: Settings, ip: str, *, raw: bool = False,
+                     cancel_check: Any = None) -> dict[str, Any]:
+    """MEASURE one host with Nmap: services and NSE observations, no database, no writes.
 
-    The default path is Nmap-only. NSE identity scripts are bundled with Nmap, need no vendor
-    controller, and are portable to any network. Nuclei is an opt-in exposure layer, not part of
-    the identity pipeline.
+    Split from the recording half so a WEIRLING can run the measurement and send the facts
+    to the hub, while the hub writes them with the same code it has always used. A unit with
+    no database credential never needs one to scan.
     """
-    scan_id = str(uuid.uuid4())
-    ok = True
-    _mark(client, asset, "scanning")
-    _record_scan(client, scan_id, asset, "service", status="running")
-    command = ""
-    error = ""
+    argv = service_scan_argv(settings, ip, raw=raw)
+    command = " ".join(argv)
     try:
-        command = (
-            f"{settings.scan_nmap_binary} -sV --version-intensity 5 -Pn -T3 --max-retries 2 "
-            f"--host-timeout 120s --script {NSE_IDENTITY_SCRIPTS} --script-timeout 30s "
-            f"-p {settings.scan_ports} -oX - {asset['ip']}"
-        )
-        result = _run([
-            settings.scan_nmap_binary, "--unprivileged", "-sV", "--version-intensity", "5",
-            "-Pn", "-T3", "--max-retries", "2", "--host-timeout", "120s",
-            "--script", NSE_IDENTITY_SCRIPTS, "--script-timeout", "30s",
-            "-p", settings.scan_ports, "-oX", "-", asset["ip"],
-        ], settings.scan_timeout_s)
-        services = parse_service_xml(result.stdout)
-        observations = parse_script_xml(result.stdout)
+        result = _run(argv, settings.scan_timeout_s, cancel_check=cancel_check)
+        return {
+            "ok": True,
+            "command": command,
+            "error": "",
+            "services": parse_service_xml(result.stdout),
+            "observations": parse_script_xml(result.stdout),
+        }
+    except Exception as exc:  # noqa: BLE001 - an invocation failure is a measured result
+        return {"ok": False, "command": command, "error": str(exc),
+                "cancelled": isinstance(exc, ScanCancelled),
+                "services": [], "observations": []}
+
+
+def _service_rows(payload: object) -> list[Service]:
+    rows: list[Service] = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            port = int(item.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        rows.append(Service(
+            port=port,
+            protocol=str(item.get("protocol") or "tcp")[:16],
+            service=str(item.get("service") or "")[:120],
+            product=str(item.get("product") or "")[:200],
+            version=str(item.get("version") or "")[:120],
+            cpe=str(item.get("cpe") or "")[:300],
+        ))
+    return rows
+
+
+def _observation_rows(payload: object) -> list[Observation]:
+    rows: list[Observation] = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            port = int(item.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        rows.append(Observation(
+            port=port,
+            script=_clip(item.get("script"), 120),
+            key=_clip(item.get("key"), 200),
+            value=_clip(item.get("value"), 2000),
+        ))
+    return rows
+
+
+def record_scan_result(client: Any, asset: dict[str, Any], result: dict[str, Any], *,
+                       scan_id: str) -> bool:
+    """Record ONE measured scan: services, history, changes, posture, observations.
+
+    `result` is the shape `run_service_scan` returns, so a result measured on a weirling and
+    sent over the mTLS gateway is written by THIS function -- the fleet cannot grow a second
+    definition of what a scan row is. A failed invocation is marked `error`, never `done`.
+    """
+    ok = bool(result.get("ok"))
+    command = str(result.get("command") or "")
+    if not ok:
+        error = str(result.get("error") or "the scan failed")
+        _mark(client, asset, "error", error, scanned=True)
+        _record_scan(client, scan_id, asset, "service", status="error", error=error, command=command)
+        return False
+    services = _service_rows(result.get("services"))
+    observations = _observation_rows(result.get("observations"))
+    try:
         now = _now()
 
         # THE PREVIOUS SNAPSHOT, BEFORE THIS SCAN OVERWRITES IT. asset_services is the current
@@ -838,86 +1229,74 @@ def scan_asset(client: Any, settings: Settings, asset: dict[str, Any]) -> bool:
             _insert(client, "asset_observations", OBSERVATION_COLUMNS, [[
                 asset["asset_key"], asset["ip"], item.port, item.script, item.key, item.value, now,
             ] for item in observations])
-
-        # NUCLEI IS OPT-IN. Identity is complete after Nmap + NSE; an unconfigured appliance
-        # must not download a template tree or run community exploit checks just to inventory.
-        if not settings.scan_nuclei_enabled:
-            _mark(client, asset, "done", scanned=True)
-            _record_scan(
-                client, scan_id, asset, "service", status="done", command=command
-            )
-            return True
-
-        targets = nuclei_targets(asset["ip"], services)
-        if not targets:
-            _mark(client, asset, "done", scanned=True)
-            _record_scan(client, scan_id, asset, "service", status="done", command=command)
-            return True
-        args = nuclei_arguments(settings, targets)
-        nuclei_command = " ".join(shlex.quote(part) for part in args)
-        nuclei_result = _run(args, settings.scan_timeout_s)
-        findings = parse_nuclei_jsonl(nuclei_result.stdout)
-        existing = {
-            str(row[0]): row for row in client.query(
-                "SELECT finding_key, first_seen FROM weirvern.asset_findings FINAL "
-                "WHERE asset_key = %(asset_key)s",
-                parameters={"asset_key": asset["asset_key"]},
-            ).result_rows
-        }
-        now = _now()
-        _insert(client, "asset_findings", FINDING_COLUMNS, [[
-            asset["asset_key"], asset["ip"], "nuclei", finding.finding_key, finding.template_id,
-            finding.name, finding.severity, finding.cve, finding.matched_at,
-            finding.description, finding.remediation,
-            existing.get(finding.finding_key, [None, now])[1], now,
-        ] for finding in findings])
-        _mark(client, asset, "done", scanned=True)
-        _record_scan(client, scan_id, asset, "nuclei", status="done", command=nuclei_command)
     except Exception as exc:  # noqa: BLE001 - one host must not stop the inventory
-        ok = False
         error = str(exc)
-        logger.warning("scanner: %s failed: %s", asset.get("ip"), error)
+        logger.warning("scanner: recording %s failed: %s", asset.get("ip"), error)
         _mark(client, asset, "error", error, scanned=True)
         _record_scan(client, scan_id, asset, "service", status="error", error=error, command=command)
-    return ok
+        return False
+
+    _mark(client, asset, "done", scanned=True)
+    _record_scan(client, scan_id, asset, "service", status="done", command=command)
+    return True
 
 
-def process_scan_jobs(client: Any, settings: Settings) -> int:
-    """Claim at most one manual job and run it, under a lease.
+def scan_asset(client: Any, settings: Settings, asset: dict[str, Any],
+               *, raw: bool = False, cancel_check: Any = None) -> bool:
+    """Measure one host and record it: the hub-side path, unchanged by where it runs."""
+    scan_id = str(uuid.uuid4())
+    _mark(client, asset, "scanning")
+    _record_scan(client, scan_id, asset, "service", status="running")
+    return record_scan_result(
+        client, asset, run_service_scan(settings, asset["ip"], raw=raw, cancel_check=cancel_check),
+        scan_id=scan_id)
 
-    A job is a one-host request from the Assets view. It runs before the scheduled pending/rescan
-    work so an operator's explicit click is not stuck behind a large hourly sweep. A failed Nmap
-    invocation is recorded on the job as well as on the asset; the scanner never reports a queued
-    job as done just because it tried.
+
+def run_claimed_job(client: Any, settings: Settings, job: dict[str, Any],
+                    *, raw: bool = False, cancel_check: Any = None) -> bool:
+    """Run ONE claimed manual job to a terminal state, on a claimer with database access.
+
+    A cancelled job is DELETED (with an audit row), because the operator asked for the request
+    to be removed and the weirling confirmed it stopped. Any other outcome is recorded on the
+    asset and finished on the job -- a failed Nmap is never reported as done.
     """
-    lease_s = getattr(settings, "scan_job_lease_s", 0)
-    if lease_s <= 0:
-        return 0
-    job = scan_jobs.claim_next_job(client, owner=socket.gethostname() or "scanner", lease_s=lease_s)
-    if not job:
-        return 0
-    asset = scan_jobs.find_asset(client, job["ip"])
+    asset = scan_jobs.find_asset(client, str(job.get("ip") or ""))
     if asset is None:
         scan_jobs.finish_job(
             client, job, ok=False,
             error="the host is no longer in the asset registry; run discovery first",
         )
-        return 1
+        return False
+    scan_id = str(uuid.uuid4())
     try:
-        ok = scan_asset(client, settings, asset)
+        _mark(client, asset, "scanning")
+        _record_scan(client, scan_id, asset, "service", status="running")
+        result = run_service_scan(settings, asset["ip"], raw=raw, cancel_check=cancel_check)
     except Exception as exc:  # noqa: BLE001 - the job must reach a terminal state
-        ok = False
         scan_jobs.finish_job(client, job, ok=False, error=str(exc))
-        logger.warning("scanner: manual scan job %s failed: %s", job["job_id"], exc)
-        return 1
+        logger.warning("scanner: manual scan job %s failed: %s", job.get("job_id"), exc)
+        return False
+    if result.get("cancelled"):
+        from weirvern import fleet_store  # noqa: PLC0415
+
+        fleet_store.write_audit(
+            client, scope="scan", action="scan_cancelled_confirmed",
+            target=f"{job.get('ip')} job {job.get('job_id')}",
+            reason="the weirling confirmed it stopped the scan", actor=job.get("lease_owner", ""))
+        scan_jobs.delete_job(client, str(job.get("job_id") or ""))
+        _mark(client, asset, "pending", "scan cancelled by the operator")
+        logger.info("scanner: manual scan %s cancelled at the operator's request",
+                    job.get("job_id"))
+        return False
+    ok = record_scan_result(client, asset, result, scan_id=scan_id)
     error = ""
     if not ok:
-        refreshed = scan_jobs.find_asset(client, job["ip"])
+        refreshed = scan_jobs.find_asset(client, str(job.get("ip") or ""))
         error = str((refreshed or {}).get("scan_error") or "the asset scan failed")
     scan_jobs.finish_job(client, job, ok=ok, error=error)
-    logger.info("scanner: manual scan %s for %s -> %s", job["job_id"], job["ip"],
+    logger.info("scanner: manual scan %s for %s -> %s", job.get("job_id"), job.get("ip"),
                 "done" if ok else "error")
-    return 1
+    return ok
 
 
 def run_once(
@@ -941,11 +1320,10 @@ def run_once(
         new_count += int(new)
     scanned = 0
     if scan_pending:
-        scanned += process_scan_jobs(client, settings)
         for asset in pending_assets(client, settings.scan_max_hosts):
             scan_asset(client, settings, asset)
             scanned += 1
-        # The second half of the scanner's job: revisit hosts that were already inventoried.
+        # The second half of the inventory: revisit hosts that were already inventoried.
         # A new listener on an existing host is a change, and without this the change ledger
         # would stay empty forever. 0 disables the rescan clock.
         rescan_s = getattr(settings, "scan_rescan_s", 0)
@@ -954,48 +1332,3 @@ def run_once(
                 scan_asset(client, settings, asset)
                 scanned += 1
     return {"hosts": len(hosts), "new": new_count, "scanned": scanned}
-
-
-def run_forever(settings: Settings) -> None:
-    if not settings.scan_enabled:
-        logger.info("scanner: SCAN_ENABLED is off; idling without touching the network")
-        while True:
-            time.sleep(3600)
-    client = db.connect(settings)
-    db.apply_schema(client, settings)
-    recover_incomplete(client)
-    logger.info(
-        "scanner: enabled; scope=weirlings passive=%ss active=%ss nmap=%s nuclei=%s",
-        settings.scan_interval_s, settings.scan_discovery_s,
-        settings.scan_nmap_binary,
-        settings.scan_nuclei_binary if settings.scan_nuclei_enabled else "disabled",
-    )
-    last_discovery = 0.0
-    while True:
-        try:
-            capability = detect_scanner(settings)
-            write_scanner_status(client, capability)
-            now = time.monotonic()
-            discover = (now - last_discovery) >= settings.scan_discovery_s
-            result = run_once(
-                client, settings, discover=discover,
-                scan_pending=bool(capability["nmap_available"]),
-            )
-            if discover and capability["nmap_available"]:
-                last_discovery = now
-            note = "" if capability["nmap_available"] else " (basic: nmap not installed)"
-            if not discover and capability["nmap_available"]:
-                note = " (passive only)"
-            logger.info("scanner: %s%s", result, note)
-        except Exception as exc:  # noqa: BLE001 - the loop must survive a bad pass
-            logger.warning("scanner: pass failed: %s", exc)
-        time.sleep(max(10, settings.scan_interval_s))
-
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run_forever(Settings())
-
-
-if __name__ == "__main__":
-    main()

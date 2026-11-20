@@ -567,6 +567,11 @@ else
     # verify scripts from there, and building from the root fails on a missing file.
     docker build -q -t "weirvern-worker:$WORKER_TAG" -f Containerfile . >/dev/null
     ok "built weirvern-worker:$WORKER_TAG"
+    # THE SCAN IMAGE. Scanning is executed by weirlings, so the nmap-capable image is a
+    # first-class artifact rather than a Deployment's private build: deploy-weirling.sh pulls
+    # `weirvern-scan:<same tag>` for each unit's agent container.
+    docker build -q -t "weirvern-scan:$WORKER_TAG" -f Containerfile.scanner . >/dev/null
+    ok "built weirvern-scan:$WORKER_TAG"
     docker build -q -t "weirvern-zeek:$ZEEK_TAG" -f zeek/Containerfile zeek/ >/dev/null
     ok "built weirvern-zeek:$ZEEK_TAG"
 fi
@@ -576,6 +581,7 @@ log "Importing images into k3s's containerd"
 # import -` copies them into the runtime k3s actually uses; skipping it produces
 # ImagePullBackOff on a node that has the image in a different daemon.
 docker save "weirvern-worker:$WORKER_TAG" | k3s ctr images import - >/dev/null
+docker save "weirvern-scan:$WORKER_TAG" | k3s ctr images import - >/dev/null
 docker save "weirvern-zeek:$ZEEK_TAG" | k3s ctr images import - >/dev/null
 ok "imported $(k3s ctr images ls 2>/dev/null | grep -c 'weirvern-') weirvern image(s)"
 

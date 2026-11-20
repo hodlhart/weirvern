@@ -732,7 +732,38 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         ip = str(web._first(request.args, "ip", "") or "").strip()
         job = str(web._first(request.args, "job", "") or "").strip()
-        return _soft_route(payloads.scan_jobs, payloads.scan_jobs_failure, ip=ip, job=job)
+        lease_s = int(getattr(ctx.settings, "scan_job_lease_s", 900) or 900)
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                # THE QUEUE READ MUST NOT DEPEND ON THE CAPABILITY READ. If capability cannot be
+                # read, queued rows are shown as `queued` (unknown is not disabled) rather than
+                # turning the whole queue into "not readable".
+                try:
+                    readiness = payloads.scan_readiness(client, lease_s=lease_s)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("scan readiness unavailable for the queue read: %s", exc)
+                    readiness = {"enabled": True, "reason_unavailable": ""}
+                return jsonify(payloads.scan_jobs(
+                    client, ip=ip, job=job, lease_s=lease_s,
+                    scanning_enabled=bool(readiness.get("enabled")),
+                    unavailable_reason=str(readiness.get("reason_unavailable") or "")))
+        except Exception as exc:  # noqa: BLE001
+            return jsonify(payloads.scan_jobs_failure(exc))
+
+    @app.get("/api/scan-readiness")
+    @gated
+    def scan_readiness():
+        """Whether a weirling can execute a scan, and who can reach `?ip=`.
+
+        A capability read, not a setting: the Scan button is disabled with this sentence and the
+        POST refuses with it, from one function, so the two cannot drift.
+        """
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        ip = str(web._first(request.args, "ip", "") or "").strip()
+        lease_s = int(getattr(ctx.settings, "scan_job_lease_s", 900) or 900)
+        return _soft_route(payloads.scan_readiness, payloads.scan_readiness_failure,
+                           ip=ip, lease_s=lease_s)
 
     @app.get("/api/identity")
     @gated
@@ -919,17 +950,6 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except ValueError as exc:
             return _json_error(400, str(exc))
         return _payload_route(payloads.fingerprints, ja4=ja4)
-
-    @app.get("/api/findings")
-    @gated
-    def findings():
-        from weirvern.admin import payloads, web  # noqa: PLC0415
-
-        try:
-            args = web.findings_args(request.args)
-        except ValueError as exc:
-            return _json_error(400, str(exc))
-        return _soft_route(payloads.findings, payloads.findings_failure, **args)
 
     @app.get("/api/models/retrain")
     @gated
@@ -1703,9 +1723,88 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             args = web.scan_job_args(body)
         except ValueError as exc:
             return _json_error(400, str(exc))
+        lease_s = int(getattr(ctx.settings, "scan_job_lease_s", 900) or 900)
         try:
             with ctx.connect_factory(ctx.settings) as client:
-                code, payload = payloads.scan_job_create(client, **args)
+                # THE CAPABILITY READ COMES FIRST, and its answer is the refusal: a job that no
+                # weirling can reach or execute is never written, so the queue cannot fill with
+                # work the console would imply is happening.
+                readiness = payloads.scan_readiness(client, ip=args["ip"], lease_s=lease_s)
+                code, payload = payloads.scan_job_create(
+                    client, **args, readiness=readiness, lease_s=lease_s)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.scan_job_failure(exc)
+        return jsonify(payload), code
+
+    def _scan_actor():
+        """The signed-in username for the audit trail, or `operator` for a token write."""
+        from weirvern.admin import requestauth  # noqa: PLC0415
+
+        try:
+            ident = requestauth.identity(ctx, _auth_headers())
+        except Exception:  # noqa: BLE001
+            ident = None
+        return str(getattr(ident, "username", "") or "operator")
+
+    @app.delete("/api/scan-jobs/<job_id>")
+    def scan_job_cancel(job_id: str):
+        """REMOVE a queued scan, or ask a running one to stop. Admin only; reason required.
+
+        A queued row is deleted (the operator asked for it and took it back) and the FACT of the
+        cancellation is written to `fleet_audit`, so deleting a scan cannot erase that one was
+        requested. A running job is NOT deleted: it becomes `cancel_requested` and stays visible
+        until the weirling confirms it stopped.
+        """
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        lease_s = int(getattr(ctx.settings, "scan_job_lease_s", 900) or 900)
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                readiness = payloads.scan_readiness(client, lease_s=lease_s)
+                code, payload = payloads.scan_job_cancel(
+                    client, job_id=str(job_id or ""), reason=str(body.get("reason") or ""),
+                    actor=_scan_actor(), lease_s=lease_s,
+                    scanning_enabled=bool(readiness.get("enabled")),
+                    unavailable_reason=str(readiness.get("reason_unavailable") or ""))
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.scan_job_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/scan-jobs/cancel")
+    def scan_jobs_cancel():
+        """Cancel several jobs in one action: one audit row per job, per-job outcomes."""
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        job_ids = body.get("job_ids")
+        if not isinstance(job_ids, list):
+            return _json_error(400, "'job_ids' must be a list of job ids")
+        lease_s = int(getattr(ctx.settings, "scan_job_lease_s", 900) or 900)
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                readiness = payloads.scan_readiness(client, lease_s=lease_s)
+                code, payload = payloads.scan_jobs_cancel(
+                    client, job_ids=[str(x) for x in job_ids],
+                    reason=str(body.get("reason") or ""), actor=_scan_actor(), lease_s=lease_s,
+                    scanning_enabled=bool(readiness.get("enabled")),
+                    unavailable_reason=str(readiness.get("reason_unavailable") or ""))
         except Exception as exc:  # noqa: BLE001
             code, payload = payloads.scan_job_failure(exc)
         return jsonify(payload), code

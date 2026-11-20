@@ -72,12 +72,6 @@
       "target": "weirvern.admin.status.alert_evidence",
       "verb": "GET"
     },
-    "/api/findings": {
-      "body": "{\"available\": false, \"findings\": [], \"count\": 0, \"counts\": {}, \"reason\": \"the data could not be read\"}",
-      "status": 200,
-      "target": "weirvern.admin.assets.asset_findings_list",
-      "verb": "GET"
-    },
     "/api/fingerprints": {
       "body": "{\"error\": \"ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...\", \"code\": 400}",
       "status": 400,
@@ -153,7 +147,7 @@
       "verb": "GET"
     },
     "/api/assets": {
-      "body": "{\"scope\": \"all\", \"scope_counts\": {\"all\": 0, \"external\": 0, \"monitored\": 0}}",
+      "body": "{\"scope\": \"all\", \"scope_counts\": {\"all\": 0, \"external\": 0, \"monitored\": 0}, \"scan_capability\": {\"enabled\": true, \"sentence\": \"\", \"reason_unavailable\": \"\", \"count\": 0, \"capable_count\": 0, \"available\": false}}",
       "status": 200,
       "target": "weirvern.admin.assets.asset_inventory",
       "verb": "GET"
@@ -210,12 +204,6 @@
       "body": "{\"error\": \"addr is required, e.g. /api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00\", \"code\": 400}",
       "status": 400,
       "target": "weirvern.admin.status.alert_evidence",
-      "verb": "GET"
-    },
-    "/api/findings": {
-      "body": "{\"filter\": {\"ip\": \"\", \"severity\": \"\"}}",
-      "status": 200,
-      "target": "weirvern.admin.assets.asset_findings_list",
       "verb": "GET"
     },
     "/api/fingerprints": {

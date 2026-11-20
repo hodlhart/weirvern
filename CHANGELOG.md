@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.23.117 — 2026-11-20
+
+NUCLEI IS REMOVED, AND SCANNING BECOMES A MEASURED FLEET CAPABILITY. A scan is now queued only
+when a registered weirling both reports Nmap and declares the target's network, and cancelling
+means something different for a queued job than for a running one.
+
+- **Nuclei is removed everywhere.** The identity layer is Nmap `-sV` plus safe NSE scripts; a
+  template vulnerability scan was never part of it. `Containerfile.scanner` builds Nmap and NSE
+  only, the `SCAN_NUCLEI_*` settings are gone, the `k8s/36-scanner.yaml` Deployment and its
+  kustomize image entry are deleted, and migration `049_drop_nuclei.sql` drops
+  `weirvern.asset_findings` — its only producer. A Nuclei match cannot be re-derived without the
+  binary and template set, so this is a real deletion rather than an archive.
+- **The Findings view is gone with it.** `/api/findings` and its view are removed, and an old
+  `#v=findings` bookmark lands on Assets instead of falling through to Health. The migration is
+  the record; the docs' only remaining mentions of Nuclei are the paragraph explaining what was
+  removed and why.
+- **Capability is measured on each weirling, not configured on the hub.** Every agent runs
+  `detect_scanner` (`nmap --version`, `getcap`, sudo state, `/etc/os-release`) and reports it;
+  migration `050_scan_mode.sql` adds `privileged`, `scan_mode`, `can_install` and `sudo_state` to
+  `scanner_status`. The hub counts only a row that is fresh (15-minute window), registered,
+  enabled and not revoked — a removed scanner's last row can no longer make the fleet look
+  capable.
+- **Scope limits the CLAIM, not just the button.** `claim_next_job(networks=...)` skips a queued
+  row whose address is outside the networks the weirling declared in its own registration, and
+  an empty declaration proves nothing, so it refuses. The readiness count, the POST refusal and
+  the claim all read the same definition, so the console cannot promise a scan the claim refuses.
+- **A queued scan is refused when nothing can run it.** `GET /api/scan-readiness` returns the
+  fleet's own answer (who can scan, at what mode, and which declared networks each weirling
+  covers). `POST /api/scan-jobs` answers 409 with the measured sentence — naming `nmap missing`
+  and the exact install command for the host's `os-release` ID (`apt-get`, `dnf`/`yum`, `apk`,
+  `pacman`, `zypper`, or a generic instruction that refuses to guess) — instead of filing a job
+  that would never be claimed. The Weirlings sheet shows the same sentence and disables Scan.
+- **Install commands are per host OS, on the sheet.** Unknown distributions get the generic
+  instruction and `known: false`; no package manager is ever guessed.
+- **Cancel has two honest answers.** A QUEUED job is deleted and one `fleet_audit` row
+  (`scan_cancel`) records that it was asked for and why. A RUNNING job is not deleted: it becomes
+  `cancel_requested` (202) and stays visible while the weirling polls the hub once a second, kills
+  the Nmap child, records `scan_cancelled_confirmed` and then removes the row. Bulk cancel keeps
+  one audit row per job and per-job outcomes; a reason is required on every path; a viewer is
+  refused 403 before a table is read.
+
 ## 0.23.116 — 2026-11-20
 
 THREE STANDING DEFECTS, each one a check that could not see what it claimed to look at. No
