@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -982,16 +983,19 @@ def test_every_managed_table_says_why_it_is_on_the_list():
 
 
 def test_the_ripple_inventory_never_claims_more_history_than_the_derived_window():
-    """The per-spec 7/30/60/90 constants describe the DESIGN, not this box's TTL.
+    """The live window IS every table's retention; a claim may never exceed it.
 
-    `inventory(retention_days=...)` must cap every claim to what the tables actually keep,
-    or the Models card advertises 90 days of identity history on a deployment holding 30.
+    `retention.converge` puts every managed table on ONE TTL, so the per-spec 7/30/60/90
+    constants describe the DESIGN and stop being a second cap the moment a live window is
+    supplied -- otherwise a box keeping 258 days would still advertise 7 for DNS. With no live
+    value the constants remain all the static inventory can honestly report.
     """
     from weirvern.models import ripple_evidence
 
     unscaled = {row["channel"]: row["retention_days"]
                 for row in ripple_evidence.inventory()}
     assert unscaled["kerberos_volume"] == 90, "the design constant is still available"
+    assert unscaled["dns_volume"] == 7
 
     rows = ripple_evidence.inventory(retention_days=30)
     assert rows
@@ -1000,7 +1004,9 @@ def test_the_ripple_inventory_never_claims_more_history_than_the_derived_window(
     assert claims["kerberos_volume"] == 30
     assert claims["ntlm_volume"] == 30
     assert claims["smb_file_volume"] == 30
-    assert claims["dns_volume"] == 7
+    # THE LIVE WINDOW WINS over the design constant in BOTH directions. DNS was declared at 7
+    # days; the table now keeps 30, so claiming 7 would understate what it can answer.
+    assert claims["dns_volume"] == 30
 
     tight = ripple_evidence.inventory(retention_days=3)
     assert all(row["retention_days"] <= 3 for row in tight)
@@ -1017,3 +1023,64 @@ def test_the_documents_agree_with_the_control():
     assert "auto" in runbook
     assert "7-365" in runbook or "7–365" in runbook
     assert "40%" in runbook and "70" in runbook
+
+
+# ── the retention the ripple lookback is derived from ────────────────────────────────────────
+
+
+class _TtlClient:
+    """A client whose answer to `system.tables` is the DDL this test hands it."""
+
+    def __init__(self, ddl: dict[str, str]):
+        self.ddl = ddl
+
+    def query(self, sql, parameters=None):
+        return SimpleNamespace(result_rows=[(name, text) for name, text in self.ddl.items()])
+
+
+def _table_ddl(days: int | None) -> str:
+    ttl = "" if days is None else f" TTL ts + toIntervalDay({days})"
+    return (f"CREATE TABLE weirvern.x (ts DateTime) ENGINE = MergeTree "
+            f"PARTITION BY toYYYYMM(ts){ttl} SETTINGS index_granularity = 8192")
+
+
+def test_days_in_force_reads_the_smallest_ttl_the_named_tables_keep():
+    """A baseline may only be as long as the SHORTEST table it reads."""
+    all_long = retention.days_in_force(_TtlClient({"zeek_conn": _table_ddl(258),
+                                                   "zeek_dns": _table_ddl(258)}),
+                                       ("zeek_conn", "zeek_dns"))
+    assert all_long["days"] == 258
+    assert all_long["source"] == "system.tables TTL"
+    assert all_long["unknown"] == []
+
+    mixed = retention.days_in_force(_TtlClient({"zeek_conn": _table_ddl(258),
+                                                "zeek_dns": _table_ddl(30)}),
+                                    ("zeek_conn", "zeek_dns"))
+    assert mixed["days"] == 30
+    assert mixed["tables"] == {"zeek_conn": 258, "zeek_dns": 30}
+
+
+def test_an_unreadable_ttl_is_named_and_never_raises_the_window():
+    """An unparsed TTL must not become an unlimited lookback or a silent absence."""
+    info = retention.days_in_force(
+        _TtlClient({"zeek_conn": _table_ddl(258), "zeek_dns": _table_ddl(None)}),
+        ("zeek_conn", "zeek_dns"))
+    assert info["days"] == 258
+    assert info["unknown"] == ["zeek_dns"]
+
+    nothing = retention.days_in_force(_TtlClient({"zeek_conn": _table_ddl(None)}), ("zeek_conn",))
+    assert nothing["days"] is None
+    assert nothing["source"] == "unreadable"
+    assert nothing["unknown"] == ["zeek_conn"]
+
+
+def test_days_in_force_never_raises_on_a_failed_read():
+    class _Broken:
+        def query(self, sql, parameters=None):
+            raise ConnectionError("clickhouse is not reachable")
+
+    info = retention.days_in_force(_Broken(), ("zeek_conn",))
+
+    assert info["days"] is None
+    assert info["source"] == "unreadable"
+    assert "ConnectionError" in info["reason"]

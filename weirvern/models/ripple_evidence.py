@@ -14,22 +14,36 @@ pieces of evidence that line up in one time window on one host are grouped into 
 `ripple.group_evidence`; the ripple is what an operator reads, the evidence is what it is made
 of.
 
-THE SCALES, AND AN HONEST LIMIT. A scale is the length of the window being measured: 1h, 6h,
-24h, 7d. A channel can only be measured at a scale the lookback can supply a baseline for, and
-the baseline samples are NON-OVERLAPPING windows of that length. With the fixed 7-day lookback
-and the 30-window minimum that means:
+THE SCALES, AND A LOOKBACK DERIVED FROM THE RETENTION IN FORCE. A scale is the length of the
+window being measured: 1h, 6h, 24h, 7d. A channel can only be measured at a scale the lookback
+can supply a baseline for, and the baseline samples are NON-OVERLAPPING windows of that length.
 
-    1h  -> 167 baseline windows  floor 0.0060  measurable and resolvable below 0.01
-    6h  ->  27 baseline windows  floor 0.0357  BELOW THE MINIMUM: not measured
-    24h ->   6 baseline windows  floor 0.1429  BELOW THE MINIMUM: not measured
-    7d  ->   0 baseline windows  NO EVIDENCE at all
+The lookback is not a constant. `scale_lookback_days()` derives it per scale from the retention
+the tables have IN FORCE -- `retention.days_in_force()`, which reads each source table's TTL
+back from `system.tables` -- and caps it at what that scale needs:
 
-That is not a bug to paper over. `flows` retains 3 days, the Zeek tables 7, so no collected
-source can answer "is this week different from this host's previous weeks" yet. The 7d scale is
-declared in `EVIDENCE_SCALES` and computed the moment the lookback is raised past 35 days; at
-today's retention it produces nothing, which is the honest answer. The same rule kills the 6h
-and 24h scales' ability to support the 0.01 ripple bar at a 7-day lookback, so they are reported
-as baseline-too-short rather than measured and printed as if their floor meant something.
+    scale  1h    6h     24h    7d
+    need   7d    26d    103d   721d      (100 windows + 2 spare, see below)
+    at a 258-day retention: 7d, 26d, 103d, 258d -> the first three are usable; 7d is not
+
+TWO NUMBERS, AND THEY ARE NOT THE SAME. The 30-window floor is what makes a rank worth
+computing, and `required_lookback_days` still reports the lookback it needs (2/8/31/217). But
+p = 1/(n+1), so thirty windows can express no p below 0.032 and only 100 windows can resolve the
+0.01 family bar. A scale is therefore READ only when its lookback can hold `windows_for_bar()`
+baseline windows. This is why 6h needs 26 days and not 8: at 8 days it has 31 windows and a
+p-floor of 0.031, so no row from it could ever support a ripple. The 30-window floor is
+unchanged and still refuses a measurement; it was simply never the only bar.
+
+NEVER BEYOND RETENTION, AND NEVER A WISH. `scale_lookback_days` returns
+`min(retention_days, max(7, required))`: a query never reads further back than the tables keep
+(it would be empty), and a scale whose requirement exceeds retention is reported unusable with
+both numbers named rather than measured at a lookback the tables cannot hold. The 7d scale needs
+721 days at this bar, past the 365-day cap, so it is declared and reported as unreachable.
+
+MEASURED ON THE LIVE BOX 2026-11-20: the TTLs in force were 258 days while `retention.derive()`
+would have said 289. The TTL is what decides which rows still exist, so that is what the ripple
+lookback is derived from -- re-deriving on the read path would advertise history the cluster has
+not applied yet.
 
 COVERAGE AND SILENCE. A host with four hours of data in a week does not have a week-long
 normal. Evidence is emitted only when the baseline holds at least `MIN_BASELINE_SAMPLES`
@@ -101,6 +115,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from weirvern import monitored as monitored_mod
+from weirvern import retention as retention_mod
 from weirvern.models.generic_channels import ChannelSpec
 from weirvern.models.ripple import (
     DEFAULT_FAMILY_MAX_P,
@@ -115,10 +130,18 @@ from weirvern.models.ripple import (
     pvalue_floor,
 )
 
-MODEL_VERSION = "ripple-evidence-3"
+MODEL_VERSION = "ripple-evidence-4"
 
-#: The trailing history every baseline is drawn from. One constant, as phase 1 requires.
+#: The lookback a scale gets when the retention in force cannot be read: the historical 7-day
+#: window, which is also the FLOOR of every derived lookback. It is no longer the answer -- see
+#: `scale_lookback_days`, which derives the per-scale value from what the tables keep.
 LOOKBACK_DAYS = 7
+
+#: Spare baseline windows over the number a scale needs to resolve the family bar. One covers a
+#: gap (a host that was silent for a window) and one covers the current bucket's arithmetic at a
+#: scale boundary; without them a baseline at exactly 100 windows loses its resolution after a
+#: single missing bucket.
+LOOKBACK_MARGIN_WINDOWS = 2
 
 #: The finest bucket any channel is measured in. Every scale is a whole number of these, so an
 #: additive statistic is queried once and rolled up; only `diversity` needs a query per scale.
@@ -310,18 +333,87 @@ def effective_lookback_days(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAY
                             retention_days: int | None = None) -> int:
     """How far back this source can actually be read: the lookback, capped by its retention.
 
-    `flows` keeps 3 days while the Zeek tables keep 7. Measuring a 7-day baseline against a
-    3-day table would count coverage against windows that do not exist; capping here is what
-    makes `coverage` mean "share of the possible history", not "share of a wish".
+    WHEN A LIVE RETENTION IS SUPPLIED IT WINS OVER THE PER-SPEC CONSTANT. `retention.converge`
+    puts every table in this layer on ONE window (the derived one), so the 7/30/60/90 constants
+    that describe what each source was DESIGNED to keep are no longer a separate limit: the TTL
+    read back from `system.tables` is. Without a live value (a test, or the static inventory) the
+    constant remains the only cap, which is what a hypothetical 30-day deployment has.
 
-    `retention_days` is the window the BOX derived. When supplied it caps the per-spec
-    constant as well: a spec that was written for 90 days cannot claim 90 on a deployment
-    whose TTL is 30.
+    `flows_window` and the Zeek tables are all on `retention.RETENTION_TABLES`, so the live
+    value is the real one; a spec whose table was NOT managed would need its constant here. That
+    is why the live read is per table (`days_in_force(names=...)`) and takes the minimum.
     """
-    cap = int(spec.retention_days)
-    if retention_days is not None:
-        cap = min(cap, max(0, int(retention_days)))
+    cap = max(0, int(retention_days)) if retention_days is not None else int(spec.retention_days)
     return max(0, min(int(lookback_days), cap))
+
+
+def windows_for_bar(max_p: float = DEFAULT_FAMILY_MAX_P) -> int:
+    """Baseline windows needed for a p-value strictly below `max_p` to exist at all.
+
+    p = (1 + #{as extreme}) / (n + 1), so the attainable floor is 1/(n+1). Thirty windows can
+    express no p below 0.031: that is the point at which a rank stops being noise, not the point
+    at which the ripple bar becomes reachable. Reaching a p STRICTLY below max_p takes
+    1/(n+1) < max_p, i.e. n > 1/max_p - 1; at 0.01 that is 100 windows.
+    """
+    return max(MIN_BASELINE_SAMPLES, math.floor(1.0 / float(max_p) - 1.0) + 1)
+
+
+def required_lookback_days(scale: str, *, windows: int | None = None,
+                           margin_windows: int = LOOKBACK_MARGIN_WINDOWS) -> int:
+    """Lookback (whole days) that can hold `windows` + `margin_windows` baseline windows.
+
+    `baseline_windows` excludes the current bucket, so n history windows need lookback for n+1.
+    Passing `windows=min_baseline_samples(scale), margin_windows=0` reproduces the 30-window
+    floor's number (2/8/31/217) that the API has always reported as `required_lookback_days`.
+    """
+    seconds = int(EVIDENCE_SCALE_SECONDS.get(scale) or 0)
+    if not seconds:
+        return 0
+    need = (windows_for_bar() if windows is None else int(windows)) + int(margin_windows)
+    return math.ceil((need + 1) * seconds / 86400)
+
+
+def scale_lookback_days(scale: str, retention_days: int) -> int:
+    """The lookback this scale is READ at: what it needs, never more than retention holds.
+
+    `max(LOOKBACK_DAYS, required)` keeps the 1h baseline at the seven days this layer shipped
+    with (167 windows) instead of shrinking it toward its 5-day minimum; for every coarser scale
+    the requirement is already larger. The result is capped by the retention in force, so a
+    query can never ask a table for history its TTL has already dropped.
+    """
+    retention = max(0, int(retention_days))
+    return min(retention, max(LOOKBACK_DAYS, required_lookback_days(scale)))
+
+
+def lookbacks_for(retention_days: int, lookback_days: int | None = None) -> dict[str, int]:
+    """Every scale's read window from one retention. `lookback_days` overrides for tests."""
+    retention = max(0, int(retention_days))
+    if lookback_days is not None:
+        return {scale: min(max(0, int(lookback_days)), retention) for scale in EVIDENCE_SCALES}
+    return {scale: scale_lookback_days(scale, retention) for scale in EVIDENCE_SCALES}
+
+
+def retention_in_force(client: Any, specs: tuple[ChannelSpec, ...] = SPECS) -> dict[str, Any]:
+    """The retention the source tables have IN FORCE, read from their TTLs.
+
+    One `system.tables` read for the tables this layer actually queries; see
+    `retention.days_in_force` for why the TTL (what `converge` wrote) is used instead of a fresh
+    disk derivation. When the TTLs cannot be read the answer is the 7-day floor with
+    `source: "default"`: a read failure must not grant a long scan the tables cannot support.
+    """
+    names = tuple(sorted({spec.table.rsplit(".", 1)[-1] for spec in specs}))
+    try:
+        info = retention_mod.days_in_force(client, names)
+    except Exception as exc:  # noqa: BLE001 - an unreadable TTL is a named state, not a crash
+        info = {"days": None, "source": "unreadable", "tables": {}, "unknown": list(names),
+                "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    if info.get("days") is None:
+        info = dict(info)
+        info["days"] = LOOKBACK_DAYS
+        info["source"] = "default"
+        info["reason"] = (info.get("reason")
+                          or "the source tables' TTL could not be read; using the 7-day floor")
+    return info
 
 
 def baseline_windows(scale: str, lookback_days: int = LOOKBACK_DAYS) -> int:
@@ -332,59 +424,89 @@ def baseline_windows(scale: str, lookback_days: int = LOOKBACK_DAYS) -> int:
     return max(0, int(lookback_days * 86400) // int(seconds) - 1)
 
 
-def scale_report(scale: str, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]:
+def scale_report(scale: str, lookback_days: int | None = None,
+                 retention_days: int | None = None,
+                 max_p: float = DEFAULT_FAMILY_MAX_P) -> dict[str, Any]:
     """The baseline a scale can offer, and whether that is enough to decide anything.
 
     `p_floor` is the smallest p a FULL baseline at this scale could express. A scale is usable
     only when it has the minimum number of windows AND that floor is strictly below the ripple
     family bar; otherwise the honest statement is "baseline too short at this scale", which the
     API exposes instead of printing a floor value as a result.
+
+    THE TWO NUMBERS THE EMPTY STATE NEEDS, AND THEY DIFFER. `required_lookback_days` is the
+    lookback the 30-window FLOOR needs (unchanged: 2/8/31/217). `required_lookback_days_for_bar`
+    is the lookback at which a p below the family bar can exist (5/26/103/721).
+    `lookback_days` is what is actually configured after the retention cap, and
+    `retention_days` is the window that cap came from. Without all four a reader can only say
+    "not enough history"; with them the console can say which number is short and whether more
+    history is even the fix.
     """
-    windows = baseline_windows(scale, lookback_days)
+    retention = LOOKBACK_DAYS if retention_days is None else max(0, int(retention_days))
+    if lookback_days is None:
+        lookback = scale_lookback_days(scale, retention)
+        derived = True
+    else:
+        lookback = max(0, int(lookback_days))
+        derived = False
+    windows = baseline_windows(scale, lookback)
     minimum = min_baseline_samples(scale)
     floor = pvalue_floor(windows)
     seconds = int(EVIDENCE_SCALE_SECONDS.get(scale) or 0)
+    need_windows = windows_for_bar(max_p)
+    need_days = required_lookback_days(scale, windows=need_windows)
+    floor_days = required_lookback_days(scale, windows=minimum, margin_windows=0)
     if windows < minimum:
         reason = (f"baseline too short at this scale: {windows} window(s), "
                   f"{minimum} required")
         usable = False
-    elif floor >= DEFAULT_FAMILY_MAX_P:
-        reason = (f"baseline cannot resolve p < {DEFAULT_FAMILY_MAX_P:g} at this scale: "
-                  f"floor {floor:.4f} with {windows} windows")
+    elif floor >= max_p:
+        reason = (f"baseline too short at this scale: {lookback} day(s) of lookback hold "
+                  f"{windows} window(s), but {need_days} day(s) are needed for {need_windows} "
+                  f"windows to resolve p<{max_p:g}; retention allows {retention}")
         usable = False
     else:
         reason = ""
         usable = True
-    # THE NUMBERS THE EMPTY STATE NEEDS. `baseline_windows` is what this lookback can hold,
-    # `minimum_windows` is what the test needs, and `required_lookback_days` is the lookback at
-    # which those two meet: (minimum + 1) non-overlapping windows of this length. Without them a
-    # reader can only say "not enough history"; with them the console can say WHICH scale is
-    # next and what it would take to make it usable, without hardcoding a scale's duration in
-    # the JavaScript.
-    required_days = math.ceil((minimum + 1) * seconds / 86400) if seconds else 0
     return {
         "baseline_windows": windows,
         "minimum_windows": minimum,
         "scale_seconds": seconds,
-        "lookback_days": int(lookback_days),
-        "required_lookback_days": required_days,
+        "lookback_days": lookback,
+        "retention_days": retention,
+        "lookback_derived": derived,
+        "required_lookback_days": floor_days,
+        "required_lookback_days_for_bar": need_days,
+        "windows_for_bar": need_windows,
+        "lookback_margin_windows": LOOKBACK_MARGIN_WINDOWS,
         "p_floor": round(floor, 6),
         "usable": usable,
         "reason": reason,
     }
 
 
-def supported_scales(spec: ChannelSpec, lookback_days: int = LOOKBACK_DAYS,
+def supported_scales(spec: ChannelSpec, lookback_days: int | None = None,
                      retention_days: int | None = None) -> list[str]:
-    """The scales this channel can actually be measured at, given its retention and the floor.
+    """The scales this channel can be measured at: the USABLE ones, given retention and the bar.
 
-    A scale with fewer than `min_baseline_samples(scale)` windows is NOT listed. That is what
-    makes the inventory honest: 7d is absent everywhere in this deployment, and a channel is
-    never scored against a baseline it does not have.
+    A scale missing here is not measured at all. The test is `scale_report(...)["usable"]` -- the
+    same 30-window floor and the same p-floor resolution the read path applies -- so the worker
+    never spends a query on a baseline that could not support a ripple. `lookback_days` is an
+    explicit override (tests, a caller that knows); otherwise each scale derives its own window.
     """
-    effective = effective_lookback_days(spec, lookback_days, retention_days)
-    return [scale for scale in spec.scales
-            if baseline_windows(scale, effective) >= min_baseline_samples(scale)]
+    retention = LOOKBACK_DAYS if retention_days is None else max(0, int(retention_days))
+    out: list[str] = []
+    for scale in spec.scales:
+        if scale not in EVIDENCE_SCALE_SECONDS:
+            continue
+        if lookback_days is None:
+            wanted = scale_lookback_days(scale, retention)
+        else:
+            wanted = min(max(0, int(lookback_days)), retention)
+        lookback = effective_lookback_days(spec, wanted, retention)
+        if scale_report(scale, lookback, retention).get("usable"):
+            out.append(scale)
+    return out
 
 
 def statistic(spec: ChannelSpec) -> str:
@@ -418,18 +540,21 @@ def inventory(lookback_days: int = LOOKBACK_DAYS,
     every effective lookback is capped to the derived window when it is supplied.
     """
     out: list[dict[str, Any]] = []
+    live = None if retention_days is None else max(0, int(retention_days))
     for spec in SPECS:
-        claimed = int(spec.retention_days)
-        if retention_days is not None:
-            claimed = min(claimed, max(0, int(retention_days)))
-        effective = effective_lookback_days(spec, lookback_days, claimed)
+        # WHEN A LIVE WINDOW IS SUPPLIED IT IS THE TABLE'S RETENTION. `retention.converge` puts
+        # every managed table on the same derived window, so the design constants (7/30/60/90)
+        # are not a second cap; see `effective_lookback_days`. Without a live value the constants
+        # are all this function can honestly report, which is what the static inventory needs.
+        claimed = int(spec.retention_days) if live is None else live
+        effective = effective_lookback_days(spec, lookback_days, live)
         out.append({
             "channel": spec.channel,
             "family": spec.family,
             "source": spec.table,
             "statistic": statistic(spec),
-            "scales": supported_scales(spec, lookback_days, claimed),
-            "scale_detail": {scale: scale_report(scale, effective) for scale in spec.scales},
+            "scales": supported_scales(spec, lookback_days, live),
+            "scale_detail": {scale: scale_report(scale, effective, live) for scale in spec.scales},
             "retention_days": claimed,
             "required_columns": list(spec.required_columns),
         })
@@ -708,11 +833,33 @@ def _evidence_for_scale(spec: ChannelSpec, *, scale: str, buckets: dict[str, dic
     return out
 
 
+def _slice_buckets(buckets: dict[str, dict[int, tuple[float, float, float]]],
+                   keep: int) -> dict[str, dict[int, tuple[float, float, float]]]:
+    """Keep the buckets inside one scale's OWN lookback (k=0 is the current bucket).
+
+    ONE QUERY, SEVERAL SCALES. Additive channels are queried once at the finest bucket over the
+    WIDEST usable scale's lookback, then folded. A coarser fold must not hand the 1h scale 103
+    days of history: each scale gets exactly the windows its own lookback holds, so its coverage
+    and p-value are the same numbers a per-scale query would have produced.
+    """
+    if keep <= 0:
+        return {}
+    return {host: {index: value for index, value in by_index.items() if index < keep}
+            for host, by_index in buckets.items()}
+
+
 def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None = None,
-            lookback_days: int = LOOKBACK_DAYS,
+            lookback_days: int | None = None,
+            retention_days: int | None = None,
             specs: tuple[ChannelSpec, ...] = SPECS,
             monitored_nets: list[Any] | None = None) -> list[ChannelEvidence]:
     """Every channel's evidence for every host it can be measured for, at every usable scale.
+
+    THE LOOKBACK IS DERIVED, PER SCALE, FROM RETENTION. With no explicit `lookback_days` each
+    scale reads `scale_lookback_days(scale, retention)` days, where retention is read from the
+    source tables' own TTLs (`retention_in_force`). `lookback_days` is the override tests and a
+    caller that knows the window use; it is still capped by retention, so no query asks a table
+    for history its TTL has dropped.
 
     ONLY MONITORED SUBJECTS. The operator's monitored networks are read from `network_scopes`
     unless the caller supplies them. Every row is attributed in SQL to its monitored endpoint
@@ -729,6 +876,15 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
         return []
     cidrs = tuple(str(net) for net in nets)
     moment = _aware(now or datetime.now(UTC)).replace(microsecond=0)
+    if retention_days is not None:
+        retention = max(0, int(retention_days))
+    elif lookback_days is not None:
+        # An explicit lookback IS the retention for this call: the old behaviour, kept so a
+        # test (or a replay at a known window) never reads beyond what it asked for.
+        retention = max(0, int(lookback_days))
+    else:
+        retention = int(retention_in_force(client, specs)["days"])
+    lookbacks = lookbacks_for(retention, lookback_days)
     missing_columns = {row["channel"] for row in availability(client, specs=specs)
                        if not row["available"]}
     wanted = set(hosts) if hosts is not None else None
@@ -736,37 +892,41 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
     for spec in specs:
         if spec.channel in missing_columns:
             continue
-        effective = effective_lookback_days(spec, lookback_days)
-        scales = supported_scales(spec, lookback_days)
+        scales = supported_scales(spec, lookback_days, retention)
         if not scales:
             continue
         try:
             if spec.kind in ADDITIVE_KINDS:
-                # One query at the finest bucket; every scale is then a sum of whole buckets.
+                # ONE QUERY AT THE FINEST BUCKET, folded up for every scale. The query covers the
+                # WIDEST scale's lookback (103 days when 24h is usable, 26 when only 6h is); each
+                # scale is then sliced back to its own window, so a coarse scale cannot lengthen
+                # the 1h baseline. The per-scale cap is what keeps one pass from reading retention.
+                widest = max(scales, key=lambda name: lookbacks[name])
                 base = _buckets(client, spec, scale="1h", moment=moment,
-                                lookback_days=effective, scope_cidrs=cidrs)
+                                lookback_days=lookbacks[widest], scope_cidrs=cidrs)
                 for scale in scales:
                     factor = EVIDENCE_SCALE_SECONDS[scale] // STEP_SECONDS
                     folded = _fold_from_buckets(base, factor)
+                    window_limit = lookbacks[scale] * 86400 // EVIDENCE_SCALE_SECONDS[scale]
                     out.extend(_evidence_for_scale(
-                        spec, scale=scale, buckets=folded, moment=moment,
-                        wanted=wanted, lookback_days=effective))
+                        spec, scale=scale, buckets=_slice_buckets(folded, window_limit),
+                        moment=moment, wanted=wanted, lookback_days=lookbacks[scale]))
             elif spec.kind in SET_KINDS:
                 # A SET cannot be rolled up from smaller buckets: "was this value new?" is a
                 # question about the whole window, so each scale is queried at its own length.
                 for scale in scales:
                     value_sets = _value_sets(client, spec, scale=scale, moment=moment,
-                                             lookback_days=effective, scope_cidrs=cidrs)
+                                             lookback_days=lookbacks[scale], scope_cidrs=cidrs)
                     out.extend(_series_evidence(
                         spec, scale=scale, buckets=value_sets, moment=moment,
-                        wanted=wanted, lookback_days=effective))
+                        wanted=wanted, lookback_days=lookbacks[scale]))
             else:
                 for scale in scales:
                     buckets = _buckets(client, spec, scale=scale, moment=moment,
-                                       lookback_days=effective, scope_cidrs=cidrs)
+                                       lookback_days=lookbacks[scale], scope_cidrs=cidrs)
                     out.extend(_evidence_for_scale(
                         spec, scale=scale, buckets=buckets, moment=moment,
-                        wanted=wanted, lookback_days=effective))
+                        wanted=wanted, lookback_days=lookbacks[scale]))
         except Exception:  # noqa: BLE001 - one unreadable source must not silence the rest
             continue
     # DEFENCE IN DEPTH: the SQL attributed every row, but a stored or injected row must never
@@ -861,15 +1021,29 @@ def read(client: Any, *, hours: int = 24, now: datetime | None = None) -> list[C
 
 
 def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = None,
-        lookback_days: int = LOOKBACK_DAYS) -> dict[str, Any]:
+        lookback_days: int | None = None,
+        retention_days: int | None = None) -> dict[str, Any]:
     """Measure every channel, store the evidence, and return the counts the worker logs.
 
     THE RIPPLES ARE NOT STORED. A ripple is a deterministic projection of its evidence, so
     persisting it would create a second copy that can disagree with the rows it is made of
     (after a TTL, a re-run, or a changed grouping constant). The read path groups evidence
     instead, which keeps the explanation and the numbers in the same rows.
+
+    THE DERIVATION IS PART OF THE RECEIPT. `retention_days`, `retention_source` and the
+    per-scale `lookbacks` are returned (and logged by the worker) so a pass that read 26 days
+    for 6h can be told apart from one that fell back to 7 because the TTL was unreadable.
     """
-    items = compute(client, now=now, hosts=hosts, lookback_days=lookback_days)
+    if retention_days is not None:
+        info: dict[str, Any] = {"days": max(0, int(retention_days)), "source": "explicit",
+                                "tables": {}, "unknown": [], "reason": ""}
+    elif lookback_days is not None:
+        info = {"days": max(0, int(lookback_days)), "source": "explicit lookback",
+                "tables": {}, "unknown": [], "reason": ""}
+    else:
+        info = retention_in_force(client)
+    items = compute(client, now=now, hosts=hosts, lookback_days=lookback_days,
+                    retention_days=info["days"])
     stored = store(client, items)
     unavailable = [{"channel": row["channel"], "reason": row["reason"]}
                    for row in availability(client) if not row["available"]]
@@ -881,6 +1055,9 @@ def run(client: Any, *, now: datetime | None = None, hosts: list[str] | None = N
         "declared_channels": len(SPECS),
         "unavailable": unavailable,
         "scales": sorted({item.scale for item in items}),
+        "retention_days": info["days"],
+        "retention_source": info["source"],
+        "lookbacks": lookbacks_for(info["days"], lookback_days),
         "model_version": MODEL_VERSION,
     }
 
@@ -894,8 +1071,12 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
 
     `baseline` is the other distinction the card needs: a scale whose baseline cannot resolve
     the ripple bar is reported as such, with its window count and p-value floor, instead of
-    letting a floor value be printed as if it were a result. `monitored_networks` is the scope
-    the subjects were filtered to; an empty list means no subject could be attributed.
+    letting a floor value be printed as if it were a result. Each scale reports the lookback it
+    is read at (`lookback_days`), the retention that lookback was derived from
+    (`retention_days`), and what the bar actually needs (`required_lookback_days_for_bar`), so
+    the empty state can say which number is short instead of only "not enough history".
+    `monitored_networks` is the scope the subjects were filtered to; an empty list means no
+    subject could be attributed.
     """
     window_hours = max(1, int(hours))
     try:
@@ -913,6 +1094,9 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
     nets = monitored_mod.networks(client)
     in_scope = [item for item in items if monitored_mod.in_scope(item.host, nets)]
     ripples = group_evidence(in_scope, monitored=nets)
+    # ONE READ FOR EVERY SCALE. The TTLs are read once and each scale derives its own lookback
+    # from the same number; the block below is what makes that derivation inspectable.
+    retention = retention_in_force(client)
     return {
         "available": True,
         "reason": "",
@@ -921,7 +1105,15 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
         "count": len(ripples),
         "ripples": [ripple.as_dict() for ripple in ripples],
         "monitored_networks": [str(net) for net in nets],
-        "baseline": {scale: scale_report(scale) for scale in EVIDENCE_SCALES},
+        "baseline": {scale: scale_report(scale, retention_days=retention["days"])
+                     for scale in EVIDENCE_SCALES},
+        "retention": {
+            "days": retention["days"],
+            "source": retention["source"],
+            "reason": retention.get("reason") or "",
+            "tables": retention.get("tables") or {},
+            "unknown": retention.get("unknown") or [],
+        },
         "evidence": {
             "rows": len(items),
             "monitored_rows": len(in_scope),
@@ -931,7 +1123,9 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
     }
 
 
-__all__ = ["COLUMNS", "LOOKBACK_DAYS", "MAX_HOSTS", "MIN_BASELINE_SAMPLES", "MIN_COVERAGE",
-           "MODEL_VERSION", "SET_KINDS", "SPECS", "availability", "baseline_windows", "compute",
-           "effective_lookback_days", "inventory", "overview", "read", "run", "scale_report",
-           "statistic", "store", "supported_scales"]
+__all__ = ["COLUMNS", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
+           "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SET_KINDS", "SPECS",
+           "availability", "baseline_windows", "compute", "effective_lookback_days", "inventory",
+           "lookbacks_for", "overview", "read", "required_lookback_days", "retention_in_force",
+           "run", "scale_lookback_days", "scale_report", "statistic", "store",
+           "supported_scales", "windows_for_bar"]

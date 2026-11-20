@@ -2439,8 +2439,11 @@ def main() -> None:
                             ev = _rev.run(client)
                             logger.info(
                                 "ML ripple evidence: %s row(s), %s host(s), %s channel(s), "
-                                "scales %s", ev["rows"], ev["hosts"], ev["channels"],
-                                ",".join(ev["scales"]) or "none")
+                                "scales %s; retention %s day(s) (%s), lookback %s",
+                                ev["rows"], ev["hosts"], ev["channels"],
+                                ",".join(ev["scales"]) or "none", ev["retention_days"],
+                                ev["retention_source"],
+                                ",".join(f"{s}={d}d" for s, d in sorted(ev["lookbacks"].items())))
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(
                                 "ML ripple evidence pass failed (detection continues): %s", exc)

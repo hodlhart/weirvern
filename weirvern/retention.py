@@ -668,6 +668,44 @@ def effective_ttls(client: Any, names: tuple[str, ...] | None = None) -> dict[st
     return out
 
 
+def days_in_force(client: Any, names: tuple[str, ...] | None = None) -> dict[str, Any]:
+    """The retention the TABLES actually keep, read from their own DDL.
+
+    THE TTL IS WHAT THIS MODULE DERIVED. `converge()` writes the derived window onto every
+    managed table with `ALTER TABLE ... MODIFY TTL`, so reading the TTL back is reading the value
+    this module produced -- and it is the value that decides which rows still exist. Re-deriving
+    on a read path would report a window the cluster has not applied yet: measured on the live
+    box (2026-11-20) `derive()` answered 289 days while every managed table still kept 258.
+
+    The answer is the SMALLEST window among `names`, because a baseline may only be as long as
+    the shortest table it reads. A table whose TTL cannot be read is reported in `unknown` and
+    never raises the answer: the minimum of the known windows is the conservative cap, and an
+    unreadable TTL must not become an unlimited lookback. `days` is None only when NO table's
+    TTL could be read; the caller decides what floor to fall back to.
+    """
+    wanted = tuple(names or table_names())
+    if not wanted:
+        return {"days": None, "source": "unreadable", "tables": {}, "unknown": [],
+                "reason": "no table was named"}
+    try:
+        read = effective_ttls(client, wanted)
+    except Exception as exc:  # noqa: BLE001 - an unreadable schema is a state, not a crash
+        return {"days": None, "source": "unreadable", "tables": {}, "unknown": list(wanted),
+                "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    known = {name: int(ttl.days) for name, ttl in read.items() if ttl.days is not None}
+    unknown = [name for name in wanted if name not in known]
+    if not known:
+        return {"days": None, "source": "unreadable", "tables": {}, "unknown": unknown,
+                "reason": "no table-level TTL could be read from create_table_query"}
+    return {
+        "days": min(known.values()),
+        "source": "system.tables TTL",
+        "tables": known,
+        "unknown": unknown,
+        "reason": "",
+    }
+
+
 def not_derived_report(report: dict[str, Any]) -> dict[str, Any]:
     """The report for a converged-nothing pass: auto has no honest number yet."""
     return {
@@ -849,7 +887,8 @@ __all__ = ["AUTO", "DEFAULT_RATIO_PERCENT", "MAX_RATIO_PERCENT", "MAX_RETENTION_
            "MIN_OBSERVATION_DAYS", "MIN_RATIO_PERCENT", "MIN_RETENTION_DAYS", "NEVER_EXPIRE",
            "RETENTION_DAYS_KEY", "RETENTION_RATIO_KEY", "RETENTION_TABLES", "UNMANAGED",
            "EffectiveTTL", "Measurement", "RetentionTable", "alter_sql", "auto_report",
-           "budget_refusal", "converge", "derive", "effective_ttls", "ensure", "is_auto",
+           "budget_refusal", "converge", "days_in_force", "derive", "effective_ttls", "ensure",
+           "is_auto",
            "manual_report", "measure", "normalise_days", "normalise_ratio", "not_derived_report",
            "parse_ttl",
            "resolve", "table_names", "unavailable"]

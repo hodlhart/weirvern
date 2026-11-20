@@ -617,3 +617,146 @@ def test_http_host_diversity_counts_the_header_not_the_subject_alias():
                             until=NOW, scope_cidrs=("198.51.100.0/24",))
     assert "uniqExact(weirvern.zeek_http.host)" in sql
     assert "uniqExact(host)" not in sql
+
+
+# ── the lookback is derived from the retention in force ──────────────────────────────────────
+#
+# The measured defect this fixes: `lookback_days` was the constant 7 for every scale while the
+# 6h scale needs 26 days (100 windows) to resolve the 0.01 bar. The 7-day constant was not a
+# policy, it was a number nothing updated when retention rose to 258 days.
+
+
+class _TtlClient:
+    """A read client whose useful answer is the source tables' own TTLs."""
+
+    def __init__(self, days: int = 258, scope: str = "198.51.100.0/24"):
+        self.days = days
+        self.scope = scope
+
+    def query(self, sql, parameters=None):
+        if "system.tables" in sql:
+            names = re.findall(r"'([^']+)'", sql.split("name IN (")[-1])
+            ddl = ("CREATE TABLE weirvern.x (ts DateTime) ENGINE = MergeTree "
+                   "PARTITION BY toYYYYMM(ts) "
+                   f"TTL ts + toIntervalDay({self.days}) SETTINGS index_granularity = 8192")
+            return SimpleNamespace(result_rows=[(name, ddl) for name in names])
+        if "network_scopes" in sql:
+            return SimpleNamespace(result_rows=[(self.scope,)])
+        return SimpleNamespace(result_rows=[])
+
+
+def _query_sinces(client: FakeClient) -> list[datetime]:
+    out = []
+    for sql in client.queries:
+        match = _SINCE.search(sql)
+        if match:
+            out.append(_parse(match.group(1)))
+    return out
+
+
+def test_the_lookback_is_derived_from_retention_and_capped_per_scale():
+    """What each scale reads, from the retention, never past it."""
+    assert ripple_evidence.scale_lookback_days("1h", 258) == 7      # the historical floor
+    assert ripple_evidence.scale_lookback_days("6h", 258) == 26     # 100 windows + 2 spare
+    assert ripple_evidence.scale_lookback_days("24h", 258) == 103
+    assert ripple_evidence.scale_lookback_days("7d", 258) == 258    # capped: the bar needs 721
+
+    for retention in (3, 7, 8, 30, 103, 258, 365):
+        for scale in ("1h", "6h", "24h", "7d"):
+            assert ripple_evidence.scale_lookback_days(scale, retention) <= retention, \
+                f"{scale} at retention {retention} would read past the tables"
+
+
+def test_a_retention_below_a_scales_requirement_names_both_numbers():
+    """8 days is enough for the 30-window floor and NOT for the 0.01 bar; say so."""
+    report = ripple_evidence.scale_report("6h", retention_days=8)
+
+    assert report["usable"] is False
+    assert report["lookback_days"] == 8
+    assert report["retention_days"] == 8
+    assert report["baseline_windows"] == 31
+    assert report["minimum_windows"] == 30
+    assert report["required_lookback_days"] == 8, "the 30-window floor's lookback is unchanged"
+    assert report["windows_for_bar"] == 100
+    assert report["required_lookback_days_for_bar"] == 26
+    assert "8" in report["reason"] and "26" in report["reason"]
+    assert "retention allows 8" in report["reason"]
+
+
+def test_retention_above_the_requirement_makes_the_scale_usable():
+    """The 6h and 24h scales become readable once the lookback is allowed to grow."""
+    six = ripple_evidence.scale_report("6h", retention_days=258)
+    assert six["usable"] is True
+    assert six["lookback_days"] == 26
+    assert six["baseline_windows"] == 103
+    assert six["p_floor"] < ripple_evidence.DEFAULT_FAMILY_MAX_P
+
+    day = ripple_evidence.scale_report("24h", retention_days=258)
+    assert day["usable"] is True
+    assert day["lookback_days"] == 103
+    assert day["baseline_windows"] == 102
+
+    # 7d is declared and honestly unreachable at this bar, not measured at a wish.
+    week = ripple_evidence.scale_report("7d", retention_days=258)
+    assert week["usable"] is False
+    assert week["lookback_days"] == 258
+    assert "721" in week["reason"] and "258" in week["reason"]
+
+
+def test_no_query_reads_further_back_than_retention():
+    client = FakeClient({"weirvern.zeek_dns": _series("dns")})
+    ripple_evidence.compute(client, now=NOW, retention_days=30)
+    sinces = _query_sinces(client)
+    assert sinces
+    assert min(sinces) >= NOW - timedelta(days=30)
+
+    long_client = FakeClient({"weirvern.zeek_dns": _series("dns")})
+    ripple_evidence.compute(long_client, now=NOW, retention_days=258)
+    long_sinces = _query_sinces(long_client)
+    assert min(long_sinces) >= NOW - timedelta(days=258)
+    assert min(long_sinces) < NOW - timedelta(days=20), \
+        "the 6h/24h scales must read past the old 7-day constant"
+
+
+def test_the_payload_reports_the_lookback_and_the_retention_it_came_from():
+    out = ripple_evidence.overview(_TtlClient(258), hours=6, now=NOW)
+
+    assert out["available"] is True
+    assert out["retention"]["days"] == 258
+    assert out["retention"]["source"] == "system.tables TTL"
+    assert out["baseline"]["1h"]["lookback_days"] == 7
+    assert out["baseline"]["6h"]["lookback_days"] == 26
+    assert out["baseline"]["24h"]["lookback_days"] == 103
+    assert out["baseline"]["7d"]["lookback_days"] == 258
+    assert out["baseline"]["6h"]["retention_days"] == 258
+    assert out["baseline"]["6h"]["usable"] is True
+    assert out["baseline"]["6h"]["baseline_windows"] == 103
+    assert out["baseline"]["24h"]["usable"] is True
+    assert out["baseline"]["7d"]["usable"] is False
+
+
+def test_an_unreadable_ttl_falls_back_to_the_seven_day_floor_and_says_so():
+    info = ripple_evidence.retention_in_force(FakeClient({}))
+
+    assert info["days"] == 7
+    assert info["source"] == "default"
+    assert info["reason"]
+
+
+def test_the_thirty_window_floor_and_the_family_rule_are_untouched():
+    """This change reads MORE history; it does not lower what counts as a ripple."""
+    assert ripple_evidence.MIN_BASELINE_SAMPLES == 30
+    assert ripple_evidence.min_baseline_samples("6h") == 30
+    report = ripple_evidence.scale_report("6h", retention_days=258)
+    assert report["minimum_windows"] == 30
+    assert report["required_lookback_days"] == 8
+
+    # The same family at the ordinary bar still cannot corroborate itself...
+    one = _evidence("flow_volume", "flow", 0.005, samples=103)
+    two = _evidence("flow_bytes", "flow", 0.005, samples=103)
+    assert group_evidence([one, two], monitored=NETS) == []
+
+    # ...and two independent families at the ordinary bar still form one ripple.
+    dns = _evidence("dns_volume", "dns", 0.005, samples=103)
+    conn = _evidence("conn_volume", "conn", 0.005, samples=103)
+    assert len(group_evidence([dns, conn], monitored=NETS)) == 1
