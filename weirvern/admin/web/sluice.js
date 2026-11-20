@@ -597,7 +597,7 @@ function renderSluiceGates(d) {
       why: g.stale
         ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
         : "Its rules are not installed and the gate has opened.",
-      when: `last reported ${ago}`,
+      when: "",
       target: "sl2-fleet-card",
     });
   }
