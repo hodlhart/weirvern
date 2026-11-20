@@ -234,7 +234,8 @@ def ripples_failure(exc: BaseException | None = None, *, hours: int = 0) -> dict
 
     logger.warning("ripple evidence unavailable: %s", exc)
     return {"available": False, "reason": read_failure(exc), "ripples": [], "count": 0,
-            "window_hours": int(hours), "model_version": ripple_evidence.MODEL_VERSION}
+            "window_hours": int(hours), "model_version": ripple_evidence.MODEL_VERSION,
+            "severity_bands": ripple_evidence.severity_bands()}
 
 
 def ml_data_contract(client: Client) -> dict[str, Any]:
@@ -946,12 +947,46 @@ def model_retrain_failure(exc: BaseException) -> dict[str, Any]:
     return web_api.retrain_payload(None, None, available=False, reason=read_failure(exc))
 
 
+def _attach_ripples(client: Client, payload: dict[str, Any], *, hours: int) -> dict[str, Any]:
+    """Attach the window's ripples (and the ONE band table) to a graph payload.
+
+    THE NETWORK TAB MUST NOT READ A SECOND MAPPING. `/api/ripples` groups the evidence; this
+    reuses that exact read at the graph's EFFECTIVE window (`payload["hours"]`, which the graph
+    may have narrowed), so a ring/chip on the map and a row on the Ripples tab are the same
+    ripple with the same server-computed `severity`. A failed ripple read is named in the
+    payload rather than drawn as "no ripples".
+    """
+    from weirvern.models import ripple_evidence  # noqa: PLC0415
+
+    effective = int(payload.get("hours") or hours)
+    try:
+        data = ripple_evidence.overview(client, hours=effective)
+    except Exception as exc:  # noqa: BLE001 - the graph still stands without ripple presence
+        logger.warning("graph ripple presence unavailable: %s", exc)
+        payload.update({"ripples": [], "ripple_available": False,
+                        "ripple_reason": f"{type(exc).__name__}: {str(exc)[:160]}",
+                        "ripple_window_hours": effective,
+                        "severity_bands": ripple_evidence.severity_bands()})
+        return payload
+    payload.update({
+        "ripples": data.get("ripples") or [],
+        "ripple_available": bool(data.get("available")),
+        "ripple_reason": data.get("reason") or "",
+        "ripple_window_hours": int(data.get("window_hours") or effective),
+        "severity_bands": data.get("severity_bands") or ripple_evidence.severity_bands(),
+    })
+    return payload
+
+
 def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
     """The connection graph, optionally restricted to the tracked hosts.
 
     AN EMPTY SELECTION MEANS NO RESTRICTION and returns the whole graph, which is what an operator
     expects from a cleared multi-select. The selection is echoed back when it is non-empty, so the UI
     can draw it as selected even when an edge is missing.
+
+    RIPPLE PRESENCE RIDES THE SAME PAYLOAD. A host node and every edge it touches can then show
+    the severity the Ripples page shows, without the Network view re-deriving a bar it does not own.
     """
     from weirvern.admin import assets as assets_mod  # noqa: PLC0415
 
@@ -959,8 +994,8 @@ def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
         if tracked:
             payload = assets_mod.top_edges_for(client, tracked, hours=hours)
             payload.setdefault("tracked", tracked)
-            return payload
-        return assets_mod.connection_graph(client, hours=hours)
+            return _attach_ripples(client, payload, hours=hours)
+        return _attach_ripples(client, assets_mod.connection_graph(client, hours=hours), hours=hours)
     except Exception as exc:  # noqa: BLE001
         return graph_failure(exc)
 
@@ -968,9 +1003,12 @@ def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
 def graph_failure(exc: BaseException) -> dict[str, Any]:
     """The console's own failure shape for /api/graph."""
     from weirvern.admin.web import read_failure  # noqa: PLC0415
+    from weirvern.models import ripple_evidence  # noqa: PLC0415
 
     logger.warning("graph unavailable: %s", exc)
-    return {"available": False, "nodes": [], "edges": [],
+    return {"available": False, "nodes": [], "edges": [], "ripples": [],
+            "ripple_available": False, "ripple_reason": read_failure(exc),
+            "severity_bands": ripple_evidence.severity_bands(),
             "reason": read_failure(exc), "data_error": str(exc)}
 
 
@@ -2807,9 +2845,33 @@ def anomalies(client: Client, *, limit: int, min_score: float, hours: int, host:
         rows = [r for r in rows if r.get("unreviewed_n", 0) > 0]
     if watched_only and watch_err is None:
         rows = [r for r in rows if r.get("watched")]
+    # THE FUSED-SCORE STATUS IS COMPUTED WITH THE ROWS, so the header sentence and the list
+    # cannot disagree. `score` is the strongest row in the list, `target` is the configured
+    # strong-signal bar, and `detectors` is the union of the models that contributed to them.
+    from weirvern.ensemble import strong_signal_threshold  # noqa: PLC0415
+
+    try:
+        fused_target = float(strong_signal_threshold(settings))
+    except Exception:  # noqa: BLE001 - a settings read failure must not hide the list
+        fused_target = None
+    scores = []
+    detector_names: set[str] = set()
+    for row in rows:
+        try:
+            scores.append(float(row.get("anomaly_score") or 0.0))
+        except (TypeError, ValueError):
+            continue
+        for name in str(row.get("detected_by_models") or "").split(","):
+            if name.strip():
+                detector_names.add(name.strip())
+    fused = {
+        "score": max(scores) if scores else None,
+        "target": fused_target,
+        "detectors": sorted(detector_names),
+    }
     return web_api.anomalies_payload(
         rows, severity_counts=severity_counts, discipline=discipline,
-        watch_error=watch_err, total_unfiltered=total_unfiltered)
+        watch_error=watch_err, total_unfiltered=total_unfiltered, fused=fused)
 
 
 def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:

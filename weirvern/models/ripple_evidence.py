@@ -129,6 +129,7 @@ from weirvern.models.ripple import (
     group_evidence,
     min_baseline_samples,
     pvalue_floor,
+    severity_bands,
 )
 
 MODEL_VERSION = "ripple-evidence-4"
@@ -1091,6 +1092,7 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
             "model_version": MODEL_VERSION,
             "count": 0,
             "ripples": [],
+            "severity_bands": severity_bands(),
         }
     nets = monitored_mod.networks(client)
     in_scope = [item for item in items if monitored_mod.in_scope(item.host, nets)]
@@ -1105,6 +1107,9 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
         "model_version": MODEL_VERSION,
         "count": len(ripples),
         "ripples": [ripple.as_dict() for ripple in ripples],
+        # THE CRITICALITY TABLE TRAVELS WITH THE ROWS. The page's legend and its fallback
+        # banding read these numbers; none of them is restated in JavaScript.
+        "severity_bands": severity_bands(),
         "monitored_networks": [str(net) for net in nets],
         "baseline": {scale: scale_report(scale, retention_days=retention["days"])
                      for scale in EVIDENCE_SCALES},

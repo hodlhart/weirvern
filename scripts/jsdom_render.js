@@ -1611,9 +1611,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       // empty-state checks exercise the same filter path the real query takes.
       const q = new URLSearchParams(String(u).split("?")[1] || "");
       const minF = Number(q.get("min_score") || q.get("min") || "0") || 0;
-      return { rows: ANOMALIES_STATE.filter(
-                 (r) => (r.anomaly_score || 0) >= minF
-                        && (!String(u).includes("unreviewed=1") || (r.unreviewed_n || 0) > 0)),
+      const rows = ANOMALIES_STATE.filter(
+        (r) => (r.anomaly_score || 0) >= minF
+          && (!String(u).includes("unreviewed=1") || (r.unreviewed_n || 0) > 0));
+      // THE FUSED STATUS RIDES THE ROWS, exactly as payloads.anomalies builds it: strongest
+      // score, configured strong-signal target, union of contributing detectors.
+      const detectors = [...new Set(rows.flatMap((r) =>
+        String(r.detected_by_models || "").split(",").map((x) => x.trim()).filter(Boolean)))].sort();
+      return { rows,
+               fused: { score: rows.length ? Math.max(...rows.map((r) => r.anomaly_score || 0)) : null,
+                        target: 0.85, detectors },
                discipline: { available: true, reason: "", fired: 4, acted: 1,
                              by_state: { ack: 1 } },
                severity_counts: { available: true, reason: "",
@@ -2092,6 +2099,106 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         H.ASSETS_STATE.tracked.length === 0,
         JSON.stringify(H.ASSETS_STATE.tracked));
 
+  // ── RIPPLE PRESENCE ON THE NETWORK VIEW (2026-11-20) ──────────────────────────────────────
+  //
+  // The Network tab reads `ripples` and `severity_bands` from the /api/graph payload, which the
+  // server fills from the SAME ripple grouping `/api/ripples` returns. The checks below pin the
+  // table chips, the blank cell, the higher-of-two rule, the graph ring and the header count.
+  {
+    const bands = {
+      low: { min_score: 3.0, min_families: 1 },
+      medium: { min_score: 4.0, min_families: 2 },
+      high: { min_score: 6.0, min_families: 3 },
+      bar: { family_max_p: 0.01, extreme_p: 0.001, min_score: 3.0, min_families: 2 },
+    };
+    const RIPPLE_GRAPH = {
+      available: true, hours: 24, total_edges: 3, status_available: true,
+      ripple_available: true, ripple_window_hours: 24, severity_bands: bands,
+      ripples: [
+        { host: "203.0.113.42", window_start: "2026-11-20T09:00:00", score: 7.11,
+          families: ["conn", "dns", "tls"], severity: "high", single_family: false,
+          explanation: "ripple on 203.0.113.42", evidence: [] },
+        { host: "192.0.2.40", window_start: "2026-11-20T08:00:00", score: 3.42,
+          families: ["flow"], severity: "low", single_family: true,
+          explanation: "ripple on 192.0.2.40", evidence: [] },
+      ],
+      nodes: [
+        { id: "203.0.113.42", name: "workstation.lan", degree: 2, bytes: 700, hops: 0, ttl: 64 },
+        { id: "192.0.2.40", name: "vault", degree: 2, bytes: 500 },
+        { id: "203.0.113.1", name: "gateway", degree: 1, bytes: 200 },
+        { id: "198.51.100.9", name: "quiet", degree: 1, bytes: 100 },
+      ],
+      edges: [
+        { source: "203.0.113.42", target: "203.0.113.1", bytes: 500, flows: 9, ports: [443] },
+        { source: "192.0.2.40", target: "203.0.113.42", bytes: 300, flows: 4, ports: [22] },
+        { source: "203.0.113.1", target: "198.51.100.9", bytes: 100, flows: 1, ports: [53] },
+      ],
+    };
+    H.ASSETS_STATE.tracked = [];
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.graph = RIPPLE_GRAPH;
+    H.renderNetwork();
+
+    const nwRows = [...doc.querySelectorAll("#nw-table tbody tr")];
+    check("the Network edge table has a Ripple column with a chip for a ripple endpoint",
+          nwRows.length === 3
+          && !!nwRows[0].querySelector(".nw-ripple-chip.sev-high")
+          && nwRows[0].children.length === 6,
+          `${nwRows.length} rows; ${nwRows[0] ? nwRows[0].textContent : "none"}`);
+    check("a non-ripple edge leaves the Ripple cell blank, never a zero chip",
+          !!nwRows[2] && !nwRows[2].querySelector(".nw-ripple-chip")
+          && nwRows[2].children[2].textContent.trim() === "",
+          nwRows[2] ? `|${nwRows[2].children[2].textContent}|` : "no row");
+    check("an edge with ripples on BOTH ends takes the higher band",
+          !!nwRows[1] && !!nwRows[1].querySelector(".nw-ripple-chip.sev-high")
+          && nwRows[1].querySelector(".nw-ripple-chip").getAttribute("title")
+            .includes("203.0.113.42"),
+          nwRows[1] ? nwRows[1].children[2].textContent : "no row");
+
+    const line = needEl("nw-ripple-line").textContent.replace(/\s+/g, " ");
+    check("the Network header counts the hosts in view and the same ripple count",
+          /2 of 4 hosts in view have 2 ripples in this 24h window/.test(line)
+          && /open Ripples/.test(line), line.slice(0, 180));
+
+    const rippleNodes = [...doc.querySelectorAll("#nw-graph g.node.has-ripple")];
+    check("a ripple host's graph node carries a severity ring",
+          rippleNodes.length === 2
+          && !!doc.querySelector("#nw-graph .node-ripple-ring.rp-sev-high")
+          && !!doc.querySelector("#nw-graph .node-ripple-ring.rp-sev-low"),
+          `${rippleNodes.length} ripple nodes`);
+    check("the node's accessible name names the ripple score and families",
+          rippleNodes.some((n) => (n.getAttribute("aria-label") || "").includes("ripple: score 7.11")
+            && (n.getAttribute("aria-label") || "").includes("conn / dns / tls")),
+          rippleNodes.map((n) => n.getAttribute("aria-label")).join(" | ").slice(0, 220));
+    check("the graph legend explains the ripple ring",
+          /ripple ring on this host/.test(needEl("nw-legend").textContent),
+          needEl("nw-legend").textContent.slice(0, 240));
+
+    // A CHIP IS A DOOR TO THE SAME HOUSE SHEET, and it must not trigger the row's own click.
+    const beforeTracked = JSON.stringify(H.ASSETS_STATE.tracked);
+    nwRows[0].querySelector(".nw-ripple-chip").dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true }));
+    const rpSheet = needEl("rp-detail-card");
+    check("clicking a Network ripple chip opens that host's ripple sheet",
+          !rpSheet.classList.contains("hidden")
+          && needEl("rp-detail-title").textContent.includes("203.0.113.42"),
+          needEl("rp-detail-title").textContent);
+    check("...and the chip click does not trigger the row's tracking handler",
+          JSON.stringify(H.ASSETS_STATE.tracked) === beforeTracked,
+          JSON.stringify(H.ASSETS_STATE.tracked));
+    needEl("rp-detail-close").click();
+
+    H.showEdgeDetail(RIPPLE_GRAPH.edges[1]);
+    check("the connection detail table also carries the Ripple column",
+          [...doc.querySelectorAll("#nw-detail-table th")]
+            .some((th) => th.textContent.trim() === "Ripple")
+          && !!doc.querySelector("#nw-detail-table tbody .nw-ripple-chip.sev-high"),
+          needEl("nw-detail-table").textContent.slice(0, 200));
+
+    H.ASSETS_STATE.status = "all";
+    H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
+  }
+
   // ── blocked / alerted graph readings ─────────────────────────────────────────────────────
   const STATUS_GRAPH = {
     available: true, hours: 24, status_available: true, total_edges: 2,
@@ -2460,6 +2567,46 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("...and its section is labelled corroboration, not the finding",
           /corroboration, not the finding/.test(needEl("view-anomalies").textContent),
           needEl("view-anomalies").textContent.replace(/\s+/g, " ").slice(0, 220));
+
+    // THE ML SIGNPOST (operator, 2026-11-20): beside the ripple count, from the list's payload.
+    const ml = needEl("rp-ml");
+    const mlText = ml.textContent.replace(/\s+/g, " ");
+    check("the header carries an ML signpost whose count equals the list's row count",
+          !ml.classList.contains("hidden") && /^3 model detections/.test(mlText)
+          && /2 high, 1 medium/.test(mlText),
+          mlText);
+    const fusedText = needEl("an-fused-line").textContent.replace(/\s+/g, " ");
+    check("the fused-score status names the score, the target and the contributing detectors",
+          /0\.910/.test(fusedText) && /0\.85/.test(fusedText)
+          && /Isolation Forest/.test(fusedText) && /DBSCAN/.test(fusedText)
+          && /corroboration, not 3 incidents/.test(fusedText),
+          fusedText.slice(0, 260));
+  }
+
+  // A SILENT ENGINE MUST LOOK SILENT, NOT ABSENT: zero rows still renders the signpost.
+  {
+    fetchOverride = (u) => {
+      if (!String(u).includes("/api/anomalies")) return null;
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({
+        available: true, rows: [], total_unfiltered: 0,
+        fused: { score: null, target: 0.85, detectors: [] },
+        discipline: { available: true, reason: "", fired: 0, acted: 0, by_state: {} },
+        severity_counts: { available: true, reason: "", counts: [] },
+      }) };
+    };
+    H.clearGetCache();
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 140));
+    const ml = needEl("rp-ml");
+    check("with zero model detections the ML signpost is present and says so",
+          !ml.classList.contains("hidden") && /^0 model detections/.test(ml.textContent),
+          ml.textContent);
+    check("...and the fused-score line says the read was quiet, never absent",
+          /No fused-score detection/.test(needEl("an-fused-line").textContent)
+          && /strong-signal target is 0\.85/.test(needEl("an-fused-line").textContent),
+          needEl("an-fused-line").textContent.slice(0, 200));
+    fetchOverride = null;
+    H.clearGetCache();
   }
 
   // THE EMPTY STATE IS THE COMMON CASE TODAY. It must name the scales and the baseline counts,
@@ -2583,6 +2730,114 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     needEl("rp-detail-close").click();
     await new Promise((r) => setTimeout(r, 80));
     check("closing the sheet hides it again", needEl("rp-detail-card").classList.contains("hidden"));
+    fetchOverride = null;
+    H.clearGetCache();
+  }
+
+  // ── RIPPLES ON A PHONE + CRITICALITY (2026-11-20) ───────────────────────────────────────────
+  //
+  // The live failure this block pins: the five fixed columns summed to 480px inside a 390px
+  // viewport, so the explanation column was 0px wide and ONE row measured 4,497px tall -- the
+  // other rows existed but were thousands of pixels below the fold, which read as "only one of
+  // three ripples rendered". The cards are the phone layout; the table stays for the desk.
+  //
+  // The bands below are deliberately NOT the engine's (medium 4.25, high 7.25). The legend must
+  // print THOSE numbers, proving the page reads `severity_bands` from the payload instead of
+  // hardcoding the bar in app.js. The per-row `severity` is the server's answer.
+  {
+    const bands = {
+      low: { min_score: 3.0, min_families: 1 },
+      medium: { min_score: 4.25, min_families: 2 },
+      high: { min_score: 7.25, min_families: 3 },
+      bar: { family_max_p: 0.01, extreme_p: 0.001, min_score: 3.0, min_families: 2 },
+    };
+    const why = "ripple on 198.51.100.5 at 2026-11-20 09:00 UTC — 2 independent families: " +
+      "conn, dns: conn family: conn_volume 812 vs median 74 (rose at 1h; p=0.006 over 167 " +
+      "baseline windows); dns family: dns_volume 1440 vs median 210 (rose at 1h; p=0.005 " +
+      "over 167 baseline windows).";
+    fetchOverride = (u) => {
+      if (!String(u).includes("/api/ripples")) return null;
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({
+        available: true, reason: "", window_hours: 24, count: 3,
+        model_version: "ripple-evidence-4", severity_bands: bands,
+        monitored_networks: ["198.51.100.0/24"],
+        ripples: [
+          { host: "198.51.100.5", window_start: "2026-11-20T09:00:00",
+            window_end: "2026-11-20T10:00:00", score: 4.29, combined_p: 0.00021,
+            channels: ["conn_volume", "dns_volume"], families: ["conn", "dns"],
+            single_family: false, severity: "medium", explanation: why, evidence: [] },
+          { host: "198.51.100.51", window_start: "2026-11-20T08:00:00",
+            window_end: "2026-11-20T09:00:00", score: 3.42, combined_p: 0.00038,
+            channels: ["flow_bytes"], families: ["flow"], single_family: true,
+            severity: "low",
+            explanation: "ripple on 198.51.100.51 at 2026-11-20 08:00 UTC — single family " +
+              "flow at the extreme bar, not cross-family corroboration: flow family: " +
+              "flow_bytes 9.4 GB vs median 220 MB (rose at 24h; p<=0.001, the floor for 258 " +
+              "baseline windows).", evidence: [] },
+          { host: "198.51.100.23", window_start: "2026-11-20T07:00:00",
+            window_end: "2026-11-20T08:00:00", score: 7.11, combined_p: 0.0000031,
+            channels: ["conn_volume", "dns_query_diversity", "tls_fingerprint_diversity"],
+            families: ["conn", "dns", "tls"], single_family: false, severity: "high",
+            explanation: "ripple on 198.51.100.23 at 2026-11-20 07:00 UTC — 3 independent " +
+              "families: conn, dns, tls: conn family: conn_volume 233 vs median 18 (rose at " +
+              "1h; p=0.002 over 167 baseline windows); dns family: dns_query_diversity 91 vs " +
+              "median 12 (rose at 1h; p=0.0007 over 167 baseline windows); tls family: " +
+              "tls_fingerprint_diversity 44 vs median 6 (rose at 1h; p=0.0004 over 167 " +
+              "baseline windows).", evidence: [] },
+        ],
+        baseline: {}, evidence: { rows: 14, monitored_rows: 14, subjects: 3,
+                                  baseline_short_rows: 0 },
+      }) };
+    };
+    H.clearGetCache();
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 160));
+
+    const tableRows = [...doc.querySelectorAll("#ripples-table tbody tr")];
+    const cards = [...doc.querySelectorAll("#ripples-cards .rp-card")];
+    check("three ripples render as three table rows and three phone cards",
+          tableRows.length === 3 && cards.length === 3,
+          `table=${tableRows.length} cards=${cards.length}`);
+
+    const first = cards[0];
+    const firstText = first ? first.textContent.replace(/\s+/g, " ") : "";
+    check("a phone card carries host, window, score, families and the full explanation",
+          !!first && firstText.includes("198.51.100.5") && firstText.includes("11-20 09:00")
+          && firstText.includes("4.29") && firstText.includes("conn / dns")
+          && firstText.includes("conn_volume 812 vs median 74"),
+          firstText.slice(0, 200));
+    check("a phone card is a role=button door with a >=44px tap target",
+          !!first && first.getAttribute("role") === "button"
+          && first.getAttribute("tabindex") === "0"
+          && window.getComputedStyle(first).minHeight === "44px",
+          first ? `${first.getAttribute("role")} min-height=${window.getComputedStyle(first).minHeight}` : "no card");
+
+    const single = cards[1];
+    const singleText = single ? single.textContent.replace(/\s+/g, " ") : "";
+    check("a single-family ripple is LOW and never styled sev-high",
+          !!single && single.classList.contains("rp-sev-low")
+          && !single.classList.contains("rp-sev-high")
+          && !!single.querySelector(".rp-sev-chip.sev-low")
+          && !!single.querySelector(".rp-card-score.sev-low")
+          && !singleText.includes("high"),
+          single ? `${single.className} | ${singleText.slice(0, 80)}` : "no single-family card");
+    check("a three-family ripple is HIGH and carries the severity chip + coloured score",
+          !!cards[2] && cards[2].classList.contains("rp-sev-high")
+          && !!cards[2].querySelector(".rp-sev-chip.sev-high")
+          && !!cards[2].querySelector(".rp-card-score.sev-high"),
+          cards[2] ? cards[2].className : "no high card");
+    check("the desk table carries the same band per row",
+          tableRows.map((r) => r.className).join(" ").includes("rp-sev-high")
+          && tableRows.map((r) => r.className).join(" ").includes("rp-sev-low"),
+          tableRows.map((r) => r.className).join(" | "));
+
+    const legend = needEl("rp-legend");
+    const legendText = legend.textContent.replace(/\s+/g, " ");
+    check("the criticality legend exists and prints the payload's own thresholds",
+          !legend.classList.contains("hidden") && legendText.includes("4.3")
+          && legendText.includes("7.3") && !legendText.includes("6.0"),
+          legendText.slice(0, 260));
+
     fetchOverride = null;
     H.clearGetCache();
   }
