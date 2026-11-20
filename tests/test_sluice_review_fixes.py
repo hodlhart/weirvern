@@ -148,3 +148,57 @@ def test_the_mobile_rules_are_stacked_cards_not_a_scroll_box():
     assert ".sl2-rules thead { display: none; }" in phone
     assert ".sl2-rules-wrap { overflow-x: visible; }" in phone
     assert "min-height: 44px" in phone
+
+
+# ── The visual layer (2026-11-20): hierarchy, fault text, state-vs-action shapes ──────────────
+
+def test_a_fault_owns_the_top_of_its_card_and_the_first_screen():
+    """Severity outranks every control: a degraded gate and a stale sensor are stated in a
+    full-width band at the top of their card, and the first screen repeats every fault."""
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    js = (WEB / "sluice.js").read_text(encoding="utf-8")
+    assert 'id="sl2-attn"' in html
+    assert 'id="sl2-traf-band"' in html and "sl2-sev-band" in html
+    assert "renderSluiceAttention" in js and "sl2-sev-band" in js
+    assert 'stale: "high"' in js and 'degraded: "critical"' in js
+    # "New rule" is visually secondary even though it remains the header's one primary verb.
+    assert "#sl2-new.sl2-new" in (WEB / "style.css").read_text(encoding="utf-8")
+
+
+def test_rules_that_match_nothing_are_grouped_not_deleted():
+    """The no-predicate records stay findable under one explanation, outside the real table."""
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    js = (WEB / "sluice.js").read_text(encoding="utf-8")
+    assert 'id="sl2-orphans"' in html
+    assert "function sl2HasPredicate(" in js
+    assert "function renderSluiceOrphans(" in js
+    assert "Rules that match nothing" in js
+    assert "never match traffic" in js
+
+
+def test_state_is_a_capsule_pill_and_action_is_a_button():
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    js = (WEB / "sluice.js").read_text(encoding="utf-8")
+    assert ".rp-sev-chip.sl2-pill" in css
+    assert "border-radius: 999px" in css
+    assert "sl2-pill" in js
+    # A pill has no solid control border; the button system keeps its 6px corners.
+    assert "border: 0; border-radius: 999px" in css.replace("\n", " ")
+
+
+def test_the_disabled_arming_control_names_its_reason_beside_it():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    js = (WEB / "sluice.js").read_text(encoding="utf-8")
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    assert 'class="sl2-blocked-note hidden" id="sl2-traf-note"' in html
+    assert "Arming is unavailable: file a packet rule first." in js
+    assert ".sl2-blocked-note" in css
+    assert "button:disabled" in css
+
+
+def test_the_revoked_filter_is_a_designed_control_not_a_native_box():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    assert 'class="sl2-check"' in html
+    assert ".sl2-show input:checked + .sl2-check" in css
+    assert "input:focus-visible + .sl2-check" in css

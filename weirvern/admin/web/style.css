@@ -1836,20 +1836,91 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 
 .legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }
 
-/* ── Sluice Gate (2026-11-20 re-engineer: evidence before action) ──────────────────────────
- * Each gate reads top-down as: state chip -> what it enforces -> what it has measurably done ->
- * the one control that changes it. Nothing here is a tile repeating a number already stated in
- * a sentence; the only coloured surfaces are the severity chips the Alerts tab already uses. */
-.sl2-gates { align-items: start; }
-.sl2-gate { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.sl2-gate > h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
-.sl2-gate-what { margin: 2px 0 0; color: var(--fg-2); overflow-wrap: anywhere; }
-.sl2-gate-why { margin: 2px 0 0; padding-left: 10px; border-left: 3px solid var(--sev-high);
-  color: var(--fg-2); overflow-wrap: anywhere; white-space: pre-line; }
-.sl2-gate-ev { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-2);
+/* ── Sluice Gate (2026-11-20 re-engineer; visual layer 2026-11-20) ─────────────────────────
+ * HIERARCHY: a fault outranks a control. Degraded and stale states wear a full-width band at the
+ * top of their own card, and the first screen repeats every fault in one attention strip. "New
+ * rule" is a secondary action: it never wears the accent a critical state needs.
+ *
+ * TYPE: a rule sentence is the reading line (600 weight, 13px, 1.5); its evidence is metadata
+ * (12px, muted). Mono is reserved for identifiers and addresses and never sets a whole sentence.
+ *
+ * COLOUR: the existing sev-* ramp only. enforcing = low, monitoring = medium, stale = high,
+ * degraded = critical, off = low (neutral but legible). STATE is a capsule pill with a filled
+ * tint; ACTION is a 6px-radius button with a solid border. The shapes cannot be confused.
+ *
+ * SURFACES: one card radius (8px) and one padding scale (20px card, 16px nested sensor) across
+ * gates, fleet and rules; the fleet gutter is 12px and the grid stacks at 390.
+ */
+.card.sl2-gate, .card.sl2-section { padding: var(--s5); }
+.sl2-gates { align-items: stretch; gap: var(--s4); }
+.sl2-gate { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.sl2-gate > h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0; }
+.sl2-gate-what { margin: 0; color: var(--fg-2); font-size: var(--fs-2); line-height: 1.55;
   overflow-wrap: anywhere; }
-.sl2-gate-actions { margin-top: auto; padding-top: 4px; }
+.sl2-gate-ev { margin: 0; color: var(--muted); font-size: calc(var(--fs-2) - 1px); line-height: 1.5;
+  overflow-wrap: anywhere; }
+.sl2-gate-actions { margin-top: auto; padding-top: var(--s2); align-items: center; }
 .sl2-gate-actions .link { align-self: center; }
+
+/* ── THE ATTENTION STRIP: the first screen states every fault, not just the cards below ────── */
+.sl2-attn { margin: 0 0 var(--s5); padding: var(--s4) var(--s5);
+  border: 1px solid color-mix(in srgb, var(--sev-critical) 38%, var(--border));
+  border-left: 4px solid var(--sev-critical); border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--sev-critical) 12%, var(--surface));
+  box-shadow: var(--shadow-low); }
+.sl2-attn-head { margin: 0 0 var(--s2); color: var(--fg); font-size: var(--fs-3);
+  font-weight: 700; line-height: 1.3; }
+.sl2-attn-list { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.sl2-attn-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  color: var(--sev-critical); font-size: var(--fs-2); line-height: 1.5; }
+.sl2-attn-item + .sl2-attn-item { border-top: 1px solid color-mix(in srgb, var(--sev-critical) 18%, transparent);
+  padding-top: var(--s2); }
+.sl2-attn-item.sev-high { color: var(--sev-high); }
+.sl2-attn-item.sev-medium { color: var(--sev-medium); }
+.sl2-attn-jump { display: inline; height: auto; padding: 0; border: 0; background: none;
+  color: currentColor; font: inherit; font-weight: 700; line-height: inherit; text-align: left;
+  text-decoration: underline; text-underline-offset: 3px; white-space: normal; }
+.sl2-attn-jump:hover { background: none; border: 0; color: var(--fg); }
+.sl2-attn-why { flex: 1 1 340px; min-width: 0; color: var(--fg-2); }
+.sl2-attn-when { color: var(--muted); white-space: nowrap; }
+
+/* ── SEVERITY BAND: the fault owns the top edge of its card ───────────────────────────────── */
+.sl2-sev-band { display: flex; flex-direction: column; gap: 4px; margin: 0;
+  padding: var(--s3) var(--s5); border: 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-start-start-radius: var(--r-lg);
+  border-start-end-radius: var(--r-lg);
+  background: color-mix(in srgb, currentColor 13%, var(--surface)); color: var(--fg); }
+.sl2-gate > .sl2-sev-band { margin: calc(-1 * var(--s5)) calc(-1 * var(--s5)) 0; }
+.sl2-sensor > .sl2-sev-band { margin: calc(-1 * var(--s4)) calc(-1 * var(--s4)) 2px;
+  padding: var(--s3) var(--s4); }
+.sl2-band-critical { color: var(--sev-critical); }
+.sl2-band-high { color: var(--sev-high); }
+.sl2-band-medium { color: var(--sev-medium); }
+.sl2-sev-band-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.sl2-sev-band-word { color: currentColor; font-size: var(--fs-1); font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; }
+.sl2-sev-band-since { margin-left: auto; color: var(--muted); font-size: var(--fs-1);
+  white-space: nowrap; }
+.sl2-sev-band-why { margin: 0; color: var(--fg); font-size: var(--fs-2); font-weight: 500;
+  line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
+
+/* ── STATE PILLS vs ACTION BUTTONS ────────────────────────────────────────────────────────── */
+.rp-sev-chip.sl2-pill { padding: 4px 10px; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 24%, transparent);
+  font-size: var(--fs-1); font-weight: 600; line-height: 1.15; letter-spacing: .01em; }
+
+/* ── A DISABLED CONTROL IS DESIGNED, AND ITS REASON SITS BESIDE IT ─────────────────────────── */
+.sl2-gate-actions button:disabled,
+.sl2-gate-actions button:disabled:hover { background: var(--surface-2); color: var(--muted);
+  border: 1px dashed var(--border-solid); cursor: not-allowed; opacity: 1; }
+.sl2-blocked-note { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--muted) 8%, transparent);
+  color: var(--muted); font-size: var(--fs-1); line-height: 1.4; }
+.sl2-blocked-note::before { content: "\2298"; color: var(--muted); font-size: var(--fs-2);
+  line-height: 1; }
 
 /* The receipt for a write: the server's own `applied` value plus what the re-read now says.
    A write is not "done" because the POST returned 200. */
@@ -1857,35 +1928,99 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   background: var(--surface-2); color: var(--fg-2); overflow-wrap: anywhere; }
 .sl2-receipt.bad { border-left-color: var(--crit); }
 
-/* ── Fleet packet gates: one card per sensor. The old table's fifth column fell off a phone;
-   a card has no fixed columns to lose. */
-.sl2-fleet { display: grid; gap: 10px;
+/* ── Fleet packet gates: one card per sensor, same surface and radius as their parent card ── */
+.sl2-fleet { display: grid; gap: var(--s3); margin-top: var(--s3);
   grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
-.sl2-sensor { display: flex; flex-direction: column; gap: 4px; min-width: 0;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
+.sl2-sensor { display: flex; flex-direction: column; gap: var(--s2); min-width: 0;
+  padding: var(--s4); border: 1px solid var(--border); border-radius: var(--r-lg);
   background: var(--surface-2); overflow-wrap: anywhere; }
 .sl2-sensor.clickable { cursor: pointer; }
 .sl2-sensor.clickable:hover { background: var(--hover); }
 .sl2-sensor:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sl2-sensor-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
-.sl2-sensor-name { font-family: var(--mono); font-size: var(--fs-2); color: var(--fg); }
-.sl2-sensor-meta { color: var(--muted); font-size: var(--fs-1); }
-.sl2-sensor-ev { color: var(--fg-2); font-size: var(--fs-2); }
+.sl2-sensor-name { font-family: var(--mono); font-size: var(--fs-2); font-weight: 600;
+  color: var(--fg); }
+.sl2-sensor-meta { color: var(--muted); font-size: calc(var(--fs-2) - 1px); line-height: 1.45; }
+.sl2-sensor-ev { color: var(--fg-2); font-size: var(--fs-2); line-height: 1.5; }
 .sl2-sensor-cue { color: var(--accent); font-size: var(--fs-1); }
 
-/* ── Rules: a sentence and its evidence, then the state. The raw-field columns are gone. */
-.sl2-rules { table-layout: fixed; }
-.sl2-rules th:last-child, .sl2-rules td:last-child { width: 132px; }
-.sl2-rules td { vertical-align: top; }
-.sl2-rule-ev { margin-top: 3px; color: var(--muted); font-size: var(--fs-1);
-  overflow-wrap: anywhere; }
-.sl2-rule-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 3px; }
-.sl2-rule-links .link { font-size: var(--fs-1); }
-.sl2-rule-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.sl2-rule-gate { color: var(--muted); font-size: var(--fs-1); }
+/* ── Rules: the same containment as the cards above, with a deliberate row rhythm ─────────── */
+.sl2-filterbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
+  margin: 0 0 var(--s4); padding: var(--s2) var(--s3);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); }
+.sl2-filterbar .dc-chip { flex: none; }
+.controls label.sl2-show { position: relative; display: inline-flex; align-items: center; gap: 8px;
+  margin-left: auto; padding: 0 4px; min-height: 44px;
+  color: var(--muted); font-size: var(--fs-2); cursor: pointer; }
+.controls label.sl2-show input { position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 44px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
+.sl2-check { display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 18px; height: 18px; border: 1px solid var(--border-solid); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--canvas); }
+.sl2-check::after { content: ""; width: 9px; height: 5px; border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor; transform: rotate(-45deg) translate(1px, -1px);
+  opacity: 0; }
+.sl2-show input:checked + .sl2-check { background: var(--accent); border-color: var(--accent);
+  color: var(--canvas); }
+.sl2-show input:checked + .sl2-check::after { opacity: 1; }
+.sl2-show input:focus-visible + .sl2-check { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* The rule sheet's facts are a definition list, not a row of stat tiles: a tile repeats a
-   number the sentence already carries, a fact row states it once with its label. */
+.sl2-rules { table-layout: fixed; }
+.sl2-rules th { padding: 8px 12px; color: var(--muted); font-size: var(--fs-1);
+  font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); }
+.sl2-rules th:last-child, .sl2-rules td:last-child { width: 156px; }
+.sl2-rules td { padding: var(--s4) var(--s3); vertical-align: top;
+  border-bottom: 1px solid var(--border); }
+.sl2-rules tbody tr:last-child td { border-bottom: 0; }
+.sl2-rules tbody tr:hover td { background: color-mix(in srgb, var(--hover) 55%, transparent); }
+.sl2-rule-btn { font-weight: 600; font-size: var(--fs-2); line-height: 1.5; }
+.sl2-rule-ev { margin-top: 4px; color: var(--muted); font-size: calc(var(--fs-2) - 1px); line-height: 1.5;
+  overflow-wrap: anywhere; }
+.sl2-rule-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+.sl2-rule-links .link { font-size: var(--fs-2); }
+.sl2-rule-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sl2-rule-gate { color: var(--muted); font-size: var(--fs-1); font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; }
+
+/* Rules that can never match: one disclosure, one explanation, still findable. */
+.sl2-orphans-host { margin-top: var(--s3); }
+.sl2-orphans { border-top: 1px solid var(--border); padding-top: var(--s3); }
+.sl2-orphans-summary { display: flex; align-items: center; gap: 8px; min-height: 44px;
+  list-style: none; cursor: pointer; color: var(--fg-2); font-size: var(--fs-2);
+  font-weight: 600; }
+.sl2-orphans-summary::-webkit-details-marker { display: none; }
+.sl2-orphans-summary::after { content: "\203A"; margin-left: auto; color: var(--muted);
+  transition: transform var(--t-fast); }
+.sl2-orphans[open] .sl2-orphans-summary::after { transform: rotate(90deg); }
+.sl2-orphans-cue { color: var(--muted); font-size: var(--fs-1); font-weight: 400; }
+.sl2-orphans[open] .sl2-orphans-cue { display: none; }
+.sl2-orphans-why { margin: 0 0 var(--s2); max-width: 78ch; color: var(--muted);
+  font-size: calc(var(--fs-2) - 1px); line-height: 1.5; }
+.sl2-orphan-list { border-top: 1px solid var(--border); }
+.sl2-orphan { display: flex; align-items: center; gap: var(--s3); padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.sl2-orphan:last-child { border-bottom: 0; }
+.sl2-orphan-btn { display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  flex: 1 1 auto; min-width: 0; min-height: 44px; height: auto; padding: 4px 0;
+  border: 0; background: none; color: var(--fg-2); font: inherit; text-align: left;
+  white-space: normal; cursor: pointer; }
+.sl2-orphan-btn:hover { background: none; border: 0; color: var(--accent); }
+.sl2-orphan-id { color: var(--muted); font-family: var(--mono); font-size: var(--fs-1);
+  overflow-wrap: anywhere; }
+.sl2-orphan-note { color: var(--fg-2); font-size: var(--fs-2); line-height: 1.4; }
+
+/* A secondary "New rule": the view's primary verb is still the one moved into the header, but
+   it never out-shouts a degraded gate. */
+#sl2-new.sl2-new { background: transparent; color: var(--fg-2);
+  border: 1px solid var(--border-solid); }
+#sl2-new.sl2-new:hover { background: var(--surface-2); border-color: var(--accent); color: var(--fg); }
+
+.sl2-sheet-link { display: inline-flex; align-items: center; min-height: 44px;
+  margin: 0 0 4px; }
+
+/* The rule sheet's facts are a definition list, not a row of stat tiles. */
 .sl2-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 14px; margin: 0 0 14px; padding: 10px 12px;
   background: var(--surface-2); border-radius: var(--r-md); }
@@ -1902,11 +2037,6 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   white-space: normal; }
 .sl2-rule-btn:hover { color: var(--accent); text-decoration: underline; }
 .sl2-rule-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-/* A CHECKBOX SITS ON ITS LABEL'S LINE. .controls label is a column (label above field) because
- * most of them wrap an input; a checkbox with its own label is the exception, and inheriting the
- * column left the box floating a line above the words. */
-.sl2-show { display: inline-flex; flex-direction: row; align-items: center; gap: 6px;
-  font-size: var(--fs-1); align-self: center; }
 .sl2-delete { margin-top: 8px; }
 .sl2-confirm { max-width: 520px; }
 .sl2-confirm label { display: block; margin: 12px 0; }
@@ -1921,29 +2051,38 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   .sl2-gates { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
-  .sl2-gates .card { padding: 12px; }
+  .card.sl2-gate, .card.sl2-section { padding: var(--s3); }
+  .sl2-gate { gap: var(--s2); }
+  .sl2-gate > .sl2-sev-band { margin: calc(-1 * var(--s3)) calc(-1 * var(--s3)) 0;
+    padding: var(--s3); }
+  .sl2-sev-band-since { margin-left: 0; }
+  .sl2-attn { padding: var(--s3); margin-bottom: var(--s4); }
+  .sl2-attn-why { flex-basis: 100%; }
   /* The button system owns size: the phone floor is set on the base token for this section,
      never as a height on a selector (BTN-1). Links are not buttons and take the floor directly. */
   .sl2-gate-actions { flex-direction: column; align-items: stretch; }
   .sl2-gate-actions button, .sl2-gate-actions .link {
     width: 100%; display: flex; align-items: center; justify-content: center; }
   .sl2-gate-actions .link { min-height: 44px; }
+  .sl2-blocked-note { width: 100%; justify-content: center; }
+  .sl2-filterbar { gap: var(--s2); }
+  .controls label.sl2-show { margin-left: 0; width: 100%; }
+  .sl2-fleet { grid-template-columns: 1fr; gap: var(--s3); }
+  .sl2-sensor { padding: var(--s4); }
   .sl2-rules-wrap { overflow-x: visible; }
   .sl2-rules, .sl2-rules tbody, .sl2-rules tr, .sl2-rules td { display: block; width: 100%; }
   .sl2-rules thead { display: none; }
-  .sl2-rules tr { margin: 0 0 10px; padding: 12px; min-width: 0;
+  .sl2-rules tr { margin: 0 0 var(--s3); padding: var(--s3); min-width: 0;
     background: var(--surface-2); border: 1px solid var(--border);
-    border-left: 3px solid var(--border-solid); border-radius: var(--r-md);
+    border-left: 3px solid var(--border-solid); border-radius: var(--r-lg);
     overflow-wrap: anywhere; }
   .sl2-rules tr:last-child { margin-bottom: 0; }
   .sl2-rules td { padding: 0; border: 0; min-width: 0; }
-  .sl2-rules td:last-child { margin-top: 8px; }
+  .sl2-rules td:last-child { margin-top: var(--s2); }
   .sl2-rules .sl2-rule-links .link { min-height: 44px; display: inline-flex; align-items: center; }
   .sl2-sensor { min-height: 44px; }
+  .sl2-orphan { align-items: flex-start; }
 }
-
-
-
 /* PR-1: a card status is read in words, never by colour alone. Production is the only
    status that may contribute to the fused score; the word carries that, the colour repeats it. */
 .card-status { font-weight: 600; }

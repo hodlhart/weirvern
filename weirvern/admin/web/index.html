@@ -1528,10 +1528,15 @@
          hidden-at-boot section silently ends up with a second Refresh. -->
     <span id="sl2-count" class="hidden"></span>
     <div class="view-head">
-      <button id="sl2-new" class="primary" type="button">New rule</button>
+      <button id="sl2-new" class="primary sl2-new" type="button">New rule</button>
     </div>
 
     <p id="sl2-readonly" class="empty hidden"></p>
+
+    <!-- THE FIRST SCREEN IS THE FAULT. A degraded gate or a stale sensor outranks every
+         control on this page: the band states what is wrong, why it is measured that way and
+         since when, and each line jumps to the card that owns it. Hidden when nothing is wrong. -->
+    <div id="sl2-attn" class="sl2-attn hidden" role="status" aria-live="polite"></div>
 
     <!-- ── STATE, THEN EVIDENCE, THEN THE CONTROL ─────────────────────────────────────────────
          Each gate answers three questions in this order and no others: is it enforcing (from
@@ -1539,7 +1544,14 @@
          selected window, and only then the control that changes it. The tiles that repeated the
          sentence's numbers are gone; a count lives in the sentence it belongs to. -->
     <div class="grid2 sl2-gates">
-      <div class="card sl2-gate">
+      <div class="card sl2-gate" id="sl2-dom-card">
+        <div class="sl2-sev-band hidden" id="sl2-dom-band">
+          <div class="sl2-sev-band-head">
+            <span class="sl2-sev-band-word">Degraded</span>
+            <span class="sl2-sev-band-since"></span>
+          </div>
+          <p class="sl2-sev-band-why"></p>
+        </div>
         <h2>Domain gate <span class="muted">DNS</span> <span class="rp-sev-chip sev-low" id="sl2-dom-chip">loading&hellip;</span>
           <button class="info-btn" data-info="sl-info" aria-label="what this view shows"
                   aria-expanded="false" title="what this view shows">i</button>
@@ -1563,16 +1575,23 @@
         </div>
       </div>
 
-      <div class="card sl2-gate">
+      <div class="card sl2-gate" id="sl2-traf-card">
+        <!-- THE FAULT IS THE CARD'S FIRST LINE, not a paragraph with the same weight as a fact.
+             It carries the state word, the measured reason and the last report time, and it sits
+             against the card's own top edge so a degraded gate cannot be mistaken for a quiet one. -->
+        <div class="sl2-sev-band hidden" id="sl2-traf-band">
+          <div class="sl2-sev-band-head">
+            <span class="sl2-sev-band-word">Degraded</span>
+            <span class="sl2-sev-band-since"></span>
+          </div>
+          <p class="sl2-sev-band-why" id="sl-gate-warning"></p>
+        </div>
         <h2>Traffic gate <span class="muted">packets</span> <span class="rp-sev-chip sev-low" id="sl2-traf-chip">loading&hellip;</span></h2>
         <p class="sl2-gate-what" id="sl2-traf-line">loading&hellip;</p>
-        <!-- THE REASON IS ITS OWN LINE, ONCE. The old card printed the server's detail in both
-             the sentence and the warning paragraph, verbatim, doubling the card. -->
-        <p class="sl2-gate-why hidden" id="sl-gate-warning"></p>
         <p class="sl2-gate-ev" id="sl2-traf-ev">loading&hellip;</p>
         <div class="controls sl2-gate-actions">
           <button id="sl2-traf-toggle" type="button" class="quiet" disabled>&hellip;</button>
-          <span class="muted" id="sl2-traf-note"></span>
+          <span class="sl2-blocked-note hidden" id="sl2-traf-note"></span>
           <a class="link" href="#v=blocked">View blocks</a>
         </div>
         <div id="sl2-auto" class="sl2-auto hidden"></div>
@@ -1584,22 +1603,26 @@
     <!-- FLEET PACKET GATES: the sibling card, full width. Every row is a sensor that reports its
          own gate state; a sensor with no matches says so in words rather than showing a table of
          empty cells. `sl-reach` names where a packet rule can actually bite. -->
-    <div class="card">
+    <div class="card sl2-section" id="sl2-fleet-card">
       <h2>Fleet packet gates <span class="muted" id="sl2-fleet-note"></span></h2>
       <div id="sl-reach" class="chips"></div>
       <div id="sl2-fleet" class="sl2-fleet"></div>
     </div>
 
-    <div class="card">
+    <div class="card sl2-section">
       <h2>Rules <span class="muted" id="sl2-rules-note"></span></h2>
       <!-- One filter row: the gate chips and the revoked toggle answer the same question
            ("which rules am I looking at"), so they sit on one line instead of the toggle
            floating above the heading. -->
-      <div class="controls" id="sl2-filters" role="group" aria-label="filter rules by gate">
+      <div class="controls sl2-filterbar" id="sl2-filters" role="group" aria-label="filter rules by gate">
         <button class="dc-chip active" type="button" data-gate="all" aria-pressed="true">All rules</button>
         <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain gate</button>
         <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic gate</button>
-        <label class="muted sl2-show check"><input id="sl2-show-revoked" type="checkbox"> show revoked</label>
+        <label class="sl2-show check">
+          <input id="sl2-show-revoked" type="checkbox">
+          <span class="sl2-check" aria-hidden="true"></span>
+          <span>Show revoked</span>
+        </label>
       </div>
       <!-- ONE ROW PER RULE, READ AS A SENTENCE WITH ITS EVIDENCE. The raw-field columns -- gate,
            expires, origin, reason -- are gone; the sheet holds them. At 390 each row is a
@@ -1613,6 +1636,9 @@
         </table>
       </div>
       <p id="sl2-empty" class="empty"></p>
+      <!-- RULES THAT CAN NEVER MATCH ARE RECORDS, NOT RULES. They stay findable in one
+           disclosure with an explanation, so the real rules are not buried among database rows. -->
+      <div id="sl2-orphans" class="sl2-orphans-host"></div>
     </div>
 
     <!-- ONE RULE SHEET. Creation is target-first: choose domain or traffic, then only that

@@ -46,18 +46,20 @@ function sl2On(key) {
  * loaded -- never from the setting alone.
  */
 const SL2_STATE_SEV = { enforcing: "low", monitoring: "medium", off: "low", degraded: "critical",
-                        unknown: "low" };
+                        stale: "high", unknown: "low" };
 
 function sl2StateWord(kind) {
   return { enforcing: "enforcing", monitoring: "monitoring", off: "off",
-           degraded: "degraded", unknown: "unknown" }[kind] || "unknown";
+           degraded: "degraded", stale: "stale", unknown: "unknown" }[kind] || "unknown";
 }
 
 function sl2StateChip(kind, extra) {
   const sev = SL2_STATE_SEV[kind] || "low";
   const glyph = (typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[sev]) || "";
   const text = `${glyph ? glyph + " " : ""}${sl2StateWord(kind)}${extra ? " · " + extra : ""}`;
-  return el("span", { class: `rp-sev-chip sev-${sev}`, text });
+  // STATE IS A PILL, ACTION IS A BUTTON. The pill's capsule shape and filled tint are the
+  // vocabulary that keeps a revoked rule from reading like a disabled control.
+  return el("span", { class: `rp-sev-chip sl2-pill sev-${sev}`, text });
 }
 
 /** Replace the chip in place, keeping its id: the markup owns one element, and the renderer
@@ -80,6 +82,7 @@ function sl2Count(n, one, many) {
 function sl2Ago(seconds) {
   if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "";
   const s = Math.max(0, Number(seconds));
+  if (s < 10) return "just now";
   if (s < 90) return `${Math.round(s)}s ago`;
   if (s < 5400) return `${Math.round(s / 60)}m ago`;
   if (s < 172800) return `${(s / 3600).toFixed(1)}h ago`;
@@ -253,7 +256,8 @@ function sl2DomainFacts(d) {
 function sl2TrafficKind(gate, settingsOn) {
   const state = String((gate && gate.state) || "").toLowerCase();
   if (!gate || gate.available === false) return { kind: "unknown", mismatch: "" };
-  if (gate.stale || state === "degraded") return { kind: "degraded", mismatch: "" };
+  if (gate.stale) return { kind: "stale", mismatch: "" };
+  if (state === "degraded") return { kind: "degraded", mismatch: "" };
   const live = Number(gate.rules_active || 0);
   const measured = state === "armed" ? (live > 0 ? "enforcing" : "monitoring")
     : (state === "disarmed" ? "off" : "unknown");
@@ -266,6 +270,70 @@ function sl2TrafficKind(gate, settingsOn) {
     };
   }
   return { kind: measured, mismatch: "" };
+}
+
+/* ── Severity bands and the attention strip ─────────────────────────────────────────────────
+ *
+ * THE FAULT OWNS THE TOP OF ITS CARD. A band is not decoration: it is the state in words, the
+ * measured reason and the last report time, and it is the first thing painted inside the card.
+ * The attention strip repeats only enough of each fault to make the first screen truthful.
+ */
+function sl2Short(text, max) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  const limit = max || 180;
+  if (t.length <= limit) return t;
+  const cut = t.slice(0, limit);
+  const space = cut.lastIndexOf(" ");
+  return `${cut.slice(0, space > limit * 0.6 ? space : limit).trimEnd()}…`;
+}
+
+function sl2BandSet(bandId, word, why, since, sev) {
+  const band = document.getElementById(bandId);
+  if (!band) return;
+  const show = Boolean(String(why || "").trim());
+  band.classList.remove("sl2-band-critical", "sl2-band-high", "sl2-band-medium");
+  band.classList.add(`sl2-band-${sev || "critical"}`);
+  band.classList.toggle("hidden", !show);
+  const wordEl = band.querySelector(".sl2-sev-band-word");
+  if (wordEl) wordEl.textContent = word || "Degraded";
+  const whyEl = band.querySelector(".sl2-sev-band-why");
+  if (whyEl) whyEl.textContent = why || "";
+  const sinceEl = band.querySelector(".sl2-sev-band-since");
+  if (sinceEl) sinceEl.textContent = since || "";
+}
+
+/** The first screen names every fault, with its measured reason and how long it has stood. */
+function renderSluiceAttention(faults) {
+  const host = document.getElementById("sl2-attn");
+  if (!host) return;
+  const items = (faults || []).filter((f) => f && f.name);
+  host.replaceChildren();
+  if (!items.length) {
+    host.classList.add("hidden");
+    return;
+  }
+  host.classList.remove("hidden");
+  const glyphOf = (sev) => (typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[sev]) || "▲";
+  host.appendChild(el("div", { class: "sl2-attn-head", text:
+    `${items.length} ${items.length === 1 ? "fault needs" : "faults need"} attention` }));
+  const list = el("ul", { class: "sl2-attn-list" });
+  for (const f of items) {
+    const jump = el("button", { class: "sl2-attn-jump", attrs: { type: "button" },
+      text: `${glyphOf(f.sev)} ${f.name}` });
+    jump.addEventListener("click", () => {
+      const target = document.getElementById(f.target || "");
+      if (!target) return;
+      try { target.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_e) { /* optional */ }
+      target.classList.add("flash-hit");
+      setTimeout(() => target.classList.remove("flash-hit"), 1400);
+    });
+    list.appendChild(el("li", { class: `sl2-attn-item sev-${f.sev || "critical"}` }, [
+      jump,
+      el("span", { class: "sl2-attn-why", text: f.why || "" }),
+      f.when ? el("span", { class: "sl2-attn-when", text: f.when }) : null,
+    ].filter(Boolean)));
+  }
+  host.appendChild(list);
 }
 
 /* ── Gate state ─────────────────────────────────────────────────────────────────────────────── */
@@ -294,8 +362,9 @@ function renderSluiceGates(d) {
     if (domLine) domLine.textContent = "Cannot read the rule and blocklist store; no claim is made about DNS blocking.";
     const domEv = document.getElementById("sl2-dom-ev");
     if (domEv) domEv.textContent = why;
-    const warning = document.getElementById("sl-gate-warning");
-    if (warning) { warning.textContent = ""; warning.classList.add("hidden"); }
+    sl2BandSet("sl2-traf-band", "Unavailable", `Cannot read the gate state: ${why}`, "", "critical");
+    sl2BandSet("sl2-dom-band", "Unavailable",
+      "Cannot read the rule and blocklist store; no claim is made about DNS blocking.", "", "critical");
     for (const id of ["sl2-traf-toggle", "sl2-dom-toggle"]) {
       const btn = document.getElementById(id);
       if (btn) { btn.disabled = true; btn.title = "the gate state could not be read, so this control would act blind"; }
@@ -306,6 +375,11 @@ function renderSluiceGates(d) {
     }
     renderSluiceFleet(d.gates || [], d);
     renderSluiceReach(d);
+    renderSluiceAttention([{
+      sev: "critical", name: "Gate state unreadable",
+      why: `Cannot read the gate state: ${why}`,
+      when: "", target: "sl2-traf-card",
+    }]);
     return;
   }
 
@@ -315,6 +389,7 @@ function renderSluiceGates(d) {
   const live = Number(gate.rules_active || 0) || 0;
   const total = Number(gate.rules_total || 0) || 0;
   const windowText = sl2Window(d.hits_hours);
+  const faults = [];
 
   // ── DOMAIN GATE ────────────────────────────────────────────────────────────────────────────
   const dom = sl2DomainFacts(d);
@@ -346,6 +421,13 @@ function renderSluiceGates(d) {
     domEv = `0 names covered · ${sl2Count(dom.dnsHits, "DNS match", "DNS matches")} recorded in ${windowText}`;
   }
   sl2SetStateChip("sl2-dom-chip", domKind);
+  if (domKind === "degraded") {
+    sl2BandSet("sl2-dom-band", "Degraded", domEv, "", "critical");
+    faults.push({ sev: "critical", name: "Domain gate degraded", why: domEv,
+                  when: "", target: "sl2-dom-card" });
+  } else {
+    sl2BandSet("sl2-dom-band", "", "", "", "critical");
+  }
   const domLineEl = document.getElementById("sl2-dom-line");
   if (domLineEl) domLineEl.textContent = domLine;
   const domEvEl = document.getElementById("sl2-dom-ev");
@@ -378,14 +460,16 @@ function renderSluiceGates(d) {
   let showWhy = "";
   if (traf.kind === "unknown") {
     trafLine = "The gate has not reported a state yet, so no claim is made about whether packets are dropped.";
-  } else if (traf.kind === "degraded") {
+  } else if (traf.kind === "degraded" || traf.kind === "stale") {
     // ONE STATEMENT OF THE FAULT. When the setting and the supervisor disagree, the line says
     // so and the callout carries both readings; the "could not install" sentence would be a
     // second, possibly wrong explanation of the same state.
     trafLine = traf.mismatch
       ? "Not enforcing: the setting and the supervisor disagree about whether this gate is armed."
-      : "Not enforcing: the gate could not install its rules and has opened, so traffic on this "
-        + "segment is not being blocked.";
+      : (traf.kind === "stale"
+        ? "Not enforcing: this gate stopped reporting, so its last measured state is stale."
+        : "Not enforcing: the gate could not install its rules and has opened, so traffic on this "
+          + "segment is not being blocked.");
     showWhy = traf.mismatch || why;
   } else if (traf.kind === "off") {
     trafLine = "Disarmed: no packet is being dropped. Rules still record matches.";
@@ -395,11 +479,21 @@ function renderSluiceGates(d) {
     trafLine = `Armed on ${iface}, but no packet rules are installed — nothing can be dropped.`;
   }
   if (trafLineEl) trafLineEl.textContent = trafLine;
+  const since = gate.age_s === null || gate.age_s === undefined
+    ? "no report time" : `last reported ${sl2Ago(gate.age_s)}`;
+  if (traf.kind === "degraded" || traf.kind === "stale") {
+    const sev = traf.kind === "stale" ? "high" : "critical";
+    const word = traf.kind === "stale" ? "Stale" : "Degraded";
+    sl2BandSet("sl2-traf-band", word, showWhy, since, sev);
+    faults.push({ sev, name: `Traffic gate ${word.toLowerCase()}`,
+                  why: sl2Short(showWhy, 190), when: since, target: "sl2-traf-card" });
+  } else {
+    sl2BandSet("sl2-traf-band", "", "", "", "critical");
+  }
   if (warning) {
     // ONE REASON PER LINE. The supervisor joins the per-interface refusals with "; "; a single
     // wall of text hides the second interface's failure behind the first.
     warning.textContent = showWhy ? showWhy.split(/;\s*/).filter(Boolean).join("\n") : "";
-    warning.classList.toggle("hidden", !showWhy);
   }
 
   const ev = d.evidence || {};
@@ -413,7 +507,7 @@ function renderSluiceGates(d) {
   let trafEv = "";
   if (traf.kind === "unknown") {
     trafEv = "No gate state has been recorded for this sensor.";
-  } else if (traf.kind === "degraded") {
+  } else if (traf.kind === "degraded" || traf.kind === "stale") {
     trafEv = (total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
                    : "no packet rules stored")
       + ` · ${sl2Count(pkts, "packet")} dropped as of the last report`
@@ -445,11 +539,15 @@ function renderSluiceGates(d) {
     trafBtn.title = !on && !canArm
       ? (backend === "none" || !backend ? "No nft backend is running" : "File a rule before arming the gate")
       : "";
-    if (note) note.textContent = trafBtn.disabled && !on && !canArm
-      ? (backend === "none" || !backend
-        ? "Arming is unavailable: no nft backend is running on this sensor."
-        : "Arming is unavailable: file a packet rule first.")
-      : "";
+    const blocked = trafBtn.disabled && !on && !canArm;
+    if (note) {
+      note.textContent = blocked
+        ? (backend === "none" || !backend
+          ? "Arming is unavailable: no nft backend is running on this sensor."
+          : "Arming is unavailable: file a packet rule first.")
+        : "";
+      note.classList.toggle("hidden", !blocked);
+    }
     trafBtn.onclick = () => sl2AskSetting({
       key: "SLUICE_ENABLED", value: on ? "0" : "1",
       heading: on ? "Disarm the packet gate?" : "Arm the packet gate?",
@@ -488,8 +586,24 @@ function renderSluiceGates(d) {
       autoEl.replaceChildren();
     }
   }
+  for (const g of (d.gates || [])) {
+    const state = String(g.state || "").toLowerCase();
+    if (!g.stale && state !== "degraded") continue;
+    if (traf.kind === "stale" && g.sensor && gate.sensor && g.sensor === gate.sensor) continue;
+    const ago = sl2Ago(g.age_s) || "some time ago";
+    faults.push({
+      sev: g.stale ? "high" : "critical",
+      name: `${g.sensor || "unnamed sensor"} ${g.stale ? "stale" : "degraded"}`,
+      why: g.stale
+        ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
+        : "Its rules are not installed and the gate has opened.",
+      when: `last report ${ago}`,
+      target: "sl2-fleet-card",
+    });
+  }
   renderSluiceFleet(d.gates || [], d);
   renderSluiceReach(d);
+  renderSluiceAttention(faults);
 }
 
 
@@ -535,16 +649,16 @@ function renderSluiceFleet(gates, d) {
     const total = Number(g.rules_total || 0) || 0;
     const pkts = Number(g.packets_blocked || 0) || 0;
     let kind = "unknown";
-    if (g.stale || state === "degraded") kind = "degraded";
+    if (g.stale) kind = "stale";
+    else if (state === "degraded") kind = "degraded";
     else if (state === "armed") kind = live > 0 ? "enforcing" : "monitoring";
     else if (state === "disarmed") kind = "off";
 
     let what;
-    if (kind === "degraded") {
-      what = g.stale
-        ? `Stopped reporting ${sl2Ago(g.age_s) || "some time ago"}; its last report said degraded. `
-          + "Nothing here is being enforced."
-        : "Its rules are not installed and the gate has opened; this segment is not filtered.";
+    if (kind === "stale") {
+      what = "Nothing here is being enforced.";
+    } else if (kind === "degraded") {
+      what = "This segment is not filtered.";
     } else if (kind === "off") {
       what = "Open by choice: no packet is being dropped on this sensor.";
     } else if (kind === "monitoring") {
@@ -567,10 +681,24 @@ function renderSluiceFleet(gates, d) {
       pkts ? `${sl2Count(pkts, "packet")} dropped since it started` : "no packets matched since it started",
     ].join(" · ");
 
+    const ago = g.age_s === null || g.age_s === undefined ? "some time ago" : sl2Ago(g.age_s);
+    const band = (kind === "stale" || kind === "degraded")
+      ? el("div", { class: `sl2-sev-band sl2-band-${SL2_STATE_SEV[kind]}` }, [
+          el("div", { class: "sl2-sev-band-head" }, [
+            el("span", { class: "sl2-sev-band-word", text: kind === "stale" ? "Stale" : "Degraded" }),
+            el("span", { class: "sl2-sev-band-since", text: `last report ${ago}` }),
+          ]),
+          el("p", { class: "sl2-sev-band-why", text: kind === "stale"
+            ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
+            : "Its rules are not installed and the gate has opened." }),
+        ])
+      : null;
+
     const card = el("div", {
       class: g.sensor && typeof openWeirling === "function" ? "sl2-sensor clickable" : "sl2-sensor",
       attrs: g.sensor ? { role: "button", tabindex: "0", "aria-label": `open ${g.sensor}` } : {},
     }, [
+      band,
       el("div", { class: "sl2-sensor-head" }, [
         el("span", { class: "sl2-sensor-name", text: g.sensor || "unnamed sensor" }),
         g.local ? el("span", { class: "muted", text: "· this hub" }) : null,
@@ -708,23 +836,69 @@ function sl2RuleLinks(rule) {
   const links = [];
   if (rule.domain) {
     links.push({ href: `#v=blocked&bl.domain=${encodeURIComponent(rule.domain)}`,
-                 text: `Blocks for ${rule.domain}` });
+                 text: "View blocks", label: `view blocks for ${rule.domain}` });
   } else {
     const addr = String(rule.src_cidr || rule.dst_cidr || "").split("/")[0].trim();
     if (addr) {
       links.push({ href: `#v=discover&dc.addr=${encodeURIComponent(addr)}`,
-                   text: `Flows for ${addr}` });
+                   text: "View flows", label: `view flows for ${addr}` });
     }
   }
   return links;
+}
+
+/** A rule that can never match is a record, not a rule: no domain, address, port or protocol. */
+function sl2HasPredicate(rule) {
+  if (!rule) return false;
+  const described = String(rule.describes || "").trim();
+  if (described && described !== "(no predicate)") return true;
+  return Boolean(String(rule.domain || "").trim()
+    || String(rule.src_cidr || "").trim()
+    || String(rule.dst_cidr || "").trim()
+    || Number(rule.dst_port || 0) > 0
+    || String(rule.protocol || "").trim());
+}
+
+/** One disclosure, one explanation: the empty rows stay findable without becoming the list. */
+function renderSluiceOrphans(list) {
+  const host = document.getElementById("sl2-orphans");
+  if (!host) return;
+  host.replaceChildren();
+  if (!list.length) return;
+  const details = el("details", { class: "sl2-orphans" });
+  details.appendChild(el("summary", { class: "sl2-orphans-summary" }, [
+    el("span", { class: "sl2-orphans-title",
+      text: `Rules that match nothing (${list.length})` }),
+    el("span", { class: "sl2-orphans-cue", text: "show" }),
+  ]));
+  details.appendChild(el("p", { class: "sl2-orphans-why",
+    text: "These records have no predicate — no domain, address, port or protocol — so they can "
+      + "never match traffic. They are kept for the audit trail; open one to inspect or revoke it." }));
+  const rows = el("div", { class: "sl2-orphan-list" });
+  for (const rule of list) {
+    const state = sl2StateOf(rule);
+    const btn = el("button", { class: "sl2-orphan-btn", attrs: { type: "button" } }, [
+      el("span", { class: "sl2-orphan-id", text: rule.rule_id || "unknown rule" }),
+      el("span", { class: "sl2-orphan-note", text: "no predicate — matches nothing" }),
+    ]);
+    btn.addEventListener("click", () => openRuleSheet(rule));
+    const chip = sl2StateChip(state.kind);
+    chip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
+    chip.className = `rp-sev-chip sl2-pill sev-${state.sev}`;
+    rows.appendChild(el("div", { class: "sl2-orphan" }, [btn, chip]));
+  }
+  details.appendChild(rows);
+  host.appendChild(details);
 }
 
 function renderSluiceRules(d) {
   const rules = Array.isArray(d.rules) ? d.rules : [];
   const shown = rules.filter(sl2Visible);
   const live = rules.filter((r) => sl2Enforces(r) && String(r.mode || "block") === "block").length;
+  const emptyTotal = rules.filter((r) => !sl2HasPredicate(r)).length;
   const count = document.getElementById("sl2-count");
-  if (count) count.textContent = `${live} live · ${rules.length} total`;
+  if (count) count.textContent = `${live} live · ${rules.length} total`
+    + (emptyTotal ? ` · ${emptyTotal} empty` : "");
   const note = document.getElementById("sl2-rules-note");
   const hiddenRevoked = rules.filter((r) => r.revoked && !SL2_STATE.showRevoked).length;
   if (note) {
@@ -736,7 +910,9 @@ function renderSluiceRules(d) {
   const empty = document.getElementById("sl2-empty");
   if (!tbody || !empty) return;
   tbody.replaceChildren();
-  if (!shown.length) {
+  const real = shown.filter(sl2HasPredicate);
+  const empties = shown.filter((r) => !sl2HasPredicate(r));
+  if (!real.length) {
     if (!d.available) {
       empty.textContent = d.reason || "The rule store could not be read.";
     } else if (!rules.length) {
@@ -746,6 +922,9 @@ function renderSluiceRules(d) {
       const other = rules.filter((r) => (SL2_STATE.filter === "domain" ? !r.domain : r.domain)).length;
       empty.textContent = `No ${SL2_STATE.filter} rule exists yet. `
         + `${sl2Count(other, "rule")} in the other gate ${other === 1 ? "is" : "are"} still listed.`;
+    } else if (empties.length) {
+      empty.textContent = "No rule with a predicate matches this view. The rules that can never "
+        + "match are listed below.";
     } else {
       empty.textContent = "No rule matches this view.";
     }
@@ -753,30 +932,29 @@ function renderSluiceRules(d) {
       empty.textContent += ` ${sl2Count(hiddenRevoked, "revoked rule")} hidden; tick "show revoked" to read them.`;
     }
     empty.classList.remove("hidden");
+    renderSluiceOrphans(empties);
     return;
   }
   empty.classList.add("hidden");
-  for (const rule of shown) {
+  for (const rule of real) {
     const state = sl2StateOf(rule);
     const sentence = el("button", {
       class: "sl2-rule-btn", attrs: { type: "button" },
-      // "(no predicate)" is a store artefact, not a sentence: say what it means.
-      text: (rule.describes && rule.describes !== "(no predicate)")
-        ? rule.describes
-        : (rule.domain || `rule ${rule.rule_id || "unknown"} has no predicate — it matches nothing`),
+      text: rule.describes || (rule.domain ? `block ${rule.domain}` : `rule ${rule.rule_id || "unknown"}`),
     });
     sentence.addEventListener("click", () => openRuleSheet(rule));
     const evidence = el("div", { class: "sl2-rule-ev", text: sl2RuleEvidence(rule, d) });
     const links = el("div", { class: "sl2-rule-links" });
     for (const link of sl2RuleLinks(rule)) {
-      const a = el("a", { class: "link", text: link.text, attrs: { href: link.href } });
+      const a = el("a", { class: "link", text: link.text,
+        attrs: { href: link.href, "aria-label": link.label || link.text } });
       // THE ROW OPENS THE RULE; THE LINK LEAVES THE TAB. Without this the click did both.
       a.addEventListener("click", (e) => e.stopPropagation());
       links.appendChild(a);
     }
     const stateChip = sl2StateChip(state.kind);
     stateChip.textContent = `${(typeof SEVERITY_GLYPHS !== "undefined" && SEVERITY_GLYPHS[state.sev]) || ""} ${state.text}`.trim();
-    stateChip.className = `rp-sev-chip sev-${state.sev}`;
+    stateChip.className = `rp-sev-chip sl2-pill sev-${state.sev}`;
     const tr = el("tr", {
       class: "sl2-rule-row",
       attrs: { "data-rule-id": rule.rule_id },
@@ -792,6 +970,7 @@ function renderSluiceRules(d) {
     });
     tbody.appendChild(tr);
   }
+  renderSluiceOrphans(empties);
   sluiceApplyFlash();
 }
 
@@ -935,6 +1114,13 @@ function sl2Facts(rule) {
     dl.appendChild(el("dd", { text: String(v) }));
   }
   host.appendChild(dl);
+  // ONE DOOR FROM THE SHEET INTO THE RECORDED EVIDENCE. The row carried a link that repeated
+  // the address already in its sentence; this is where that door lives now.
+  for (const link of sl2RuleLinks(rule)) {
+    const a = el("a", { class: "link sl2-sheet-link", text: `Open ${link.text.toLowerCase()}`,
+      attrs: { href: link.href, "aria-label": link.label || link.text } });
+    host.appendChild(a);
+  }
   const note = el("p", { class: "muted",
     text: `Matches are counted in ${windowText}, the same window as the Blocks ledger.` });
   host.appendChild(note);
