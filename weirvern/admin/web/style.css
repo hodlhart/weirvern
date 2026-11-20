@@ -1871,16 +1871,19 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .sl2-attn-head { margin: 0 0 var(--s2); color: var(--fg); font-size: var(--fs-3);
   font-weight: 700; line-height: 1.3; }
 .sl2-attn-list { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
-.sl2-attn-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
-  color: var(--sev-critical); font-size: var(--fs-2); line-height: 1.5; }
-.sl2-attn-item + .sl2-attn-item { border-top: 1px solid color-mix(in srgb, var(--sev-critical) 18%, transparent);
+.sl2-attn-li { color: var(--sev-critical); }
+.sl2-attn-li.sev-high { color: var(--sev-high); }
+.sl2-attn-li.sev-medium { color: var(--sev-medium); }
+.sl2-attn-li + .sl2-attn-li { border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   padding-top: var(--s2); }
-.sl2-attn-item.sev-high { color: var(--sev-high); }
-.sl2-attn-item.sev-medium { color: var(--sev-medium); }
-.sl2-attn-jump { display: inline; height: auto; padding: 0; border: 0; background: none;
-  color: currentColor; font: inherit; font-weight: 700; line-height: inherit; text-align: left;
-  text-decoration: underline; text-underline-offset: 3px; white-space: normal; }
-.sl2-attn-jump:hover { background: none; border: 0; color: var(--fg); }
+.sl2-attn-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  width: 100%; min-height: 44px; height: auto; padding: 4px 0; border: 0; background: none;
+  color: inherit; font: inherit; font-size: var(--fs-2); line-height: 1.5; text-align: left;
+  white-space: normal; cursor: pointer; }
+.sl2-attn-item:hover { background: none; border: 0; color: inherit; }
+.sl2-attn-jump { color: currentColor; font-weight: 700; text-decoration: underline;
+  text-underline-offset: 3px; }
+.sl2-attn-item:hover .sl2-attn-jump { color: var(--fg); }
 .sl2-attn-why { flex: 1 1 340px; min-width: 0; color: var(--fg-2); }
 .sl2-attn-when { color: var(--muted); white-space: nowrap; }
 
@@ -1915,10 +1918,13 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .sl2-gate-actions button:disabled,
 .sl2-gate-actions button:disabled:hover { background: var(--surface-2); color: var(--muted);
   border: 1px dashed var(--border-solid); cursor: not-allowed; opacity: 1; }
-.sl2-blocked-note { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px;
-  border: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
-  border-radius: var(--r-md); background: color-mix(in srgb, var(--muted) 8%, transparent);
+.sl2-blocked-note { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border: 0; border-left: 2px solid var(--border-solid);
+  border-start-end-radius: var(--r-sm); border-end-end-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--muted) 6%, transparent);
   color: var(--muted); font-size: var(--fs-1); line-height: 1.4; }
+#sl2-traf-note { flex: 1 0 100%; order: 2; }
+.sl2-gate-actions .link { order: 1; }
 .sl2-blocked-note::before { content: "\2298"; color: var(--muted); font-size: var(--fs-2);
   line-height: 1; }
 
@@ -1994,8 +2000,6 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .sl2-orphans-summary::after { content: "\203A"; margin-left: auto; color: var(--muted);
   transition: transform var(--t-fast); }
 .sl2-orphans[open] .sl2-orphans-summary::after { transform: rotate(90deg); }
-.sl2-orphans-cue { color: var(--muted); font-size: var(--fs-1); font-weight: 400; }
-.sl2-orphans[open] .sl2-orphans-cue { display: none; }
 .sl2-orphans-why { margin: 0 0 var(--s2); max-width: 78ch; color: var(--muted);
   font-size: calc(var(--fs-2) - 1px); line-height: 1.5; }
 .sl2-orphan-list { border-top: 1px solid var(--border); }
@@ -2067,6 +2071,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   .sl2-blocked-note { width: 100%; justify-content: center; }
   .sl2-filterbar { gap: var(--s2); }
   .controls label.sl2-show { margin-left: 0; width: 100%; }
+  #sl2-fleet-note { display: block; margin-top: 2px; }
   .sl2-fleet { grid-template-columns: 1fr; gap: var(--s3); }
   .sl2-sensor { padding: var(--s4); }
   .sl2-rules-wrap { overflow-x: visible; }

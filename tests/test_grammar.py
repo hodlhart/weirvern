@@ -65,7 +65,7 @@ def test_the_pointer_sweep_no_dead_pointers():
         ".info-btn", ".graph", ".gate-field", ".sev-tiles",
         ".gate-linkish", ".setting-help-btn", ".setting-toggle-label", ".sortable",
         # A checkbox is a control: its own label and its box are clickable (Sluice filter bar).
-        ".sl2-show", ".sl2-orphan-btn",
+        ".sl2-show", ".sl2-orphan-btn", ".sl2-attn-item",
         # The auto-retention checkbox is wrapped in its own label: clicking the words toggles
         # the box, exactly like the toggle row above.
         ".setting-auto-label",

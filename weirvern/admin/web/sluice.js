@@ -318,20 +318,19 @@ function renderSluiceAttention(faults) {
     `${items.length} ${items.length === 1 ? "fault needs" : "faults need"} attention` }));
   const list = el("ul", { class: "sl2-attn-list" });
   for (const f of items) {
-    const jump = el("button", { class: "sl2-attn-jump", attrs: { type: "button" },
-      text: `${glyphOf(f.sev)} ${f.name}` });
-    jump.addEventListener("click", () => {
+    const row = el("button", { class: "sl2-attn-item", attrs: { type: "button" } }, [
+      el("span", { class: "sl2-attn-jump", text: `${glyphOf(f.sev)} ${f.name}` }),
+      el("span", { class: "sl2-attn-why", text: f.why || "" }),
+      f.when ? el("span", { class: "sl2-attn-when", text: f.when }) : null,
+    ].filter(Boolean));
+    row.addEventListener("click", () => {
       const target = document.getElementById(f.target || "");
       if (!target) return;
       try { target.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_e) { /* optional */ }
       target.classList.add("flash-hit");
       setTimeout(() => target.classList.remove("flash-hit"), 1400);
     });
-    list.appendChild(el("li", { class: `sl2-attn-item sev-${f.sev || "critical"}` }, [
-      jump,
-      el("span", { class: "sl2-attn-why", text: f.why || "" }),
-      f.when ? el("span", { class: "sl2-attn-when", text: f.when }) : null,
-    ].filter(Boolean)));
+    list.appendChild(el("li", { class: `sl2-attn-li sev-${f.sev || "critical"}` }, [row]));
   }
   host.appendChild(list);
 }
@@ -597,7 +596,7 @@ function renderSluiceGates(d) {
       why: g.stale
         ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
         : "Its rules are not installed and the gate has opened.",
-      when: `last report ${ago}`,
+      when: `last reported ${ago}`,
       target: "sl2-fleet-card",
     });
   }
@@ -672,9 +671,12 @@ function renderSluiceFleet(gates, d) {
     if (g.iface) bits.push(ifaceList(g.iface));
     if (g.enforcement && g.enforcement !== "none") bits.push(`${g.enforcement} path`);
     else bits.push("no verified path");
-    bits.push(g.age_s === null || g.age_s === undefined
-      ? "no report time" : `last reported ${sl2Ago(g.age_s)}`);
-    if (g.stale) bits.push("stale");
+    if (!g.stale) {
+      bits.push(g.age_s === null || g.age_s === undefined
+        ? "no report time" : `last reported ${sl2Ago(g.age_s)}`);
+    } else {
+      bits.push("stale");
+    }
     const ev = [
       total ? `${live} of ${sl2Count(total, "stored packet rule")} installed`
             : "no packet rules stored",
@@ -686,7 +688,7 @@ function renderSluiceFleet(gates, d) {
       ? el("div", { class: `sl2-sev-band sl2-band-${SL2_STATE_SEV[kind]}` }, [
           el("div", { class: "sl2-sev-band-head" }, [
             el("span", { class: "sl2-sev-band-word", text: kind === "stale" ? "Stale" : "Degraded" }),
-            el("span", { class: "sl2-sev-band-since", text: `last report ${ago}` }),
+            el("span", { class: "sl2-sev-band-since", text: `last reported ${ago}` }),
           ]),
           el("p", { class: "sl2-sev-band-why", text: kind === "stale"
             ? `Stopped reporting ${ago}; its last report said ${state || "degraded"}.`
@@ -869,7 +871,6 @@ function renderSluiceOrphans(list) {
   details.appendChild(el("summary", { class: "sl2-orphans-summary" }, [
     el("span", { class: "sl2-orphans-title",
       text: `Rules that match nothing (${list.length})` }),
-    el("span", { class: "sl2-orphans-cue", text: "show" }),
   ]));
   details.appendChild(el("p", { class: "sl2-orphans-why",
     text: "These records have no predicate — no domain, address, port or protocol — so they can "
