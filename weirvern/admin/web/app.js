@@ -2715,6 +2715,7 @@ function rippleScaleSentence(scale, report) {
   const b = report || {};
   const minimum = Number(b.minimum_windows || 0);
   const windows = Number(b.baseline_windows || 0);
+  const expected = Number(b.expected_windows || b.baseline_windows || 0);
   const floor = Number(b.p_floor);
   const days = Number(b.required_lookback_days || 0);
   // THE RETENTION THE LOOKBACK CAME FROM, and the lookback the BAR needs. Both are payload
@@ -2723,7 +2724,19 @@ function rippleScaleSentence(scale, report) {
   const lookback = Number(b.lookback_days || 0);
   const needBar = Number(b.required_lookback_days_for_bar || 0) || days;
   const barWindows = Number(b.windows_for_bar || 0) || minimum;
+  // NO ROWS IS NOT A ZERO-WINDOW BASELINE. The server says which case this is; print its
+  // reason rather than turning an unmeasured scale into one that "needs 30 more windows".
+  if (/no measured rows/i.test(String(b.reason || ""))) {
+    return `${scale} scale: no evidence rows in this reading; its ${expected}-window ` +
+      `baseline is available but was not measured.`;
+  }
   if (b.usable) {
+    if (b.method === "parametric") {
+      return `${scale} scale is usable with a fitted count tail: ${windows} baseline ` +
+        `windows (minimum ${minimum}), p floor ${Number(b.p_floor).toPrecision(3)} for the ` +
+        `rank test, fitted tail trusted to ${Number(b.tail_p_floor).toExponential(0)}` +
+        (lookback && retention ? `, reading ${lookback} of the ${retention} days kept.` : ".");
+    }
     return `${scale} scale is usable: ${windows} baseline windows (minimum ${minimum})` +
       (lookback && retention
         ? `, reading ${lookback} of the ${retention} day${retention === 1 ? "" : "s"} kept`
@@ -2801,7 +2814,7 @@ function renderRippleEmpty(data) {
     const need = Number(b.required_lookback_days_for_bar || 0) ||
       Number(b.required_lookback_days || 0);
     return { scale, b, have, need, gap: Math.max(0, need - have) };
-  }).filter((x) => x.need && x.gap > 0).sort((a, b) => a.gap - b.gap);
+  }).filter((x) => x.need && x.gap > 0 && Number(x.b.observed_windows ?? 1) > 0).sort((a, b) => a.gap - b.gap);
   if (pending.length) {
     const next = pending[0];
     const minimum = Number(next.b.minimum_windows || 0);

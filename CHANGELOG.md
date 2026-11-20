@@ -42,7 +42,9 @@ THE COARSE SCALES CAN NOW SPEAK WITHOUT INVENTING A RESULT, AND THE TAB IS CALLE
   (`empirical` | `parametric` | `insufficient`), `fallback_method`, `tail_p_floor` (1e-6 trust
   floor) beside the empirical `p_floor`, the validation record (`held_out_windows`, FAR and
   interval, ordinary-window FAR), and `observed_windows` is exposed per scale so a 102-window
-  capability with 29 windows of history cannot read as a working baseline.
+  capability with 29 windows of history cannot read as a working baseline. `overview` now passes
+  the observed count into `scale_report`, so the page says "no evidence rows at this scale in
+  this reading" instead of "0 of 30 windows" when a scale simply was not measured.
 - **The Ripples tab is now Alerts** (operator: "Because we have ripples and anomalies in the
   ripples tab. Rename it to Alerts"). The view id `anomalies`, the API routes, the ripple data
   model and the severity bands are unchanged. The page heading is `Alerts` with the subtitle

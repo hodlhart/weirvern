@@ -548,7 +548,8 @@ def baseline_windows(scale: str, lookback_days: int = LOOKBACK_DAYS) -> int:
 def scale_report(scale: str, lookback_days: int | None = None,
                  retention_days: int | None = None,
                  max_p: float = DEFAULT_FAMILY_MAX_P,
-                 kind: str | None = None) -> dict[str, Any]:
+                 kind: str | None = None,
+                 observed_windows: int | None = None) -> dict[str, Any]:
     """The baseline a scale can offer, which test would produce its p, and whether it decides.
 
     THREE STATES, AND THE METHOD IS NAMED IN EACH:
@@ -570,6 +571,12 @@ def scale_report(scale: str, lookback_days: int | None = None,
     tail has no such floor; its trust floor is `ripple_tail.TAIL_P_FLOOR` (1e-6), reported as
     `tail_p_floor`. `required_lookback_days_for_bar` remains the EMPIRICAL requirement
     (5/26/103/721), which is still the number that decides the `empirical` state.
+
+    `observed_windows` is what the deployment ACTUALLY holds for this scale in the reading being
+    described. When it is supplied, the method and usability are judged on it and `baseline_windows`
+    is that number; `expected_windows` keeps the lookback's theoretical count. This is the
+    difference between "a 24h scale could hold 102 windows" and "this deployment has 29": the
+    first is a capability, the second is what a reader needs.
     """
     retention = LOOKBACK_DAYS if retention_days is None else max(0, int(retention_days))
     if lookback_days is None:
@@ -578,7 +585,8 @@ def scale_report(scale: str, lookback_days: int | None = None,
     else:
         lookback = max(0, int(lookback_days))
         derived = False
-    windows = baseline_windows(scale, lookback)
+    expected = baseline_windows(scale, lookback)
+    windows = expected if observed_windows is None else max(0, int(observed_windows))
     minimum = min_baseline_samples(scale)
     floor = pvalue_floor(windows)
     seconds = int(EVIDENCE_SCALE_SECONDS.get(scale) or 0)
@@ -587,7 +595,15 @@ def scale_report(scale: str, lookback_days: int | None = None,
     floor_days = required_lookback_days(scale, windows=minimum, margin_windows=0)
     tail_ok = scale in TAIL_ENABLED and (kind is None or kind in TAIL_KINDS)
     method = "insufficient"
-    if windows >= need_windows:
+    if observed_windows is not None and windows == 0:
+        # NO ROWS IS NOT A ZERO-WINDOW BASELINE. The scale may be perfectly capable; this
+        # reading simply holds no measurement at it (the pass has not run, or coverage refused
+        # every host). Say that rather than blaming the baseline's length.
+        method = "insufficient"
+        usable = False
+        reason = (f"no measured rows at this scale in this reading; the lookback can hold "
+                  f"{expected} window(s)")
+    elif windows >= need_windows:
         method = "empirical"
         reason = ""
         usable = True
@@ -614,6 +630,8 @@ def scale_report(scale: str, lookback_days: int | None = None,
         usable = False
     return {
         "baseline_windows": windows,
+        "expected_windows": expected,
+        "observed_windows": None if observed_windows is None else int(observed_windows),
         "minimum_windows": minimum,
         "scale_seconds": seconds,
         "lookback_days": lookback,
@@ -1356,6 +1374,13 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
     # ONE READ FOR EVERY SCALE. The TTLs are read once and each scale derives its own lookback
     # from the same number; the block below is what makes that derivation inspectable.
     retention = retention_in_force(client)
+    # WHAT THE DEPLOYMENT ACTUALLY HOLDS, per scale, from the rows just read. A scale whose
+    # lookback COULD hold 102 windows but whose rows hold 29 is not a working scale, and the
+    # baseline block below says so rather than printing the capability as if it were the state.
+    observed_windows = {
+        scale: max((item.sample_count for item in in_scope if item.scale == scale), default=0)
+        for scale in EVIDENCE_SCALES
+    }
     # WHICH EVIDENCE LINES CAN BECOME A SIGNATURE. The sheet puts the verb on every row, and a
     # row that measures a rate (volume, ratio, sum) has no single value to name. The capability
     # is computed HERE, from the specs, so the browser never keeps a second copy of the list.
@@ -1377,7 +1402,8 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
         # banding read these numbers; none of them is restated in JavaScript.
         "severity_bands": severity_bands(),
         "monitored_networks": [str(net) for net in nets],
-        "baseline": {scale: scale_report(scale, retention_days=retention["days"])
+        "baseline": {scale: scale_report(scale, retention_days=retention["days"],
+                                         observed_windows=observed_windows[scale])
                      for scale in EVIDENCE_SCALES},
         # WHICH TEST PRODUCED THE P-VALUES IN THIS WINDOW, per method and per scale. A reader
         # can tell a rank from a fitted tail without opening a row; the rows carry the same
@@ -1396,11 +1422,7 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
             "tail_kinds": sorted(TAIL_KINDS),
             # THE OBSERVED WINDOW COUNT, not the lookback's theoretical one. A scale can be
             # capable of 102 windows and hold 29; the two numbers answer different questions.
-            "observed_windows": {
-                scale: max((item.sample_count for item in in_scope if item.scale == scale),
-                           default=0)
-                for scale in sorted({item.scale for item in in_scope})
-            },
+            "observed_windows": observed_windows,
         },
         "retention": {
             "days": retention["days"],

@@ -177,8 +177,10 @@ def test_an_empty_window_keeps_the_payloads_window_and_the_scale_report():
     assert out["window_hours"] == 6
     assert out["ripples"] == []
     assert out["count"] == 0
-    assert out["baseline"]["1h"]["usable"] is True
-    assert out["baseline"]["6h"]["baseline_windows"] == 27
+    assert out["baseline"]["1h"]["expected_windows"] == 167
+    assert out["baseline"]["1h"]["usable"] is False
+    assert "no measured rows" in out["baseline"]["1h"]["reason"], out["baseline"]["1h"]["reason"]
+    assert out["baseline"]["6h"]["expected_windows"] == 27
     assert out["evidence"]["rows"] == 0
     assert out["monitored_networks"] == ["198.51.100.0/24"]
     # THE BANDS TRAVEL EVEN WHEN THERE ARE NO ROWS: the legend is part of the page, and the

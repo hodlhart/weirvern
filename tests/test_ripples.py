@@ -814,9 +814,13 @@ def test_the_payload_reports_the_lookback_and_the_retention_it_came_from():
     assert out["baseline"]["24h"]["lookback_days"] == 103
     assert out["baseline"]["7d"]["lookback_days"] == 258
     assert out["baseline"]["6h"]["retention_days"] == 258
-    assert out["baseline"]["6h"]["usable"] is True
-    assert out["baseline"]["6h"]["baseline_windows"] == 103
-    assert out["baseline"]["24h"]["usable"] is True
+    # NO ROWS IN THIS READING IS NOT AN UNUSABLE SCALE. The capability is stated by
+    # `expected_windows`; the state is stated by `usable`, and it says why.
+    assert out["baseline"]["6h"]["expected_windows"] == 103
+    assert out["baseline"]["6h"]["usable"] is False
+    assert "no measured rows" in out["baseline"]["6h"]["reason"]
+    assert out["baseline"]["24h"]["expected_windows"] == 102
+    assert out["baseline"]["24h"]["usable"] is False
     assert out["baseline"]["7d"]["usable"] is False
 
 
