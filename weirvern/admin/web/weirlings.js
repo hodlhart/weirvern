@@ -2630,6 +2630,9 @@ async function loadNetworkCoverage(coverage) {
 // from their own package manager, the next scanner pass flips the profile automatically.
 function scannerChip(item) {
   if (item.state === "not_reported") return el("span", { class: "bubble state muted", text: "not reported" });
+  // A STALE ROW IS NOT A PROFILE. "Basic" reads as a measured verdict about what this weirling
+  // can do now; the row only says what it said before it went silent.
+  if (item.state === "stale") return el("span", { class: "bubble state muted", text: "stale" });
   if (item.profile === "nmap") return el("span", { class: "bubble state ok", text: "Nmap" });
   return el("span", { class: "bubble state warn", text: "Basic" });
 }
@@ -2642,7 +2645,9 @@ function scannerAge(value) {
   if (s < 90) return `${s}s ago`;
   const m = Math.round(s / 60);
   if (m < 90) return `${m}m ago`;
-  return `${Math.round(m / 60)}h ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
 }
 
 // ── the install sheet ───────────────────────────────────────────────────────────────────────
@@ -2690,7 +2695,11 @@ function openInstallSheet(item) {
   INSTALL.requestId = "";
   const command = String(item.install_command || "");
   const needsPassword = item.sudo_state === "password";
-  const canInstall = Boolean(item.install_known && item.sudo_state && item.sudo_state !== "none");
+  // AN AGED ROW CANNOT AUTHORIZE AN INSTALL. The sheet may still be opened from the table's
+  // Details, so it says the report is old rather than pretending the host is known-incapable.
+  const stale = item.state === "stale";
+  const canInstall = Boolean(item.install_known && item.sudo_state && item.sudo_state !== "none")
+    && !stale;
   if (els.subject) els.subject.textContent = item.sensor_id || "";
   if (els.title) els.title.textContent = "Install nmap";
   if (els.runs) els.runs.setAttribute("data-sensor", item.sensor_id || "");
@@ -2710,7 +2719,8 @@ function openInstallSheet(item) {
     ? "This weirling can run the install itself."
     : "No privilege path on this host: copy the command and run it as root.";
   if (els.setcap) els.setcap.textContent = item.setcap_command || "";
-  installSay(item.nmap_available ? "Nmap is already installed." : "");
+  installSay(stale ? `No report in ${item.age || "over 15m"}.`
+    : (item.nmap_available ? "Nmap is already installed." : ""));
   openSheet(els.sheet, { initialFocus: "install-close" });
 }
 
@@ -2820,35 +2830,42 @@ async function loadScannerStatus() {
   const cap = d.capability || {};
   const total = cap.count === undefined ? sensors.length : cap.count;
   const capable = cap.capable_count || 0;
-  // NUMBERS BEAT SENTENCES: the chip is the count, not a paragraph about the count.
-  summary.textContent = `${capable} of ${total} can scan`;
-  const missing = sensors.filter((s) => !s.nmap_available);
+  // A STALE ROW IS NOT A CAPABILITY COUNT. If no registered weirling has a fresh report, the
+  // count "0 of 1 can scan" is a verdict the hub cannot support -- say unknown instead.
+  const stale = sensors.filter((s) => s.state === "stale");
+  const fresh = sensors.filter((s) => s.state !== "stale" && s.state !== "not_reported");
+  const missing = fresh.filter((s) => !s.nmap_available);
+  summary.textContent = sensors.length && fresh.length === 0
+    ? "unknown"
+    : `${capable} of ${total} can scan`;
   if (cap.enabled) {
     note.textContent = "Scanning is available.";
     if (installBtn) installBtn.classList.add("hidden");
   } else {
-    const sentence = String(cap.sentence || "");
     const one = total === 1 ? sensors[0] : null;
-    // THE ROW IS THE FACT; the sentence's freshness wording is a Details concern. A row that
-    // says nmap is missing is "nmap missing" even if the report has aged out -- calling it
-    // "not reported" would hide the install the operator actually needs.
-    if (one && one.state === "not_reported") {
+    if (one && one.state === "stale") {
+      // THE FACT THE OLD CARD HID: no report. "Nmap missing" was the last thing this silent
+      // weirling said, and the console presented it as today's measurement.
+      note.textContent = `No report from this weirling in ${one.age || "over 15m"} — no agent is reporting.`;
+    } else if (one && one.state === "not_reported") {
       note.textContent = "Not scanning — this weirling has not reported.";
+    } else if (sensors.length && stale.length === sensors.length) {
+      note.textContent = `No report from any weirling in ${stale[0].age || "over 15m"}.`;
+    } else if (stale.length) {
+      note.textContent = `No report from ${stale.length} of ${total} weirlings.`;
     } else if (one && !one.nmap_available) {
       note.textContent = "Not scanning — nmap missing on this weirling.";
-    } else if (one && /no capability report/i.test(sentence)) {
-      note.textContent = "Not scanning — this weirling has not reported.";
     } else if (missing.length) {
       note.textContent = `Not scanning — nmap missing on ${missing.length} of ${total}.`;
     } else {
       note.textContent = "Not scanning.";
     }
-    // ONE PRIMARY ACTION. It opens the sheet; that sheet decides whether this host can run
-    // the install or only copy the command.
+    // ONE PRIMARY ACTION -- AND NEVER FROM AN AGED ROW. An install offered from a stale report
+    // would be a guess about what that host runs today.
     if (installBtn) {
-      const target = missing.find((s) => s.install_command) || missing[0] || sensors[0];
+      const target = missing.find((s) => s.install_command) || missing[0] || null;
       installBtn.classList.toggle("hidden", !target);
-      installBtn.onclick = () => openInstallSheet(target);
+      installBtn.onclick = target ? () => openInstallSheet(target) : null;
     }
   }
   // The server's measured sentence and the explanation stay available, one click away.

@@ -85,6 +85,98 @@ weirling** button copies the command for the operator to run by hand — never a
 that cannot work. The full two-path tradeoff is in
 [deployment.md](deployment.md#installing-nmap-on-a-weirling-two-paths).
 
+## The shipped installer: Docker containers, not a systemd unit
+
+`scripts/deploy-weirling.sh` is the only shipped way to put a weirling on a box. It runs where you
+are, reaches the hub and the target over ssh (`--target local` means the box it runs on), and
+leaves Docker containers on the target plus a local operator helper:
+
+```bash
+scripts/deploy-weirling.sh --hub <hub-ssh> --target <target-ssh> \
+        --iface <capture-port> --sensor-id <id> [--segment <label>]
+```
+
+| Container | Role | Started by |
+| --- | --- | --- |
+| `weirvern-capture-<id>` | Zeek on the capture port (host network, `NET_RAW` only) | always |
+| `weirvern-agent-<id>` | the sensor agent: heartbeats, capability, plans, flows, scan jobs | always |
+| `weirvern-netflow-<id>` | goflow2 collector on 2055/6343 | `--netflow` |
+| `weirvern-gate-<id>` | the enforcement gate | `--gate` |
+
+Every container is started with `--restart unless-stopped`, so it returns after a Docker or host
+restart until an operator stops it.
+
+**There is no systemd unit.** `weirvern-weirling` is the name of the shell helper the installer
+writes to `/usr/local/bin/weirvern-weirling` (`status|start|stop`); it is not a service, and no
+`weirvern-weirling.service` file exists on a target. A systemd unit was an earlier design that was
+never shipped in a release; those instructions were removed rather than left beside the real path.
+
+### The agent container, exactly
+
+The agent is `python3 -m weirvern.admin.sensor_agent` in the release image:
+
+| Setting | Value |
+| --- | --- |
+| image | `weirvern-scan:<tag>` when the hub's k3s image store has it, otherwise `weirvern-worker:<tag>`; the tag is read from the RUNNING `deploy/weirvern-worker` |
+| network | `--network host` |
+| user | `0:0` on the default mTLS transport (the remote ARP probe needs an effective `NET_RAW`); `10001:10001` with `--legacy-clickhouse` |
+| capabilities | `--cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN` |
+| restart policy | `unless-stopped` |
+| entrypoint | `--entrypoint python3 … -m weirvern.admin.sensor_agent` |
+
+Environment comes from `--env-file /etc/weirvern-weirling.env` (0600, rewritten on every install),
+then per-container `-e` values:
+
+- **mTLS (default):** `WEIRLING_GATEWAY_URL`, `WEIRLING_CLIENT_CERT`, `WEIRLING_CLIENT_KEY`,
+  `WEIRLING_ROOT_CA`. No database credential is written to the target.
+- **`--legacy-clickhouse`:** `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`,
+  `CLICKHOUSE_PASSWORD`, `WEIRLING_ALLOW_DIRECT_CLICKHOUSE=1`.
+- **per container:** `SENSOR_ID`, `ZEEK_IFACE`, `ZEEK_LOG_DIR=/zeek/logs`, `MGMT_IFACE`,
+  `TRUNK_STATE_DIR=/state`, `TRUNK_DISABLE`, `WEIRLING_NETFLOW`,
+  `WEIRLING_FLOW_FILE=/flows/flows.jsonl`.
+
+Volumes on `weirvern-agent-<id>`:
+
+| Host path | Container path | Mode |
+| --- | --- | --- |
+| `/var/lib/weirvern-weirling/logs` | `/zeek/logs` | read-only |
+| `/var/lib/weirvern-weirling/flows` | `/flows` | read-only |
+| `/var/lib/weirvern-weirling/trunk-<id>` (`inline-<id>` with `--inline`) | `/state` | read-write |
+| `/etc/weirvern-weirling/pki` | `/etc/weirvern-weirling/pki` | read-only |
+| `/etc/os-release` | `/etc/os-release` | read-only |
+
+The last mount is why the capability row names the **host's** distro — `Ubuntu 26.04 LTS (debian
+family — apt)` — instead of the container image's Debian.
+
+### Check that it is running
+
+On the target:
+
+```bash
+# what the installer left, and whether it is up
+weirvern-weirling status
+# the same thing without the helper
+docker ps --filter "name=weirvern-.*-<id>" --format '{{.Names}} {{.Status}}'
+# the agent's state and restart policy, which must be running + unless-stopped
+docker inspect --format '{{.State.Status}} {{.HostConfig.RestartPolicy.Name}}' weirvern-agent-<id>
+```
+
+The installer's own last step is the strongest check: it waits up to 60 s for a fresh
+`sensor_status` heartbeat for that `sensor_id` and exits non-zero with the log commands if none
+arrives.
+
+### Read its logs
+
+```bash
+docker logs --tail 200 -f weirvern-agent-<id>     # agent: enrollment, heartbeats, capability, scans
+docker logs --tail 100 weirvern-capture-<id>      # Zeek's own output
+ls -l /var/lib/weirvern-weirling/logs/<iface>/    # the Zeek logs themselves (host path)
+```
+
+The agent re-measures Nmap every five minutes, so installing Nmap does not require a restart; the
+next capability report flips the row. A unit that stops reporting is shown as `stale` with its age
+(see [Readiness is capability](#readiness-is-capability-never-a-setting)).
+
 ## Install-time provisioning (privileged once, never at runtime)
 
 **Can Weirvern install nmap on a weirling?** Yes, through one of the three paths above. The agent
@@ -100,12 +192,16 @@ sudo apt-get update && sudo apt-get install -y nmap
 # 2. let SYN/UDP scans run without root: file capabilities on the binary only
 sudo setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap
 
-# 3. run the agent as the unprivileged user under systemd
-sudo systemctl edit --full weirvern-weirling   # or the unit deploy-weirling.sh installed
-#   [Service]
-#   User=weirvern
-#   ExecStart=/usr/bin/python3 -m weirvern.admin.sensor_agent
+# 3. start the agent through the shipped installer -- there is no systemd unit to edit
+scripts/deploy-weirling.sh --hub <hub-ssh> --target local --iface <capture-port> \
+        --sensor-id <id>
 ```
+
+Under the default mTLS transport the installer runs the agent as uid 0 because the remote ARP
+probe needs an effective `NET_RAW` capability, which Docker does not grant to a non-root UID. That
+is not root on the host: the container drops every capability except `NET_RAW` and `NET_ADMIN` and
+has no shell channel. The capture container additionally sets `no-new-privileges`. With
+`--legacy-clickhouse` the agent runs as `10001:10001`.
 
 After step 2 the agent reports `nmap present with raw-socket capabilities (SYN/UDP available)`.
 Without it, the honest readiness line is `nmap present, unprivileged (connect scan only)`: a
@@ -143,6 +239,12 @@ copies them; it cannot send them.
 row is not capability — a removed workload's last row would otherwise promise a scan nothing can
 execute. The Assets table, the host page and the Scanner readiness card all read the same
 sentence, and the POST refuses with it, so the button and the refusal cannot drift.
+
+`GET /api/scanner` applies the same window to every row it lists. A row past it comes back as
+`state: "stale"` with `age_s`/`age`, never as `state: "reported"`; the card says
+`No report from this weirling in <age> — no agent is reporting.` and offers no install, because
+the last report cannot say what that host runs now. Both endpoints call
+`scanner.freshness(last_check)`, so the window cannot differ between them.
 
 ## The manual-scan queue
 
@@ -219,10 +321,16 @@ allowed to look like a host with no services.
 ## Verification
 
 ```bash
+# on the weirling: the agent is up and comes back after a restart
+docker inspect --format '{{.State.Status}} {{.HostConfig.RestartPolicy.Name}}' weirvern-agent-<id>
+
 # the fleet's own answer, from the hub
 curl -s http://127.0.0.1:30088/api/scan-readiness | python3 -m json.tool
 
-# the capability rows behind it
+# the same rows the card renders: `state` must be reported or stale, never a stale `reported`
+curl -s http://127.0.0.1:30088/api/scanner | python3 -m json.tool
+
+# the capability rows behind both
 kubectl -n weirvern exec sts/clickhouse -- clickhouse-client --query \
   "SELECT sensor_id, profile, nmap_available, nmap_version, os_id, last_check
    FROM weirvern.scanner_status FINAL"

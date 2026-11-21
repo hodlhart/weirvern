@@ -10950,6 +10950,46 @@ check("...a contradicted segment names BOTH segments on the issues list",
           visibleWords(needEl("scanner-note").closest(".card")) <= 25,
           String(visibleWords(needEl("scanner-note").closest(".card"))));
 
+    // A STALE ROW IS NOT A VERDICT. This was the live defect: an hours-old `nmap missing` row
+    // was presented as `reported`, and the card printed a capability claim it could not support.
+    const STALE = Object.assign({}, ITEM, {
+      state: "stale", fresh: false, age: "2h", age_s: 7200,
+      install_answer: "No report from this weirling in 2h; its last report is too old to act on.",
+      can_install: false, install_privileged: false,
+    });
+    const STALE_SENTENCE = "0 of 1 weirling can scan: edge-one unknown "
+      + "(no capability report in 2h).";
+    fetchOverride = (u) => {
+      if (String(u).includes("/api/scanner")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, local_sensor: "edge-one", count: 1,
+          capability: { enabled: false, count: 1, capable_count: 0, sentence: STALE_SENTENCE,
+                        reason_unavailable: STALE_SENTENCE },
+          sensors: [STALE],
+        }) };
+      }
+      return null;
+    };
+    H.clearGetCache();
+    await H.loadScannerStatus();
+    await new Promise((r) => setTimeout(r, 40));
+    check("a stale row is not an nmap verdict: the card names the silence and its age",
+          needEl("scanner-note").textContent.trim()
+            === "No report from this weirling in 2h — no agent is reporting.",
+          needEl("scanner-note").textContent);
+    check("...the count reads 'unknown', not '0 of 1 can scan'",
+          needEl("scanner-summary").textContent.trim() === "unknown",
+          needEl("scanner-summary").textContent);
+    check("...and no Install action is offered from an aged report",
+          needEl("scanner-install").classList.contains("hidden"),
+          needEl("scanner-install").className);
+    check("...the row's chip reads 'stale'",
+          /stale/.test(needEl("scanner-list").textContent),
+          needEl("scanner-list").textContent.slice(0, 120));
+    check("the stale card stays inside the 25-word copy budget",
+          visibleWords(needEl("scanner-note").closest(".card")) <= 25,
+          String(visibleWords(needEl("scanner-note").closest(".card"))));
+
     H.openInstallSheet(ITEM);
     await new Promise((r) => setTimeout(r, 30));
     check("the install sheet is titled 'Install nmap'",

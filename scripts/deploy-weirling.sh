@@ -22,9 +22,10 @@
 # its check does not consult --allow-management-nic. --gate combined with --allow-management-nic
 # is refused outright on a single-NIC host.
 #
-# IT DOES NOT REGISTER THE SENSOR. Registration is an operator's declaration in the Weirlings
-# view ("who is this and whose is it"); the row appears as UNREGISTERED until someone says so.
-# That is the view's entire point.
+# IT DOES NOT REGISTER THE SENSOR -- EXCEPT BY ENROLLMENT. With the default mTLS transport the
+# one-time token's enrollment creates the fleet row (note: "adopted by mTLS enrollment").
+# --legacy-clickhouse has no such step, so its row appears as UNREGISTERED until an operator says
+# whose it is. That is the view's entire point.
 #
 # THE TRANSPORT IS mTLS BY DEFAULT: the agent enrolls once, then writes heartbeats, plans,
 # flows and Zeek records through the hub gateway with a client certificate. No database
@@ -501,8 +502,8 @@ AGENT_USER='10001:10001'
 [ "$MTLS" = "1" ] && AGENT_USER='0:0'
 # Every unit owns one trunk-state directory. It survives a restart so the next probe can
 # remove VLAN devices this unit created when the port is moved back to an access port.
-TRUNKSTATE="/var/lib/weirvern-weirling/trunk-$ID"
-[ "$INLINE" = "1" ] && TRUNKSTATE="/var/lib/weirvern-weirling/inline-$ID"
+TRUNKSTATE="/var/lib/weirvern-weirling/trunk-\$ID"
+[ "$INLINE" = "1" ] && TRUNKSTATE="/var/lib/weirvern-weirling/inline-\$ID"
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
   stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true ;;
@@ -542,7 +543,7 @@ case "\${1:-status}" in
     if [ "\$NETFLOW" = "1" ]; then
       # THE COLLECTOR. Runs the hub's own collector image with the hub's own arguments, so a record
       # written here is the record the hub writes for its exporters; the agent above ships them into
-      # the same `flows` table. uid 100 is the image's own user and the directory is chowned to it --
+      # the same flows table. uid 100 is the image's own user and the directory is chowned to it --
       # no root needed, unlike the in-cluster unit (a hostPath there cannot be chowned by a pod).
       mkdir -p "\$FLOWDIR"
       chown 100:10001 "\$FLOWDIR" 2>/dev/null || true
@@ -553,17 +554,18 @@ case "\${1:-status}" in
         -transport file -transport.file /flows/flows.jsonl >/dev/null
     fi
     docker run -d --name "weirvern-agent-\$ID" --restart unless-stopped \\
-      --network host --env-file "\$ENVF" --user "$AGENT_USER" \\
+      --network host --env-file "\$ENVF" --user "\$AGENT_USER" \\
       --cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN \\
-      -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \
-      -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state -e TRUNK_DISABLE="$NO_TRUNK" \
+      -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
+      -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state -e TRUNK_DISABLE="$NO_TRUNK" \\
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
       -v "\$TRUNKSTATE":/state \\
       -v "\$PKIDIR":"\$PKIDIR":ro \\
+      -v /etc/os-release:/etc/os-release:ro \\
       --entrypoint python3 "$AGENT_IMG" -m weirvern.admin.sensor_agent >/dev/null
     # NOTE ON THE EXPANSIONS: this whole block was written by the deploy script (the heredoc is
-    # unquoted), so `$GATE` and `$GATE_IFACE` are decided NOW, while `\$ID` and `\$GATE_IF` are left
+    # unquoted), so \$GATE and \$GATE_IFACE are decided NOW, while \$ID and \$GATE_IF are left
     # for the target's own runtime.
     if [ "$GATE" = "1" ]; then
       # THE GATE. Same image, same code path as the hub's (WEIRVERN_ROLE=gate): it reads the shared
@@ -588,6 +590,10 @@ case "\${1:-status}" in
     else
       echo "weirvern-weirling \$ID: started (capture + agent; no gate -- pass --gate to enforce here)"
     [ "\$NETFLOW" = "1" ] && echo "  netflow: collector on 2055/6343 -- point an exporter here and the records land in the hub"
+    # THE BRANCH MUST END TRUE. As a bare test-and-echo, a unit without --netflow ended the
+    # start branch with status 1, so weirvern-weirling start returned 1 and deploy-weirling.sh
+    # aborted (set -e) before its heartbeat check -- on every unit that was not a collector.
+    true
     fi
     ;;
   *) echo "usage: weirvern-weirling [status|start|stop]" >&2; exit 2 ;;
@@ -607,8 +613,13 @@ done
 if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
     say "  heartbeat OK: \"$SENSOR_ID\" is reporting (iface $IFACE)"
     say ""
-    say "NEXT: open the Weirlings view and register \"$SENSOR_ID\" -- the row shows as"
-    say "      UNREGISTERED until you say whose it is. Operate it on the target with:"
+    if [ "$MTLS" = "1" ]; then
+        say "NEXT: the enrollment registered \"$SENSOR_ID\" -- confirm it in the Weirlings view."
+    else
+        say "NEXT: open the Weirlings view and register \"$SENSOR_ID\" -- the row shows as"
+        say "      UNREGISTERED until you say whose it is."
+    fi
+    say "      Operate it on the target with:"
     say "      weirvern-weirling status|start|stop   (logs under /var/lib/weirvern-weirling)"
 else
     die "no fresh heartbeat after 60s -- check on the target: weirvern-weirling status; docker logs weirvern-agent-$SENSOR_ID; docker logs weirvern-capture-$SENSOR_ID"

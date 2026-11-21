@@ -408,3 +408,77 @@ def test_no_blanket_sudoers_rule_is_shipped_or_generated():
             if "NOPASSWD: ALL" in text or "NOPASSWD:ALL" in text:
                 offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"a blanket sudoers rule is shipped: {offenders}"
+
+
+# ── /api/scanner: a row is a REPORT, not a verdict ──────────────────────────────────────────
+
+def _scanner_row(sensor, *, age_s, available=False):
+    """The SIXTEEN columns `payloads.scanner` selects, in its order."""
+    return (
+        sensor, "nmap" if available else "basic", 1 if available else 0,
+        "Nmap version 7.95 ( https://nmap.org )" if available else "",
+        "/usr/bin/nmap" if available else "", 0, "ubuntu", "26.04",
+        "" if available else "Nmap is not installed; install it with apt.",
+        datetime.now(UTC) - timedelta(seconds=age_s),
+        False, "raw" if available else "none", False, "none",
+        "Ubuntu 26.04 LTS (debian family — apt)", "debian",
+    )
+
+
+class ScannerPayloadClient:
+    """Answers the two reads `payloads.scanner` makes, by SQL substring."""
+
+    def __init__(self, status_rows, registered):
+        self.status_rows = status_rows
+        self.registered = registered
+
+    def query(self, sql, parameters=None):
+        if "scanner_status" in sql:
+            return RowsResult(self.status_rows)
+        if "weirlings" in sql:
+            return RowsResult(self.registered)
+        return RowsResult([])
+
+
+def test_an_aged_capability_row_is_STALE_not_a_current_nmap_verdict():
+    """The live defect: a seven-hour-old `nmap missing` read as `state: reported`."""
+    from weirvern.admin import payloads
+
+    client = ScannerPayloadClient([_scanner_row("wl-a", age_s=7200)], [("wl-a", [], "", "")])
+    item = payloads.scanner(client)["sensors"][0]
+
+    assert item["state"] == "stale"
+    assert item["fresh"] is False
+    assert item["age"] == "2h" and item["age_s"] >= 7100
+    # The aged privilege facts cannot authorize an install.
+    assert item["install_privileged"] is False
+    assert item["install_answer"].startswith("No report from this weirling in 2h")
+
+
+def test_a_fresh_capability_row_is_still_reported():
+    from weirvern.admin import payloads
+
+    client = ScannerPayloadClient([_scanner_row("wl-a", age_s=30)], [("wl-a", [], "", "")])
+    item = payloads.scanner(client)["sensors"][0]
+
+    assert item["state"] == "reported"
+    assert item["fresh"] is True
+    assert item["install_answer"].startswith("Weirvern cannot install nmap here")
+
+
+def test_a_row_with_no_timestamp_is_never_fresh():
+    from weirvern.admin import payloads
+
+    row = list(_scanner_row("wl-a", age_s=0))
+    row[9] = None
+    item = payloads.scanner(ScannerPayloadClient([tuple(row)], [("wl-a", [], "", "")]))["sensors"][0]
+    assert item["state"] == "stale"
+    assert item["age_s"] is None and item["age"] == "unknown"
+
+
+def test_the_fleet_sentence_and_the_row_share_ONE_freshness_rule():
+    """Both readers call `scanner.freshness`, so a row cannot be stale on one surface only."""
+    now = datetime.now(UTC)
+    checked = now - timedelta(seconds=scanner.CAPABILITY_MAX_AGE_S + 1)
+    assert scanner.freshness(checked, now=now) == (False, scanner.CAPABILITY_MAX_AGE_S + 1)
+    assert scanner.freshness(datetime.now(UTC), now=now)[0] is True

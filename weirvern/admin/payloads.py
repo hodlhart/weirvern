@@ -607,10 +607,16 @@ def scanner(client: Client) -> dict[str, Any]:
     ).result_rows
 
     status: dict[str, dict[str, Any]] = {}
+    now = datetime.datetime.now(datetime.UTC)
     for row in status_rows:
         sid = str(row[0] or "").strip().lower()
         if not sid or sid in status:
             continue
+        # A ROW IS A REPORT, NOT A VERDICT. `last_check` ages; when it is past the same window
+        # `fleet_capability` uses, the row is marked `stale` and carries its age, so no surface
+        # can read an old measurement as this weirling's current state.
+        when = scanner_mod.checked_at(row[9])
+        is_fresh, age_s = scanner_mod.freshness(when, now=now)
         status[sid] = {
             "sensor_id": sid,
             "profile": str(row[1] or "basic"),
@@ -621,8 +627,7 @@ def scanner(client: Client) -> dict[str, Any]:
             "os_id": str(row[6] or ""),
             "os_version": str(row[7] or ""),
             "detail": str(row[8] or ""),
-            "last_check": (row[9].isoformat() if hasattr(row[9], "isoformat")
-                           else str(row[9] or "")),
+            "last_check": when.isoformat() if when is not None else "",
             "privileged": bool(row[10]) if len(row) > 10 else False,
             "scan_mode": str(row[11] if len(row) > 11 else "") or (
                 "raw" if bool(row[2]) else "none"),
@@ -632,7 +637,10 @@ def scanner(client: Client) -> dict[str, Any]:
             # columns existed falls back to ID + version and derives the family from that.
             "os_label": str(row[14]) if len(row) > 14 else "",
             "os_family": str(row[15]) if len(row) > 15 else "",
-            "state": "reported",
+            "state": "reported" if is_fresh else "stale",
+            "fresh": is_fresh,
+            "age_s": int(age_s) if age_s is not None else None,
+            "age": scanner_mod.ago(age_s),
         }
 
     sensors: list[dict[str, Any]] = []
@@ -666,22 +674,32 @@ def scanner(client: Client) -> dict[str, Any]:
         # THE ANSWER TO "CAN WEIRVERN INSTALL IT?" IS THE AGENT'S OWN MEASUREMENT, never a
         # hopeful assumption at the hub. Root, or the one scoped sudoers entry the installer
         # created, makes it yes; everything else is copy-and-instruct with the reason.
-        item["install_privileged"] = bool(item.get("can_install"))
-        sudo_state = str(item.get("sudo_state") or "unknown")
-        if item.get("can_install"):
-            item["install_answer"] = "Weirvern can install nmap here (privileged installer path)"
-        elif sudo_state == "password":
+        # A STALE ROW'S PRIVILEGE FACTS ARE AS OLD AS THE ROW. Offering a one-click install from
+        # a measurement that may predate the host's current state is the same unearned verdict
+        # the card must not print, one layer down.
+        if item.get("state") == "stale":
+            item["install_privileged"] = False
+            item["can_install"] = False
             item["install_answer"] = (
-                "Weirvern cannot install nmap here — the weirling's user has a sudo password, "
-                "but this build has no secret channel from the console to an agent. Run the "
-                "command below as root, or create the scoped sudoers entry.")
-        elif sudo_state == "none":
-            item["install_answer"] = (
-                "Weirvern cannot install nmap here — the weirling's user is not in sudoers; "
-                "run the command below as root")
+                f"No report from this weirling in {item.get('age') or 'the freshness window'}; "
+                "its last report is too old to act on.")
         else:
-            item["install_answer"] = (
-                "Weirvern cannot install nmap here — run this as root")
+            item["install_privileged"] = bool(item.get("can_install"))
+            sudo_state = str(item.get("sudo_state") or "unknown")
+            if item.get("can_install"):
+                item["install_answer"] = "Weirvern can install nmap here (privileged installer path)"
+            elif sudo_state == "password":
+                item["install_answer"] = (
+                    "Weirvern cannot install nmap here — the weirling's user has a sudo password, "
+                    "but this build has no secret channel from the console to an agent. Run the "
+                    "command below as root, or create the scoped sudoers entry.")
+            elif sudo_state == "none":
+                item["install_answer"] = (
+                    "Weirvern cannot install nmap here — the weirling's user is not in sudoers; "
+                    "run the command below as root")
+            else:
+                item["install_answer"] = (
+                    "Weirvern cannot install nmap here — run this as root")
         item["install_url"] = "https://nmap.org/download.html"
         item["docs_url"] = "docs/deployment.md#asset-scanning-and-nmap"
         sensors.append(item)

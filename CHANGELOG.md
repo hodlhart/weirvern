@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.23.119 — 2026-11-21
+
+A SILENT WEIRLING IS REPORTED AS SILENT — a stale capability row stops reading as a verdict, and
+the installer documentation matches the containers it actually starts.
+
+- **An aged capability row is `stale`, never `reported`.** `/api/scanner` stamped every row it read
+  as a current measurement, so a row past the freshness window was shown as this weirling's verdict
+  and the card offered an install from it. A row older than `CAPABILITY_MAX_AGE_S` (900 s) now comes
+  back as `state: "stale"` with its `age_s` and `age`; the card says
+  `No report from this weirling in 1h — no agent is reporting.` and offers no install. Both
+  endpoints call one `scanner.freshness()`, so `/api/scan-readiness` and `/api/scanner` cannot
+  disagree about freshness.
+- **The docs describe the containers the installer starts.** `docs/scanner.md` documented a systemd
+  unit `weirvern-weirling` that no release shipped. It now names the real containers
+  (`weirvern-capture-<id>`, `weirvern-agent-<id>`, plus `--netflow` / `--gate`), their
+  `unless-stopped` restart policy, the env file, every mount, and the commands to check and read
+  their logs. The systemd instructions are deleted, not left beside the real path.
+- **The agent reports the HOST's distro.** The agent container mounts `/etc/os-release` read-only,
+  so a weirling reports `Ubuntu 26.04 LTS (debian family — apt)` instead of the base image's
+  Debian. Without the mount every containerised unit misnamed its own host on the scan card.
+- **The shipped installer actually starts a unit.** Three defects stopped `deploy-weirling.sh`
+  before its own verification: the generated helper expanded `$ID` and `$AGENT_USER` in the
+  deployer instead of in the helper, and a non-netflow `start` branch ended with status 1 and
+  aborted the script before the heartbeat check. A fresh unit now starts, and the installer's last
+  step prints `heartbeat OK`.
+- **The fleet note is one line, and the reasoning is behind Details.** The 30-word paragraph above
+  the scanner card is now the count and the network (`1 declared network has no sensor:
+  203.0.113.0/24.`); why declared and seen differ moved into the card's Details disclosure. This
+  copy fix was committed after the 0.23.118 image was built and ships here.
+
 ## 0.23.118 — 2026-11-20
 
 ONE-CLICK NMAP INSTALL ON A WEIRLING — the memory-only sudo path, and a cancel button that

@@ -581,6 +581,37 @@ def declared_networks(networks: object, segment: object = "", plan_segment: obje
     return out
 
 
+def checked_at(value: Any) -> datetime | None:
+    """One capability row's `last_check` as an aware UTC datetime, or None when it has none.
+
+    ClickHouse hands back naive datetimes; the console compares them to `now`, so the naive form
+    is read as UTC (the zone the writer stores) rather than silently as local time.
+    """
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return None
+
+
+def freshness(last_check: Any, *, now: datetime | None = None,
+              max_age_s: int = CAPABILITY_MAX_AGE_S) -> tuple[bool, float | None]:
+    """(fresh, age_seconds) for ONE capability report -- THE staleness rule, in one place.
+
+    TWO READERS ASKED THE SAME QUESTION AND ONE ANSWERED WRONG. `fleet_capability` already
+    ignored an aged row, but `/api/scanner` stamped every row it read as `reported`, so a
+    seven-hour-old `nmap missing` was presented as this weirling's current verdict (and the
+    card offered an install based on it). Both readers now call this function, so the window
+    cannot drift between the readiness sentence and the scanner card.
+
+    A row with no timestamp is NOT fresh: unknown is not a licence to claim a measurement.
+    """
+    when = checked_at(last_check)
+    if when is None:
+        return False, None
+    moment = now or _now()
+    return ((moment - when).total_seconds() <= max(60, int(max_age_s)),
+            (moment - when).total_seconds())
+
+
 def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
                      max_age_s: int = CAPABILITY_MAX_AGE_S) -> dict[str, Any]:
     """WHO can scan, from the fleet's own capability rows — never from a deployment setting.
@@ -612,9 +643,7 @@ def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
         if not sid or sid in latest:
             continue
         checked = row[5]
-        when = None
-        if isinstance(checked, datetime):
-            when = checked.replace(tzinfo=UTC) if checked.tzinfo is None else checked.astimezone(UTC)
+        when = checked_at(checked)
         latest[sid] = {
             "sensor_id": sid,
             "nmap_available": bool(row[2]),
@@ -647,10 +676,10 @@ def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
             unknown.append({**base, "reason": "no capability report has ever arrived from this weirling"})
             continue
         when = seen["last_check"]
-        age_s = (moment - when).total_seconds() if when is not None else None
-        if age_s is None or age_s > age_limit:
+        is_fresh, age_s = freshness(when, now=moment, max_age_s=age_limit)
+        if not is_fresh:
             unknown.append({**base, "nmap_version": seen["nmap_version"],
-                            "reason": (f"no capability report in {_ago(age_s)}" if age_s is not None
+                            "reason": (f"no capability report in {ago(age_s)}" if age_s is not None
                                        else "its capability report carries no timestamp")})
             continue
         if seen["nmap_available"]:
@@ -743,7 +772,7 @@ def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
     }
 
 
-def _ago(seconds: float | None) -> str:
+def ago(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"
     total = max(0, int(seconds))

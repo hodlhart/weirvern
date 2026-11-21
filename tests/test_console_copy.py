@@ -41,6 +41,17 @@ def test_scanner_readiness_is_one_line_and_one_action():
     assert "detailText.textContent = String(cap.sentence" in js
 
 
+def test_a_stale_row_is_named_as_silence_not_as_nmap_missing():
+    """The card must not print a capability verdict from a report that has aged out."""
+    js = (WEB / "weirlings.js").read_text(encoding="utf-8")
+    assert "No report from this weirling in ${one.age" in js
+    assert "no agent is reporting" in js
+    # The comment that used to justify the unearned verdict is gone, not merely contradicted.
+    assert "even if the report has aged out" not in js
+    # No install is offered from an aged row.
+    assert 'const target = missing.find((s) => s.install_command) || missing[0] || null;' in js
+
+
 def test_install_sheet_copy():
     js = (WEB / "weirlings.js").read_text(encoding="utf-8")
     html = (WEB / "index.html").read_text(encoding="utf-8")
