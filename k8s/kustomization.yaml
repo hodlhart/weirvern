@@ -131,7 +131,7 @@ images:
   # image that is now running -- otherwise two people roll the same cluster and the pin names
   # whichever build finished last.
   - name: weirvern-worker
-    newTag: "sha-1e8d068"
+    newTag: "sha-dbb26c4"
   # THERE IS NO SCANNER IMAGE ENTRY. Scanning runs inside each weirling's agent: the hub ships
   # the worker image to weirlings, and the agent measures its own Nmap. The old central
   # central scanner Deployment (and its image transformer entry) is removed.
