@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.23.126 — 2026-11-21
+
+INGEST CAN NO LONGER CHECKPOINT A FAILED WRITE, A LOST CHECKPOINT CAN NO LONGER DUPLICATE THE FLOW
+FILE, AND A CAP TRIM CAN NO LONGER DELETE THE RECORDS THE COLLECTOR WROTE WHILE IT REWROTE.
+
+- **A DATABASE BLIP DISCARDED A WHOLE FILE, AND THE CURSOR SAID IT WAS READ.** `_insert_batch`
+  isolates a bad record by retrying row by row, then returns what landed. When NOTHING landed --
+  every row failing for the same transient reason -- it still returned 0 and BOTH callers advanced
+  their cursor. Measured with a client whose insert raises: `inserted=0, offset=<file size>`. The
+  file was marked consumed with nothing written and nothing left to retry it. A multi-row batch
+  that lands nothing now RAISES, so the cursor stays where it is and the next pass re-reads those
+  bytes; both tailers checkpoint only after every flush returned. A single-row batch keeps the old
+  trade (named at WARNING and skipped) because there is no smaller unit to retry, and raising there
+  would let one unparseable record block its log type forever.
+- **A LOST CHECKPOINT RE-INSERTED THE WHOLE FILE.** The flow path's idempotence guard was enabled
+  only when reset detection fired. A lost checkpoint reaches offset 0 through six other paths that
+  `load_tail_state` treats as "no cursor" (`reset_reason` answers "" at 0, because a missing cursor
+  is not a reset), so the guard was OFF exactly when a full re-read happened. Measured: four
+  records, checkpoint deleted, eight rows in `flows`. Starting at zero is now itself the re-read
+  case, and the existence check runs there.
+- **A CAP TRIM DELETED WHATEVER WAS APPENDED WHILE IT RAN.** `enforce_netflow` copied the kept
+  tail, reopened the sink, copied the tail back and truncated. Records the collector appended
+  between the copy and the truncate sat beyond the copied region, so the truncate removed them --
+  silently, with the trim reporting success and the size it intended. The kept region's end in the
+  SOURCE is now captured at copy time and `[kept_end, new_size)` is drained into the rewritten file
+  before the truncate (bounded passes, re-checking the size because a writer can append during the
+  drain). The UNLINK path is gone too: "no reader bound" is not "nothing is appending", and
+  unlinking the collector's live sink is the same outage the in-place rewrite exists to prevent.
+  A fully superseded sink is truncated to zero in place, keeping its inode.
+- **RETRIED BATCHES CARRY A DEDUPLICATION TOKEN.** Flow and Zeek batches pass
+  `insert_deduplication_token` (derived from the table, the file instance, the byte range and a
+  digest of the source bytes), so a retried batch is recognisable as the same batch while a genuine
+  repeat at another offset -- or in a new file instance -- is not collapsed. It is only sent to a
+  client whose `insert` accepts `settings`; the token is a no-op until the table's deduplication
+  window is configured.
+- **Tests.** A raising client leaves the cursor unchanged and the next pass lands the records (both
+  paths); a lost checkpoint inserts nothing twice; a record appended mid-trim survives as a whole
+  JSON line and a fully superseded sink keeps its inode; the token is stable across a retry and
+  distinct for different bytes, inodes, offsets and tables. The mid-trim test is mutation-verified:
+  it fails with the drain removed.
+
 ## 0.23.125 — 2026-11-21
 
 TWO PRIVILEGE-ESCALATION HOLES CLOSED, EACH WITH AN AUDIT ROW AND A TEST THAT CANNOT LET THE CLASS
