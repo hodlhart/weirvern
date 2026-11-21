@@ -167,19 +167,49 @@ def test_a_second_pass_does_NOT_retry_the_rejected_row(tmp_path):
     assert offset2 == f.stat().st_size
 
 
-def test_EVERY_row_rejected_still_advances(tmp_path):
-    """The hardest case: nothing lands at all. The cursor must STILL advance, because a log type
-    that is entirely unparseable is exactly when a stuck cursor is least recoverable."""
+def test_a_pass_where_NOTHING_lands_does_NOT_advance_the_cursor(tmp_path):
+    """The other half of the poison-pill trade, and the data-durability fix.
+
+    Row-by-row isolation answers ONE bad record. When *every* row is rejected the failure is not a
+    row -- it is the destination refusing the batch (schema drift, or a database that is not
+    answering), and those two are indistinguishable from here. The old contract advanced the cursor
+    anyway, so a transient database blip checkpointed the whole file as read. Measured with a
+    client whose insert raises: `inserted=0, offset=<file size>` -- the file was marked consumed
+    and nothing retried it.
+
+    So this RAISES and the cursor stays put. A genuinely unparseable log now blocks its own log
+    type -- loudly, once per pass, with the reason logged -- instead of being discarded in silence.
+    That is the trade this file makes everywhere: a visible stall and a duplicate are recoverable,
+    a quiet gap is not.
+    """
     f = _write_log(tmp_path, [_row(1), _row(2)])
     client = _Rejecting(reject_all=True)
+    state = ZeekTailState()
 
-    inserted, offset, _, _ = tail_zeek_log(client, str(f), state=ZeekTailState())
+    with pytest.raises(IngesterError, match="none of the 2 row"):
+        tail_zeek_log(client, str(f), state=state)
 
-    assert inserted == 0, f"nothing should have been counted as inserted: {inserted}"
-    assert offset == f.stat().st_size, (
-        f"the cursor stopped at {offset} with every row rejected, so this log type can never "
-        f"progress past data it cannot parse"
+    assert state.offset == 0, (
+        f"a pass that stored nothing checkpointed the file at {state.offset} of "
+        f"{f.stat().st_size} -- those records are now lost with nothing to retry them"
     )
+
+
+def test_the_NEXT_pass_lands_the_records_after_the_destination_recovers(tmp_path):
+    """A blip, not a poison pill: the retry must be the ordinary next pass, not an operator."""
+    f = _write_log(tmp_path, [_row(1), _row(2), _row(3)])
+    client = _Rejecting(reject_all=True)
+    state = ZeekTailState()
+
+    with pytest.raises(IngesterError):
+        tail_zeek_log(client, str(f), state=state)
+
+    client.reject_all = False
+    inserted, offset, _, _ = tail_zeek_log(client, str(f), state=state)
+
+    assert inserted == 3, f"the retry landed {inserted} of the 3 records the failure left unread"
+    assert offset == f.stat().st_size
+    assert client.rows_attempted, "the retry never reached the destination"
 
 
 def test_the_reported_COUNT_is_what_LANDED_not_what_was_attempted(tmp_path):

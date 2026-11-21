@@ -28,8 +28,15 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 log = logging.getLogger(__name__)
+
+# How many times a trim re-checks the sink for bytes appended while it was copying. One pass
+# covers the ordinary case (the writer appended during the kept-region copy); the loop exists
+# because the writer can also append DURING the drain. Bounded so a sink being written faster
+# than it can be copied cannot hold the prune job open forever.
+APPEND_DRAIN_PASSES = 16
 
 # Read the SAME variables the rest of the package already uses (weirvern/config.py), so a
 # layout change moves one value instead of two. Hardcoding paths here would mean the
@@ -158,6 +165,61 @@ def _append_trim_hint(p: Path, old_inode: int, new_inode: int, removed: int) -> 
         log.warning("prune: could not record the trim hint for %s: %s", p, exc)
 
 
+def _copy_appends(src: IO[bytes], out: IO[bytes], start: int) -> int:
+    """Move bytes the collector appended after `start` into the rewritten file.
+
+    ── WHY THIS EXISTS (measured data-durability defect) ──────────────────────────────────────
+
+    The in-place rewrite copies only the KEPT region back over the sink's front, then truncates.
+    The collector does not pause for it: a record appended between the start of the copy and the
+    truncate sits at an offset the copy never wrote, and `truncate()` deletes it. The trim then
+    reports success with the size it intended -- no error, no gap in the count, just a record that
+    vanished.
+
+    So capture where the kept region ended IN THE SOURCE, and move everything after it into the
+    new file before truncating. One pass covers what arrived during the copy; the loop re-reads the
+    size because a writer can also append during the drain, and stops only when it has caught up.
+
+    SAFE BY CONSTRUCTION: `start` is `kept_end`, the source offset just past the kept region, and
+    the destination is positioned at `kept_end - cut` (the kept region is `cut` bytes shorter).
+    Every write therefore stays exactly `cut` bytes behind the read cursor, so a drain can never
+    overwrite source bytes it has not read yet.
+
+    Returns the number of bytes moved.
+    """
+    moved = 0
+    pos = start
+    for _ in range(APPEND_DRAIN_PASSES):
+        try:
+            size_now = os.fstat(src.fileno()).st_size
+        except OSError:
+            return moved
+        if size_now <= pos:
+            return moved
+        src.seek(pos)
+        remaining = size_now - pos
+        while remaining > 0:
+            chunk = src.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            out.write(chunk)
+            pos += len(chunk)
+            moved += len(chunk)
+            remaining -= len(chunk)
+    # Still behind after the bound: name the exposure rather than pretending the trim was clean.
+    try:
+        residual = max(0, os.fstat(src.fileno()).st_size - pos)
+    except OSError:
+        residual = 0
+    if residual:
+        log.error(
+            "prune: the sink was still being appended to after %d drain pass(es); %d byte(s) "
+            "written during the rewrite are beyond the truncation point and will be lost",
+            APPEND_DRAIN_PASSES, residual,
+        )
+    return moved
+
+
 def enforce_netflow(cap_mb: float) -> ComponentResult:
     """Trim the goflow2 JSONL sink to a byte cap, oldest lines first.
 
@@ -181,6 +243,14 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
        deduplication: duplicate rows feeding the aggregates and models, at real cost. A
        trim-hint file beside the sink lists each rewrite (from-inode, to-inode, bytes
        removed); the reader walks that chain and subtracts, which is exact.
+
+    3. THE WRITER IS STILL WRITING WHILE THE FILE IS REWRITTEN. The copy takes the kept
+       region from a snapshot, and every record the collector appends meanwhile is beyond
+       it. Those bytes are drained into the new layout BEFORE the truncate (see
+       `_copy_appends`) -- otherwise the trim silently deletes exactly the records that
+       arrived during it. There is also no unlink path any more: a file whose whole content
+       is older than the cut is truncated in place, because "no reader bound" does not mean
+       "nothing is appending to it" and unlinking a live sink is how capture goes dark.
     """
     before = _total_bytes(NETFLOW_DIR)
     r = ComponentResult(component="netflow", cap_mb=cap_mb, before_mb=_mb(before),
@@ -207,17 +277,21 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
             size = st.st_size
             old_inode = st.st_ino
             guard = _reader_boundary(p, size)  # the reader's cursor, when it is for THIS file
-            if size <= excess and guard is None:
-                # The whole file goes; it is entirely older than the cut, and no reader is
-                # bound to this instance.
-                p.unlink()
-                excess -= size
-                r.actions += 1
-                continue
+            # ── ONE MECHANISM: TRIM IN PLACE. THERE IS NO UNLINK PATH. ────────────────────────
+            #
+            # A file whose whole content was older than the cut used to be UNLINKED when no reader
+            # was bound to it. "No reader bound" is not "not live": a first boot, a lost checkpoint
+            # and a checkpoint from a previous instance all look identical from here, and the file
+            # is normally the collector's open sink. Unlinking it is the same failure the in-place
+            # rewrite below exists to prevent -- the writer keeps appending to an inode nothing can
+            # see, the visible log freezes at the trim point, and the disk fills through a handle
+            # no path names. A full trim is simply a rewrite to zero bytes: same space freed, the
+            # handle still valid.
+            #
             # Partial trim: drop the OLDEST bytes, then discard the remainder of the line
             # the cut landed in so the file still starts at a record boundary.
             tmp = p.with_suffix(p.suffix + ".trim")
-            with open(p, "rb") as src, open(tmp, "wb") as out:
+            with open(p, "rb") as src:
                 src.seek(min(int(excess), size))
                 _ = src.readline()  # partial line -- discarded on purpose
                 cut = src.tell()
@@ -232,7 +306,11 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
                 # memory OOM-killed the prune CronJob at its 256Mi limit every five minutes
                 # (measured 2026-11-12: exit 137, BackoffLimitExceeded, cap never enforced while
                 # the disk filled). copyfileobj moves it in bounded chunks instead.
-                shutil.copyfileobj(src, out, length=1024 * 1024)
+                with open(tmp, "wb") as kept_out:
+                    shutil.copyfileobj(src, kept_out, length=1024 * 1024)
+                # WHERE THE KEPT REGION ENDED, IN THE SOURCE. Everything after this point was
+                # appended by the collector while the copy ran and belongs to the new file too.
+                kept_end = src.tell()
             # REWRITE THE FILE IN PLACE -- SAME INODE, NOT A RENAME.
             #
             # A rename creates a NEW inode while the COLLECTOR still holds the old one open,
@@ -246,9 +324,15 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
             # The collector opens this log for append, so writing the kept bytes back at
             # offset 0 and truncating keeps its handle valid: its next record lands after
             # ours. Ownership and mode are untouched by construction.
-            with p.open("r+b") as out, tmp.open("rb") as kept:
+            with p.open("r+b") as out, tmp.open("rb") as kept, open(p, "rb") as live:
                 out.seek(0)
                 shutil.copyfileobj(kept, out, length=1024 * 1024)
+                # DRAIN WHAT WAS APPENDED DURING THE REWRITE, THEN TRUNCATE. Truncating without
+                # this deletes those records silently: the trim reports success and the file is
+                # short by exactly the bytes the collector wrote while the copy was running.
+                # `live` is a second read handle: it only touches [kept_end, EOF), which the
+                # rewrite above (positions [0, kept_end - cut)) never wrote.
+                _copy_appends(live, out, kept_end)
                 out.truncate()
             tmp.unlink(missing_ok=True)
             # The hint records the trim even though the inode did not change: the reader's

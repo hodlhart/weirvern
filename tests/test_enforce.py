@@ -358,3 +358,68 @@ def test_a_trim_keeps_the_inode_the_collector_has_open(_isolated_dirs):
 
     assert f.stat().st_ino == before, "the collector's open handle must stay valid"
     assert f.stat().st_size > 0
+
+
+def test_a_record_appended_during_the_trim_is_not_truncated_away(_isolated_dirs, monkeypatch):
+    """MEASURED DATA-LOSS DEFECT: the rewrite copied the kept tail, reopened the sink, copied the
+    tail back and truncated. Anything the collector appended between the copy and the truncate sat
+    beyond the copied region, so the truncate deleted it -- and the trim still reported success.
+
+    The fix captures where the kept region ended IN THE SOURCE and drains [end, new size) into the
+    rewritten file before truncating. This test appends a real record during the copy, so the race
+    is exercised rather than described.
+    """
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    f.write_bytes(_jsonl_bytes(200))
+    late = (json.dumps({"i": "late", "pad": "p" * 80}) + "\n").encode()
+
+    real = enforce.shutil.copyfileobj
+    state = {"appended": False}
+
+    def copy_then_append(src, out, length=0):
+        real(src, out, length)
+        if not state["appended"]:
+            state["appended"] = True
+            with open(f, "ab") as writer:
+                writer.write(late)
+
+    monkeypatch.setattr(enforce.shutil, "copyfileobj", copy_then_append)
+
+    r = enforce.enforce_netflow(0.004)  # far below the file: a real trim
+
+    assert state["appended"], "nothing was copied, so the race was not exercised"
+    assert r.actions == 1
+    after = f.read_bytes()
+    assert late in after, (
+        "the record the collector appended during the trim was truncated away -- the file is "
+        "short by exactly the write that landed mid-rewrite"
+    )
+    for line in after.splitlines():
+        if line.strip():
+            json.loads(line)  # a drained record must still be a whole record
+
+
+def test_a_fully_superseded_sink_is_truncated_in_place_and_never_unlinked(_isolated_dirs):
+    """`no reader bound` is NOT `nothing is writing to it`.
+
+    The trim used to unlink a file whose whole content was older than the cut when no checkpoint
+    named it. A first boot, a lost checkpoint and a checkpoint from a previous instance are
+    indistinguishable from there, and the file is normally the collector's open sink: unlinking it
+    leaves the writer appending to an inode no path names -- the exact failure the in-place rewrite
+    exists to prevent. A full trim is a rewrite to zero bytes instead.
+    """
+    d = _isolated_dirs["netflow"]
+    old = d / "old.jsonl"
+    old.write_text('{"i": "old"}\n')
+    os.utime(old, (time.time() - 9999, time.time() - 9999))
+    big = d / "big.jsonl"
+    big.write_bytes(_jsonl_bytes(200))  # the excess comes from here
+    before = old.stat().st_ino
+
+    r = enforce.enforce_netflow(0.01)  # excess exceeds `old` entirely: the old code unlinked it
+
+    assert r.actions >= 1
+    assert old.exists(), "the sink was unlinked; anything still appending to it writes nowhere"
+    assert old.stat().st_ino == before, "the trim replaced the inode instead of rewriting in place"
+    assert old.stat().st_size == 0, "a fully superseded sink must be emptied, not removed"
