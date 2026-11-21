@@ -261,9 +261,10 @@ class FleetClient:
 
 def _status(sensor, available, version="Nmap version 7.95 ( https://nmap.org )", age_s=30):
     # Exactly the columns fleet_capability selects:
-    # sensor_id, profile, nmap_available, nmap_version, detail, last_check
+    # sensor_id, profile, nmap_available, nmap_version, detail, last_check, scan_mode
     return (sensor, "nmap" if available else "basic", 1 if available else 0, version, "",
-            datetime.now(UTC) - timedelta(seconds=age_s))
+            datetime.now(UTC) - timedelta(seconds=age_s),
+            "syn/udp" if available else "none")
 
 
 def test_capability_counts_only_fresh_registered_rows():
@@ -279,7 +280,7 @@ def test_capability_counts_only_fresh_registered_rows():
     assert [x["sensor_id"] for x in cap["capable"]] == ["wl-a"]
     assert [x["sensor_id"] for x in cap["incapable"]] == ["wl-b"]
     assert [x["sensor_id"] for x in cap["unknown"]] == ["wl-c"]
-    assert "1 of 3 weirlings can scan (nmap 7.95)" in cap["sentence"]
+    assert "1 of 3 weirlings can scan (nmap 7.95, syn/udp)" in cap["sentence"]
     assert cap["enabled"] is True
 
 
@@ -364,11 +365,22 @@ def test_capability_counts_only_enabled_unrevoked_registrations():
 def test_scan_modes_are_distinct_and_never_overclaim():
     assert scanner.scan_mode(False, False, False) == "none"
     assert scanner.scan_mode(True, False, False) == "connect"
-    assert scanner.scan_mode(True, True, False) == "raw"
-    assert scanner.scan_mode(True, False, True) == "raw"
+    assert scanner.scan_mode(True, True, False) == "syn/udp"
+    assert scanner.scan_mode(True, False, True) == "syn/udp"
     assert "connect scan only" in scanner.scan_mode_sentence("connect")
-    assert "SYN/UDP available" in scanner.scan_mode_sentence("raw")
+    assert "SYN/UDP available" in scanner.scan_mode_sentence("syn/udp")
     assert scanner.scan_mode_sentence("none") == "nmap missing"
+
+
+def test_a_legacy_raw_row_still_reads_as_syn_udp():
+    """The label changed (`raw` -> `syn/udp`); a row written by the old build must not read
+    as unknown capability. Both the display sentence and the scan-argv decision agree."""
+    assert scanner.normalise_scan_mode("raw") == "syn/udp"
+    assert scanner.normalise_scan_mode("RAW") == "syn/udp"
+    assert scanner.normalise_scan_mode("connect") == "connect"
+    assert scanner.scan_mode_is_raw("raw") is True
+    assert scanner.scan_mode_is_raw("connect") is False
+    assert "SYN/UDP available" in scanner.scan_mode_sentence("raw")
 
 
 def test_raw_mode_omits_the_unprivileged_flag(monkeypatch):
@@ -412,7 +424,7 @@ def test_no_blanket_sudoers_rule_is_shipped_or_generated():
 
 # ── /api/scanner: a row is a REPORT, not a verdict ──────────────────────────────────────────
 
-def _scanner_row(sensor, *, age_s, available=False):
+def _scanner_row(sensor, *, age_s, available=False) -> tuple[object, ...]:
     """The SIXTEEN columns `payloads.scanner` selects, in its order."""
     return (
         sensor, "nmap" if available else "basic", 1 if available else 0,
@@ -420,7 +432,7 @@ def _scanner_row(sensor, *, age_s, available=False):
         "/usr/bin/nmap" if available else "", 0, "ubuntu", "26.04",
         "" if available else "Nmap is not installed; install it with apt.",
         datetime.now(UTC) - timedelta(seconds=age_s),
-        False, "raw" if available else "none", False, "none",
+        False, "syn/udp" if available else "none", False, "none",
         "Ubuntu 26.04 LTS (debian family — apt)", "debian",
     )
 

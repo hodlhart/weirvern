@@ -650,8 +650,8 @@ def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
             "nmap_version": nmap_short_version(str(row[3] or "")),
             "detail": str(row[4] or ""),
             "last_check": when,
-            "scan_mode": str(row[6] if len(row) > 6 else "") or
-                         ("raw" if bool(row[2]) else "none"),
+            "scan_mode": normalise_scan_mode(
+                str(row[6] if len(row) > 6 else "") or ("syn/udp" if bool(row[2]) else "none")),
         }
 
     capable: list[dict[str, Any]] = []
@@ -708,13 +708,22 @@ def fleet_capability(client: Any, *, ip: str = "", now: datetime | None = None,
 
     if enabled:
         versions = sorted({item["nmap_version"] for item in capable if item["nmap_version"]})
-        detail = f" (nmap {', '.join(versions)})" if versions else ""
-        modes = {item["scan_mode"] for item in eligible if item.get("scan_mode")}
+        modes = {normalise_scan_mode(item["scan_mode"]) for item in eligible
+                 if item.get("scan_mode")}
+        # ONE PARENTHESISED FACT, THE VERSION AND THE MODE: "… can scan (nmap 7.95, syn/udp)".
+        # The mode belongs beside the version because "can scan" without it promised a SYN/UDP
+        # sweep on a node that could only complete TCP connections.
+        mode_label = "syn/udp" if "syn/udp" in modes else ("connect" if modes == {"connect"} else "")
+        detail = ""
+        if versions and mode_label:
+            detail = f" (nmap {', '.join(versions)}, {mode_label})"
+        elif versions:
+            detail = f" (nmap {', '.join(versions)})"
+        elif mode_label:
+            detail = f" ({mode_label})"
         mode_note = ""
         if modes == {"connect"}:
             mode_note = " — connect scans only: no raw-socket capability on the scanning weirling"
-        elif "raw" in modes:
-            mode_note = " — SYN/UDP available"
         if ip:
             sentence = (f"{len(eligible)} of {len(reachable)} weirling"
                         f"{'s' if len(reachable) != 1 else ''} can scan {ip}{detail}{mode_note}")
@@ -799,24 +808,50 @@ SUDOERS_ENTRY = "/etc/sudoers.d/weirvern-nmap"
 
 
 def scan_mode(available: bool, privileged: bool, caps: bool) -> str:
-    """What kind of scan this node can ACTUALLY run: `none` | `connect` | `raw`.
+    """What kind of scan this node can ACTUALLY run: `none` | `connect` | `syn/udp`.
 
     THE DISTINCTION IS NOT COSMETIC. Unprivileged Nmap can only complete a TCP connection
     (`--unprivileged`, connect scan); SYN and UDP scans need CAP_NET_RAW/CAP_NET_ADMIN (or
     root). Reporting "can scan" without saying which would promise a scan type the node cannot
     perform, so readiness carries the mode and the console prints it.
+
+    THE SPELLING IS THE OPERATOR'S, NOT NMAP'S INTERNAL ONE. `syn/udp` names the two scan
+    types the capability unlocks; the older `raw` value is still accepted on read so a row
+    written by a previous release is understood rather than shown as unknown.
     """
     if not available:
         return "none"
-    return "raw" if (privileged or caps) else "connect"
+    return "syn/udp" if (privileged or caps) else "connect"
+
+
+def normalise_scan_mode(mode: str | None) -> str:
+    """Map every spelling this project has written to today's two-value vocabulary.
+
+    `raw` was the previous label for a raw-socket-capable node. Rows live for 15 minutes and
+    are read by the console, so the old value is translated instead of being redefined as
+    unknown -- a capability that works must not read as "unknown" because of a rename.
+    """
+    text = str(mode or "").strip().lower()
+    if text in {"raw", "syn/udp", "syn-udp", "synudp", "syn,udp"}:
+        return "syn/udp"
+    if text == "connect":
+        return "connect"
+    if text == "none":
+        return "none"
+    return text or "unknown"
+
+
+def scan_mode_is_raw(mode: str | None) -> bool:
+    """Does this mode allow SYN/UDP scans? One predicate, so every caller agrees."""
+    return normalise_scan_mode(mode) == "syn/udp"
 
 
 def scan_mode_sentence(mode: str) -> str:
     return {
         "none": "nmap missing",
         "connect": "nmap present, unprivileged (connect scan only)",
-        "raw": "nmap present with raw-socket capabilities (SYN/UDP available)",
-    }.get(str(mode or ""), "scan capability unknown")
+        "syn/udp": "nmap present with raw-socket capabilities (SYN/UDP available)",
+    }.get(normalise_scan_mode(mode), "scan capability unknown")
 
 
 def nmap_has_caps(path: str) -> bool:

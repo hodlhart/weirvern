@@ -629,8 +629,9 @@ def scanner(client: Client) -> dict[str, Any]:
             "detail": str(row[8] or ""),
             "last_check": when.isoformat() if when is not None else "",
             "privileged": bool(row[10]) if len(row) > 10 else False,
-            "scan_mode": str(row[11] if len(row) > 11 else "") or (
-                "raw" if bool(row[2]) else "none"),
+            "scan_mode": scanner_mod.normalise_scan_mode(
+                str(row[11] if len(row) > 11 else "")
+                or ("syn/udp" if bool(row[2]) else "none")),
             "can_install": bool(row[12]) if len(row) > 12 else False,
             "sudo_state": str(row[13]) if len(row) > 13 else "",
             # THE LABEL IS THE DISTRO; THE FAMILY PICKS THE COMMAND. A row written before the

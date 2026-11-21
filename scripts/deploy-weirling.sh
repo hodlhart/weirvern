@@ -63,6 +63,9 @@
 #                 Weirvern without a route to the hub. Inert until an exporter is pointed at it.
 #   --mtls        Accepted for compatibility; mTLS is now the DEFAULT.
 #   --mtls-token  use this already-issued one-time token instead of asking the hub CLI.
+#   --agent-image override the agent image. Default: `weirvern-scan:<worker tag>` when the hub
+#                 has it (Nmap + raw-socket file capabilities, so the unit can scan), otherwise
+#                 the worker image, which reports `nmap missing` and claims nothing.
 #   --legacy-clickhouse
 #                 Explicitly opt OUT of mTLS and give the unit a ClickHouse credential. This is
 #                 a migration path for a hub whose gateway is not yet reachable; it is not the
@@ -92,6 +95,7 @@ INLINE=0
 NO_TRUNK=0
 MTLS=1
 MTLS_TOKEN=""
+AGENT_IMAGE=""
 REMOVE=0
 PURGE=0
 DRY=0
@@ -114,6 +118,7 @@ while [ $# -gt 0 ]; do
         --netflow) NETFLOW=1; shift ;;
         --mtls) MTLS=1; shift ;;
         --mtls-token) MTLS_TOKEN="${2:?--mtls-token needs a value}"; MTLS=1; shift 2 ;;
+        --agent-image) AGENT_IMAGE="${2:?--agent-image needs a value}"; shift 2 ;;
         --legacy-clickhouse) MTLS=0; shift ;;
         --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
         --inline) INLINE=1; NO_TRUNK=1; shift ;;
@@ -306,11 +311,32 @@ SITE_CM="${SITE_CM#configmap/}"
 # this script resolves it from the running worker's tag. If the hub does not have it, the unit
 # still deploys -- and its agent reports `nmap missing`, which the hub shows instead of
 # pretending the unit can scan.
+#
+# THE IMAGE IS READ FROM THE STORE `docker save` READS. This script transfers with
+# `docker save` on the hub, so checking k3s's containerd was not enough: an image present only
+# in containerd (the runtime) could be announced as available and then fail the transfer. Docker
+# is checked first; if only containerd has it, it is copied into docker once, on the hub, before
+# the transfer. `--agent-image` is the escape hatch for a tag that does not follow the worker's.
 WORKER_TAG="${WORKER_IMG##*:}"
 SCAN_IMG="weirvern-scan:$WORKER_TAG"
-if rsh "$HUB" "k3s ctr images ls 2>/dev/null | grep -q '$SCAN_IMG'" 2>/dev/null; then
+if [ -n "$AGENT_IMAGE" ]; then
+    AGENT_IMG="$AGENT_IMAGE"
+    say "  scan image: $AGENT_IMG (explicit --agent-image)"
+elif rsh "$HUB" "docker image inspect '$SCAN_IMG' >/dev/null 2>&1"; then
     AGENT_IMG="$SCAN_IMG"
     say "  scan image: $AGENT_IMG (nmap-capable; this weirling can claim manual scans)"
+elif rsh "$HUB" "k3s ctr images ls 2>/dev/null | grep -q '$SCAN_IMG'"; then
+    say "  scan image: $SCAN_IMG is in the hub's containerd but not its docker; copying it for transfer"
+    if rsh "$HUB" "k3s ctr images export /tmp/$(basename "$SCAN_IMG" | tr ':' '-').tar '$SCAN_IMG' \
+                   && docker load -i /tmp/$(basename "$SCAN_IMG" | tr ':' '-').tar \
+                   && rm -f /tmp/$(basename "$SCAN_IMG" | tr ':' '-').tar" >/dev/null 2>&1; then
+        AGENT_IMG="$SCAN_IMG"
+        say "  scan image: $AGENT_IMG (nmap-capable; this weirling can claim manual scans)"
+    else
+        AGENT_IMG="$WORKER_IMG"
+        say "  scan image: $SCAN_IMG could not be copied from containerd to docker on the hub"
+        say "              this unit will report 'nmap missing' and will not claim scans"
+    fi
 else
     AGENT_IMG="$WORKER_IMG"
     say "  scan image: $SCAN_IMG not found on the hub; this unit will report 'nmap missing'"
@@ -361,7 +387,7 @@ fi
 
 if [ "$DRY" = "1" ]; then
     step "DRY RUN -- plan for weirling \"$SENSOR_ID\" on $TARGET"
-    say "  1. stream $ZEEK_IMG and $WORKER_IMG from $HUB to $TARGET (docker save | docker load)"
+    say "  1. stream $ZEEK_IMG , $WORKER_IMG and $AGENT_IMG from $HUB to $TARGET (docker save | docker load)"
     if [ "$MTLS" = "1" ]; then
         say "  2. obtain a one-time adoption token and enroll a local key/CSR over mTLS"
         say "     write /etc/weirvern-weirling.env (gateway URL + certificate paths only)"
@@ -601,6 +627,42 @@ esac
 HELPER
 rsh "$TARGET" "weirvern-weirling start"
 say "  started"
+
+# ── verify: the container can ACTUALLY scan, not just "the container started" ────────────────
+# The readiness line is the fleet's measured fact, so the installer measures it here instead of
+# letting the operator discover `nmap missing` in the console later. Both halves are checked: the
+# binary and the capability that decides connect vs SYN/UDP.
+step "verifying the agent's scan capability"
+NMAP_LINE=""
+i=0
+while [ "$i" -lt 6 ]; do
+    NMAP_LINE="$(rsh "$TARGET" "docker exec weirvern-agent-$SENSOR_ID nmap --version 2>/dev/null | head -1" || true)"
+    [ -n "$NMAP_LINE" ] && break
+    i=$((i + 1)); sleep 2
+done
+CAPS="$(rsh "$TARGET" "docker inspect --format '{{json .HostConfig.CapAdd}}' weirvern-agent-$SENSOR_ID 2>/dev/null" || true)"
+if [ -n "$NMAP_LINE" ]; then
+    UID_IN="$(rsh "$TARGET" "docker exec weirvern-agent-$SENSOR_ID id -u 2>/dev/null" || true)"
+    GETCAP_LINE="$(rsh "$TARGET" "docker exec weirvern-agent-$SENSOR_ID getcap /usr/bin/nmap 2>/dev/null" || true)"
+    HAVE_BOTH=0
+    case "$CAPS" in *NET_RAW*) case "$CAPS" in *NET_ADMIN*) HAVE_BOTH=1 ;; esac ;; esac
+    FILE_CAPS=0
+    case "$GETCAP_LINE" in *cap_net_raw*) case "$GETCAP_LINE" in *cap_net_admin*) FILE_CAPS=1 ;; esac ;; esac
+    if [ "$HAVE_BOTH" = "1" ] && { [ "$UID_IN" = "0" ] || [ "$FILE_CAPS" = "1" ]; }; then
+        MODE="syn/udp"
+    else
+        MODE="connect"
+    fi
+    NMAP_VER="$(printf '%s' "$NMAP_LINE" | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p')"
+    say "  scan: $NMAP_LINE"
+    say "  capabilities: ${CAPS:-none reported}; uid ${UID_IN:-unknown}; file caps ${GETCAP_LINE:-none}"
+    say "  readiness will read: $SENSOR_ID can scan (nmap ${NMAP_VER:-unknown}, $MODE)"
+    [ "$MODE" = "syn/udp" ] || say "  WARNING: raw-socket capability is incomplete; this unit can only run connect scans."
+else
+    say "  WARNING: the agent container has no nmap; this unit will report 'nmap missing' and"
+    say "           will not claim scans. It must run $SCAN_IMG (Containerfile.scanner), not the"
+    say "           worker image; rebuild and re-run, or pass --agent-image."
+fi
 
 # ── verify: a FRESH heartbeat for this id in the hub's database ─────────────────────────────
 step "verifying the heartbeat reaches the hub"

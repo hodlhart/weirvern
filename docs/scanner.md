@@ -15,9 +15,11 @@ the old central scanner Deployment is gone. Each unit runs the sensor agent, whi
    not require a restart);
 2. reports that capability — with its `/etc/os-release` distro and version — to the hub;
 3. asks the hub for at most one queued manual job at a time, and **only if Nmap is present**;
-4. runs `nmap --unprivileged -sV … -oX -` against the one address and sends the measured services
-   and NSE observations back over the authenticated mTLS gateway. The hub writes them with the
-   same recorder it has always used.
+4. runs `nmap -sV … -oX -` against the one address and sends the measured services and NSE
+   observations back over the authenticated mTLS gateway. The hub writes them with the same
+   recorder it has always used. On a unit that measured `syn/udp` the command omits
+   `--unprivileged`, so Nmap uses SYN and UDP probes; a `connect`-only unit passes
+   `--unprivileged` instead and the console says which mode it is.
 
 A weirling that cannot scan reports `nmap missing` and never claims. The hub enforces the same
 rule at claim time, so a queued job cannot be held by a node that cannot execute it.
@@ -40,33 +42,76 @@ Add the network to a weirling's registration first.
 
 ## Installing Nmap on a weirling
 
-The agent container is not root and has no privileged channel by default. Three supported paths,
-in the order to prefer them:
+There are **two deployment shapes**, and the install path depends on which one you run. They do
+not contradict each other: the agent always measures the filesystem IT runs in, so a package
+installed on the host is invisible to a containerised agent and vice versa.
 
-**1. Use the scan image (recommended for the fleet).** `install.sh` builds `weirvern-scan:<tag>`
-from `Containerfile.scanner` (Nmap + safe NSE scripts, no Nuclei).
-`scripts/deploy-weirling.sh` resolves that image from the running worker's tag and uses it for
-the agent container, so the unit can scan as soon as it starts. If the hub does not have it, the
-script says so and the unit reports `nmap missing` until it is built:
+### A. Containerised weirling (the shipped installer): Nmap is in the image
+
+Nothing is installed at runtime and there is nothing to click. `install.sh` builds
+`weirvern-scan:<tag>` from `Containerfile.scanner`; that image installs `nmap` and
+`libcap2-bin`, and runs
+
+```bash
+setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap
+```
+
+so a non-root agent receives both capabilities as file capabilities at exec.
+`scripts/deploy-weirling.sh` selects `weirvern-scan:<worker tag>` for the agent container and
+starts it with `--cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN`. **Both halves are
+required:** a file capability outside the container's bounding set is ignored at exec, and a
+bounding set with no file capability gives a non-root process nothing effective.
+
+The agent reports `scan_mode: syn/udp`, so `/api/scan-readiness` reads:
+
+```
+1 of 1 weirling can scan (nmap 7.95, syn/udp)
+```
+
+and the Weirlings card hides **Install nmap** — there is nothing to install, and a container
+cannot install into its own image (an install would also vanish on the next recreate). If the
+hub lacks the scan image the installer says so, and the unit honestly reports `nmap missing`.
+Build and import it on the hub:
 
 ```bash
 docker build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
 docker save weirvern-scan:sha-<commit> | k3s ctr images import -
 ```
 
-**2. Scoped sudoers: one command, no password (recommended when the unit is not on the scan
-image).** Give the agent's user one sudoers entry that permits exactly the install command for
-that host's distro. The agent reports `sudo_state=passwordless`, the console's **Install nmap**
-button appears with no password field, and one click runs it. The grant is the allow-listed
-package-manager command, not root.
+`--agent-image <ref>` overrides the image selection when the tag does not follow the worker's.
 
-**3. One-click prompt: the fallback, with a sudo password.** When the agent reports
+**Size.** Nmap plus its NSE script tree adds roughly 190 MB uncompressed to the image
+(`python:3.11-slim` base; measured with `docker images`: 521 MB worker vs 714 MB scan at
+0.23.119-era builds). That is why Nmap is **not** in `Containerfile`: every hub workload
+(worker, GUI, ingest, schema Job, prune CronJob) runs the worker image, and only a sensor's
+agent runs the scan image. The delta is paid per weirling, not per cluster workload.
+
+The installer also verifies the result after starting the container: it runs `nmap --version`
+inside `weirvern-agent-<id>`, reports the binary, the container capabilities, the uid and
+`getcap`, and prints the readiness line the hub will show. A missing binary or incomplete
+capability is a warning at install time, not a discovery in the console later.
+
+### B. Non-containerised (or worker-image) weirling: install on the host
+
+For a unit whose agent runs directly on the host — or an older unit still running the worker
+image — install Nmap **on that host**. Two supported ways to give the agent the privilege, in
+order of preference:
+
+**B1. Scoped sudoers: one command, no password (recommended).** Give the agent's user one
+sudoers entry that permits exactly the install command for that host's distro. The agent reports
+`sudo_state=passwordless`, the console's **Install nmap** button appears with no password field,
+and one click runs it. The grant is the allow-listed package-manager command, not root.
+
+**B2. One-click prompt: the fallback, with a sudo password.** When the agent reports
 `sudo_state=password`, the card shows *sudo password for &lt;host&gt;*. The password goes to the
 console in a POST body, then over the cluster network to the ingest gateway, which holds it in
 memory for at most five minutes; the weirling picks the request up on its own mTLS poll and
 pipes the password to `sudo -S`. It is never stored in ClickHouse, never an environment variable,
 never logged and never written to the audit row — which records the actor, host, command, exit
 code and the FACT that a password was used. Three attempts per host per ten minutes.
+
+After either install, run `sudo setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap` on the host
+so the agent reports `syn/udp` instead of `connect`; without it the scan is a TCP connect scan.
 
 The console renders the exact command from the OS the agent reported, for every path:
 
@@ -117,7 +162,7 @@ The agent is `python3 -m weirvern.admin.sensor_agent` in the release image:
 
 | Setting | Value |
 | --- | --- |
-| image | `weirvern-scan:<tag>` when the hub's k3s image store has it, otherwise `weirvern-worker:<tag>`; the tag is read from the RUNNING `deploy/weirvern-worker` |
+| image | `weirvern-scan:<tag>` — Nmap, `libcap2-bin` and file capabilities on `/usr/bin/nmap` — selected from the RUNNING `deploy/weirvern-worker` tag. `weirvern-worker:<tag>` is the fallback and **cannot scan**. `--agent-image` overrides. |
 | network | `--network host` |
 | user | `0:0` on the default mTLS transport (the remote ARP probe needs an effective `NET_RAW`); `10001:10001` with `--legacy-clickhouse` |
 | capabilities | `--cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN` |
@@ -179,11 +224,19 @@ next capability report flips the row. A unit that stops reporting is shown as `s
 
 ## Install-time provisioning (privileged once, never at runtime)
 
-**Can Weirvern install nmap on a weirling?** Yes, through one of the three paths above. The agent
-itself stays unprivileged by default: no sudoers rule, no setuid helper and no privileged
-container. A unit that has not been provisioned reports `nmap missing` and claims nothing.
+**Can Weirvern install nmap on a weirling?** For a **host-installed** unit, yes, through one of
+the two host paths above. For the **containerised** default there is nothing to install: the
+image ships Nmap and the installer grants the two capabilities, so the unit is scan-capable from
+its first heartbeat and the console hides the install action.
 
-The setup step does exactly three things, as root (or through an installer that runs as root):
+The host-installed agent stays unprivileged by default: no sudoers rule, no setuid helper and no
+privileged container. The containerised agent is the deliberate exception, and its privilege is
+narrow: every capability is dropped except `NET_RAW` and `NET_ADMIN`, there is no shell channel,
+and `nmap` carries the same two capabilities as file capabilities for the non-root case. A unit
+that has neither the image nor the host package reports `nmap missing` and claims nothing.
+
+For a **host-installed** unit the setup step does exactly three things, as root (or through an
+installer that runs as root):
 
 ```bash
 # 1. install the package for this host's distro (see the table above)
@@ -197,16 +250,18 @@ scripts/deploy-weirling.sh --hub <hub-ssh> --target local --iface <capture-port>
         --sensor-id <id>
 ```
 
-Under the default mTLS transport the installer runs the agent as uid 0 because the remote ARP
-probe needs an effective `NET_RAW` capability, which Docker does not grant to a non-root UID. That
-is not root on the host: the container drops every capability except `NET_RAW` and `NET_ADMIN` and
-has no shell channel. The capture container additionally sets `no-new-privileges`. With
-`--legacy-clickhouse` the agent runs as `10001:10001`.
+Under the default mTLS transport the containerised installer runs the agent as uid 0 because the
+remote ARP probe needs an effective `NET_RAW` capability, which Docker does not grant to a
+non-root UID. That is not root on the host: the container drops every capability except `NET_RAW`
+and `NET_ADMIN` and has no shell channel. The capture container additionally sets
+`no-new-privileges`; the agent container deliberately does not, because that flag would also
+disable the file capabilities on `nmap`. With `--legacy-clickhouse` the agent runs as
+`10001:10001` and relies on those file capabilities.
 
-After step 2 the agent reports `nmap present with raw-socket capabilities (SYN/UDP available)`.
-Without it, the honest readiness line is `nmap present, unprivileged (connect scan only)`: a
-finished TCP connection is a weaker measurement than a SYN scan and the console does not pretend
-otherwise.
+On a host-installed unit, after step 2 the agent reports `nmap present with raw-socket
+capabilities (SYN/UDP available)`. Without it, the honest readiness line is `nmap present,
+unprivileged (connect scan only)`: a finished TCP connection is a weaker measurement than a SYN
+scan and the console does not pretend otherwise.
 
 **There is no blanket sudoers rule.** Do not give the sensor passwordless sudo over every
 command (a rule whose command list is `ALL`): it would let a compromised sensor install anything
@@ -303,9 +358,14 @@ a hundred new devices.
 
 ## Boundaries
 
-- **No NET_RAW / NET_ADMIN.** Nmap runs `--unprivileged` connect scans. This is slower than a
-  SYN scan and cannot do ARP-only discovery; that is the deliberate trade for not granting a
-  packet-socket capability to a network-facing workload.
+- **The agent container holds exactly two capabilities, and only when it scans.** `NET_RAW` and
+  `NET_ADMIN`, with `--cap-drop ALL`; nothing else is added. They are what make SYN/UDP scans
+  possible, and `nmap` carries the same two as file capabilities so the non-root (`10001:10001`)
+  path works too. A unit that cannot obtain them reports `connect`, not `syn/udp`: the console
+  never claims a SYN scan from a node that can only complete TCP connections. The hub itself
+  runs no scanner and needs no packet-socket capability.
+- **A containerised unit cannot install into its image.** The Install action is for host-installed
+  units; on the scan image it is hidden because the capability is already present.
 - **No automatic blocking.** A scan result is evidence. Sluice actions remain an operator
   decision.
 - **Nmap service banners are hints.** Backported distro patches routinely make a version string
@@ -324,7 +384,12 @@ allowed to look like a host with no services.
 # on the weirling: the agent is up and comes back after a restart
 docker inspect --format '{{.State.Status}} {{.HostConfig.RestartPolicy.Name}}' weirvern-agent-<id>
 
-# the fleet's own answer, from the hub
+# the container can ACTUALLY scan: binary, file capabilities, granted capabilities
+docker exec weirvern-agent-<id> nmap --version | head -1
+docker exec weirvern-agent-<id> getcap /usr/bin/nmap
+docker inspect --format '{{json .HostConfig.CapAdd}}' weirvern-agent-<id>
+
+# the fleet's own answer, from the hub -- expect "(nmap <version>, syn/udp)"
 curl -s http://127.0.0.1:30088/api/scan-readiness | python3 -m json.tool
 
 # the same rows the card renders: `state` must be reported or stale, never a stale `reported`

@@ -666,7 +666,7 @@ def _scan_worker(settings, sid: str, stop: threading.Event) -> None:
                     # would keep running until it was done anyway.
                     result = scanner.run_service_scan(
                         settings, str(job.get("ip") or ""),
-                        raw=capability.get("scan_mode") == "raw",
+                        raw=scanner.scan_mode_is_raw(capability.get("scan_mode")),
                         cancel_check=partial(client.scan_cancel, job_id))
                     client.scan_result(job_id, result)
                     logger.info("scan: job %s for %s -> %s", job.get("job_id"),
@@ -688,7 +688,7 @@ def _scan_worker(settings, sid: str, stop: threading.Event) -> None:
                 if job:
                     scanner.run_claimed_job(
                         client, settings, job,
-                        raw=capability.get("scan_mode") == "raw",
+                        raw=scanner.scan_mode_is_raw(capability.get("scan_mode")),
                         # THE DATABASE IS THE HUB HERE: a claimer with a direct connection
                         # polls the same `cancel_requested` row the console wrote.
                         cancel_check=partial(scan_jobs.cancel_requested, client,

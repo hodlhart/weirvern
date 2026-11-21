@@ -112,3 +112,66 @@ def test_the_sluice_backend_actually_shells_out_to_nft() -> None:
     source_text = (ROOT / "weirvern" / "sluice.py").read_text()
     assert "nft" in source_text, "the sluice module no longer references nft at all"
     assert NftBackend().name == "nft"
+
+
+# ── the SCAN image: the agent container's own filesystem is what it measures ─────────────────
+
+SCANNER_CONTAINERFILE = ROOT / "Containerfile.scanner"
+DEPLOY_WEIRLING = ROOT / "scripts" / "deploy-weirling.sh"
+
+
+def test_the_scan_image_ships_nmap_and_the_capabilities_to_use_it():
+    """A weirling measures the filesystem IT runs in.
+
+    Installing nmap on the HOST cannot make a containerised agent capable: the container has
+    its own rootfs. An agent image without nmap reports `nmap missing` forever, and the Install
+    action cannot succeed either -- a container cannot install into its own image. This test
+    pins both halves that make the container path work:
+
+      * the binary (silent `nmap missing` otherwise), and
+      * file capabilities on it (`getcap`/`setcap` come from libcap2-bin), which is how a
+        non-root agent converts the container's NET_RAW/NET_ADMIN into an EFFECTIVE capability.
+        Without them the unit is silently limited to TCP connect scans.
+    """
+    text = SCANNER_CONTAINERFILE.read_text()
+    install_lines = [line for line in text.splitlines() if "apt-get install" in line]
+    assert install_lines, "Containerfile.scanner has no apt-get install line"
+    for pkg in ("nmap", "libcap2-bin"):
+        assert any(pkg in line for line in install_lines), (
+            f"Containerfile.scanner no longer installs {pkg} on its apt-get line; a comment is "
+            f"not a package"
+        )
+    assert "setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap" in text, (
+        "the scan image no longer grants nmap its file capabilities; a non-root agent gets no "
+        "effective NET_RAW/NET_ADMIN and is silently connect-only"
+    )
+    assert "USER weirvern" in text, (
+        "the scan image is expected to run as its non-root user by default; if this changes, "
+        "the setcap rationale must be revisited rather than silently dropped"
+    )
+
+
+def test_the_weirling_installer_runs_the_agent_with_raw_socket_caps():
+    """The other half: file capabilities outside the container's bounding set are ignored.
+
+    The agent container must be granted NET_RAW and NET_ADMIN, and must NOT set
+    no-new-privileges (that flag makes the kernel ignore the file capabilities too).
+    """
+    text = DEPLOY_WEIRLING.read_text()
+    # Slice the AGENT's own block: from the docker run that precedes the sensor_agent entrypoint
+    # to that entrypoint. A fixed-size window would bleed into the neighbouring netflow block.
+    end = text.index("weirvern.admin.sensor_agent")
+    start = text.rfind("docker run -d --name", 0, end)
+    assert start != -1, "the agent container's docker run line is no longer recognisable"
+    segment = text[start:end]
+    assert "--cap-add NET_RAW" in segment and "--cap-add NET_ADMIN" in segment, (
+        "deploy-weirling.sh no longer grants the agent container NET_RAW/NET_ADMIN; nmap -sS/-sU "
+        "cannot open a raw socket"
+    )
+    assert "--security-opt no-new-privileges" not in segment, (
+        "no-new-privileges on the agent container disables the image's file capabilities on nmap; "
+        "it must stay off for the scan path"
+    )
+    assert "weirvern-scan:$WORKER_TAG" in text, (
+        "deploy-weirling.sh no longer resolves the nmap-capable scan image for the agent"
+    )

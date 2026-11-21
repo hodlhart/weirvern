@@ -6,17 +6,45 @@
 # Keeping Nmap out of the detection worker means the worker carries no network scanner's
 # binaries or attack surface.
 #
+# THE CONTAINER PATH IS THE DEFAULT PATH, SO NMAP SHIPS HERE. A unit deployed with the worker
+# image reported `nmap missing` no matter what the operator installed on the HOST: the agent
+# measures the container's filesystem, not the host's. The Install action then could not succeed
+# either -- a container cannot apt-get install into its own image. This tag is therefore the agent
+# image, and it must carry the scanner itself.
+#
+# WHY libcap2-bin AND setcap. The image's USER is uid 10001. Docker's `--cap-add NET_RAW`
+# raises the container's bounding set, but a non-root process gets no EFFECTIVE capability from
+# the bounding set alone; file capabilities on the binary are what convert them to permitted +
+# effective at exec. Without `setcap` a non-root agent is silently limited to TCP connect scans
+# even though the container was granted the two capabilities. `getcap` is how the agent MEASURES
+# that (`scanner.nmap_has_caps`); without libcap2-bin it reports connect-only rather than
+# claiming a raw scan it cannot run.
+#
+# BOTH HALVES ARE REQUIRED: this setcap line, and
+# `--cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN` on the agent container
+# (scripts/deploy-weirling.sh). A file capability outside the bounding set is ignored at exec.
+# The agent container must not set `no-new-privileges`, or the file capability is ignored too.
+#
+# SIZE: measured on 2026-11-21, `weirvern-worker:sha-<commit>` 521 MB vs
+# `weirvern-scan:sha-<commit>` 714 MB (docker images, uncompressed) -- about +193 MB, almost all
+# of it Nmap's NSE script tree. That is why nmap is NOT in Containerfile: every hub workload
+# (worker, GUI, ingest, schema Job, prune CronJob) runs the worker image, and only a weirling's
+# agent runs this one. The delta is paid per sensor, not per cluster workload.
+#
 # The identity layer is Nmap -sV plus bundled safe NSE scripts (http-title, ssl-cert,
 # smb-os-discovery, snmp-sysdescr, ...). There is no template tree, no update lifecycle and no
 # vulnerability verdict: nothing here invents a finding.
 #
 # BUILD (the tag follows the worker's; install.sh builds both):
-#   podman build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
+#   docker build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
 FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      nmap ca-certificates \
+ && apt-get install -y --no-install-recommends nmap libcap2-bin ca-certificates \
+ && setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap \
+ && getcap /usr/bin/nmap | grep -q cap_net_raw \
+ && getcap /usr/bin/nmap | grep -q cap_net_admin \
+ && nmap --version \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \

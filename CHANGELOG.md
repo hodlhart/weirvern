@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.23.120 — 2026-11-21
+
+A CONTAINERISED WEIRLING CAN SCAN — the agent image ships Nmap with raw-socket capabilities, and
+the readiness line names the scan mode it really has.
+
+- **The scan image is where Nmap belongs, and it now carries both halves.** `Containerfile.scanner`
+  installs `nmap` and `libcap2-bin` and runs
+  `setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap`, so the non-root agent converts the
+  container's `NET_RAW`/`NET_ADMIN` into an effective capability. Installing Nmap on the HOST could
+  never fix a containerised unit: the agent measures its own container filesystem, and a container
+  cannot install into its own image. The worker image stays Nmap-free — every hub workload runs
+  it — and the scan image is roughly 190 MB larger, paid per sensor.
+- **The installer resolves and verifies the agent image instead of assuming it.** It reads the
+  scan image from the same Docker store `docker save` uses (copying it out of containerd when that
+  is the only copy), accepts `--agent-image`, and after start runs `nmap --version`, `getcap` and
+  the container's `CapAdd` inside `weirvern-agent-<id>`, printing the readiness line the hub will
+  show. A unit left on the worker image says so at install time rather than surfacing later as
+  `nmap missing`.
+- **The mode is `connect` or `syn/udp`, not the internal word `raw`.** `detect_scanner` and the
+  fleet sentence now read `1 of 1 weirling can scan (nmap 7.95, syn/udp)`; a row written by an
+  older build still parses (`raw` is normalised), and the scan command omits `--unprivileged` for
+  either spelling. The Weirlings card hides **Install nmap** when the unit is already capable,
+  because on a containerised weirling there is nothing to install.
+- **The two install paths are documented separately and no longer contradict.** `docs/scanner.md`
+  and `docs/deployment.md` describe the containerised path (image + capabilities, no Install
+  action) apart from the host-installed path (package + `setcap`, scoped sudoers or one-click
+  prompt). The old "no NET_RAW / NET_ADMIN, connect scans only" boundary described neither.
+
 ## 0.23.119 — 2026-11-21
 
 A SILENT WEIRLING IS REPORTED AS SILENT — a stale capability row stops reading as a verdict, and

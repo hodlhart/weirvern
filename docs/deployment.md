@@ -94,11 +94,23 @@ docker build -t weirvern-worker:sha-<commit> -f Containerfile .
 docker build -t weirvern-scan:sha-<commit>   -f Containerfile.scanner .
 ```
 
-`weirvern-scan` is the Nmap-capable image `scripts/deploy-weirling.sh` ships to each sensor's
-agent container. If it is absent, the unit still deploys and reports `nmap missing`; the console
-renders the exact install command for that host's OS.
+`weirvern-scan` is the Nmap-capable agent image `scripts/deploy-weirling.sh` ships to each
+sensor's agent container. It installs `nmap` and `libcap2-bin` and sets
+`cap_net_raw,cap_net_admin` on the binary, and the installer starts the container with
+`--cap-add NET_RAW --cap-add NET_ADMIN`, so the unit scans out of the box. The agent reports
+`scan_mode: syn/udp` and the console hides **Install nmap** because there is nothing to install.
+If the image is absent, the unit still deploys and honestly reports `nmap missing`; build it with
+the command above and re-run the installer, or pass `--agent-image <ref>`.
 
-### Installing Nmap on a weirling: two paths
+### Installing Nmap on a weirling: the two deployment shapes
+
+**A containerised unit gets Nmap from the image, not from the host.** A package installed on the
+host is invisible to the agent (it measures its own container filesystem), and a container cannot
+install into its own image — so the Install action is deliberately absent when the unit is
+capable, and impossible when the image lacks Nmap. Rebuild the scan image instead. Nmap's NSE
+tree makes that image roughly 190 MB larger than the worker image; only sensors run it.
+
+**A host-installed unit has two privilege paths.** The rest of this section is about that shape.
 
 **Scoped sudoers — recommended, no password.** Give the agent's user one sudoers entry (for
 example `/etc/sudoers.d/weirvern-nmap`) that permits exactly the package manager's install
