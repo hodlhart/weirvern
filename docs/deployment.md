@@ -107,8 +107,8 @@ the command above and re-run the installer, or pass `--agent-image <ref>`.
 **A containerised unit gets Nmap from the image, not from the host.** A package installed on the
 host is invisible to the agent (it measures its own container filesystem), and a container cannot
 install into its own image — so the Install action is deliberately absent when the unit is
-capable, and impossible when the image lacks Nmap. Rebuild the scan image instead. Nmap's NSE
-tree makes that image roughly 190 MB larger than the worker image; only sensors run it.
+capable, and impossible when the image lacks Nmap. Rebuild the scan image instead. The
+`nmap`/`libcap2-bin` layer measures 29.1 MB; only sensors run that image.
 
 **A host-installed unit has two privilege paths.** The rest of this section is about that shape.
 

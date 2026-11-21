@@ -11,7 +11,7 @@ the readiness line names the scan mode it really has.
   container's `NET_RAW`/`NET_ADMIN` into an effective capability. Installing Nmap on the HOST could
   never fix a containerised unit: the agent measures its own container filesystem, and a container
   cannot install into its own image. The worker image stays Nmap-free — every hub workload runs
-  it — and the scan image is roughly 190 MB larger, paid per sensor.
+  it — and the scan image's `nmap`/`libcap2-bin` layer measures 29.1 MB, paid per sensor.
 - **The installer resolves and verifies the agent image instead of assuming it.** It reads the
   scan image from the same Docker store `docker save` uses (copying it out of containerd when that
   is the only copy), accepts `--agent-image`, and after start runs `nmap --version`, `getcap` and

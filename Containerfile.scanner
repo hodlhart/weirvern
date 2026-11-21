@@ -25,11 +25,14 @@
 # (scripts/deploy-weirling.sh). A file capability outside the bounding set is ignored at exec.
 # The agent container must not set `no-new-privileges`, or the file capability is ignored too.
 #
-# SIZE: measured on 2026-11-21, `weirvern-worker:sha-<commit>` 521 MB vs
-# `weirvern-scan:sha-<commit>` 714 MB (docker images, uncompressed) -- about +193 MB, almost all
-# of it Nmap's NSE script tree. That is why nmap is NOT in Containerfile: every hub workload
-# (worker, GUI, ingest, schema Job, prune CronJob) runs the worker image, and only a weirling's
-# agent runs this one. The delta is paid per sensor, not per cluster workload.
+# SIZE (measured 2026-11-21, this tree): the nmap + libcap2-bin layer is 29.1 MB
+# (`docker history`). Whole-image `docker images` size is 518 MB for `weirvern-scan:sha-<commit>`
+# against 521 MB for `weirvern-worker:sha-<commit>`: the scan image does not COPY the archived
+# docs/reviews directories the worker ships, which more than offsets Nmap's NSE tree. Older scan
+# tags measured ~714 MB because they carried those copies. Either way Nmap is NOT in
+# Containerfile: every hub workload (worker, GUI, ingest, schema Job, prune CronJob) runs the
+# worker image, and only a weirling's agent runs this one. The package cost is paid per sensor,
+# not per cluster workload.
 #
 # The identity layer is Nmap -sV plus bundled safe NSE scripts (http-title, ssl-cert,
 # smb-os-discovery, snmp-sysdescr, ...). There is no template tree, no update lifecycle and no

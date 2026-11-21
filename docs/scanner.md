@@ -80,11 +80,12 @@ docker save weirvern-scan:sha-<commit> | k3s ctr images import -
 
 `--agent-image <ref>` overrides the image selection when the tag does not follow the worker's.
 
-**Size.** Nmap plus its NSE script tree adds roughly 190 MB uncompressed to the image
-(`python:3.11-slim` base; measured with `docker images`: 521 MB worker vs 714 MB scan at
-0.23.119-era builds). That is why Nmap is **not** in `Containerfile`: every hub workload
-(worker, GUI, ingest, schema Job, prune CronJob) runs the worker image, and only a sensor's
-agent runs the scan image. The delta is paid per weirling, not per cluster workload.
+**Size (measured).** The `nmap` + `libcap2-bin` layer is **29.1 MB** (`docker history`). The
+whole scan image measures 518 MB against the worker's 521 MB because it does not copy the
+archived `docs/reviews` directories the worker ships; older scan tags measured ~714 MB for that
+reason. Nmap is still **not** in `Containerfile`: every hub workload (worker, GUI, ingest, schema
+Job, prune CronJob) runs the worker image, and only a sensor's agent runs the scan image, so the
+package cost is paid per weirling rather than per cluster workload.
 
 The installer also verifies the result after starting the container: it runs `nmap --version`
 inside `weirvern-agent-<id>`, reports the binary, the container capabilities, the uid and
