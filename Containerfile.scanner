@@ -39,12 +39,16 @@
 #   docker build -t weirvern-scan:sha-<commit> -f Containerfile.scanner .
 FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
+# BUILD ORDER MATTERS: `nmap --version` runs BEFORE setcap. BuildKit executes RUN steps with
+# no_new_privs, and exec of a file-capability binary under no_new_privs fails with EPERM -- so a
+# version probe after setcap would fail the build even though the image is correct. At runtime
+# the agent container must NOT set no-new-privileges for the same reason (deploy-weirling.sh).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends nmap libcap2-bin ca-certificates \
+ && nmap --version \
  && setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap \
  && getcap /usr/bin/nmap | grep -q cap_net_raw \
  && getcap /usr/bin/nmap | grep -q cap_net_admin \
- && nmap --version \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
