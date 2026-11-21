@@ -23,7 +23,10 @@ def test_deploy_weirling_has_inline_and_no_trunk_flags():
     assert "--inline" in src
     assert "--no-trunk" in src
     assert "TRUNK_DISABLE" in src
-    assert "TRUNKSTATE=\"/var/lib/weirvern-weirling/inline-$ID\"" in src
+    # The helper is written through an UNQUOTED heredoc, so `$ID` must be escaped in the source
+    # to reach the generated helper as a live expansion. Unescaped, the deployer expanded an
+    # unset `$ID` under `set -u` and died before it ever started a container.
+    assert 'TRUNKSTATE="/var/lib/weirvern-weirling/inline-\\$ID"' in src
 
 
 def test_trunk_sync_is_skipped_for_a_bridge(monkeypatch):
