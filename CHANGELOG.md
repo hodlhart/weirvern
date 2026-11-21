@@ -23,6 +23,12 @@ the readiness line names the scan mode it really has.
   older build still parses (`raw` is normalised), and the scan command omits `--unprivileged` for
   either spelling. The Weirlings card hides **Install nmap** when the unit is already capable,
   because on a containerised weirling there is nothing to install.
+- **A measured scan result is JSON before it leaves the weirling.** The first live containerised
+  scan ran Nmap, then failed at the mTLS send with `Object of type Service is not JSON
+  serializable`: `run_service_scan` returned its `Service`/`Observation` dataclasses and the
+  gateway client calls `json.dumps` on the payload. The job stayed `claimed` until its lease
+  expired. The result is converted to plain dicts at that one process boundary, with a test that
+  serialises a parsed scan.
 - **The two install paths are documented separately and no longer contradict.** `docs/scanner.md`
   and `docs/deployment.md` describe the containerised path (image + capabilities, no Install
   action) apart from the host-installed path (package + `setcap`, scoped sudoers or one-click

@@ -1,4 +1,6 @@
 """The scanner's parsers, capability rules and install table, without a network or a binary."""
+import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -389,6 +391,49 @@ def test_raw_mode_omits_the_unprivileged_flag(monkeypatch):
     raw = scanner.service_scan_argv(settings, "198.51.100.5", raw=True)
     assert "--unprivileged" in connect
     assert "--unprivileged" not in raw
+
+
+SERVICE_XML = """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="open"/>
+        <service name="http" product="nginx" version="1.24.0">
+          <cpe>cpe:/a:igor_sysoev:nginx:1.24.0</cpe>
+        </service>
+        <script id="http-title" output="Example">
+          <elem key="title">Example</elem>
+        </script>
+      </port>
+    </ports>
+    <hostscript><script id="smb-os-discovery" output="Windows"/></hostscript>
+  </host>
+</nmaprun>"""
+
+
+def test_a_measured_scan_result_is_json_sendable(monkeypatch):
+    """THE FIRST CONTAINERISED SCAN FAILED HERE. `weirling_client._request` sends the result
+    with `json.dumps`; `run_service_scan` returned Service/Observation dataclasses, so the send
+    raised `Object of type Service is not JSON serializable` AFTER Nmap had run and the job sat
+    `claimed` until its lease expired. The result must be plain JSON types."""
+    monkeypatch.setattr(
+        scanner, "_run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, SERVICE_XML, ""),
+    )
+    settings = type("S", (), {"scan_nmap_binary": "nmap", "scan_ports": "80",
+                              "scan_timeout_s": 5})()
+    result = scanner.run_service_scan(settings, "198.51.100.10", raw=True)
+
+    json.dumps(result)  # exactly what the gateway client does; must not raise
+    assert result["ok"] is True
+    assert result["services"] == [{
+        "port": 80, "protocol": "tcp", "service": "http", "product": "nginx",
+        "version": "1.24.0", "cpe": "cpe:/a:igor_sysoev:nginx:1.24.0",
+    }]
+    assert {obs["script"] for obs in result["observations"]} == {
+        "http-title", "smb-os-discovery"}
 
 
 def test_an_unprovisioned_agent_cannot_install_and_says_so(monkeypatch):

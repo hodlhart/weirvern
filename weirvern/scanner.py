@@ -45,7 +45,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1160,6 +1160,12 @@ def run_service_scan(settings: Settings, ip: str, *, raw: bool = False,
     Split from the recording half so a WEIRLING can run the measurement and send the facts
     to the hub, while the hub writes them with the same code it has always used. A unit with
     no database credential never needs one to scan.
+
+    THE RESULT IS JSON-READY, DELIBERATELY. A weirling sends this dict over the mTLS gateway,
+    where `weirling_client._request` calls `json.dumps` on it. Returning `Service`/`Observation`
+    dataclasses made the FIRST containerised scan fail at the send -- after Nmap had run -- and
+    left the job claimed until its lease expired. The dataclasses are converted here, at the one
+    boundary that crosses a process, and `record_scan_result` accepts the same dict shape.
     """
     argv = service_scan_argv(settings, ip, raw=raw)
     command = " ".join(argv)
@@ -1169,8 +1175,8 @@ def run_service_scan(settings: Settings, ip: str, *, raw: bool = False,
             "ok": True,
             "command": command,
             "error": "",
-            "services": parse_service_xml(result.stdout),
-            "observations": parse_script_xml(result.stdout),
+            "services": [asdict(service) for service in parse_service_xml(result.stdout)],
+            "observations": [asdict(obs) for obs in parse_script_xml(result.stdout)],
         }
     except Exception as exc:  # noqa: BLE001 - an invocation failure is a measured result
         return {"ok": False, "command": command, "error": str(exc),
