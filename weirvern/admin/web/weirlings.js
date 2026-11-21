@@ -2699,7 +2699,7 @@ function openInstallSheet(item) {
   // Details, so it says the report is old rather than pretending the host is known-incapable.
   const stale = item.state === "stale";
   const canInstall = Boolean(item.install_known && item.sudo_state && item.sudo_state !== "none")
-    && !stale;
+    && !stale && !item.nmap_available;
   if (els.subject) els.subject.textContent = item.sensor_id || "";
   if (els.title) els.title.textContent = "Install nmap";
   if (els.runs) els.runs.setAttribute("data-sensor", item.sensor_id || "");
@@ -2712,7 +2712,7 @@ function openInstallSheet(item) {
     els.go.disabled = false;
     els.go.textContent = "Install";
   }
-  if (els.copy) els.copy.classList.toggle("hidden", canInstall || !command);
+  if (els.copy) els.copy.classList.toggle("hidden", canInstall || item.nmap_available || !command);
   if (els.answer) els.answer.textContent = item.install_answer || "";
   if (els.os) els.os.textContent = item.os_label || "";
   if (els.why) els.why.textContent = item.install_privileged

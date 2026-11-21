@@ -11030,8 +11030,18 @@ check("...a contradicted segment names BOTH segments on the issues list",
           visibleWords(needEl("install-sheet")) <= 25,
           String(visibleWords(needEl("install-sheet"))));
 
-    H.openInstallSheet(Object.assign({}, ITEM, { nmap_available: true }));
+    H.openInstallSheet(Object.assign({}, ITEM, {
+      nmap_available: true, install_privileged: true, can_install: true,
+      install_answer: "Nmap is already installed on this weirling — nothing to install.",
+    }));
     await new Promise((r) => setTimeout(r, 30));
+    check("a capable weirling offers neither Install nor Copy -- nothing to install",
+          needEl("install-go").classList.contains("hidden")
+          && needEl("install-copy").classList.contains("hidden"),
+          `${needEl("install-go").className} / ${needEl("install-copy").className}`);
+    check("...and its state line says Nmap is already installed",
+          /already installed/.test(needEl("install-state").textContent),
+          needEl("install-state").textContent);
     H.closeSheet(needEl("install-sheet"));
     fetchOverride = prevOverride;
     H.clearGetCache();

@@ -523,6 +523,25 @@ def test_a_fresh_capability_row_is_still_reported():
     assert item["install_answer"].startswith("Weirvern cannot install nmap here")
 
 
+def test_a_capable_weirling_has_nothing_to_install():
+    """A weirling that already has Nmap must not be offered an Install action.
+
+    The containerised agent ships Nmap in its image; even when the agent reports `can_install`
+    (it runs as root), the surface says there is nothing to do. Otherwise the sheet offers a
+    package-manager run inside a container, whose result vanishes on the next recreate.
+    """
+    from weirvern.admin import payloads
+
+    client = ScannerPayloadClient([_scanner_row("wl-a", age_s=30, available=True)],
+                                  [("wl-a", [], "", "")])
+    item = payloads.scanner(client)["sensors"][0]
+
+    assert item["nmap_available"] is True
+    assert item["scan_mode"] == "syn/udp"
+    assert item["install_privileged"] is False
+    assert item["install_answer"].startswith("Nmap is already installed")
+
+
 def test_a_row_with_no_timestamp_is_never_fresh():
     from weirvern.admin import payloads
 

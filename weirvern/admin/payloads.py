@@ -684,6 +684,14 @@ def scanner(client: Client) -> dict[str, Any]:
             item["install_answer"] = (
                 f"No report from this weirling in {item.get('age') or 'the freshness window'}; "
                 "its last report is too old to act on.")
+        elif item.get("nmap_available"):
+            # NOTHING TO INSTALL. The containerised agent ships Nmap, and a host-installed unit
+            # that already has it needs no click either. Offering Install here would run a
+            # package manager for a binary that is present (and, in a container, an install that
+            # vanishes on the next recreate).
+            item["install_privileged"] = False
+            item["install_answer"] = (
+                "Nmap is already installed on this weirling — nothing to install.")
         else:
             item["install_privileged"] = bool(item.get("can_install"))
             sudo_state = str(item.get("sudo_state") or "unknown")

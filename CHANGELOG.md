@@ -21,8 +21,9 @@ the readiness line names the scan mode it really has.
 - **The mode is `connect` or `syn/udp`, not the internal word `raw`.** `detect_scanner` and the
   fleet sentence now read `1 of 1 weirling can scan (nmap 7.95, syn/udp)`; a row written by an
   older build still parses (`raw` is normalised), and the scan command omits `--unprivileged` for
-  either spelling. The Weirlings card hides **Install nmap** when the unit is already capable,
-  because on a containerised weirling there is nothing to install.
+  either spelling. The Weirlings card hides **Install nmap** when the unit is already capable, and
+  the Details sheet offers neither Install nor Copy for it: on a containerised weirling there is
+  nothing to install, and the answer line says so instead of describing a privilege path.
 - **A measured scan result is JSON before it leaves the weirling.** The first live containerised
   scan ran Nmap, then failed at the mTLS send with `Object of type Service is not JSON
   serializable`: `run_service_scan` returned its `Service`/`Observation` dataclasses and the
