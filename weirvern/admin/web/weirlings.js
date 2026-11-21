@@ -2801,10 +2801,16 @@ async function loadScannerStatus() {
     if (installBtn) installBtn.classList.add("hidden");
   } else {
     const sentence = String(cap.sentence || "");
-    if (total === 1 && /no capability report/i.test(sentence)) {
+    const one = total === 1 ? sensors[0] : null;
+    // THE ROW IS THE FACT; the sentence's freshness wording is a Details concern. A row that
+    // says nmap is missing is "nmap missing" even if the report has aged out -- calling it
+    // "not reported" would hide the install the operator actually needs.
+    if (one && one.state === "not_reported") {
       note.textContent = "Not scanning — this weirling has not reported.";
-    } else if (total === 1 && /nmap missing/i.test(sentence)) {
+    } else if (one && !one.nmap_available) {
       note.textContent = "Not scanning — nmap missing on this weirling.";
+    } else if (one && /no capability report/i.test(sentence)) {
+      note.textContent = "Not scanning — this weirling has not reported.";
     } else if (missing.length) {
       note.textContent = `Not scanning — nmap missing on ${missing.length} of ${total}.`;
     } else {
