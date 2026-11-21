@@ -2307,10 +2307,10 @@ def main() -> None:
     trained_once = False
     shadow_tick = 0
     last_readiness_state: str | None = None
-    # The previous cycle's sink verdict, so a RECOVERY is a line an operator can find. The
+    # The previous cycle's per-sink verdicts, so a RECOVERY is a line an operator can find. The
     # eighteen-hour outage on 2026-11-21 had no transition anywhere: it began between two cycles
     # and every later line described a quiet network.
-    last_ingest_ok: bool | None = None
+    last_ingest: dict[str, bool | None] = {}
 
     while not _stop.is_set():
         cycle_start = time.time()
@@ -2381,19 +2381,26 @@ def main() -> None:
                         readiness.state, "; ".join(readiness.reasons) or "waiting for data",
                     )
 
-            # ── THE RAW SINK'S AGE, BEFORE ANY DETECTION IS ATTEMPTED ─────────────────────────
+            # ── THE RAW SINKS' AGE, BEFORE ANY DETECTION IS ATTEMPTED ─────────────────────────
             #
             # This is the check whose absence let an eighteen-hour ingest outage read as a quiet
             # network. It is deliberately not folded into `detection_sweep`: that function reports
             # an empty AGGREGATE window (which a genuinely idle network also produces), while this
             # reports the age of the newest RAW row, which only an ingest failure produces.
             #
-            # `log_verdict` owns the levels: ERROR every cycle while stalled, WARNING on the
+            # BOTH SINKS, because they can stop independently: `flows` is the collector's JSONL
+            # (exported NetFlow plus the local tap's softflowd IPFIX) and `zeek_conn` is written
+            # from the sensor's own conn.log. On 2026-11-20 one deploy stopped the capture pod and
+            # both went to zero; a guard on only one would have described half the outage.
+            #
+            # `log_sinks` owns the levels: ERROR per stalled sink every cycle, WARNING on the
             # recovery edge, INFO while fresh. One line per cycle is the point -- the outage hid
             # among thousands of "Ingested 0 flow records" lines that each described only the
             # ingester's last action.
-            last_ingest_ok = ingest_freshness.log_verdict(
-                ingest_freshness.measure(client), last_ingest_ok)
+            last_ingest = ingest_freshness.log_sinks(
+                ingest_freshness.measure_sinks(
+                    client, zeek=bool(settings.zeek_log_dir)),
+                last_ingest)
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
             # THE EPISODE VIEW MUST TRACK THE CLOCK, NOT THE VERDICT LIST. It used to refresh

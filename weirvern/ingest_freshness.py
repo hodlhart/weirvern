@@ -16,10 +16,19 @@ WHAT THIS IS NOT. It is not a replacement for `admin.status._feed_probe`, which 
 different question (is the capture port carrying the NETWORK, or only broadcast noise?). A
 feed can be fresh and still be capturing the wrong thing; a feed can be rich and still have
 stopped an hour ago. Both are needed, and they are reported as separate checks.
+
+WHAT `flows` CONTAINS, AND WHAT `goflow2` IS. Two producers write the same sink: an external
+router's exported NetFlow (`sampler_address` = that exporter), and the local tap's softflowd
+IPFIX (`sampler_address` = a loopback address) — SOFT flow, summarised off the NIC. goflow2 is
+the COLLECTOR for both; it is not the source, and a stall in the tap is not a goflow2 fault.
+On the live deployment in November 2026 every row came from the local tap. `zeek_conn` is the
+same capture pod's own conn.log, a second product of the same tap. That is why there is one
+verdict per sink: a single 'flow pipeline is down' sentence cannot say which producer stopped.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,14 +89,14 @@ class Freshness:
     def detail(self) -> str:
         if self.state == FRESH:
             return (f"the newest flow row is {_human_age(self.age_s or 0)} old "
-                    f"(limit {_human_age(self.limit_s)}); NetFlow ingest is advancing")
+                    f"(limit {_human_age(self.limit_s)}); flow ingest is advancing")
         if self.state == NO_DATA:
             return ("weirvern.flows holds no rows: no flow has ever been ingested, so every "
                     "flow-based view is empty rather than quiet")
         if self.state == STALLED:
             return (
                 f"the newest flow row is {_human_age(self.age_s or 0)} old "
-                f"(limit {_human_age(self.limit_s)}): NetFlow INGEST HAS STOPPED. "
+                f"(limit {_human_age(self.limit_s)}): FLOW INGEST HAS STOPPED. "
                 "flows and flows_window cannot advance, so detection, calibration and every "
                 "flow count are stale rather than small. Check the collector "
                 "(`kubectl -n weirvern logs deploy/goflow2`) and the capture tap "
@@ -131,18 +140,25 @@ def classify(age_s: float | None, limit_s: float = STALE_AFTER_S, *,
 
 
 def measure(client: Any, *, limit_s: float = STALE_AFTER_S,
-            table: str = _TABLE) -> Freshness:
-    """Read the newest row's age from `weirvern.flows`. Never raises.
+            table: str = _TABLE, column: str = "timestamp") -> Freshness:
+    """Read the newest row's age from a sink table. Never raises.
 
     ONE AGGREGATE, not a count over the window: `count()` plus `max()` is answered from the
     table's own metadata and the last granule, so this costs the same on a one-hour table and
     a seven-day one. The age is computed by CLICKHOUSE (`dateDiff(…, now())`) rather than in
     Python, so the server's timezone cannot turn a fresh row into an eight-hour one.
+
+    `table`/`column` exist because the pipeline has TWO sinks that can stall independently:
+    `flows` (exported NetFlow AND the local tap's softflowd IPFIX) and `zeek_conn` (the soft-flow
+    view read from the sensor's conn.log). They froze together on 2026-11-20 because one deploy
+    stopped the capture pod, but either can stop alone, and one guard per sink is the only way
+    to say WHICH.
+
+    THE TABLE/COLUMN NAMES ARE MODULE LITERALS AT THE CALL SITES, never user input.
     """
-    # The table name is a module literal; it is never built from caller input.
-    sql = ("SELECT count(), toString(max(timestamp)), "
-           "toInt64(dateDiff('second', max(timestamp), now())) "
-           f"FROM {table}")  # noqa: S608 - literal table name
+    sql = ("SELECT count(), toString(max(" + column + ")), "
+           "toInt64(dateDiff('second', max(" + column + "), now())) "
+           f"FROM {table}")  # noqa: S608 - literal table and column names
     try:
         row = client.query(sql).result_rows[0]
     except Exception as exc:  # noqa: BLE001 - a probe must never raise at its caller
@@ -156,6 +172,29 @@ def measure(client: Any, *, limit_s: float = STALE_AFTER_S,
         except (TypeError, ValueError):
             age = None
     return classify(age, limit_s, rows=rows, newest=newest)
+
+
+# The second sink. `flows` is written by the ingester from the collector's JSONL; `zeek_conn`
+# is written from the sensor's own conn.log. They are different capture products (exported
+# NetFlow, and soft flow off the NIC) and they can stall for different reasons, so each gets a
+# verdict.
+ZEEK_TABLE = "weirvern.zeek_conn"
+ZEEK_COLUMN = "ts"
+
+
+def measure_sinks(client: Any, *, limit_s: float = STALE_AFTER_S,
+                  zeek: bool = True) -> dict[str, Freshness]:
+    """Both sinks, in one call, so a caller cannot guard one and forget the other.
+
+    `zeek=False` is for a deployment with no Zeek ingest configured. An empty `zeek_conn` there
+    is the expected state, not a stall, and reporting it would be the always-failing row an
+    operator stops reading.
+    """
+    out = {"flows": measure(client, limit_s=limit_s)}
+    if zeek:
+        out["zeek_conn"] = measure(client, limit_s=limit_s,
+                                   table=ZEEK_TABLE, column=ZEEK_COLUMN)
+    return out
 
 
 def log_verdict(freshness: Freshness, previous: bool | None = None,
@@ -182,5 +221,35 @@ def log_verdict(freshness: Freshness, previous: bool | None = None,
     return freshness.ok
 
 
-__all__ = ["FRESH", "NO_DATA", "STALE_AFTER_S", "STALLED", "UNREADABLE", "Freshness",
-           "classify", "log_verdict", "measure"]
+def log_sinks(verdicts: Mapping[str, Freshness],
+              previous: Mapping[str, bool | None] | None = None,
+              *, log: logging.Logger | None = None) -> dict[str, bool | None]:
+    """Emit the worker's line for EVERY sink, and return the state to carry forward.
+
+    ONE LINE WHEN HEALTHY, ONE PER STALLED SINK WHEN NOT. An ingest outage is not "the flow
+    pipeline" as a single object: `flows` and `zeek_conn` are written from different products and
+    can stop independently. A log line that says which sink is stale is the difference between
+    checking the collector's JSONL and checking the sensor's log rotation.
+    """
+    target = log or logger
+    before = previous or {}
+    stalled = {name: v for name, v in verdicts.items() if v.ok is False}
+    unknown = {name: v for name, v in verdicts.items() if v.ok is None}
+    for name, verdict in stalled.items():
+        target.error("FLOW INGEST STALLED (%s): %s", name, verdict.detail())
+    for name, verdict in unknown.items():
+        target.warning("Flow ingest freshness not judged (%s): %s", name, verdict.detail())
+    if not stalled and not unknown:
+        summary = "; ".join(f"{name} {_human_age(v.age_s or 0)} old"
+                            for name, v in verdicts.items())
+        recovered = any(before.get(name) is False for name in verdicts)
+        if recovered:
+            target.warning("Flow ingest RECOVERED: %s", summary)
+        else:
+            target.info("Flow ingest fresh: %s", summary)
+    return {name: verdict.ok for name, verdict in verdicts.items()}
+
+
+__all__ = ["FRESH", "NO_DATA", "STALE_AFTER_S", "STALLED", "UNREADABLE", "ZEEK_COLUMN",
+           "ZEEK_TABLE", "Freshness", "classify", "log_sinks", "log_verdict", "measure",
+           "measure_sinks"]

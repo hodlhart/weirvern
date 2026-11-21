@@ -22,6 +22,17 @@ INGEST NOW ANNOUNCES ITSELF. THE ENSEMBLE'S COVERAGE IS MEASURED IN BOTH MODES.
   writer advanced through them for the whole 25 minutes they were logged. Decoding resumed on
   the first packet after the tap was restored, with no collector restart and no error. NetFlow
   template expiry does not explain a file that stopped growing; a tap with no targets does.
+- **goflow2 IS ONLY THE EXPORTED-NETFLOW COLLECTOR, and the console must not conflate it with
+  soft flow.** On this deployment every row in `flows` carries `sampler_address = 127.0.0.1` —
+  the local tap's softflowd IPFIX, i.e. SOFT FLOW summarised off the NIC, not a router export
+  (714,350 of 714,350 rows in the six hours to 18:22Z; `flows-external.jsonl` has never received
+  a packet). The `zeek_conn` view is the same capture pod's own conn.log, a second product of
+  the same tap. So the freeze was a CAPTURE stop: the tap wrote nothing, and both `flows` and
+  `zeek_conn` stopped with it. The guard now measures both sinks separately.
+- **ClickHouse's DateTime columns here are naive LOCAL time.** `max(timestamp)` reading
+  `12:19:31` at 18:19Z is FRESH (America/Chicago is UTC-6 in November), not six hours stale; the
+  freshness module computes the age with `dateDiff(..., now())` inside ClickHouse so a local-time
+  read cannot be mistaken for a stall.
 - **The capture path is restored and the flow records prove it.** `NETFLOW_MODE=active` with the
   two NICs re-tapped produced rows within 90 seconds (17:52Z), but a passive tap on these ports
   sees only broadcast (the gateway's mDNS): the volume before the outage came from the siphon

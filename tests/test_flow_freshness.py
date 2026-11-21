@@ -153,11 +153,11 @@ def test_the_worker_runs_the_shared_measurement_every_cycle():
     from weirvern import worker  # noqa: PLC0415 - the import is the assertion
 
     source = inspect.getsource(worker.main)
-    assert "ingest_freshness.log_verdict(" in source
-    assert "ingest_freshness.measure(" in source
+    assert "ingest_freshness.log_sinks(" in source
+    assert "ingest_freshness.measure_sinks(" in source
     # It must sit in the CYCLE, ahead of the sweep, or a stalled sink is only noticed when a
     # detector happens to look.
-    assert source.index("ingest_freshness.log_verdict") < source.index(
+    assert source.index("ingest_freshness.log_sinks") < source.index(
         "detection_sweep(client, detectors, settings, cfg)")
 
 
@@ -168,3 +168,47 @@ def test_the_worker_runs_the_shared_measurement_every_cycle():
 def test_ok_is_tristate(state, expected):
     verdict = freshness.Freshness(state=state, limit_s=300.0)
     assert verdict.ok is expected
+
+
+# ── two sinks, because they can stop independently ──────────────────────────────────────────
+
+def test_measure_sinks_reads_flows_and_zeek_conn_with_their_own_columns():
+    """`flows` is keyed on `timestamp`; `zeek_conn` on `ts`. One guard per sink."""
+    client = _Client((100, "2026-11-21 12:22:16", 7))
+    verdicts = freshness.measure_sinks(client)
+    assert set(verdicts) == {"flows", "zeek_conn"}
+    assert "FROM weirvern.flows" in client.sql[0] and "max(timestamp)" in client.sql[0]
+    assert "FROM weirvern.zeek_conn" in client.sql[1] and "max(ts)" in client.sql[1]
+    assert verdicts["flows"].state == freshness.FRESH
+    assert verdicts["zeek_conn"].state == freshness.FRESH
+
+
+def test_measure_sinks_skips_zeek_when_that_ingest_is_not_configured():
+    """No Zeek ingest means an empty table is expected, not a stall to page on."""
+    client = _Client((100, "2026-11-21 12:22:16", 7))
+    assert set(freshness.measure_sinks(client, zeek=False)) == {"flows"}
+    assert len(client.sql) == 1
+
+
+def test_a_stalled_sink_is_named_in_the_error(caplog):
+    """One deploy stopped BOTH sinks on 2026-11-20; the line must say which is stale."""
+    verdicts = {
+        "flows": freshness.classify(18.0, 300.0, rows=10),
+        "zeek_conn": freshness.classify(64_800.0, 300.0, rows=10),
+    }
+    with caplog.at_level(logging.INFO, logger="weirvern.ingest_freshness"):
+        carried = freshness.log_sinks(verdicts, {"flows": True, "zeek_conn": True})
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1, "only the stalled sink should be an error"
+    assert "FLOW INGEST STALLED (zeek_conn)" in errors[0].getMessage()
+    assert carried == {"flows": True, "zeek_conn": False}
+
+
+def test_both_sinks_fresh_is_one_line(caplog):
+    verdicts = {"flows": freshness.classify(7.0, 300.0, rows=1),
+                "zeek_conn": freshness.classify(8.0, 300.0, rows=1)}
+    with caplog.at_level(logging.INFO, logger="weirvern.ingest_freshness"):
+        freshness.log_sinks(verdicts)
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "flows 7s old" in message and "zeek_conn 8s old" in message
