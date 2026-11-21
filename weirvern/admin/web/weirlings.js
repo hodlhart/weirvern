@@ -69,6 +69,14 @@ function wlLoss(v) {
   return `${Number(v).toFixed(1)}%`;
 }
 
+/** One status line, and close the Details it no longer explains. */
+function wlSummaryNote(text) {
+  const note = document.getElementById("wl-summary-note");
+  if (note) note.textContent = text;
+  const more = document.getElementById("wl-summary-details");
+  if (more) { more.classList.add("hidden"); more.open = false; }
+}
+
 async function loadWeirlings() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   // A REJECTED REQUEST MUST STILL SAY SOMETHING. `showView` fires this without awaiting it, so a
@@ -94,8 +102,12 @@ async function loadWeirlings() {
 
   const summaryBox = document.getElementById("wl-summary");
   const noteBox = document.getElementById("wl-summary-note");
+  const moreBox = document.getElementById("wl-summary-details");
+  const moreText = document.getElementById("wl-summary-detail-text");
   summaryBox.replaceChildren();
   noteBox.textContent = "";
+  if (moreText) moreText.textContent = "";
+  if (moreBox) { moreBox.classList.add("hidden"); moreBox.open = false; }
 
   if (!d.available) {
     // THE DEFECT THIS PREVENTS: a registry outage rendering as a calm, empty, healthy fleet.
@@ -176,30 +188,45 @@ async function loadWeirlings() {
   // the sensors that collect it.
   loadNetworkCoverage(d.network_coverage || null).catch(() => {});
 
-  // The server's own sentences, verbatim: it knows whether the heartbeat read degraded, and
+  // ONE SHORT LINE, THE REASONING BEHIND DETAILS. A paragraph here sat above the scanner
+  // card and said the same fact three ways (30+ words); the visible part is the count and the
+  // network, and the "why the two counts differ" sentence is one click down. The server's own
+  // sentences are kept verbatim there -- it knows whether the heartbeat read degraded, and
   // paraphrasing would lose the reason an operator acts on.
   const bits = [];
+  const detailBits = [];
   if (d.heartbeats_available === false) {
-    bits.push(`Heartbeats are unavailable (${d.heartbeat_reason || "the read did not run"}), so every `
-      + `registered weirling below reads as NEVER SEEN. That is a gap in this view, not evidence about `
-      + `the weirlings.`);
+    bits.push("Heartbeat read failed: every weirling below reads NEVER SEEN.");
+    detailBits.push(`Heartbeats are unavailable (${d.heartbeat_reason || "the read did not run"}). `
+      + `That is a gap in this view, not evidence about the weirlings.`);
   }
   if (d.filtered) bits.push("Showing problems only.");
   if (Array.isArray(cov.unobserved) && cov.unobserved.length) {
     // A DECLARATION WITH NO SENSOR BEHIND IT IS THE GAP, and it is named rather than folded
     // into a count. The operator declared these in Settings; no weirling is collecting them.
-    bits.push(`Declared but not seen by any sensor: ` +
-      cov.unobserved.map((u) => `${u.cidr}${u.label ? ` (${u.label})` : ""}`).join(", ") +
-      `. The two counts above are different facts, not a disagreement.`);
+    const named = cov.unobserved.map((u) => `${u.cidr}${u.label ? ` (${u.label})` : ""}`);
+    const shown = named.slice(0, 2).join(", ")
+      + (named.length > 2 ? ` +${named.length - 2} more` : "");
+    bits.push(`${named.length} declared network${named.length === 1 ? "" : "s"} `
+      + `${named.length === 1 ? "has" : "have"} no sensor: ${shown}.`);
+    detailBits.push(`No weirling has collected ${named.join(", ")}. Declared and seen are `
+      + `different facts, not a disagreement: a declaration is the operator's expectation, `
+      + `while the seen count is what sensors have collected.`);
   } else if (cov.available === false) {
-    bits.push(`The declared-network count is unavailable (${cov.reason || "the read failed"}); ` +
-      `the seen count is still measured.`);
+    bits.push("Declared-network count unavailable; the seen count is still measured.");
+    detailBits.push(`The declared-network count is unavailable (${cov.reason || "the read failed"}).`);
   }
   if ((s.total ?? 0) === 0 && d.heartbeats_available !== false) {
-    bits.push("No weirlings are registered and none are reporting. Register one below to record the "
-      + "expectation, so a weirling that never comes up is reported rather than invisible.");
+    bits.push("No weirlings registered.");
+    detailBits.push("Register one below to record the expectation, so a weirling that never "
+      + "comes up is reported rather than invisible.");
   }
   noteBox.textContent = bits.join(" ");
+  if (moreText) moreText.textContent = detailBits.join(" ");
+  if (moreBox) {
+    moreBox.classList.toggle("hidden", detailBits.length === 0);
+    if (!detailBits.length) moreBox.open = false;
+  }
 
   // ── the rows
   // The local sensor's NIC ROLES come from its capture settings, not from a guess. Loaded here,
@@ -2268,7 +2295,7 @@ async function adoptWeirling(row, btn) {
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = label; }
     const note = document.getElementById("wl-summary-note");
-    if (note) note.textContent = `Could not adopt ${row.sensor_id}: ${(err && err.message) || err}`;
+    if (note) wlSummaryNote(`Could not adopt ${row.sensor_id}: ${(err && err.message) || err}`);
     return;
   }
   await loadWeirlings();
@@ -2315,13 +2342,13 @@ async function wlToggle(r, btn) {
                              { sensor_id: r.sensor_id, enabled: !r.enabled });
     if (!d || d.ok !== true) {
       const note = document.getElementById("wl-summary-note");
-      if (note) note.textContent =
-        `Refused: ${(d && d.error) || "the server did not accept the change"}`;
+      if (note) wlSummaryNote(
+        `Refused: ${(d && d.error) || "the server did not accept the change"}`);
       return;
     }
   } catch (err) {
     const note = document.getElementById("wl-summary-note");
-    if (note) note.textContent = `Could not change it: ${(err && err.message) || err}`;
+    if (note) wlSummaryNote(`Could not change it: ${(err && err.message) || err}`);
   } finally {
     btn.disabled = false;
   }

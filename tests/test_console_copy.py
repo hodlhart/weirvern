@@ -74,6 +74,27 @@ def test_disabled_scan_reason_is_not_a_sentence_chain():
     assert 'el("details", { class: "copy-details scan-more" })' in js
 
 
+def test_fleet_note_is_one_line_and_the_reason_is_behind_details():
+    """`#wl-summary-note` was the last paragraph over the 25-word budget.
+
+    The visible line names the count and the network, so the declared-but-unseen fact is still
+    on screen; why declared and seen are different moved into the card's Details disclosure.
+    """
+    js = (WEB / "weirlings.js").read_text(encoding="utf-8")
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    assert "no sensor: " in js
+    assert "declared network" in js
+    # The old paragraph is gone from the source, not merely hidden.
+    assert "Declared but not seen by any sensor" not in js
+    assert "The two counts above are different facts" not in js
+    # The fact survives, in the disclosure.
+    assert "Declared and seen are " in js
+    assert "different facts, not a disagreement" in js
+    assert 'id="wl-summary-details"' in html
+    assert 'id="wl-summary-detail-text"' in html
+    assert "<summary>Details</summary>" in html
+
+
 def test_visible_copy_drops_jargon():
     """Plain words above the fold: the precise terms stay in Details or the info tooltip."""
     visible_sources = {

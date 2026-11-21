@@ -6234,6 +6234,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a declared-but-unobserved network is named in the fleet note",
           /203\.0\.113\.0\/24/.test(needEl("wl-summary-note").textContent),
           needEl("wl-summary-note").textContent);
+    // THE LAST OVER-BUDGET PARAGRAPH: the explanation now lives in #wl-summary-details, so the
+    // line above the scanner card is measured on its own, at the same 25 words as every card.
+    check("the fleet note is one short line inside the 25-word copy budget",
+          visibleWords(needEl("wl-summary-note")) <= 25,
+          `${visibleWords(needEl("wl-summary-note"))} words: ` +
+          needEl("wl-summary-note").textContent);
     // THE TILE MUST NOT WEAR THE BUTTON'S 28px BOX (2026-10-19): the clickable summary tiles
     // are <button>s, so BTN-1's height squeezed a 51px label+number stack out of the pill.
     if (tiles.length) {
