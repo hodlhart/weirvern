@@ -711,7 +711,15 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         # calibrated at all. A mean over the kept rows would sit above the floor by
         # construction and could never say "insufficient".
         evidence = coverage_evidence(reference, MODEL_EXPECTED_FEATURES.get(model_name))
-        source += _coverage_source_note(evidence, len(reference))
+        note = _coverage_source_note(evidence, len(reference))
+        if evidence["coverage"] is None and "fallback" in source.lower():
+            # SAY WHY, NOT ONLY THAT IT IS MISSING. The fallback reads `netflow_anomalies`,
+            # whose rows are the alert tail and carry no feature vector, so there is nothing to
+            # measure coverage against. Before this, the row said "not measured" and left the
+            # operator to guess whether the instrument or the data was at fault.
+            note = ("; coverage not measured for this reference: the fallback reads stored "
+                    "anomaly scores (the alert tail), which carry no feature vector")
+        source += note
         # THE FAR IS A PROPORTION, SO IT IS STORED WITH ITS DENOMINATOR AND ITS INTERVAL. A row
         # that says 0.045 and nothing else cannot be judged: on 110 windows that is 2%-10%, and
         # the eligibility rule now refuses to decide on an interval that wide.

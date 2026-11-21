@@ -616,8 +616,15 @@ def _calibration_rows(client: Any) -> dict[str, dict[str, Any]]:
                 base + columns + " FROM weirvern.ml_calibration FINAL "
                 # ONLY THE POOLED ROW: per-stratum rows measure a sub-population and are written
                 # beside it.
-                "WHERE scope = 'global' AND computed_at = (SELECT max(computed_at) "
-                "FROM weirvern.ml_calibration)"
+                "WHERE scope = 'global' "
+                # THE NEWEST ROW **PER MODEL**, not the newest row in the table. A calibration
+                # pass that cannot build a reference for one detector (measured 2026-11-21: KNN
+                # and LOF were skipped because the new version had no population yet) writes no
+                # row for it, and the old `computed_at = (SELECT max(...))` filter then made that
+                # detector read "no calibration row" -- indistinguishable from never calibrated,
+                # though it held an 18-hour-old row. Freshness is the check that should refuse
+                # it, and it can only do that if the older row is read.
+                "ORDER BY model_name, computed_at DESC LIMIT 1 BY model_name"
             )
             break
         except Exception as exc:  # noqa: BLE001

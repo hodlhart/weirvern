@@ -408,7 +408,13 @@ def test_the_population_row_carries_coverage_and_the_exclusion_decision():
     disabled_population: list[dict] = []
     detect_flows([_flow()], [_Detector()], settings, ModelConfig(),
                  score_population=disabled_population)
-    assert disabled_population[0]["coverage"] is None
+    # COVERAGE IS MEASURED IN BOTH MODES (measured defect 2026-11-21). With imputation off the
+    # scoring vector substitutes zeros for absent sources, so the calibration writer used to
+    # store NULL and the eligibility gate refused every detector with "coverage not recorded".
+    # The measurement now runs on the missing-preserving view of the same inputs; the flag still
+    # governs imputation (and therefore exclusion), not measurement.
+    assert disabled_population[0]["coverage"] == pytest.approx(expected)
+    assert disabled_population[0]["coverage_counts"][0] > 0
     assert disabled_population[0]["excluded"] is False
 
 

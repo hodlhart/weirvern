@@ -376,6 +376,38 @@ def classify_feed(rows: int, unicast: int, newest_age_s: float,
     return ("flowing", True, kind)
 
 
+def _ingest_freshness_probe(client) -> Probe:
+    """How old is the newest row in `weirvern.flows`?
+
+    ── THE OUTAGE THIS MUST NAME (measured 2026-11-21) ──────────────────────────────────────────
+
+    The NetFlow feed stopped at 2026-11-20 23:33 and stayed stopped for eighteen hours. A probe
+    of exactly this shape already existed, compared the age to 900s, and printed "newest flow
+    18.0h ago" -- true, and invisible: one terse line among twenty, with nothing in the worker's
+    log saying the same thing at the same moment.
+
+    So the measurement moved into `weirvern.ingest_freshness`, which the worker also runs once
+    per cycle and logs at ERROR while stalled. This probe reports that shared verdict: the age
+    against the DETECTION budget (one 300s bucket), the difference between "nothing ever
+    arrived" and "it stopped arriving", and the remedy in the sentence.
+    """
+    from weirvern.ingest_freshness import NO_DATA, measure  # noqa: PLC0415
+
+    started = time.perf_counter()
+    verdict = measure(client)
+    detail = verdict.detail()
+    if verdict.state == NO_DATA:
+        # The historical remedy, kept where an operator first looks. It is a different fault
+        # from a stopped collector: nothing has EVER arrived, so the exporter is the suspect.
+        detail += (
+            ". The most common cause is an exporter pointing at the CONTAINER port instead of "
+            "the NodePort: send NetFlow to <node-ip>:32055 and sFlow to :32063, NOT 2055/6343 "
+            "(those are cluster-internal). Check with: "
+            "tcpdump -i <iface> -nn 'udp and port 2055'")
+    return Probe("ingest_freshness", ok=verdict.ok, detail=detail,
+                 value=verdict.as_value(), latency_ms=(time.perf_counter() - started) * 1000)
+
+
 def _feed_probe(client, settings=None) -> Probe:
     """Is the capture port carrying the NETWORK, or only the noise every port sees?
 
@@ -558,34 +590,19 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
         ))
 
     # 3. Ingestion freshness — how long since the newest flow arrived.
-    def freshness():
-        rows = client.query(
-            "SELECT dateDiff('second', max(timestamp), now()) FROM weirvern.flows"
-        ).result_rows
-        return rows[0][0] if rows and rows[0][0] is not None else None
-
-    age_s, ms, err = _timed(freshness)
-    if err is None:
-        if age_s is None:
-            report.add(Probe(
-                "ingest_freshness", ok=False, latency_ms=ms,
-                detail=(
-                    "no flow data yet. The most common cause is an exporter "
-                    "pointing at the CONTAINER port instead of the NodePort: send "
-                    "NetFlow to <node-ip>:32055 and sFlow to :32063, NOT 2055/6343 "
-                    "(those are cluster-internal). Check with: "
-                    "tcpdump -i <iface> -nn 'udp and port 2055'"
-                ),
-            ))
-        else:
-            age_s = float(age_s)
-            report.add(Probe(
-                "ingest_freshness", ok=age_s < 900,  # 15 min => ingest is alive
-                detail=f"newest flow {_human_age(age_s)} ago",
-                value=age_s, latency_ms=ms,
-            ))
-    else:
-        _probe_failed(report, "ingest_freshness", err, ms)
+    #
+    # THE MEASUREMENT IS SHARED WITH THE WORKER (2026-11-21). It used to be a local query with a
+    # 900s bar and a one-line detail; the worker said nothing at the same moment, so an
+    # eighteen-hour stall read as a quiet network. `weirvern.ingest_freshness` now owns the
+    # definition, the worker logs its verdict at ERROR while stalled, and this probe reports the
+    # same numbers against the 300s detection budget.
+    started = time.perf_counter()
+    try:
+        report.add(_ingest_freshness_probe(client))
+    except Exception as exc:  # noqa: BLE001
+        _probe_failed(report, "ingest_freshness", exc, (time.perf_counter() - started) * 1000)
+    if report.probes:
+        report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 
     # 4. Zeek freshness (only meaningful if the sensor is enabled).
     #

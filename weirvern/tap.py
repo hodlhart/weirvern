@@ -229,6 +229,47 @@ def select_from_settings(settings, *, channel_active: bool = False,
     )
 
 
+def idle_reason(settings) -> str:
+    """WHY this sensor is metering nothing, in the configuration's own terms.
+
+    ── THE SILENCE THIS BREAKS (measured 2026-11-21) ─────────────────────────────────────────────
+
+    A deploy applied `k8s/20-configmap-env.yaml` over the live ConfigMap, which reset
+    `NETFLOW_MODE` to `auto`, `NETFLOW_IFACE` to empty and `CAPTURE_IFACE` to empty. The tap
+    sidecar restarted with that configuration, `select_targets` correctly returned no targets,
+    and the process then did the worst possible thing: it kept publishing `running: true`-shaped
+    state every fifteen seconds and said NOTHING. `goflow2` stayed Ready because its liveness
+    probe is its own /metrics endpoint, and the JSONL sink simply stopped growing. The outage was
+    found eighteen hours later from the absence of rows.
+
+    A tap that cannot meter is not idle by design; it is misconfigured or its source is gone.
+    Either way it must say so, repeatedly, with the keys that would fix it.
+    """
+    mode = str(getattr(settings, "netflow_mode", "") or "").strip().lower() or "auto"
+    sensor = str(getattr(settings, "sensor_mode", "") or "").strip().lower() or "loch"
+    netflow_iface = str(getattr(settings, "netflow_iface", "") or "")
+    capture_iface = str(getattr(settings, "capture_iface", "") or "")
+    zeek_iface = str(getattr(settings, "zeek_iface", "") or "")
+    channel = str(getattr(settings, "channel_netflow", "") or "").strip().lower() or "off"
+
+    if mode == "passive":
+        return ("netflow_mode=passive: this sensor does not meter its own capture. That is a "
+                "valid choice only when an external router exports to it; if nothing does, "
+                "flows-external.jsonl stays empty and every flow view is empty rather than quiet")
+    if mode == "active":
+        return ("netflow_mode=active but NETFLOW_IFACE, CAPTURE_IFACE and ZEEK_IFACE are all "
+                "empty: there is no interface to tap. Set NETFLOW_IFACE to the capture NIC(s)")
+    if sensor == "siphon":
+        return ("sensor_mode=siphon but the intercept is not verified live, so the tap will not "
+                "follow it -- a configured-but-dead intercept must not fill the flows table")
+    return (
+        f"netflow_mode=auto with CHANNEL_NETFLOW={channel} and SENSOR_MODE={sensor}: a passive "
+        f"mirror is not metered in auto mode. Set NETFLOW_MODE=active and NETFLOW_IFACE to the "
+        f"capture NIC(s) (NETFLOW_IFACE={netflow_iface!r}, CAPTURE_IFACE={capture_iface!r}, "
+        f"ZEEK_IFACE={zeek_iface!r}). Nothing is being metered until one of those changes"
+    )
+
+
 def prune_ring(*, directory: str | None = None, max_mb: int = TAP_RING_MAX_MB) -> int:
     """Drop the OLDEST completed segments when the ring outgrows its disk budget.
 
@@ -429,10 +470,19 @@ class Supervisor:
         self._which = which or shutil.which
         self._run = run
         self._clock = clock or time.monotonic
+        # When the idle warning was last emitted, so a misconfigured tap says so every five
+        # minutes rather than on every 15s tick (or, worse, never).
+        self._idle_logged_at = float("-inf")
 
     # ── the decision table, once per tick ────────────────────────────────────────────────────
-    def tick(self, targets: Sequence[Target]) -> None:
-        """One supervision pass. Cheap when nothing changed."""
+    def tick(self, targets: Sequence[Target], *, idle_reason: str = "") -> None:
+        """One supervision pass. Cheap when nothing changed.
+
+        `idle_reason` is what the CALLER knows and this class does not: the settings that
+        produced an empty selection. It is logged at WARNING (rate-limited to RETRY_S) when no
+        target is selected, because an idle tap that says nothing is indistinguishable from a
+        healthy one from every other surface -- which is how an eighteen-hour outage passed.
+        """
         target_ifaces = [t.iface for t in targets]
         running = any(entry.get("tap") is not None and entry["tap"].poll() is None
                       for entry in self.taps.values())
@@ -454,6 +504,9 @@ class Supervisor:
         if not target_ifaces:
             if running:
                 self.stop("no active target")
+            if idle_reason and self._clock() - self._idle_logged_at >= RETRY_S:
+                self._idle_logged_at = self._clock()
+                logger.warning("tap: NOT METERING ANY INTERFACE -- %s", idle_reason)
             return
         if running:
             self._sweep()
@@ -648,7 +701,7 @@ def main() -> None:
                 siphon_live=(liveness() if str(getattr(settings, "sensor_mode", ""))
                              .strip().lower() == "siphon" else None),
             )
-            supervisor.tick(targets)
+            supervisor.tick(targets, idle_reason=idle_reason(settings))
             # Publish what this process is doing, once per tick: the only evidence that capture is
             # ALIVE rather than merely configured. Never raises, never blocks the sweep.
             publish_state(supervisor, targets, settings)

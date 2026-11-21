@@ -75,6 +75,40 @@ def test_null_coverage_is_never_eligible():
     assert ev.reason == "coverage not recorded"
 
 
+def test_eligibility_reads_each_detectors_newest_row_not_the_newest_batch():
+    """A detector skipped by the latest pass must be judged STALE, not absent.
+
+    MEASURED 2026-11-21: the calibration pass could build no population for KNN/LOF under the
+    running version, so it wrote rows only for the other three. `_calibration_rows` selected
+    `computed_at = (SELECT max(computed_at) ...)`, which made KNN/LOF read "no calibration row"
+    -- the same answer as a detector that had never been calibrated -- even though each held a
+    row from 17:49. The remedy differs (wait for population vs. look for a broken detector), so
+    the query now takes the newest row PER MODEL and lets the freshness check refuse it.
+    """
+    from weirvern.models import eligibility as module
+
+    class _Result:
+        result_rows = [
+            ("Isolation Forest", 0.0103, 0.01, 0.9, 69, 77, "2026-11-21 11:24:00", 1.0, 9000, 0.8),
+            ("LOF", 0.0, 0.01, 0.8, 15, 19, "2026-11-20 17:49:38", 18.2, 12, 0.7),
+        ]
+
+    class _Client:
+        def __init__(self):
+            self.sql = ""
+
+        def query(self, sql, parameters=None):  # noqa: ANN001, ANN201
+            self.sql = sql
+            return _Result()
+
+    client = _Client()
+    rows = module._calibration_rows(client)
+    assert set(rows) == {"Isolation Forest", "LOF"}, (
+        "the older LOF row must be read, so freshness -- not absence -- is the finding")
+    assert "LIMIT 1 BY model_name" in client.sql
+    assert "computed_at = (SELECT max(computed_at)" not in client.sql
+
+
 def test_a_coverage_ratio_without_its_counts_is_still_unrecorded():
     """Schema 058 stores the counts; a row with only the ratio cannot be audited."""
     ev = _evidence(coverage=0.8, coverage_observed=None, coverage_expected=None)

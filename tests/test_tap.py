@@ -544,3 +544,47 @@ def test_the_sweep_exports_a_segment_to_the_collector_for_its_interface(tmp_path
                         collector=tap.collector_for(1))
 
     assert calls[0][calls[0].index("-n") + 1] == "127.0.0.2:2055"
+
+
+# ── a tap that cannot meter must say so ───────────────────────────────────────────────────────
+
+def test_an_idle_tap_names_the_settings_that_left_it_idle():
+    """THE OUTAGE THIS WOULD HAVE ANNOUNCED (measured 2026-11-21).
+
+    A deploy applied the manifest's placeholder ConfigMap over the live one: NETFLOW_MODE went
+    from active to auto, NETFLOW_IFACE from eth1,eth2 to empty. The tap restarted, selected no
+    targets, and published state every fifteen seconds without a word. flow records stopped for
+    eighteen hours while goflow2 stayed Ready.
+    """
+    from types import SimpleNamespace
+
+    from weirvern import tap
+
+    reason = tap.idle_reason(SimpleNamespace(
+        netflow_mode="auto", sensor_mode="loch", netflow_iface="",
+        capture_iface="", zeek_iface="eth1", channel_netflow="off"))
+    assert "NETFLOW_MODE=active" in reason, "the remedy must be in the sentence"
+    assert "NETFLOW_IFACE=''" in reason, "the empty key that caused it must be named"
+    assert "Nothing is being metered" in reason
+
+
+def test_an_idle_tap_warns_once_per_retry_window_not_every_tick(caplog):
+    import logging
+
+    from weirvern import tap
+
+    clock = {"now": 1000.0}
+    supervisor = tap.Supervisor(directory="/tmp/unused", clock=lambda: clock["now"])
+    reason = "netflow_mode=auto with an empty NETFLOW_IFACE"
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.tap"):
+        for _ in range(10):          # ten ticks over 2.5 minutes
+            clock["now"] += 15
+            supervisor.tick([], idle_reason=reason)
+        first = len(caplog.records)
+        clock["now"] += tap.RETRY_S  # past the retry window
+        supervisor.tick([], idle_reason=reason)
+
+    assert 1 <= first <= 2, f"the idle tap logged {first} warnings in ten ticks"
+    assert "NOT METERING ANY INTERFACE" in caplog.records[0].getMessage()
+    assert len(caplog.records) > first, "the warning must repeat, or a long outage goes quiet again"

@@ -257,3 +257,33 @@ def test_the_ensemble_measures_each_detector_against_its_own_vector(tmp_path):
     assert sample["model_coverage"][detector.name] == pytest.approx(10 / 77)
     # The window union is wider than the detector's vector, and both are recorded.
     assert sample["coverage_counts"][1] == len(TELEMETRY_FEATURES)
+
+
+def test_coverage_is_measured_even_with_missing_handling_off(tmp_path):
+    """THE LIVE DEFECT (2026-11-21): every calibration row recorded coverage NULL.
+
+    `ML_MISSING_FEATURES` is off on this deployment, and the ensemble only computed coverage
+    counts when the flag was ON. The calibration writer therefore stored NULL, and the
+    eligibility gate refused all five detectors with "coverage not recorded" -- an unmeasured
+    vector is not evidence -- so the ensemble contributed nothing for a day.
+
+    The flag governs IMPUTATION. Measurement is not optional: the counts are computed from the
+    missing-preserving view of the same inputs, so a NetFlow-only host still reads 10 of 77
+    columns rather than 77 of 77 (which is what counting the substituted-default vector would
+    claim). And `excluded` stays False, because with the flag off these windows ARE scored.
+    """
+    detector = IsolationForestDetector(tmp_path, ModelConfig(missing_features=False))
+    population: list[dict] = []
+    flow = {"src_addr": "198.51.100.10", "window_start": datetime(2026, 11, 19, 8, 0, 0),
+            "total_bytes": 1000, "total_packets": 10, "unique_dst_ips": 2, "flow_count": 4}
+    detect_flows([flow], [detector], Settings(), detector.cfg, score_population=population)
+    sample = population[0]
+    counts = sample["model_coverage_counts"][detector.name]
+    assert counts == (10, len(detector.expected_feature_columns()))
+    assert counts[1] == 77, "the denominator is still the detector's own vector"
+    assert sample["coverage_counts"][1] == len(TELEMETRY_FEATURES)
+    assert sample["coverage"] == pytest.approx(
+        sample["coverage_counts"][0] / sample["coverage_counts"][1])
+    assert sample["excluded"] is False, (
+        "with imputation off these windows are scored, so they are not excluded from the "
+        "population the FAR is measured on")

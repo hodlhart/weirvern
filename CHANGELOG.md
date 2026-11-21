@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.23.123 — 2026-11-21
+
+THE NETFLOW OUTAGE IS DIAGNOSED FROM THE EVIDENCE, THE CAPTURE PATH IS RESTORED, AND A STALLED
+INGEST NOW ANNOUNCES ITSELF. THE ENSEMBLE'S COVERAGE IS MEASURED IN BOTH MODES.
+
+- **THE OUTAGE WAS A CONFIG APPLY, NOT A COLLECTOR FAULT.** At 2026-11-20 23:33:43 the deploy
+  applied `k8s/20-configmap-env.yaml` over the live ConfigMap, restoring the manifest's
+  placeholders: `NETFLOW_MODE` auto (was active), `NETFLOW_IFACE` and `CAPTURE_IFACE` empty
+  (were `eth1,eth2` and `eth1`), `SENSOR_MODE` loch (was siphon) and `INTERCEPT_PLANS` empty. The
+  zeek DaemonSet rolled two seconds later; the new tap sidecar selected ZERO targets and
+  published `running: false, targets: []` every fifteen seconds without a word. The old tap's
+  last export, the last goflow2 log line and the last byte of both JSONL files are all
+  23:33:14.94 — the in-flight 30s segment was lost with the pod, and nothing was metered after.
+  `kubectl get cm -o jsonpath='{.metadata.managedFields[*].time}'` (23:33:43) and the
+  `weirvern.io/gui-written-keys` annotation (the values a GUI write recorded, still naming
+  `eth1,eth2` / `eth1` / siphon) are the two records that make the clobber visible.
+- **The `template error` lines were a symptom, not the cause.** goflow2's counters at the last
+  scrape read 565,420 DataFlowSet records and 29,296 `template_not_found` errors (5.2%) — real,
+  from the one-shot softflowd runs' ephemeral source ports filling the template cache, but the
+  writer advanced through them for the whole 25 minutes they were logged. Decoding resumed on
+  the first packet after the tap was restored, with no collector restart and no error. NetFlow
+  template expiry does not explain a file that stopped growing; a tap with no targets does.
+- **The capture path is restored and the flow records prove it.** `NETFLOW_MODE=active` with the
+  two NICs re-tapped produced rows within 90 seconds (17:52Z), but a passive tap on these ports
+  sees only broadcast (the gateway's mDNS): the volume before the outage came from the siphon
+  intercept, so the recorded `INTERCEPT_PLANS` were restored and the siphon overlay re-applied.
+  Flows then climbed to 219 rows / 73 hosts in the 11:59 local minute against a 287-rows/minute
+  pre-outage baseline.
+- **A stalled ingest is now loud in two places, from one measurement.** `weirvern/ingest_freshness.py`
+  reads the age of the newest row in `flows` (one aggregate; the table is ordered by timestamp)
+  and classifies it FRESH / STALLED / NO_DATA / UNREADABLE. The worker runs it every cycle and
+  logs `FLOW INGEST STALLED: ...` at ERROR while stalled, WARNING on the recovery edge, INFO while
+  fresh; the `ingest_freshness` Health probe reports the same verdict at a 300s (one detection
+  bucket) limit instead of the old 900s, and its detail names the age, the fault and the checks
+  to run. The tap itself now warns `NOT METERING ANY INTERFACE` (rate-limited to 5 minutes) with
+  the settings that produced the empty selection, instead of idling silently.
+- **Coverage is measured whether or not missing-data handling is on.** The ensemble computed
+  coverage counts only when `ML_MISSING_FEATURES` was on; on this deployment it is off, so every
+  `ml_window_scores` row carried NULL and every calibration row did too — and the eligibility
+  gate refused all five detectors with `coverage not recorded`. The measurement now runs on the
+  missing-preserving view of the same inputs in both modes (the flag governs imputation, not
+  measurement), so a NetFlow-only host reads 10 of 79 measured rather than 79 of 79, and
+  `excluded` still only marks windows the scoring path actually dropped.
+- **Eligibility reads each detector's OWN newest pooled row.** The query selected rows written at
+  the single newest `computed_at`; a pass that could not build a reference for KNN/LOF (no
+  population under the running version) therefore made them read `no calibration row` instead of
+  `stale`, which is a different fault with a different remedy. `LIMIT 1 BY model_name` makes the
+  freshness check do the refusing, and the calibration row states WHY coverage is unmeasurable
+  when the reference is the stored anomaly tail (no feature vector exists to measure).
+
 ## 0.23.122 — 2026-11-21
 
 THE ZEEK ROW STOPS BEING BLIND TO ZEEK'S OWN EVIDENCE, THE COARSE SCALES ARE RE-MEASURED, AND THE

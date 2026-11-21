@@ -471,26 +471,34 @@ def detect_flows(
             (baseline_det.baselines.get(src) if baseline_det else None),
             preserve_missing=missing_mode,
         )
-        # HOW MUCH OF THE VECTOR WAS MEASURED, once per window over the union of everything
-        # the four detectors consume (`None` with the flag off: not measured is not zero), and
-        # once per detector over its OWN vector, because the cross-sectional pair's 19 columns and
-        # the wide pair's 77 are covered differently. Both feed calibration; the per-detector number is
-        # what a detector's row reports. THE COUNTS RIDE WITH THE RATIO: calibration stores
-        # '10 of 77' so a false-alarm rate can never be read without knowing what it was
-        # measured on. They come from `coverage_counts`, the same count `coverage` divides.
-        window_counts = coverage_counts(features, TELEMETRY_FEATURES) if missing_mode else None
-        window_coverage = (window_counts[0] / window_counts[1]) if window_counts else None
-        model_coverage: dict[str, float] | None = None
-        model_coverage_counts: dict[str, tuple[int, int]] | None = None
-        if missing_mode:
-            model_coverage = {}
-            model_coverage_counts = {}
-            for det in detectors:
-                declared: Any = getattr(det, "expected_feature_columns", None)
-                names = list(declared()) if callable(declared) else []
-                counts = coverage_counts(features, names or TELEMETRY_FEATURES)
-                model_coverage_counts[det.name] = counts
-                model_coverage[det.name] = counts[0] / counts[1] if counts[1] else 1.0
+        # HOW MUCH OF THE VECTOR WAS MEASURED, IN BOTH MODES. The coverage COUNTS are what the
+        # calibration row stores and what the eligibility gate reads; with the flag OFF the
+        # scoring path substitutes historical defaults for absent sources (0/0/0/1.0), so
+        # counting the SCORING dict would report "79 of 79 measured" for a NetFlow-only host --
+        # a lie that is worse than the NULL it replaced. The measurement therefore runs on the
+        # missing-preserving view of the SAME inputs, where an absent source stays None. One
+        # extra dict build per host-window; the flag itself still governs imputation, not
+        # measurement.
+        #
+        # The argument list is written out twice on purpose: `tests/test_zeek_ml_wiring.py`
+        # pins that the Zeek row is passed at SCORING time, and a `*args` tuple would hide that
+        # from the source-level guard without changing the behaviour.
+        measured = features if missing_mode else extract_features(
+            flow, flow.get("_diversity") or None, flow.get("_temporal") or None,
+            flow.get("_zeek") or None,
+            (baseline_det.baselines.get(src) if baseline_det else None),
+            preserve_missing=True,
+        )
+        window_counts = coverage_counts(measured, TELEMETRY_FEATURES)
+        window_coverage = (window_counts[0] / window_counts[1]) if window_counts[1] else None
+        model_coverage: dict[str, float] = {}
+        model_coverage_counts: dict[str, tuple[int, int]] = {}
+        for det in detectors:
+            declared: Any = getattr(det, "expected_feature_columns", None)
+            names = list(declared()) if callable(declared) else []  # type: ignore[arg-type]
+            counts = coverage_counts(measured, names or TELEMETRY_FEATURES)
+            model_coverage_counts[det.name] = counts
+            model_coverage[det.name] = counts[0] / counts[1] if counts[1] else 1.0
         scores: dict[str, float] = {}
         for det in detectors:
             scores[det.name] = det.predict(flow, features)
@@ -507,7 +515,11 @@ def detect_flows(
                 "coverage_counts": window_counts,
                 "model_coverage": model_coverage,
                 "model_coverage_counts": model_coverage_counts,
-                "excluded": bool(window_coverage is not None
+                # THE FLAG GOVERNS EXCLUSION, NOT MEASUREMENT. With missing-data handling off the
+                # detector SCORES these windows on substituted defaults, so calling them
+                # "excluded" would misdescribe the population the FAR was measured on. The
+                # counts still travel, so a later calibration can decide with evidence.
+                "excluded": bool(missing_mode and window_coverage is not None
                                  and window_coverage < coverage_floor),
             }
 
