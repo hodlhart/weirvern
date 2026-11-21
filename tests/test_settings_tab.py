@@ -124,33 +124,69 @@ def test_a_boolean_setting_reads_as_enabled_or_disabled():
 
 
 def test_every_write_route_consults_A_GATE():
-    """Every write route refuses an anonymous caller.
+    """Every mutating route in the app refuses an anonymous caller AND a viewer session.
 
     THE INVARIANT CHANGED SHAPE TWICE. It used to assert there was NO write route at all -- right
     while the GUI had no authentication. Then: every write route consults the auth gate, checked by
     grepping each handler for `self._authorize()`. The handler is retired, so the question is now
-    asked BEHAVIOURALLY: build the real app over a context with no token and no accounts, POST to
-    EVERY write route the URL map publishes, and require a refusal.
+    asked BEHAVIOURALLY: build the real app over a context with accounts, POST to EVERY non-GET
+    route the URL map publishes, and require a refusal.
+
+    THE SCOPE IS THE WHOLE APP, NOT ONLY /api/. The viewer-to-block-rule escalation lived on three
+    rendered `/block` POSTs that carried only `@user_required`, and an `/api/`-only sweep could not
+    see them. Each route is now driven twice: anonymous must answer 401/403, and a valid VIEWER
+    session must answer 403 unless the route is on the short, explicit list of things any account
+    may do (sign out, change its own password). A route that checks "is there a session?" instead of
+    "is this an admin?" fails here.
 
     WHY THIS IS STRONGER THAN THE GREP. A source search can be satisfied by a gate call in a branch
     that is never reached, or by a route that parses its body before gating. This drives the route
-    in its most permissive deployment state -- the one where an unauthenticated write would be a
-    configuration change -- and fails on anything but a 401/403. The allow-list is implicit and
-    total: every POST is tested, so a new ungated write route fails here rather than passing
-    quietly.
+    in its most permissive deployment state and fails on anything but a refusal. The allow-lists are
+    explicit and everything else is covered, so a new ungated write route fails here rather than
+    passing quietly.
     """
     import re
 
     from tests.support_routes import _Ctx, flask_api_paths, flask_write_paths
-    from weirvern.admin import flask_app
+    from weirvern.admin import flask_app, gui_auth
+    from weirvern.admin import users as users_mod
 
-    # THERE MUST BE A WRITE SURFACE, AND IT MUST REFUSE THE UNSAFE VERBS. A PUT or DELETE accepted
+    # THERE MUST BE A WRITE SURFACE, AND IT MUST REFUSE THE UNSAFE VERBS. A PUT or PATCH accepted
     # here would be an unaudited write path.
     writes = flask_write_paths()
     assert writes, "no write surface exists"
     assert flask_api_paths(), "no read surface exists"
 
-    app = flask_app.create_app(_Ctx(), secret_key="verbs")
+    class _K8s:
+        """The account store's configmap, absent: the store bootstraps empty and is filled below."""
+
+        def __init__(self):
+            self.data = {}
+
+        def read(self):
+            from weirvern.admin.cluster_config import NotFoundError
+
+            raise NotFoundError("weirvern-users does not exist")
+
+        def create(self, data):
+            self.data = dict(data)
+
+        def patch_data(self, data):
+            self.data = dict(data)
+
+    class _GateCtx(_Ctx):
+        """Accounts ON, with one admin and one viewer, so a session's ROLE decides the answer."""
+
+        def __init__(self):
+            self.sessions = users_mod.SessionRegistry()
+            self.throttle = users_mod.LoginThrottle()
+            self.user_store = users_mod.UserStore(_K8s())
+            self.user_store.load()
+            self.user_store.create_user("admin", users_mod.ROLE_ADMIN, "admin-password-1")
+            self.user_store.create_user("viewer1", users_mod.ROLE_VIEWER, "viewer-password-1")
+
+    ctx = _GateCtx()
+    app = flask_app.create_app(ctx, secret_key="verbs")
     allowed = set()
     for rule in app.url_map.iter_rules():
         allowed |= set(rule.methods or ())
@@ -161,28 +197,68 @@ def test_every_write_route_consults_A_GATE():
     for unsafe in ("PUT", "PATCH"):
         assert unsafe not in allowed, f"{unsafe} would be an unaudited write path"
 
+    # EVERY non-GET rule, /api/ and rendered alike. A parameterised rule is driven with a concrete
+    # value so it reaches its view; the body is empty because the gate must answer BEFORE the body
+    # is read.
+    rules: list[tuple[str, str]] = []
+    for rule in app.url_map.iter_rules():
+        verbs = set(rule.methods or ()) - {"GET", "HEAD", "OPTIONS"}
+        path = re.sub(r"<[^>]+>", "probe", rule.rule)
+        rules.extend((path, verb) for verb in sorted(verbs))
+    assert rules, "the URL map publishes no mutating route"
+
+    # THE PUBLIC DOOR IS SHORT AND NAMED. Sign-in must accept anonymous by definition; registration
+    # is a first-run convenience the deployment can close; rendered sign-out carries no authority
+    # (an anonymous caller has no session to end) and is CSRF-protected, so it answers 400 rather
+    # than 401 when it has no nonce.
+    anonymous_ok = {"/api/login", "/login", "/register", "/logout"}
+    # A VIEWER MAY END ITS OWN SESSION AND CHANGE ITS OWN PASSWORD. Nothing else.
+    viewer_ok = {"/api/logout", "/logout", "/api/password"} | anonymous_ok
+
     client = app.test_client()
     unrefused = []
-    for rule in app.url_map.iter_rules():
-        if not rule.rule.startswith("/api/"):
+    for path, verb in rules:
+        if path in anonymous_ok:
             continue
-        verbs = set(rule.methods or ()) - {"GET", "HEAD", "OPTIONS"}
-        if not verbs:
-            continue
-        # A parameterised rule is driven with a concrete value so it reaches its view; the body is
-        # empty because the gate must answer BEFORE the body is read.
-        path = re.sub(r"<[^>]+>", "probe", rule.rule)
-        for verb in sorted(verbs):
-            got = client.open(path, method=verb, json={})
-            if got.status_code not in (401, 403):
-                unrefused.append(f"{verb} {path} -> {got.status_code}: {got.data[:100]!r}")
+        got = client.open(path, method=verb, json={})
+        if got.status_code not in (401, 403):
+            unrefused.append(f"{verb} {path} -> {got.status_code}: {got.data[:100]!r}")
     assert not unrefused, (
         f"these write routes answered an anonymous caller without refusing: {unrefused}. Each one "
         f"must consult requestauth.write_refusal (or the _gate_write/_write_json helper that is "
         f"its only wrapper) before doing anything else")
 
+    # THE ROLE CHECK, WHICH A SESSION-ONLY GATE DOES NOT MAKE. A viewer is authenticated; every
+    # mutating route must still refuse it with 403 rather than acting on the session's existence.
+    viewer_headers = {gui_auth.SESSION_HEADER: ctx.sessions.create(
+        users_mod.Identity(username="viewer1", role=users_mod.ROLE_VIEWER))}
+    viewer_unrefused = []
+    for path, verb in rules:
+        if path in viewer_ok:
+            continue
+        got = client.open(path, method=verb, headers=viewer_headers, json={})
+        if got.status_code != 403:
+            viewer_unrefused.append(f"{verb} {path} -> {got.status_code}: {got.data[:100]!r}")
+    assert not viewer_unrefused, (
+        f"these write routes answered a VIEWER session with something other than 403: "
+        f"{viewer_unrefused}. `@user_required` only proves a session exists; every mutation except "
+        f"sign-out and one's own password change must check the ROLE (requestauth.write_refusal, "
+        f"or an admin-session check for credential/account management)")
+
+    # COVERAGE IS ASSERTED, NOT ASSUMED. Every rule pair was either driven or deliberately
+    # allow-listed, and the rendered pages outside /api/ are part of the sweep -- that is the gap
+    # that let the block-rule escalation live.
+    assert len(rules) == len(set(rules)), "the URL map publishes a duplicate method/path pair"
+    declared = {rule.rule for rule in app.url_map.iter_rules()}
+    non_api = {path for path, _verb in rules if not path.startswith("/api/")}
+    assert {"/block", "/block/<proposal_id>/apply", "/block/<proposal_id>/dismiss"} <= declared, (
+        f"the rendered block writes are missing from the URL map: {sorted(declared)}")
+    assert len(non_api) >= 6, f"the non-/api/ mutating surface shrank unexpectedly: {sorted(non_api)}"
+
     # And the settings READ stays a read: a GET, answering the payload that carries the write state.
-    got = client.get("/api/settings")
+    # Accounts are provisioned here, so the read presents a session (a viewer may read; that is the
+    # half the write gate above must not confuse with permission to change anything).
+    got = client.get("/api/settings", headers=viewer_headers)
     assert got.status_code == 200, got.data
     assert "writes" in (got.get_json() or {}), "the settings read does not return a JSON payload"
 

@@ -13,6 +13,7 @@ import re
 import pytest
 
 from weirvern import proposals, sluice_store
+from weirvern.admin import gui_auth
 from weirvern.admin import users as users_mod
 
 flask = pytest.importorskip("flask")
@@ -39,11 +40,18 @@ class _FakeCH:
     def __init__(self):
         self.rows: dict[str, list] = {}
         self.inserts: list[tuple] = []
+        self.audits: list[dict] = []
 
     def insert(self, table, data, column_names=None):
+        if table == "weirvern.fleet_audit":
+            cols = list(column_names or ["scope", "action", "target", "reason", "actor"])
+            for row in data:
+                self.audits.append(dict(zip(cols, row, strict=False)))
+            return len(data)
         if table != "weirvern.block_proposals":
-            # The auth audit writes to another table through the same factory. It is not what these
-            # tests are about, and asserting on it here would make every login look like a defect.
+            # The auth audit and the sluice rule write go to other tables through the same factory.
+            # The rule write is exercised by the real `sluice_store.create_rule` in the apply test;
+            # neither is what these tests assert on.
             return len(data)
         self.inserts.append((table, data, column_names))
         for row in data:
@@ -417,3 +425,87 @@ def test_the_proposals_API_lists_what_is_pending(monkeypatch):
     assert body["available"] is True
     assert body["total"] == 1
     assert body["proposals"][0]["host"] == "192.0.2.10"
+
+
+# ── the rendered block writes are ADMIN, not merely signed in ──────────────────────────────
+#
+# THE ESCALATION THIS CLOSES. These three routes carried `@user_required`, which asks only whether
+# a session exists -- so a VIEWER could propose a block and apply it into a real rule. A session is
+# not a role; applying a proposal is enforcement and takes the admin write gate, before the CSRF
+# nonce and the form body.
+
+
+def _viewer_headers(ctx):
+    return {gui_auth.SESSION_HEADER: ctx.sessions.create(
+        users_mod.Identity(username="viewer1", role=users_mod.ROLE_VIEWER))}
+
+
+@pytest.mark.parametrize("path", ["/block", "/block/pp_probe/apply", "/block/pp_probe/dismiss"])
+def test_a_viewer_session_is_refused_on_every_block_write(path):
+    ch = _FakeCH()
+    ctx = _ctx()
+    ctx.connect_factory = lambda settings: _CM(ch)
+    app = flask_app.create_app(ctx, secret_key="test-key")
+    app.config.update(TESTING=True)
+
+    got = app.test_client().post(path, headers=_viewer_headers(ctx), data={})
+
+    assert got.status_code == 403, (
+        f"a viewer session was allowed to change enforcement on {path}: "
+        f"{got.status_code} {got.data[:300]!r}")
+    assert not ch.rows, "a refused viewer write stored a proposal"
+    assert not ch.audits, "a refused write left an audit row claiming it happened"
+
+
+def test_a_must_change_admin_session_cannot_change_enforcement():
+    """A held password gate must not be bypassable by hitting a rendered POST directly."""
+    ch = _FakeCH()
+    ctx = _ctx()
+    ctx.connect_factory = lambda settings: _CM(ch)
+    app = flask_app.create_app(ctx, secret_key="test-key")
+    app.config.update(TESTING=True)
+    headers = {gui_auth.SESSION_HEADER: ctx.sessions.create(
+        users_mod.Identity(username="sam", role=users_mod.ROLE_ADMIN, must_change=True))}
+
+    got = app.test_client().post("/block", headers=headers, data={})
+
+    assert got.status_code == 403, got.data[:300]
+    assert not ch.rows, "a held account changed the proposal queue"
+
+
+def test_an_admin_session_may_propose_apply_and_dismiss_and_EACH_IS_AUDITED():
+    """The other half: the gate admits an admin, and every action leaves a `fleet_audit` row."""
+    ch = _FakeCH()
+    ctx = _ctx()
+    to_apply = proposals.create_proposal(
+        ch, _proposal(host="apply.example.com", reason="this one becomes a rule"))
+    to_dismiss = proposals.create_proposal(
+        ch, _proposal(host="dismiss.example.com", reason="this one does not"))
+    client = _signed_in_client(ctx, ch)
+
+    page = client.get("/block").data.decode()
+    nonce = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+
+    proposed = client.post("/block", data={"host": "new.example.com", "reason": "a new block",
+                                           "evidence": "manual", "ttl_minutes": "30",
+                                           "csrf": nonce})
+    applied = client.post(f"/block/{to_apply['proposal_id']}/apply", data={"csrf": nonce})
+    dismissed = client.post(f"/block/{to_dismiss['proposal_id']}/dismiss", data={"csrf": nonce})
+
+    assert (proposed.status_code, applied.status_code, dismissed.status_code) == (302, 302, 302), (
+        proposed.data[:200], applied.data[:200], dismissed.data[:200])
+    assert ch.rows[to_apply["proposal_id"]]["status"] == proposals.STATUS_APPLIED
+    assert ch.rows[to_dismiss["proposal_id"]]["status"] == proposals.STATUS_DISMISSED
+
+    rows = {row["action"]: row for row in ch.audits if row["scope"] == "sluice"}
+    assert set(rows) == {"block_create", "block_apply", "block_dismiss"}, (
+        f"a block action was not audited: {sorted(rows)}")
+    assert rows["block_create"]["actor"] == "account:sam"
+    assert rows["block_create"]["target"] == "new.example.com"
+    assert rows["block_create"]["reason"] == "a new block"
+    assert rows["block_apply"]["target"] == "apply.example.com"
+    assert rows["block_apply"]["actor"] == "account:sam"
+    assert to_apply["proposal_id"] in rows["block_apply"]["reason"]
+    assert rows["block_dismiss"]["target"] == "dismiss.example.com"
+    assert to_dismiss["proposal_id"] in rows["block_dismiss"]["reason"]
+

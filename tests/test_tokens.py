@@ -174,18 +174,113 @@ def test_a_viewer_token_reads_but_is_refused_on_a_write_route():
         f"the refusal does not say the TOKEN is a viewer: {payload}")
 
 
-def test_an_admin_token_reads_and_writes():
-    """The other half, so the viewer test cannot pass by refusing every token."""
+def test_an_admin_token_reads_and_writes_but_cannot_manage_accounts():
+    """The other half, so the viewer test cannot pass by refusing every token.
+
+    ACCOUNT ADMINISTRATION IS THE EXCEPTION. Creating an account mints a durable credential that
+    outlives the token that made it, so those routes require a signed-in admin SESSION and refuse
+    even an admin token. The ordinary write gate still admits the token, which is what the
+    settings-plan probe below proves (a payload/DB failure downstream is not a gate refusal).
+    """
     ctx = _Ctx(token_store())
     _payload, admin = mint(ctx, role="admin")
     client = client_for(ctx)
 
     assert client.get("/api/settings", headers=_token_headers(admin)).status_code == 200
+    gate = client.post("/api/settings/plan", headers=_token_headers(admin), json={})
+    assert gate.status_code not in (401, 403), (
+        f"the ordinary write gate refused an admin token: {gate.status_code} {gate.data[:200]!r}")
     created = client.post("/api/users/create", headers=_token_headers(admin),
-                          json={"username": "bytoken", "role": "viewer",
+                          json={"username": "bytoken", "role": "admin",
                                 "password": "password-123", "must_change": True})
-    assert created.status_code == 200, created.get_json()
-    assert ctx.user_store.find("bytoken") is not None, "an admin token could not create an account"
+    assert created.status_code == 403, (
+        f"an admin token created a durable account: {created.status_code} {created.get_json()}")
+    assert ctx.user_store.find("bytoken") is None, "a token minted an admin account anyway"
+
+
+def test_a_viewer_session_is_refused_on_every_account_write():
+    """Account administration is admin-only, not merely signed-in-only."""
+    ctx = _Ctx(token_store())
+    ctx.user_store.create_user("victim", users_mod.ROLE_VIEWER, "victim-password-1")
+    client = client_for(ctx)
+    headers = _session_headers(ctx.viewer_session())
+
+    for path, body in (
+        ("/api/users/create", {"username": "x", "role": "admin", "password": "password-123"}),
+        ("/api/users/role", {"username": "victim", "role": "admin"}),
+        ("/api/users/delete", {"username": "victim"}),
+        ("/api/users/reset", {"username": "admin", "password": "password-123"}),
+    ):
+        got = client.post(path, headers=headers, json=body)
+        assert got.status_code == 403, f"a viewer was allowed {path}: {got.get_json()}"
+
+    assert ctx.user_store.find("x") is None
+    assert ctx.user_store.find("victim").role == users_mod.ROLE_VIEWER
+
+
+class _AuditCH:
+    """A ClickHouse stand-in that keeps every `fleet_audit` row and nothing else."""
+
+    def __init__(self):
+        self.audits: list[dict] = []
+
+    def insert(self, table, data, column_names=None):
+        if table == "weirvern.fleet_audit":
+            cols = list(column_names or ["scope", "action", "target", "reason", "actor"])
+            for row in data:
+                self.audits.append(dict(zip(cols, row, strict=False)))
+        return len(data)
+
+
+class _CM:
+    def __init__(self, ch):
+        self.ch = ch
+
+    def __enter__(self):
+        return self.ch
+
+    def __exit__(self, *_a):
+        return False
+
+
+def test_an_admin_session_manages_accounts_and_EVERY_ACTION_IS_AUDITED():
+    """The positive half: an admin session works, and each decision names its actor and target.
+
+    The audit row is the surviving record of a privilege change. Without it a token-driven admin
+    creation is invisible after the fact, which is how the escalation stayed unnoticed.
+    """
+    ctx = _Ctx(token_store())
+    ctx.user_store.create_user("victim", users_mod.ROLE_VIEWER, "victim-password-1")
+    ctx.user_store.create_user("promoted", users_mod.ROLE_VIEWER, "promoted-password-1")
+    ch = _AuditCH()
+    ctx.connect_factory = lambda _settings: _CM(ch)
+    client = client_for(ctx)
+    headers = _session_headers(ctx.admin_session())
+
+    created = client.post("/api/users/create", headers=headers,
+                          json={"username": "newbie", "role": "viewer",
+                                "password": "newbie-password-1"})
+    role = client.post("/api/users/role", headers=headers,
+                       json={"username": "promoted", "role": "admin"})
+    reset = client.post("/api/users/reset", headers=headers,
+                        json={"username": "victim", "password": "temporary-pass-1"})
+    deleted = client.post("/api/users/delete", headers=headers, json={"username": "victim"})
+
+    assert (created.status_code, role.status_code, reset.status_code, deleted.status_code) == (
+        200, 200, 200, 200), (created.get_json(), role.get_json(), reset.get_json(),
+                              deleted.get_json())
+
+    rows = {row["action"]: row for row in ch.audits if row["scope"] == "auth"}
+    assert {"user_create", "user_role", "user_reset", "user_delete"} <= set(rows), (
+        f"an account action left no audit row: {sorted(rows)}")
+    assert rows["user_create"]["actor"] == "admin"
+    assert rows["user_create"]["target"] == "newbie"
+    assert "viewer" in rows["user_create"]["reason"], (
+        "the audit row does not record the role that was granted")
+    assert rows["user_role"]["target"] == "promoted"
+    assert "admin" in rows["user_role"]["reason"]
+    assert rows["user_reset"]["target"] == "victim"
+    assert rows["user_delete"]["actor"] == "admin"
 
 
 def test_a_viewer_token_is_not_reported_as_an_admin():
@@ -218,9 +313,8 @@ def test_a_revoked_token_is_refused_on_the_very_next_request():
 
     # It works right up to the revocation...
     assert client.get("/api/settings", headers=_token_headers(admin)).status_code == 200
-    assert client.post("/api/users/create", headers=_token_headers(admin),
-                       json={"username": "before", "role": "viewer",
-                             "password": "password-123"}).status_code == 200
+    assert client.post("/api/settings/plan", headers=_token_headers(admin),
+                       json={}).status_code not in (401, 403)
 
     revoked = client.post("/api/tokens/revoke",
                           headers=_session_headers(ctx.admin_session()),
@@ -231,15 +325,14 @@ def test_a_revoked_token_is_refused_on_the_very_next_request():
     after_read = client.get("/api/settings", headers=_token_headers(admin))
     assert after_read.status_code == 401, (
         f"a revoked token still read the dashboard: {after_read.status_code}")
-    after_write = client.post("/api/users/create", headers=_token_headers(admin),
-                              json={"username": "after", "role": "viewer",
-                                    "password": "password-123"})
+    after_write = client.post("/api/settings/plan", headers=_token_headers(admin), json={})
     # The status is 401 or 403 depending on whether the deployment still has another live token
     # (the gate's "disabled" branch answers 403, the "wrong or absent credential" branch 401). The
-    # property under test is that it is REFUSED and nothing was written, so both are accepted.
+    # property under test is that the WRITE GATE refused the revoked credential, so both are
+    # accepted -- and the probe is a normal write route, not an account route, because those now
+    # refuse every token regardless of validity.
     assert after_write.status_code in (401, 403), (
         f"a revoked token still wrote: {after_write.status_code}")
-    assert ctx.user_store.find("after") is None
     # The other live token still works: the refusal above is the revocation, not a dead token path.
     assert client.get("/api/settings", headers=_token_headers(other)).status_code == 200
 
@@ -407,11 +500,17 @@ def test_the_legacy_operator_token_still_authorizes_as_admin():
     assert probe["authenticated"] is True and probe["via"] == "token"
     assert probe["role"] == users_mod.ROLE_ADMIN, probe
 
+    # The break-glass credential still opens the ordinary write gate. It may NOT create accounts:
+    # that route deliberately requires a signed-in person, because an account outlives the token
+    # that made it (and losing the token must still leave a recoverable deployment).
+    gate = client.post("/api/settings/plan", headers=_token_headers("break-glass-value"), json={})
+    assert gate.status_code not in (401, 403), (
+        f"the break-glass token was refused a normal write: {gate.status_code}")
     created = client.post("/api/users/create", headers=_token_headers("break-glass-value"),
                           json={"username": "rescued", "role": "admin",
                                 "password": "password-123"})
-    assert created.status_code == 200, created.get_json()
-    assert ctx.user_store.find("rescued") is not None
+    assert created.status_code == 403, created.get_json()
+    assert ctx.user_store.find("rescued") is None
 
 
 def test_the_legacy_token_survives_an_unreadable_token_store():
@@ -424,10 +523,9 @@ def test_the_legacy_token_survives_an_unreadable_token_store():
     ctx.auth = gui_auth.AuthState("break-glass-value", token_store=BrokenStore())
     client = client_for(ctx)
 
-    ok = client.post("/api/users/create", headers=_token_headers("break-glass-value"),
-                     json={"username": "still-here", "role": "viewer",
-                           "password": "password-123"})
-    assert ok.status_code == 200, ok.get_json()
+    ok = client.post("/api/settings/plan", headers=_token_headers("break-glass-value"), json={})
+    assert ok.status_code not in (401, 403), (
+        f"the break-glass token was refused a write while the store was broken: {ok.status_code}")
 
     # And the failure is a REFUSAL, not a 500: a broken store must not look like a crash.
     refused = client.get("/api/settings", headers=_token_headers("some-other-token"))
@@ -441,10 +539,15 @@ def test_a_store_only_deployment_accepts_its_tokens():
     ctx = _Ctx(store)
 
     assert ctx.auth.enabled is True, "a token store with a live token reported token auth disabled"
-    created = client_for(ctx).post("/api/users/create", headers=_token_headers(plaintext),
+    created = client_for(ctx).post("/api/settings/plan", headers=_token_headers(plaintext),
+                                   json={})
+    assert created.status_code not in (401, 403), (
+        f"a store-only admin token was refused the write gate: {created.status_code}")
+    # Account creation is session-only, so the same credential is refused there by design.
+    refused = client_for(ctx).post("/api/users/create", headers=_token_headers(plaintext),
                                    json={"username": "storeonly", "role": "viewer",
                                          "password": "password-123"})
-    assert created.status_code == 200, created.get_json()
+    assert refused.status_code == 403, refused.get_json()
 
 
 def test_an_empty_store_keeps_the_pre_accounts_posture():

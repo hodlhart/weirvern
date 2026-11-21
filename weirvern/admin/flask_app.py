@@ -1515,18 +1515,22 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # ── the account writes: one shape, four field sets ─────────────────────────────────────────
 
     def _account_write(kind: str, fetcher):
-        """Create / role / delete / reset share their gate, body and store check.
+        """Create / role / delete / reset share their gate, body, store check and audit row.
+
+        A TOKEN MAY NOT MANAGE ACCOUNTS. This used to take `write_refusal`, which admits an admin
+        token, so a bearer credential could mint a durable admin -- an escalation that survives the
+        token's own revocation, because the account it created has its own password. Account
+        administration therefore requires a signed-in admin SESSION, and every successful write
+        leaves a `fleet_audit` row naming the actor, the target and the role involved.
 
         THE STORE CHECK COMES BEFORE THE FIELDS ARE USED, on both surfaces: a GUI built without an
         account store answers 503 whatever the body says, which is the console's order.
         """
-        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+        from weirvern.admin import payloads, web  # noqa: PLC0415
 
-        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
-                                                addr=request.remote_addr or "")
-        if not ok:
-            code, message = refusal if refusal is not None else (403, "write access is required")
-            return _json_error(code, message)
+        ident, refused = _admin_session(what="managing accounts")
+        if refused is not None:
+            return refused
         try:
             body = web.json_body(request.get_data(cache=False))
         except ValueError as exc:
@@ -1539,6 +1543,15 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = fetcher(store, **args)
         else:
             code, payload = fetcher(store, getattr(ctx, "sessions", None), **args)
+        if code == 200:
+            reason = {
+                "create": f"created account with role {args.get('role') or 'viewer'}",
+                "role": f"role set to {args.get('role') or ''}",
+                "delete": "deleted account",
+                "reset": "password reset; must change at next sign-in",
+            }[kind]
+            _audit_write("auth", f"user_{kind}", str(args.get("username") or ""),
+                         reason, ident.username)
         return jsonify(payload), code
 
     @app.post("/api/users/create")
@@ -1580,23 +1593,28 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # shared JSON parser. There is no nonce here for the same reason there is none on the other API
     # writes; the rendered-form nonce protects the pages that post forms, not this surface.
 
-    def _admin_session() -> tuple[Any, Any]:
+    def _admin_session(*, what: str = "managing tokens") -> tuple[Any, Any]:
         """The signed-in admin for this request, and the refusal response when there is none.
 
         BOTH POSITIONS ARE `Any` ON PURPOSE: the caller branches on `refused is not None`, which is
         the invariant this function guarantees (exactly one of the two is set).
+
+        A TOKEN IS NEVER ENOUGH HERE. This is the credential-management gate: minting/revoking
+        tokens and administering accounts are the two places where a bearer credential must not
+        stand in for a person, because a credential that can create an admin can also outlive its
+        own revocation.
         """
         from weirvern.admin import requestauth  # noqa: PLC0415
 
         ident = requestauth.identity(ctx, _auth_headers())
         if ident is None:
             return None, _json_error(
-                403, "managing tokens requires a signed-in admin account; a token cannot mint "
-                     "or revoke tokens")
+                403, f"{what} requires a signed-in admin account; a token cannot substitute for "
+                     f"one")
         if ident.must_change:
-            return None, _json_error(403, "change your password before managing tokens")
+            return None, _json_error(403, f"change your password before {what}")
         if not ident.is_admin:
-            return None, _json_error(403, "admin access is required to manage tokens")
+            return None, _json_error(403, f"admin access is required for {what}")
         return ident, None
 
     @app.get("/api/tokens")
@@ -2413,6 +2431,22 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             headers[SESSION_HEADER] = token
         return headers
 
+    def _audit_write(scope: str, action: str, target: str, reason: str, actor: str) -> None:
+        """Append the `fleet_audit` row for a privileged write that has already happened.
+
+        THE ROW MUST NOT TURN A COMPLETED WRITE INTO AN ERROR. The rule or the account is already
+        durable by the time this runs; a failed audit insert is a loud log line, not a 500 that
+        invites the caller to repeat a change that landed. Same contract as `audit_auth`.
+        """
+        from weirvern import fleet_store  # noqa: PLC0415
+
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                fleet_store.write_audit(client, scope=scope, action=action, target=target,
+                                        reason=reason, actor=actor)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("audit write failed for %s/%s on %s: %s", scope, action, target, exc)
+
     # ── the proposals API, so a remote agent can ask ────────────────────────────────────────────
     #
     # `fathom` runs on an analyst's machine and Weirvern runs on the box, so HTTP is the correct
@@ -2477,6 +2511,32 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def _proposals_client():
         return ctx.connect_factory(ctx.settings)
 
+    def _block_write_refusal():
+        """The refusal for a block WRITE, rendered on the page it came from, or None.
+
+        A VIEWER MAY READ THE QUEUE AND MUST NOT DECIDE IT. These three POSTs used to require only
+        `@user_required` -- a session, no role -- so a viewer could create a proposal, and APPLY one
+        into a real block rule. Applying is enforcement, so it takes the same admin gate as every
+        other write, and the gate runs BEFORE the CSRF nonce and the form body.
+        """
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if ok:
+            return None
+        code, message = refusal if refusal is not None else (403, "write access is required")
+        return _render("block.html", error=message, pending=[], decided=[], message="",
+                       form=None), code
+
+    def _block_actor() -> str:
+        """The audit actor: the account that decided, or the operator token that stood in."""
+        ident = _signed_in()
+        return f"account:{ident.username}" if ident is not None else "token:operator"
+
+    def _block_by() -> str:
+        """The name recorded on the proposal itself; the token has no username."""
+        ident = _signed_in()
+        return ident.username if ident is not None else "operator"
+
     @app.get("/block")
     @user_required
     def block():
@@ -2498,25 +2558,26 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                        message="", form=None)
 
     @app.post("/block")
-    @user_required
     def block_post():
         from weirvern import proposals  # noqa: PLC0415
         from weirvern.admin.web import read_failure  # noqa: PLC0415
 
+        refused = _block_write_refusal()
+        if refused is not None:
+            return refused
         if not _csrf_ok():
             return _render("block.html", error="that form did not come from this page",
                            pending=[], decided=[], message="", form=None), 400
-        ident = _signed_in()
         form = {
             "host": request.form.get("host", ""),
             "reason": request.form.get("reason", ""),
             "evidence": request.form.get("evidence", ""),
             "ttl_minutes": request.form.get("ttl_minutes", "0"),
         }
-        actor = f"account:{ident.username}" if ident else "unknown"
+        actor = _block_actor()
         try:
             with _proposals_client() as client:
-                proposals.create_proposal(client, dict(form, proposed_by=actor))
+                created = proposals.create_proposal(client, dict(form, proposed_by=actor))
         except proposals.ProposalError as exc:
             # A refusal is the useful answer, and it goes back to the form with the words typed
             # still in it so the operator can fix it rather than retype it.
@@ -2525,20 +2586,23 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except Exception as exc:  # noqa: BLE001
             return _render("block.html", error=read_failure(exc), pending=[], decided=[],
                            message="", form=form), 503
+        _audit_write("sluice", "block_create", str(created.get("host") or form["host"]),
+                     str(form.get("reason") or ""), actor)
         return redirect(url_for("block"))
 
     @app.post("/block/<proposal_id>/apply")
-    @user_required
     def apply_proposal(proposal_id: str):
         from weirvern import proposals  # noqa: PLC0415
 
+        refused = _block_write_refusal()
+        if refused is not None:
+            return refused
         if not _csrf_ok():
             return _render("block.html", error="that form did not come from this page",
                            pending=[], decided=[], message="", form=None), 400
-        ident = _signed_in()
         try:
             with _proposals_client() as client:
-                proposals.apply_proposal(client, proposal_id, by=ident.username)
+                applied = proposals.apply_proposal(client, proposal_id, by=_block_by())
         except proposals.ProposalError as exc:
             return _render("block.html", error=str(exc), pending=[], decided=[], message="",
                            form=None), 400
@@ -2547,23 +2611,30 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
             return _render("block.html", error=read_failure(exc), pending=[], decided=[],
                            message="", form=None), 503
+        _audit_write("sluice", "block_apply", str(applied.get("host") or proposal_id),
+                     f"proposal {proposal_id}: {applied.get('reason') or 'applied'}",
+                     _block_actor())
         return redirect(url_for("block"))
 
     @app.post("/block/<proposal_id>/dismiss")
-    @user_required
     def dismiss_proposal(proposal_id: str):
         from weirvern import proposals  # noqa: PLC0415
 
+        refused = _block_write_refusal()
+        if refused is not None:
+            return refused
         if not _csrf_ok():
             return _render("block.html", error="that form did not come from this page",
                            pending=[], decided=[], message="", form=None), 400
-        ident = _signed_in()
         try:
             with _proposals_client() as client:
-                proposals.dismiss_proposal(client, proposal_id, by=ident.username)
+                dismissed = proposals.dismiss_proposal(client, proposal_id, by=_block_by())
         except proposals.ProposalError as exc:
             return _render("block.html", error=str(exc), pending=[], decided=[], message="",
                            form=None), 400
+        _audit_write("sluice", "block_dismiss", str(dismissed.get("host") or proposal_id),
+                     f"proposal {proposal_id}: {dismissed.get('reason') or 'dismissed'}",
+                     _block_actor())
         return redirect(url_for("block"))
 
     # ── the console, served unchanged ───────────────────────────────────────────────────────────

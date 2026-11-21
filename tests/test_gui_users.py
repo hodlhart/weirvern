@@ -544,14 +544,24 @@ def test_an_ADMIN_session_passes_the_write_gate():
     assert store.find("newbie") is not None
 
 
-def test_the_break_glass_TOKEN_still_administers_with_no_accounts():
-    """THE RECOVERY PATH. A deployment whose accounts are lost must still be administrable."""
+def test_the_break_glass_TOKEN_still_writes_but_CANNOT_create_the_first_admin():
+    """THE RECOVERY PATH MOVED, DELIBERATELY. A deployment whose accounts are lost is recovered by
+    the startup bootstrap (`users.bootstrap`, password shown once) or by signing in as an admin --
+    never by a bearer token minting a durable admin. The token keeps the ordinary write gate.
+    """
     store = _store_with(exists=False)
     ctx = _ctx(store, token="deploy-token")
     h = _Handler(ctx, headers={"X-Weirvern-Token": "deploy-token"},
                  body='{"username": "rescued", "role": "admin", "password": "password-123"}')
     out = h.call("_users_create")
-    assert out.get("ok") is True, out
+    assert h.status == 403, out
+    assert "signed-in admin" in out.get("error", ""), out
+    assert store.find("rescued") is None, "a token minted a durable admin"
+
+    # The same credential is still an admin for every ordinary write.
+    h2 = _Handler(ctx, headers={"X-Weirvern-Token": "deploy-token"}, body="{}")
+    h2.call("_settings_plan")
+    assert h2.status not in (401, 403), f"the token was refused a normal write: {h2.status}"
 
 
 def test_a_must_change_session_is_held_at_the_password_gate():

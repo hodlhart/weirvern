@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.23.125 — 2026-11-21
+
+TWO PRIVILEGE-ESCALATION HOLES CLOSED, EACH WITH AN AUDIT ROW AND A TEST THAT CANNOT LET THE CLASS
+BACK IN.
+
+- **A VIEWER COULD APPLY A REAL BLOCK RULE.** `POST /block`, `/block/<id>/apply` and
+  `/block/<id>/dismiss` were gated by `@user_required`, which asks only whether a session exists --
+  no role. A viewer session could therefore create a proposal and APPLY it, and applying is
+  enforcement: it calls `sluice_store.create_rule`. All three now take
+  `requestauth.write_refusal` FIRST (before the CSRF nonce and the form body), so a viewer gets 403,
+  a `must_change` admin is held at the password gate, and an admin session or admin token proceeds.
+  Each successful action writes `fleet_audit(scope='sluice', action='block_create'|'block_apply'|
+  'block_dismiss', target, reason, actor)`, naming the account (or `token:operator`) that decided.
+- **AN ADMIN TOKEN COULD CREATE A DURABLE ADMIN, UNAUDITED.** `/api/users/create|role|delete|reset`
+  took `write_refusal`, which admits the break-glass/admin token. That let a bearer credential mint
+  an account with its own password -- an escalation that outlives the token's revocation. The four
+  routes now require a signed-in admin SESSION (the same rule tokens already had for token
+  management), and every successful create/role/delete/reset writes an `auth` scope `fleet_audit`
+  row with the actor, target and role. First-admin recovery stays with the startup bootstrap, whose
+  password is shown once, and with a person who can sign in.
+- **THE GATE TEST NOW SWEEPS THE WHOLE APP.** `tests/test_settings_tab.py` drove only `/api/` paths
+  anonymously, which is why three rendered `/block` POSTs could sit behind a session-only gate. It
+  now drives EVERY non-GET rule twice: anonymous must get 401/403, and a valid VIEWER session must
+  get 403 unless the route is on the explicit sign-out / own-password list. The `/block` writes are
+  asserted to be inside that swept surface.
+- **Tests.** Viewer 403 on all three block routes (and no row, no audit); `must_change` admin 403;
+  admin session proposes, applies and dismisses with all three audit rows checked for actor, target
+  and reason; viewer 403 on all four account routes; admin token 403 on account creation; admin
+  session performs all four account writes with an audit row each. The token tests that used account
+  creation as a generic "token can write" probe now use `/api/settings/plan`, so they still prove
+  the ordinary write gate admits an admin token while the account routes do not.
+
 ## 0.23.124 — 2026-11-21
 
 TWO OUTAGE-CLASS DEFECTS FIXED AT THE CAUSE. A MANIFEST APPLY CAN NO LONGER BLANK THE SETTINGS THE
