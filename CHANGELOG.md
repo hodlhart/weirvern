@@ -22,18 +22,33 @@ actually uses the route it was promised.
 - **One path, no dead ends.** `sudo_state=root|passwordless` gets one click and NO password
   field; only `password` shows the field, labelled with the host. An unknown package manager or
   a user outside sudoers replaces the button with the copy-command line rather than a prompt that
-  cannot work. The sheet streams the command's output, then one line: `nmap 7.95 installed; this
-  weirling can scan <networks>`, and the readiness card refreshes in place.
+  cannot work. The install sheet is one command line (`Runs: …`), a `Details` disclosure and one
+  action; success reads `Installed. This weirling can scan <networks>.`
+- **The console says less, and says it plainly.** One status line and one action per state: the
+  readiness card is `0 of 1 can scan` plus `Not scanning — nmap missing on this weirling.` and an
+  `Install nmap` button; the disabled Scan control says `No weirling can scan.`; the install
+  sheet asks only for `sudo password` / `Needed to install on this host.` when that host needs
+  one. Every explanation — the queue-is-not-a-percentage note, the sudoers paragraph, the
+  measured capability sentence — moved behind `Details`. The DOM harness enforces a 25-word
+  budget on the rendered card/sheet copy, and the operator's exact strings are asserted.
+- **The reported OS is the HOST'S distro, not the package family.** `ID_LIKE=debian` had been
+  used as the distribution name, so an Ubuntu 26.04 LTS host was reported as “debian 13”. The
+  detector now takes the display name from `PRETTY_NAME`/`NAME` and the version from
+  `VERSION_ID` (the same record), and uses `ID`/`ID_LIKE` only to choose the package manager.
+  A differing family is stated plainly: `Ubuntu 26.04 LTS (debian family — apt)`. An unreadable
+  `/etc/os-release` answers `unknown` and the generic command — never a guessed Debian. Remote
+  units mount the host's `/etc/os-release` read-only so the agent does not report its own image.
+- **The console's Cancel button now calls the DELETE route.** It was still POSTing to a
+  `/cancel` path the server no longer serves. It now asks `Cancel scan?` · `This removes the job
+  from the record.` with `Cancel scan` / `Keep`, sends `DELETE /api/scan-jobs/<id>` with the
+  console's audit reason, and prints the server's own receipt; a running job's 202 says the
+  weirling has not confirmed and the row stays. The DOM harness pins the DELETE route, the
+  reason in the body and the receipt.
 - **The service credential is single-scope.** `WEIRVERN_SCAN_INSTALL_TOKEN` is a separate Secret
   key mounted only into the console and the ingest gateway; it opens the two install routes and
   nothing else, and an unset credential refuses (503) rather than accepting every caller. A
   request for an unregistered, revoked or disabled host is refused before a request exists, and
   a viewer cannot create one (403 before the body is read).
-- **The console's Cancel button now calls the DELETE route.** It was still POSTing to a
-  `/cancel` path the server no longer serves, and it collected no reason. It now reveals a
-  required reason field, sends `DELETE /api/scan-jobs/<id>` with that reason, and prints the
-  server's own receipt; a running job's 202 says the weirling has not confirmed and the row stays.
-  The DOM harness pins the DELETE route, the reason in the body and the receipt.
 - **A 390px fix on the same sheet.** The scanner table (415px inside a 336px card) had no
   scroller and widened the page, so a phone opened every view scrolled sideways. The card keeps
   its width and the table scrolls inside it.

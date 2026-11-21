@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from weirvern import scan_jobs
+from weirvern import os_release, scan_jobs
 from weirvern.asset_changes import detect_service_changes
 from weirvern.asset_posture import AssetPostureModel
 from weirvern.config import Settings
@@ -74,6 +74,9 @@ SCANNER_STATUS_COLUMNS = [
     "nse_available", "os_id", "os_version", "detail", "last_check",
     # Appended (never reordered): a pre-capability reader stays aligned.
     "privileged", "scan_mode", "can_install", "sudo_state",
+    # Appended (051): the DISTRO label and package FAMILY, kept apart. os_id stays the machine
+    # identifier; os_label is what a person reads ("Ubuntu 26.04 LTS (debian family — apt)").
+    "os_label", "os_family",
 ]
 HISTORY_COLUMNS = [
     "asset_key", "ip", "scan_id", "port", "protocol", "service", "product", "version",
@@ -427,18 +430,9 @@ def monitored_networks(client: Any) -> list[Network]:
     return list(networks.values())
 
 
-def _os_release() -> tuple[str, str]:
-    """The node's distribution and version, for the guided Nmap command."""
-    values: dict[str, str] = {}
-    try:
-        with open("/etc/os-release", encoding="utf-8") as handle:
-            for line in handle:
-                if "=" in line:
-                    key, value = line.rstrip("\n").split("=", 1)
-                    values[key] = value.strip().strip('"')
-    except OSError:
-        pass
-    return values.get("ID", ""), values.get("VERSION_ID", "")
+def _os_release() -> dict[str, str]:
+    """The host's /etc/os-release content. Empty when unreadable -- never a guess."""
+    return os_release.read()
 
 
 def detect_scanner(settings: Settings, sensor_id: str = "") -> dict[str, Any]:
@@ -461,14 +455,25 @@ def detect_scanner(settings: Settings, sensor_id: str = "") -> dict[str, Any]:
         except (OSError, subprocess.SubprocessError):
             version = ""
     nse_available = os.path.isdir("/usr/share/nmap/scripts")
-    os_id, os_version = _os_release()
+    identity = os_release.identity(_os_release())
+    os_id = identity["os_id"]
+    os_version = identity["os_version"]
+    os_family = identity["os_family"]
     available = bool(path and version)
     ident = (sensor_id or settings.sensor_name or socket.gethostname() or "weirling").strip().lower()
     privilege = sudo_state()
     privileged = privilege == "root"
     caps = nmap_has_caps(path)
     mode = scan_mode(available, privileged, caps)
+    # THE COMMAND COMES FROM THE ID FIRST, THEN THE FAMILY. The ID carries the nuances a family
+    # loses (an old CentOS is yum, not dnf); the family is the fallback for a distro we do not
+    # list but whose ID_LIKE names one we do. The DISPLAY is always the distro, never the family.
     install = nmap_install_command(os_id, os_version)
+    if not install["known"] and os_family and os_family != os_id:
+        install = nmap_install_command(os_family, os_version)
+    os_label = identity["os_display"]
+    if os_family and os_family != os_id and install["manager"]:
+        os_label = f"{identity['os_display']} ({os_family} family — {install['manager']})"
     can_install = can_install_without_a_secret()
     detail = ""
     if not available:
@@ -492,6 +497,8 @@ def detect_scanner(settings: Settings, sensor_id: str = "") -> dict[str, Any]:
         "nse_available": nse_available,
         "os_id": os_id,
         "os_version": os_version,
+        "os_family": os_family,
+        "os_label": os_label,
         "privileged": privileged,
         "scan_mode": mode,
         "can_install": can_install,
@@ -887,6 +894,7 @@ def write_scanner_status(client: Any, status: dict[str, Any]) -> None:
         status["os_id"], status["os_version"], status["detail"], _now(),
         int(bool(status.get("privileged"))), str(status.get("scan_mode") or ""),
         int(bool(status.get("can_install"))), str(status.get("sudo_state") or ""),
+        str(status.get("os_label") or ""), str(status.get("os_family") or ""),
     ]])
 
 

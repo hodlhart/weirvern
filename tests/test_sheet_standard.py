@@ -36,16 +36,17 @@ def test_every_sheet_is_a_labelled_dialog_with_one_close():
                               ("rp-detail-card", "rp-detail-title"),
                               ("nw-host-card", "nw-host-title"),
                               ("bl-detail-card", "bl-detail-title"),
-                              ("scan-sheet", "scan-title")):
+                              ("scan-sheet", "scan-title"),
+                              ("install-sheet", "install-title")):
         tag = _opening_tag(html, card_id)
         assert "card sheet" in tag, f"{card_id} is not a sheet"
         assert 'role="dialog"' in tag and 'aria-modal="true"' in tag, f"{card_id} is not a dialog"
         assert f'aria-labelledby="{title_id}"' in tag, f"{card_id} has no label"
         assert 'aria-hidden="true"' in tag, f"{card_id} hides with a class but not from AT"
         assert f'<span id="{title_id}"' in html, f"{title_id} missing"
-    # 7 since the unifications (2026-11-20): weirlings, identity detail, normalize, ripples,
-    # network host, blocked hit (was a centre modal) and the scan sheet.
-    assert html.count('class="sheet-close"') == 7, "not exactly one close per sheet"
+    # 8 since the install sheet (2026-11-20): weirlings, identity detail, normalize, ripples,
+    # network host, blocked hit (was a centre modal), the scan sheet and the install sheet.
+    assert html.count('class="sheet-close"') == 8, "not exactly one close per sheet"
 
 
 def test_the_sheets_share_one_opener_and_build_no_private_machinery():

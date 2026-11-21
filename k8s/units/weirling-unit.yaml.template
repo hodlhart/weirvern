@@ -182,6 +182,11 @@ spec:
               value: "__CAPTURE_IFACE__"
             - name: ZEEK_LOG_DIR
               value: /zeek/logs
+            # THE HOST'S OWN os-release, NOT THE CONTAINER'S (operator, 2026-11-20). The agent
+            # runs in an image whose base is Debian; without this mount an Ubuntu sensor would
+            # report "Debian" because that is the container's file. Read-only, no secret.
+            - name: WEIRVERN_OS_RELEASE
+              value: /host-os-release
             # ANY SENSOR CAN RECEIVE NETFLOW, IF ENABLED. "0" here means the collector below may
             # as well not exist: nothing is shipped, and an exporter on this segment has nowhere
             # to land. Set to "1" and the agent tails the collector's JSONL into the hub's `flows`
@@ -240,6 +245,9 @@ spec:
             # revoking one sensor must not touch another's credential.
             - name: pki
               mountPath: /etc/weirvern-weirling
+              readOnly: true
+            - name: host-os-release
+              mountPath: /host-os-release
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -389,6 +397,11 @@ spec:
             # the hub's `weirling-root` Secret during enrollment, exactly as deploy-weirling.sh does.
             path: /var/lib/weirvern/units/__WEIRLING_ID__/pki
             type: DirectoryOrCreate
+        - name: host-os-release
+          hostPath:
+            # The HOST's distribution, not the agent image's. Read-only single file; no secret.
+            path: /etc/os-release
+            type: File
         - name: zeek-site
           configMap:
             # The kustomize-GENERATED name of zeek/weirvern-local.zeek — generated names carry

@@ -100,9 +100,9 @@ function scanApplyButton(btn, note, ip) {
   btn.disabled = pending ? true : !st.enabled;
   if (note) {
     let text = "";
-    if (pending) text = "checking whether a weirling can scan this host…";
-    else if (!st.enabled) text = st.reason_unavailable || "no weirling can scan";
-    else if (st.error) text = st.error;
+    if (pending) text = "Checking…";
+    else if (!st.enabled) text = "No weirling can scan.";
+    else if (st.error) text = "Scan state unavailable.";
     note.textContent = text;
     note.classList.toggle("hidden", !text);
     if (text && note.id) btn.setAttribute("aria-describedby", note.id);
@@ -210,6 +210,7 @@ function scanSheetEls() {
     cancelForm: document.getElementById("scan-cancel-form"),
     cancelReason: document.getElementById("scan-cancel-reason"),
     cancelConfirm: document.getElementById("scan-cancel-confirm"),
+    cancelKeep: document.getElementById("scan-cancel-keep"),
     close: document.getElementById("scan-close"),
     cancel: document.getElementById("scan-cancel"),
   };
@@ -396,28 +397,32 @@ function scanRenderBody() {
 
   els.body.replaceChildren();
 
+  // EVERYTHING EXPLANATORY LIVES BEHIND DETAILS. The operator reads state, consequence and one
+  // action; the facts keep their full wording for whoever opens the disclosure.
+  const more = el("details", { class: "copy-details scan-more" });
+  more.appendChild(el("summary", { text: "Details" }));
   const dl = el("dl", { class: "scan-facts" });
   scanFact(dl, "target", (job && job.ip) || SCAN_STATE.ip || "unknown address");
   scanFact(dl, "state", word);
   if (job) {
     scanFact(dl, "queued", job.requested_at ? fmtTime(job.requested_at) : "not recorded");
-    scanFact(dl, "started", job.started_at ? fmtTime(job.started_at) : "not yet claimed");
+    scanFact(dl, "started", job.started_at ? fmtTime(job.started_at) : "not picked up");
     scanFact(dl, "finished", job.finished_at ? fmtTime(job.finished_at) : "not yet");
     const elapsed = scanElapsed(job);
     const dd = scanFact(dl, elapsed.label, elapsed.text);
     dd.id = "scan-elapsed";
-    scanFact(dl, "claimer", job.lease_owner || "no weirling has claimed it");
+    scanFact(dl, "picked up by", job.lease_owner || "no weirling yet");
     scanFact(dl, "requested by", job.requested_by || "unknown");
     scanFact(dl, "scanner evidence",
       job.error ? `error: ${job.error}`
         : job.result ? job.result
-          : "nothing recorded yet — the weirling writes its result when it finishes");
+          : "nothing recorded yet");
   }
-  els.body.appendChild(dl);
+  more.appendChild(dl);
 
   // THE HONESTY LINE. The queue has no phase and no percentage; saying that is part of the
-  // reading, not a disclaimer bolted on.
-  els.body.appendChild(el("p", {
+  // reading, not a disclaimer bolted on -- and it belongs in Details, not above the fold.
+  more.appendChild(el("p", {
     class: "muted scan-honest",
     text: "The queue records state, not percentage: queued, running (claimed), done or failed. "
       + "Elapsed time is the only progress it can prove, so there is no progress bar and no "
@@ -426,47 +431,43 @@ function scanRenderBody() {
   }));
 
   if (job && job.derived_state === "abandoned") {
-    els.body.appendChild(el("p", {
-      class: "warn",
-      text: `Abandoned: ${job.state_reason || "no weirling has claimed it"}. `
-        + "Nothing will run this job; Cancel it to clear it from the queue.",
+    more.appendChild(el("p", {
+      class: "muted",
+      text: `Abandoned: ${job.state_reason || "no weirling picked it up"}.`,
     }));
   } else if (job && job.derived_state === "stale") {
-    els.body.appendChild(el("p", { class: "warn", text: `Stale: ${job.state_reason}` }));
+    more.appendChild(el("p", { class: "muted", text: `Stale: ${job.state_reason}` }));
   }
   if (SCAN_STATE.timedOut) {
-    els.body.appendChild(el("p", { class: "warn", text: SCAN_STATE.timedOut }));
+    more.appendChild(el("p", { class: "muted", text: SCAN_STATE.timedOut }));
   }
   if (SCAN_STATE.renderNote) {
-    els.body.appendChild(el("p", {
-      class: "warn", text: `The queue could not be read: ${SCAN_STATE.renderNote}.`,
-    }));
+    more.appendChild(el("p", { class: "muted", text: `The queue could not be read: ${SCAN_STATE.renderNote}.` }));
   }
+  if (job && job.state === "error") {
+    more.appendChild(el("p", { class: "muted", text: job.error || "the weirling recorded no reason" }));
+  }
+  if (!SCAN_READY.loaded) {
+    more.appendChild(el("p", { class: "muted", text: "Checking whether a weirling can scan this host…" }));
+  } else if (!SCAN_READY.enabled) {
+    more.appendChild(el("p", { class: "muted",
+                               text: SCAN_READY.reason_unavailable || "No weirling can scan." }));
+  }
+  els.body.appendChild(more);
+
   if (SCAN_STATE.receipt) {
     els.body.appendChild(el("p", { class: "scan-receipt", text: SCAN_STATE.receipt }));
   }
-  if (missing) {
-    els.body.appendChild(el("p", {
-      class: "warn",
-      text: "The queue no longer lists this job id. It may have been pruned; the recent list "
-        + "below the scanner card is the surviving record.",
-    }));
-  }
-  if (job && job.state === "error") {
-    els.body.appendChild(el("p", {
-      class: "bad",
-      text: `The scan failed: ${job.error || "the weirling recorded no reason"}. `
-        + "Retry queues the same host again; nothing about the failure is hidden.",
-    }));
-  }
-  if (!SCAN_READY.loaded) {
-    els.body.appendChild(el("p", { class: "muted", text: "Checking whether a weirling can scan this host…" }));
-  } else if (!SCAN_READY.enabled) {
-    els.body.appendChild(el("p", {
-      class: "warn",
-      text: `No weirling can scan this host: ${SCAN_READY.reason_unavailable || "no capable weirling"}.`,
-    }));
-  }
+  // ONE SHORT LINE, ONE FACT: the consequence of this state, never a sentence chain.
+  let line = "";
+  if (missing) line = "Job not found.";
+  else if (job && job.derived_state === "abandoned") line = "Nothing will run this job.";
+  else if (job && job.derived_state === "stale") line = "This job timed out.";
+  else if (job && job.state === "error") line = "Scan failed.";
+  else if (SCAN_STATE.timedOut) line = "Still waiting for a weirling.";
+  else if (SCAN_STATE.renderNote) line = "Queue unavailable.";
+  else if (SCAN_READY.loaded && !SCAN_READY.enabled) line = "No weirling can scan.";
+  if (line) els.body.appendChild(el("p", { class: "scan-line", text: line }));
 
   // THE CANCEL OFFER is only for a row nothing has claimed. A claimed job is refused
   // server-side with its own sentence; offering the button would imply it can be stopped.
@@ -474,7 +475,7 @@ function scanRenderBody() {
     const cancellable = Boolean(job) && String(job.state) === "queued";
     els.cancelJob.classList.toggle("hidden", !cancellable);
     els.cancelJob.disabled = Boolean(SCAN_STATE.cancelling);
-    els.cancelJob.textContent = SCAN_STATE.cancelling ? "Cancelling…" : "Cancel this job";
+    els.cancelJob.textContent = SCAN_STATE.cancelling ? "Cancelling…" : "Cancel scan";
     els.cancelJob.onclick = () => scanCancelJob();
   }
 
@@ -488,23 +489,32 @@ function scanRenderBody() {
   }
 }
 
-/** Reveal the reason field. The server REQUIRES a reason, so the button asks for one before
- *  it can send anything -- the audit trail is the only surviving record of a deleted row. */
+/** Reveal the confirmation. Two words, two buttons, one consequence: nothing to type. */
 function scanCancelJob() {
   const els = scanSheetEls();
   if (!els.cancelForm) return;
   els.cancelForm.classList.remove("hidden");
-  if (els.cancelReason) { els.cancelReason.focus(); els.cancelReason.select(); }
+  if (els.cancelConfirm) els.cancelConfirm.focus();
+}
+
+/** Hide the confirmation without touching the job. */
+function scanKeepJob() {
+  const els = scanSheetEls();
+  if (els.cancelForm) els.cancelForm.classList.add("hidden");
+  if (els.cancelJob) els.cancelJob.focus();
 }
 
 /** DELETE the queued job, with its reason, and show the receipt the server wrote. */
 async function scanConfirmCancel() {
   const els = scanSheetEls();
   const id = String(SCAN_STATE.jobId || "").trim();
-  const reason = String((els.cancelReason && els.cancelReason.value) || "").trim();
+  // THE AUDIT STILL GETS A REASON. The console writes a fixed one ("cancelled from the
+  // console"); the operator is not asked to type what the button already says.
+  const reason = String((els.cancelReason && els.cancelReason.value)
+    || "cancelled from the console").trim();
   if (!id || SCAN_STATE.cancelling) return;
   if (!reason) {
-    SCAN_STATE.receipt = "A reason is required to cancel a scan; it is kept in the audit trail.";
+    SCAN_STATE.renderNote = "A reason is required to cancel a scan.";
     scanRenderBody();
     return;
   }
@@ -576,8 +586,6 @@ let SCAN_QUEUE_TIMER = null;
 function scanQueueRow(job) {
   const state = job.derived_state || job.state || "unknown";
   const word = SCAN_WORDS[state] || SCAN_WORDS[job.state] || job.state || "unknown";
-  const evidence = job.state_reason
-    || (job.error ? `error: ${job.error}` : (job.result || ""));
   const button = el("button", {
     class: "scan-queue-row" + (state === "error" || state === "abandoned" ? " bad" : ""),
     attrs: { type: "button", "aria-label": `open scan ${job.job_id} for ${job.ip || "unknown address"}` },
@@ -585,7 +593,6 @@ function scanQueueRow(job) {
     el("span", { class: `bubble state scan-state-${state}`, text: word }),
     el("span", { class: "mono scan-queue-ip", text: job.ip || "—" }),
     el("span", { class: "muted scan-queue-when", text: job.requested_at ? `queued ${fmtTime(job.requested_at)}` : "" }),
-    el("span", { class: "muted scan-queue-evidence", text: evidence }),
   ]);
   button.addEventListener("click", () => openScanSheet(job.job_id, { ip: job.ip }));
   return button;
@@ -601,8 +608,7 @@ async function loadScanQueue() {
   } catch (err) {
     box.replaceChildren(emptyState({
       state: "failed",
-      message: `The scan queue could not be read: ${err && err.message ? err.message : err}. `
-        + "This is a failed read, not an empty queue.",
+      message: "Queue unavailable.",
     }));
     if (note) note.textContent = "";
     return;
@@ -610,8 +616,7 @@ async function loadScanQueue() {
   if (d.available === false) {
     box.replaceChildren(emptyState({
       state: "failed",
-      message: `${d.reason || "The scan-job table is not readable"}. `
-        + "This is a failed read, not an empty queue.",
+      message: "Queue unavailable.",
     }));
     if (note) note.textContent = "";
     return;
@@ -620,7 +625,7 @@ async function loadScanQueue() {
   if (!jobs.length) {
     box.replaceChildren(emptyState({
       state: "none",
-      message: "No manual scan has been queued. \"Scan now\" on a host files one.",
+      message: "No scans yet.",
     }));
     if (note) note.textContent = `${jobs.length} recent job${jobs.length === 1 ? "" : "s"}`;
     return;
@@ -630,8 +635,8 @@ async function loadScanQueue() {
     const active = jobs.filter((j) => (j.derived_state || j.state) === "queued"
       || (j.derived_state || j.state) === "claimed").length;
     const abandoned = jobs.filter((j) => j.derived_state === "abandoned").length;
-    note.textContent = `${jobs.length} recent job${jobs.length === 1 ? "" : "s"}`
-      + (active ? ` · ${active} still active` : " · none active")
+    note.textContent = `${jobs.length} scan${jobs.length === 1 ? "" : "s"}`
+      + (active ? ` · ${active} active` : "")
       + (abandoned ? ` · ${abandoned} abandoned` : "");
   }
   // A RUNNING JOB STAYS DISCOVERABLE. While any job is active the list refreshes on a bounded
@@ -661,6 +666,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   if (els.cancel) els.cancel.addEventListener("click", () => closeScanSheet());
   if (els.cancelConfirm) els.cancelConfirm.addEventListener("click", () => { scanConfirmCancel(); });
+  if (els.cancelKeep) els.cancelKeep.addEventListener("click", () => { scanKeepJob(); });
   if (els.cancelReason) els.cancelReason.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") { ev.preventDefault(); scanConfirmCancel(); }
   });

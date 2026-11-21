@@ -273,14 +273,17 @@ def test_a_signature_can_never_be_granted_forever():
     channels = {spec.channel: spec.family for spec in ripple_evidence.SPECS}
     with pytest.raises(ValueError, match="in the future"):
         ripple_signatures.new_signature(host=HOST, channel="http_ua_novelty", value="ua-x",
-                                        reason="r", channels=channels,
+                                        reason="r", channels=channels, today=TODAY,
                                         review_after=TODAY - timedelta(days=1))
+    # `today=TODAY` PINS THE WALL CLOCK. The fixed NOW above is the test's frame; letting
+    # new_signature read date.today() made this assertion expire the day after NOW, which is a
+    # property of the calendar rather than of the bound under test (measured 2026-11-21).
     with pytest.raises(ValueError, match="at most"):
         ripple_signatures.new_signature(host=HOST, channel="http_ua_novelty", value="ua-x",
-                                        reason="r", channels=channels,
+                                        reason="r", channels=channels, today=TODAY,
                                         review_after=TODAY + timedelta(days=366))
     row = ripple_signatures.new_signature(host=HOST, channel="http_ua_novelty", value="ua-x",
-                                          reason="r", channels=channels,
+                                          reason="r", channels=channels, today=TODAY,
                                           review_after=TODAY + timedelta(days=365))
     assert (row["review_after"] - TODAY).days == 365
 

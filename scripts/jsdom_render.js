@@ -54,6 +54,32 @@ const notes = [];
 // to silence it -- name the element the view actually has instead.
 const stales = [];
 let staleTouched = new Set();
+// THE COPY BUDGET (operator, 2026-11-20): a card or sheet shows at most 25 words before a
+// `details` disclosure. Measure VISIBLE copy only: `details` content, page titles, commands,
+// table cells and hidden nodes are data/disclosure, not the sentence the operator must read.
+// Consequence lines (a server receipt, a blast-radius warning) are exempt by the same rule.
+function visibleWords(root) {
+  if (!root) return 0;
+  const skip = new Set(["DETAILS", "TITLE", "CODE", "PRE", "TH", "TD", "DT", "DD",
+                        "INPUT", "SELECT", "TEXTAREA", "SCRIPT", "STYLE"]);
+  let words = 0;
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      const text = String(node.nodeValue || "").trim();
+      if (text) words += text.split(/\s+/).filter(Boolean).length;
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    if (skip.has(node.tagName)) return;
+    if (node.classList && node.classList.contains("hidden")) return;
+    // A LIST OF SCANS IS DATA, like a table's cells: timestamps and targets are not copy.
+    if (node.classList && node.classList.contains("scan-queue")) return;
+    if (node.getAttribute && node.getAttribute("aria-hidden") === "true") return;
+    Array.from(node.childNodes).forEach(walk);
+  };
+  walk(root);
+  return words;
+}
 function check(label, ok, detail) {
   if (ok) {
     notes.push(`  PASS  ${label}`);
@@ -196,6 +222,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    emptyState, emptyStateCell, activeFilterLabels,
                    openScanSheet, closeScanSheet, loadScanQueue, scanPollOnce, SCAN_STATE,
                    SCAN_READY, loadScanReadiness, scanGate, scanCancelJob, scanConfirmCancel,
+                   scanKeepJob, openInstallSheet, loadScannerStatus,
                    openSheet, closeSheet, sheetIsOpen, requestScan,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    showSessionNote, refreshAccountCard,
@@ -10764,7 +10791,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("the sheet reflects queued -> running from the queue row",
           /Running/.test(needEl("scan-state-line").textContent)
           && /wl-lab/.test(needEl("scan-body").textContent)
-          && /no scanner has claimed it|claimer/.test(needEl("scan-body").textContent),
+          && /picked up by/.test(needEl("scan-body").textContent),
           needEl("scan-state-line").textContent);
 
     // DONE: terminal, with the measured evidence the weirling recorded.
@@ -10829,16 +10856,24 @@ check("...a contradicted segment names BOTH segments on the issues list",
     scanDeletes = [];
     H.scanCancelJob();
     await new Promise((r) => setTimeout(r, 20));
-    check("...and cancelling asks for the reason the audit needs",
+    check("...and cancelling asks 'Cancel scan?' with the consequence and two buttons",
           !needEl("scan-cancel-form").classList.contains("hidden")
-          && !!needEl("scan-cancel-reason"),
+          && /Cancel scan\?/.test(needEl("scan-cancel-form").textContent)
+          && /This removes the job from the record\./.test(needEl("scan-cancel-form").textContent)
+          && /Cancel scan/.test(needEl("scan-cancel-confirm").textContent)
+          && /Keep/.test(needEl("scan-cancel-keep").textContent),
+          needEl("scan-cancel-form").textContent);
+    check("...and Keep closes it without deleting the job",
+          (H.scanKeepJob(), needEl("scan-cancel-form").classList.contains("hidden")
+            && scanDeletes.length === 0),
           needEl("scan-cancel-form").className);
-    needEl("scan-cancel-reason").value = "duplicate request";
+    H.scanCancelJob();
+    await new Promise((r) => setTimeout(r, 20));
     await H.scanConfirmCancel();
     await new Promise((r) => setTimeout(r, 80));
-    check("...and cancelling DELETEs that job's route with its reason",
+    check("...and cancelling DELETEs that job's route with the console's audit reason",
           scanDeletes.some((d) => d.url.includes("/api/scan-jobs/job-scan-1")
-            && /duplicate request/.test(d.body)),
+            && /cancelled from the console/.test(d.body)),
           JSON.stringify(scanDeletes));
     check("...and the sheet shows the server's receipt after the row is gone",
           /recorded in the audit trail/.test(needEl("scan-body").textContent),
@@ -10851,6 +10886,104 @@ check("...a contradicted segment names BOTH segments on the issues list",
           String(window.location.hash || ""));
     scanBtn.remove();
     fetchOverride = null;
+    H.clearGetCache();
+  }
+  // ── THE COPY BUDGET AND THE SHORT STRINGS (operator, 2026-11-20) ──────────────────────────
+  // "This is not simple. There are too many words." Every surface below shows one status line
+  // and one action; the mechanism lives under Details. These checks pin the exact strings and
+  // the 25-word budget, measured on the rendered DOM rather than on the source.
+  {
+    H.clearGetCache();
+    const prevOverride = fetchOverride;
+    const ITEM = {
+      sensor_id: "edge-one", nmap_available: false, nmap_version: "", profile: "basic",
+      os_id: "debian", os_version: "13", sudo_state: "none", install_known: true,
+      install_privileged: false, can_install: false,
+      install_command: "sudo apt-get update && sudo apt-get install -y nmap",
+      setcap_command: "sudo setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap",
+      install_answer: "Weirvern cannot install nmap here — the weirling's user is not in "
+        + "sudoers; run the command below as root",
+      networks: ["192.0.2.0/24"], scan_mode_sentence: "nmap missing",
+      last_check: new Date().toISOString(), state: "reported",
+    };
+    const SENTENCE = "0 of 1 weirling can scan: edge-one cannot (nmap missing). Install Nmap "
+      + "on a weirling and restart its agent.";
+    fetchOverride = (u) => {
+      if (String(u).includes("/api/scanner")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, local_sensor: "edge-one", count: 1,
+          capability: { enabled: false, count: 1, capable_count: 0, sentence: SENTENCE,
+                        reason_unavailable: SENTENCE },
+          sensors: [ITEM],
+        }) };
+      }
+      return null;
+    };
+    await H.loadScannerStatus();
+    await new Promise((r) => setTimeout(r, 40));
+    check("the scanner card says '0 of 1 can scan' as a number, not a paragraph",
+          needEl("scanner-summary").textContent.trim() === "0 of 1 can scan",
+          needEl("scanner-summary").textContent);
+    check("...and one short status line: 'Not scanning — nmap missing on this weirling.'",
+          needEl("scanner-note").textContent.trim()
+            === "Not scanning — nmap missing on this weirling.",
+          needEl("scanner-note").textContent);
+    check("...with one primary action, 'Install nmap'",
+          !needEl("scanner-install").classList.contains("hidden")
+          && needEl("scanner-install").textContent.trim() === "Install nmap",
+          needEl("scanner-install").className);
+    check("...and the measured sentence is behind Details, not above the fold",
+          /cannot \(nmap missing\)/.test(needEl("scanner-detail-text").textContent)
+          && !needEl("scanner-details").open,
+          needEl("scanner-detail-text").textContent.slice(0, 80));
+    check("the scanner card stays inside the 25-word copy budget",
+          visibleWords(needEl("scanner-note").closest(".card")) <= 25,
+          String(visibleWords(needEl("scanner-note").closest(".card"))));
+
+    H.openInstallSheet(ITEM);
+    await new Promise((r) => setTimeout(r, 30));
+    check("the install sheet is titled 'Install nmap'",
+          needEl("install-title").textContent.trim() === "Install nmap",
+          needEl("install-title").textContent);
+    check("...shows exactly one command line",
+          needEl("install-runs").textContent.trim()
+            === "Runs: sudo apt-get update && sudo apt-get install -y nmap",
+          needEl("install-runs").textContent);
+    check("...hides the password field when the host needs no sudo password",
+          needEl("install-password-block").classList.contains("hidden"),
+          needEl("install-password-block").className);
+    check("...offers Copy command, not a dead Install, when there is no privilege path",
+          needEl("install-go").classList.contains("hidden")
+          && !needEl("install-copy").classList.contains("hidden"),
+          `go=${needEl("install-go").className} copy=${needEl("install-copy").className}`);
+    check("...keeps the install sheet inside the 25-word copy budget",
+          visibleWords(needEl("install-sheet")) <= 25,
+          String(visibleWords(needEl("install-sheet"))));
+    check("...and puts the sudoers explanation behind Details",
+          /sudoers/.test(needEl("install-details").textContent)
+          && !needEl("install-details").open,
+          needEl("install-details").textContent.slice(0, 80));
+
+    H.openInstallSheet(Object.assign({}, ITEM, { sudo_state: "password",
+      install_privileged: false, can_install: true }));
+    await new Promise((r) => setTimeout(r, 30));
+    check("the password case says 'sudo password' and 'Needed to install on this host.'",
+          !needEl("install-password-block").classList.contains("hidden")
+          && /sudo password/.test(needEl("install-password-block").textContent)
+          && /Needed to install on this host\./.test(needEl("install-password-block").textContent),
+          needEl("install-password-block").textContent);
+    check("...and shows the Install action for that host",
+          !needEl("install-go").classList.contains("hidden")
+          && needEl("install-go").textContent.trim() === "Install",
+          needEl("install-go").className);
+    check("...still inside the copy budget with the password line visible",
+          visibleWords(needEl("install-sheet")) <= 25,
+          String(visibleWords(needEl("install-sheet"))));
+
+    H.openInstallSheet(Object.assign({}, ITEM, { nmap_available: true }));
+    await new Promise((r) => setTimeout(r, 30));
+    H.closeSheet(needEl("install-sheet"));
+    fetchOverride = prevOverride;
     H.clearGetCache();
   }
   check("no JavaScript errors during any of the above", errors.length === 0,

@@ -2618,153 +2618,210 @@ function scannerAge(value) {
   return `${Math.round(m / 60)}h ago`;
 }
 
-function installControls(item) {
-  // ONE PATH, NO DEAD ENDS (operator, 2026-11-20). A host whose agent reports root or
-  // passwordless sudo gets ONE click and no password field; only a host that actually asks
-  // for a password gets the field, labelled with whose password it is.
-  const box = el("div", { class: "scan-install" });
-  const needsPassword = item.sudo_state === "password";
-  const password = needsPassword ? el("input", {
-    attrs: { type: "password", autocomplete: "off", id: "scan-install-password" },
-  }) : null;
-  if (password) {
-    box.appendChild(el("label", { class: "muted", text: `sudo password for ${item.sensor_id}` }));
-    box.appendChild(password);
-    box.appendChild(el("p", {
-      class: "muted",
-      text: "Used once, over this weirling's mTLS channel. Never stored, never logged, never "
-        + "written to the audit trail. It expires five minutes after you press Install.",
-    }));
-  }
-  const reason = el("input", {
-    attrs: { type: "text", id: "scan-install-reason", autocomplete: "off" },
-  });
-  reason.value = "install nmap to enable scanning";
-  box.appendChild(el("label", { class: "muted", text: "reason (kept in the audit trail)" }));
-  box.appendChild(reason);
-  const button = el("button", { class: "quiet", attrs: { type: "button" },
-                                text: "Install nmap" });
-  const status = el("p", { class: "muted" });
-  const output = el("pre", { class: "scan-install-output hidden" });
-  const controls = el("div", { class: "controls" }, [button]);
-  box.appendChild(controls);
-  box.appendChild(status);
-  box.appendChild(output);
+// ── the install sheet ───────────────────────────────────────────────────────────────────────
+// ONE ACTION, ONE COMMAND, EVERYTHING ELSE BEHIND DETAILS (operator, 2026-11-20). The old
+// inline "setup" expansion explained the mechanism above the fold; this surface says what will
+// run, asks only for the password that host actually needs, and keeps the rest one click away.
+const INSTALL = { item: null, requestId: "", timer: null };
 
-  const say = (text, cls) => {
-    status.textContent = text;
-    status.className = cls || "muted";
+function installEls() {
+  return {
+    sheet: document.getElementById("install-sheet"),
+    title: document.getElementById("install-title"),
+    runs: document.getElementById("install-runs"),
+    details: document.getElementById("install-details"),
+    subject: document.getElementById("install-subject"),
+    command: document.getElementById("install-command"),
+    passwordBlock: document.getElementById("install-password-block"),
+    password: document.getElementById("install-password"),
+    state: document.getElementById("install-state"),
+    go: document.getElementById("install-go"),
+    copy: document.getElementById("install-copy"),
+    answer: document.getElementById("install-answer"),
+    os: document.getElementById("install-os"),
+    why: document.getElementById("install-why"),
+    setcap: document.getElementById("install-setcap"),
+    setcapCopy: document.getElementById("install-setcap-copy"),
   };
-  const poll = async (requestId, attempt) => {
-    let data;
-    try {
-      data = await getJSON(`/api/weirlings/install/${encodeURIComponent(requestId)}`);
-    } catch (err) {
-      say(`The install could not be read: ${err && err.message ? err.message : err}`, "warn");
-      return;
-    }
-    if (data.output) {
-      output.textContent = data.output;
-      output.classList.remove("hidden");
-    }
-    if (data.state === "done") {
-      const where = (item.networks || []).join(", ") || "its declared networks";
-      say(`nmap ${data.nmap_version || ""} installed; this weirling can scan ${where}`.replace("  ", " "),
-          "scan-install-done");
-      button.textContent = "Installed";
-      button.disabled = true;
-      if (password) password.value = "";
-      loadScannerStatus().catch(() => {});
-      return;
-    }
-    if (data.state === "failed" || data.state === "expired") {
-      say(data.state === "expired"
-        ? "The request expired before this weirling picked it up. Try again."
-        : "The install failed; sudo's own output is below.", "warn");
-      button.textContent = "Retry";
-      button.disabled = false;
-      return;
-    }
-    if (attempt > 150) {
-      say("Still waiting for this weirling to pick the request up. It polls every few seconds.",
-          "muted");
-      button.disabled = false;
-      button.textContent = "Check again";
-      return;
-    }
-    say(`Installing… ${data.state === "delivered" ? "the weirling is running the command" : "waiting for the weirling to pick it up"}.`,
-        "muted");
-    setTimeout(() => { poll(requestId, attempt + 1).catch(() => {}); }, 1200);
-  };
-  button.addEventListener("click", async () => {
-    const why = String(reason.value || "").trim();
-    if (!why) { say("A reason is required to install Nmap.", "warn"); return; }
-    if (needsPassword && !String(password.value || "")) {
-      say(`Enter the sudo password for ${item.sensor_id}, or run the command above by hand.`,
-          "warn");
-      return;
-    }
-    const body = { reason: why };
-    if (needsPassword) body.sudo_password = String(password.value || "");
-    button.disabled = true;
-    button.textContent = "Installing…";
-    output.classList.add("hidden");
-    output.textContent = "";
-    // THE BROWSER'S COPY IS NOT KEPT. The value went into the request body; clearing the field
-    // here means it cannot be read from the page while the install runs.
-    if (password) password.value = "";
-    say("Sending the install request over mTLS…");
-    try {
-      const created = await postJSON(
-        `/api/weirlings/${encodeURIComponent(item.sensor_id)}/install`, body);
-      if (!created || !created.request_id) throw new Error("no request id was returned");
-      say("Request accepted; waiting for this weirling to pick it up.");
-      poll(created.request_id, 0).catch(() => {});
-    } catch (err) {
-      button.disabled = false;
-      button.textContent = "Install nmap";
-      say(`The install was refused: ${err && err.message ? err.message : err}`, "warn");
-    } finally {
-      // The in-flight request already serialised its body; this drops the page's other copy.
-      delete body.sudo_password;
-    }
-  });
-  return box;
 }
 
+function installSay(text) {
+  const els = installEls();
+  if (els.state) els.state.textContent = String(text || "");
+}
+
+function installStop() {
+  if (INSTALL.timer) { clearTimeout(INSTALL.timer); INSTALL.timer = null; }
+}
+
+/** Open the sheet for one weirling. The command line is the only fact above the fold. */
+function openInstallSheet(item) {
+  const els = installEls();
+  if (!els.sheet || !item) return;
+  installStop();
+  INSTALL.item = item;
+  INSTALL.requestId = "";
+  const command = String(item.install_command || "");
+  const needsPassword = item.sudo_state === "password";
+  const canInstall = Boolean(item.install_known && item.sudo_state && item.sudo_state !== "none");
+  if (els.subject) els.subject.textContent = item.sensor_id || "";
+  if (els.title) els.title.textContent = "Install nmap";
+  if (els.runs) els.runs.setAttribute("data-sensor", item.sensor_id || "");
+  if (els.details) els.details.open = false;
+  if (els.command) els.command.textContent = command || "—";
+  if (els.passwordBlock) els.passwordBlock.classList.toggle("hidden", !needsPassword);
+  if (els.password) els.password.value = "";
+  if (els.go) {
+    els.go.classList.toggle("hidden", !canInstall);
+    els.go.disabled = false;
+    els.go.textContent = "Install";
+  }
+  if (els.copy) els.copy.classList.toggle("hidden", canInstall || !command);
+  if (els.answer) els.answer.textContent = item.install_answer || "";
+  if (els.os) els.os.textContent = item.os_label || "";
+  if (els.why) els.why.textContent = item.install_privileged
+    ? "This weirling can run the install itself."
+    : "No privilege path on this host: copy the command and run it as root.";
+  if (els.setcap) els.setcap.textContent = item.setcap_command || "";
+  installSay(item.nmap_available ? "Nmap is already installed." : "");
+  openSheet(els.sheet, { initialFocus: "install-close" });
+}
+
+async function installPoll(attempt) {
+  const els = installEls();
+  if (!INSTALL.requestId) return;
+  let data;
+  try {
+    data = await getJSON(`/api/weirlings/install/${encodeURIComponent(INSTALL.requestId)}`);
+  } catch (err) {
+    installSay("Could not read the install.");
+    return;
+  }
+  if (data && data.output && els.why) els.why.textContent = String(data.output);
+  if (data && data.state === "done") {
+    const where = (INSTALL.item && (INSTALL.item.networks || []).join(", ")) || "its networks";
+    installSay(`Installed. This weirling can scan ${where}.`);
+    if (els.go) { els.go.textContent = "Installed"; els.go.disabled = true; }
+    if (els.password) els.password.value = "";
+    loadScannerStatus().catch(() => {});
+    return;
+  }
+  if (data && (data.state === "failed" || data.state === "expired")) {
+    installSay(data.state === "expired" ? "Request expired." : "Install failed.");
+    if (els.go) { els.go.disabled = false; els.go.textContent = "Retry"; }
+    return;
+  }
+  if (attempt > 150) {
+    installSay("Still waiting for this weirling.");
+    if (els.go) els.go.disabled = false;
+    return;
+  }
+  installSay("Installing…");
+  INSTALL.timer = setTimeout(() => { installPoll(attempt + 1).catch(() => {}); }, 1200);
+}
+
+async function installGo() {
+  const els = installEls();
+  const item = INSTALL.item;
+  if (!item) return;
+  const needsPassword = item.sudo_state === "password";
+  const password = String((els.password && els.password.value) || "");
+  if (needsPassword && !password) { installSay("Enter the sudo password."); return; }
+  const body = { reason: "install nmap from the console" };
+  if (needsPassword) body.sudo_password = password;
+  if (els.go) { els.go.disabled = true; els.go.textContent = "Installing…"; }
+  try {
+    const created = await postJSON(
+      `/api/weirlings/${encodeURIComponent(item.sensor_id)}/install`, body);
+    if (!created || !created.request_id) throw new Error("no request id");
+    INSTALL.requestId = String(created.request_id);
+    installSay("Waiting for this weirling.");
+    installPoll(0).catch(() => {});
+  } catch (err) {
+    if (els.go) { els.go.disabled = false; els.go.textContent = "Install"; }
+    installSay("Install refused.");
+  } finally {
+    delete body.sudo_password;
+    if (els.password) els.password.value = "";
+  }
+}
+
+function installCopy() {
+  const command = String((INSTALL.item && INSTALL.item.install_command) || "");
+  if (!command) return;
+  navigator.clipboard.writeText(command)
+    .then(() => installSay("Copied. Run it on the host."))
+    .catch(() => installSay("Select the command."));
+}
+
+(function wireInstall() {
+  const els = installEls();
+  if (els.sheet) wireSheet(els.sheet, { onClose: () => installStop() });
+  if (els.go) els.go.addEventListener("click", () => { installGo().catch(() => {}); });
+  if (els.copy) els.copy.addEventListener("click", () => installCopy());
+  if (els.setcapCopy) els.setcapCopy.addEventListener("click", () => {
+    const cmd = String((INSTALL.item && INSTALL.item.setcap_command) || "");
+    if (cmd && navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {});
+  });
+})();
+
+// ── scanner readiness: a number, a status line, and one action ───────────────────────────────
 async function loadScannerStatus() {
   const list = document.getElementById("scanner-list");
   const summary = document.getElementById("scanner-summary");
   const note = document.getElementById("scanner-note");
+  const installBtn = document.getElementById("scanner-install");
+  const details = document.getElementById("scanner-details");
+  const detailText = document.getElementById("scanner-detail-text");
   if (!list || !summary || !note) return;
   let d;
   try {
     d = await getJSON("/api/scanner");
   } catch (err) {
     summary.textContent = "unknown";
-    note.textContent = `Scanner readiness could not be read: ${err && err.message ? err.message : err}`;
+    note.textContent = "Scan state unavailable.";
     list.replaceChildren();
     return;
   }
   if (!d.available) {
     summary.textContent = "unknown";
-    note.textContent = d.reason || "Scanner readiness is unavailable.";
+    note.textContent = "Scan state unavailable.";
     list.replaceChildren();
     return;
   }
   const sensors = d.sensors || [];
   const cap = d.capability || {};
-  // CAPABILITY, NOT HEALTH. The summary counts weirlings that can actually run Nmap; a node
-  // that is merely alive is not a scanner.
+  const total = cap.count === undefined ? sensors.length : cap.count;
+  const capable = cap.capable_count || 0;
+  // NUMBERS BEAT SENTENCES: the chip is the count, not a paragraph about the count.
+  summary.textContent = `${capable} of ${total} can scan`;
+  const missing = sensors.filter((s) => !s.nmap_available);
   if (cap.enabled) {
-    summary.textContent = `${cap.capable_count ?? 0} of ${cap.count ?? sensors.length} can scan`;
+    note.textContent = "Scanning is available.";
+    if (installBtn) installBtn.classList.add("hidden");
   } else {
-    summary.textContent = "no weirling can scan";
+    const sentence = String(cap.sentence || "");
+    if (total === 1 && /no capability report/i.test(sentence)) {
+      note.textContent = "Not scanning — this weirling has not reported.";
+    } else if (total === 1 && /nmap missing/i.test(sentence)) {
+      note.textContent = "Not scanning — nmap missing on this weirling.";
+    } else if (missing.length) {
+      note.textContent = `Not scanning — nmap missing on ${missing.length} of ${total}.`;
+    } else {
+      note.textContent = "Not scanning.";
+    }
+    // ONE PRIMARY ACTION. It opens the sheet; that sheet decides whether this host can run
+    // the install or only copy the command.
+    if (installBtn) {
+      const target = missing.find((s) => s.install_command) || missing[0] || sensors[0];
+      installBtn.classList.toggle("hidden", !target);
+      installBtn.onclick = () => openInstallSheet(target);
+    }
   }
-  note.textContent = cap.sentence || (cap.enabled
-    ? "Every capable weirling claims manual scans inside the networks it declares."
-    : "Manual scans are unavailable until a weirling reports Nmap. Each row's setup sheet "
-      + "carries the exact command for that host's own OS.");
+  // The server's measured sentence and the explanation stay available, one click away.
+  if (detailText) detailText.textContent = String(cap.sentence || "");
+  if (details) details.classList.toggle("hidden", !cap.enabled && !cap.sentence);
+
   list.replaceChildren();
   loadScanQueue().catch(() => {});
   if (!sensors.length) {
@@ -2773,122 +2830,13 @@ async function loadScannerStatus() {
   }
   const table = el("table", { class: "scanner-table" });
   table.appendChild(el("thead", {}, [el("tr", {}, [
-    el("th", { text: "Scanner node" }), el("th", { text: "Profile" }),
-    el("th", { text: "Nmap" }), el("th", { text: "Last check" }), el("th", { text: "Setup" }),
+    el("th", { text: "Scanner" }), el("th", { text: "Profile" }),
+    el("th", { text: "Nmap" }), el("th", { text: "Last check" }), el("th", { text: "" }),
   ])]));
   const body = el("tbody");
   for (const item of sensors) {
-    const setupId = `scanner-setup-${item.sensor_id.replace(/[^a-z0-9_-]/gi, "_")}`;
-    const setup = el("div", { class: "scanner-setup hidden", attrs: { id: setupId } });
-    const command = item.install_command || "";
-    const hasNmap = Boolean(item.nmap_available);
-    // THE INSTALL LINE COMES FROM THE HOST'S OWN OS. The agent reports /etc/os-release with its
-    // capability; the hub renders the command for that distro. An unrecognised OS says so and
-    // shows the generic instruction rather than guessing a package manager.
-    const osLabel = [item.os_id, item.os_version].filter(Boolean).join(" ") || "unknown OS";
-    setup.appendChild(el("p", {
-      class: "muted",
-      text: `Scan capability on ${osLabel}: ${item.scan_mode_sentence || "unknown"}.`,
-    }));
-    setup.appendChild(el("p", { class: "muted",
-      text: hasNmap
-        ? "This weirling can claim manual scans inside the networks it declares."
-        : "This weirling cannot claim a manual scan until Nmap is installed and the agent "
-          + "re-reports (it re-measures every few minutes, so a restart is not always needed)." }));
-    // THE ANSWER TO "CAN WEIRVERN INSTALL IT?", for THIS host. The agent measures whether it
-    // could install without a privilege escalation; the hub never assumes it can.
-    setup.appendChild(el("p", {
-      class: item.install_privileged ? "muted" : "warn",
-      text: item.install_answer
-        || (hasNmap ? "Nmap is already installed here."
-                    : "Weirvern cannot install nmap here — run this as root"),
-    }));
-    if (!hasNmap && item.setcap_command) {
-      // THE SECOND HALF OF THE INSTALL. A bare package install gives connect scans only; the
-      // setcap is what makes SYN/UDP available, and the sheet states both commands.
-      setup.appendChild(el("p", { class: "muted",
-        text: "Then grant raw-socket capability so SYN/UDP scans work without root:" }));
-      const capsCode = el("code", { class: "mono", text: item.setcap_command });
-      const capsCopy = el("button", { class: "quiet", attrs: { type: "button" },
-                                      text: "Copy setcap" });
-      capsCopy.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(item.setcap_command);
-          capsCopy.textContent = "Copied";
-          setTimeout(() => { capsCopy.textContent = "Copy setcap"; }, 1600);
-        } catch (_e) { capsCopy.textContent = "Select the command"; }
-      });
-      setup.appendChild(el("div", { class: "scanner-command" }, [capsCode, capsCopy]));
-    }
-    if (command) {
-      const code = el("code", { class: "mono", text: command });
-      const copy = el("button", { class: "quiet", attrs: { type: "button" }, text: "Copy command" });
-      copy.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(command);
-          copy.textContent = "Copied";
-          setTimeout(() => { copy.textContent = "Copy command"; }, 1600);
-        } catch (_e) { copy.textContent = "Select the command"; }
-      });
-      setup.appendChild(el("div", { class: "scanner-command" }, [code, copy]));
-    }
-    if (!hasNmap) {
-      // ONE PATH, NO DEAD ENDS. When the agent reported a privilege path that can run the
-      // install (root, passwordless sudo, or a sudo password), the sheet offers the one-click
-      // install. When it reported neither — no sudoers entry, or no package manager — the
-      // button is replaced by the copy-command line rather than a prompt that cannot work.
-      const canInstall = Boolean(item.install_known && item.sudo_state
-        && item.sudo_state !== "none");
-      if (canInstall) {
-        setup.appendChild(installControls(item));
-        setup.appendChild(el("p", {
-          class: "muted",
-          text: "The request is held on the hub for five minutes and this weirling picks it up "
-            + "on its next poll; nothing is opened inbound to the sensor.",
-        }));
-      } else {
-        // "PREPARE THIS WEIRLING" — A COPY, NOT A REMOTE COMMAND, AND IT SAYS WHY.
-        //
-        // No package manager could be detected, or the agent's user is not in sudoers: either
-        // way there is no privilege path to run the install on this host. The button copies
-        // the one allowlisted command for the operator to run by hand, and the sentence says
-        // which of the two facts made the remote path unavailable.
-        const prepare = el("button", { class: "quiet", attrs: { type: "button" },
-                                       text: "Prepare this weirling" });
-        const status = el("p", { class: "muted hidden" });
-        prepare.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(command);
-            status.textContent = `Copied: ${command} — run it on ${item.sensor_id}, then click Check again.`;
-          } catch (_e) {
-            status.textContent = `Run this on ${item.sensor_id}: ${command}`;
-          }
-          status.classList.remove("hidden");
-        });
-        setup.appendChild(el("div", { class: "controls" }, [prepare]));
-        setup.appendChild(status);
-        setup.appendChild(el("p", {
-          class: "muted",
-          text: item.install_known
-            ? "It copies the command: the agent's user has no privilege path on this host, so "
-              + "there is nothing the weirling could run. Create the scoped sudoers entry (or "
-              + "run the command as root) and the Install button appears."
-            : "It copies the command: the agent could not detect a package manager on this host, "
-              + "so the hub will not guess one.",
-        }));
-      }
-    }
-    setup.appendChild(el("p", { class: "muted" }, [
-      el("a", { attrs: { href: item.install_url || "https://nmap.org/download.html",
-                         target: "_blank", rel: "noopener" }, text: "Official Nmap download" }),
-      el("span", { text: " · the install steps are documented in " }),
-      el("a", { attrs: { href: "/docs/deployment.md", target: "_blank", rel: "noopener" },
-                text: "docs/deployment.md" }),
-      el("span", { text: " (in the repository, under Asset scanning and Nmap)." }),
-    ]));
-    const toggle = el("button", { class: "quiet", attrs: { type: "button" },
-                                   text: hasNmap ? "Details" : "Set up" });
-    toggle.addEventListener("click", () => setup.classList.toggle("hidden"));
+    const toggle = el("button", { class: "quiet", attrs: { type: "button" }, text: "Details" });
+    toggle.addEventListener("click", () => openInstallSheet(item));
     const row = el("tr", {}, [
       el("td", {}, [el("span", { class: "mono", text: item.sensor_id }),
         item.sensor_id === d.local_sensor ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
@@ -2898,10 +2846,6 @@ async function loadScannerStatus() {
       el("td", {}, [toggle]),
     ]);
     body.appendChild(row);
-    const detailRow = el("tr", { class: "scanner-detail-row" }, [
-      el("td", { attrs: { colspan: "5" } }, [setup]),
-    ]);
-    body.appendChild(detailRow);
   }
   table.appendChild(body);
   list.appendChild(table);

@@ -598,7 +598,7 @@ def scanner(client: Client) -> dict[str, Any]:
     status_rows = client.query(
         "SELECT sensor_id, profile, nmap_available, nmap_version, nmap_path, "
         "       nse_available, os_id, os_version, detail, last_check, "
-        "       privileged, scan_mode, can_install, sudo_state "
+        "       privileged, scan_mode, can_install, sudo_state, os_label, os_family "
         "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
     ).result_rows
     registered = client.query(
@@ -628,6 +628,10 @@ def scanner(client: Client) -> dict[str, Any]:
                 "raw" if bool(row[2]) else "none"),
             "can_install": bool(row[12]) if len(row) > 12 else False,
             "sudo_state": str(row[13]) if len(row) > 13 else "",
+            # THE LABEL IS THE DISTRO; THE FAMILY PICKS THE COMMAND. A row written before the
+            # columns existed falls back to ID + version and derives the family from that.
+            "os_label": str(row[14]) if len(row) > 14 else "",
+            "os_family": str(row[15]) if len(row) > 15 else "",
             "state": "reported",
         }
 
@@ -639,12 +643,21 @@ def scanner(client: Client) -> dict[str, Any]:
             item = {
                 "sensor_id": sid, "profile": "unknown", "nmap_available": False,
                 "nmap_version": "", "nmap_path": "", "nse_available": False,
-                "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
+                "os_id": "", "os_version": "", "os_label": "", "os_family": "",
+                "detail": "no scanner status reported yet",
                 "last_check": "", "privileged": False, "scan_mode": "unknown",
                 "can_install": False, "sudo_state": "unknown", "state": "not_reported",
             }
-        install = scanner_mod.nmap_install_command(item.get("os_id", ""),
-                                                   item.get("os_version", ""))
+        # THE COMMAND COMES FROM THE ID FIRST, THEN THE FAMILY -- the same order the agent uses.
+        install = scanner_mod.nmap_install_command(
+            item.get("os_id", ""), item.get("os_version", ""))
+        if not install.get("known") and item.get("os_family"):
+            install = scanner_mod.nmap_install_command(
+                item.get("os_family", ""), item.get("os_version", ""))
+        if not item.get("os_label"):
+            name = str(item.get("os_id") or "").strip()
+            version = str(item.get("os_version") or "").strip()
+            item["os_label"] = " ".join(part for part in (name.title(), version) if part)
         item["install_command"] = install["command"]
         item["install_manager"] = install["manager"]
         item["install_known"] = install["known"]

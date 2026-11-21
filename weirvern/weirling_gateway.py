@@ -326,6 +326,8 @@ class Gateway:
                 "nse_available": bool(body.get("nse_available")),
                 "os_id": str(body.get("os_id") or "")[:64],
                 "os_version": str(body.get("os_version") or "")[:64],
+                "os_label": str(body.get("os_label") or "")[:120],
+                "os_family": str(body.get("os_family") or "")[:32],
                 "detail": str(body.get("detail") or "")[:500],
                 "privileged": bool(body.get("privileged")),
                 "scan_mode": str(body.get("scan_mode") or "")[:16],

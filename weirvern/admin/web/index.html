@@ -832,18 +832,54 @@
             aria-label="close this panel (Escape also closes)">Close</button></h2>
   <p id="scan-state-line" class="scan-state-line" role="status" aria-live="polite">Reading the queue…</p>
   <div id="scan-body"></div>
-  <div id="scan-cancel-form" class="scan-cancel-form hidden">
-    <label class="muted" for="scan-cancel-reason">reason (kept in the audit trail)</label>
-    <input id="scan-cancel-reason" type="text" autocomplete="off"
-           value="cancelled by the operator">
-    <button id="scan-cancel-confirm" class="quiet" type="button">Confirm cancel</button>
+  <div id="scan-cancel-form" class="scan-cancel-dialog hidden">
+    <p class="scan-cancel-q">Cancel scan?</p>
+    <p class="muted">This removes the job from the record.</p>
+    <div class="controls">
+      <button id="scan-cancel-confirm" class="primary" type="button">Cancel scan</button>
+      <button id="scan-cancel-keep" class="quiet" type="button">Keep</button>
+    </div>
+    <input id="scan-cancel-reason" type="hidden" value="cancelled from the console">
   </div>
   <div class="controls sheet-actions">
-    <button id="scan-retry" class="quiet hidden" type="button">Retry this scan</button>
-    <button id="scan-cancel-job" class="quiet hidden" type="button">Cancel this job</button>
+    <button id="scan-retry" class="quiet hidden" type="button">Retry</button>
+    <button id="scan-cancel-job" class="quiet hidden" type="button">Cancel scan</button>
     <button id="scan-check" class="quiet" type="button">Check now</button>
     <button id="scan-cancel" class="quiet" type="button">Close</button>
   </div>
+</div>
+
+<!-- THE INSTALL SHEET: one action, one command line, everything else behind Details. -->
+<div class="card sheet hidden" id="install-sheet" tabindex="-1" role="dialog" aria-modal="true"
+     aria-labelledby="install-title" aria-hidden="true">
+  <h2><span id="install-title">Install nmap</span>
+    <span id="install-subject" class="muted mono"></span>
+    <button id="install-close" class="sheet-close" type="button"
+            aria-label="close this panel (Escape also closes)">Close</button></h2>
+  <p id="install-runs" class="mono">Runs: <code id="install-command"></code></p>
+  <div id="install-password-block" class="hidden">
+    <label for="install-password" class="muted">sudo password</label>
+    <input id="install-password" type="password" autocomplete="off">
+    <p class="muted">Needed to install on this host.</p>
+  </div>
+  <p id="install-state" class="muted" role="status" aria-live="polite"></p>
+  <div class="controls">
+    <button id="install-go" class="primary" type="button">Install</button>
+    <button id="install-copy" class="quiet hidden" type="button">Copy command</button>
+  </div>
+  <details id="install-details" class="copy-details">
+    <summary>Details</summary>
+    <p id="install-os" class="muted"></p>
+    <p id="install-answer" class="muted"></p>
+    <p class="muted">Then grant raw sockets so SYN/UDP scans work:</p>
+    <div class="scanner-command">
+      <code id="install-setcap" class="mono"></code>
+      <button id="install-setcap-copy" class="quiet" type="button">Copy setcap</button>
+    </div>
+    <p id="install-why" class="muted"></p>
+    <p class="muted"><a href="https://nmap.org/download.html" target="_blank" rel="noopener">Official Nmap download</a>
+      · <a href="/docs/deployment.md" target="_blank" rel="noopener">docs/deployment.md</a></p>
+  </details>
 </div>
 
 <!-- THE RIPPLE SHEET. The house sheet (sheets.js), not a new surface: one scrim, one Escape,
@@ -1912,12 +1948,17 @@
         <p><strong>What Weirvern does not do.</strong> It does not download or install Nmap. The setup sheet gives the official package command for the node's operating system; the operator installs it. Weirvern detects it on the next scanner pass.</p>
         <p><strong>Last changed.</strong> The scanner reports a capability row on every pass; a node with no row is <em>not reported</em>, not basic.</p>
       </div>
-      <p id="scanner-note" class="muted">loading…</p>
+      <p id="scanner-note" class="scanner-status">loading…</p>
+      <div class="controls"><button id="scanner-install" class="primary hidden" type="button">Install nmap</button></div>
+      <details id="scanner-details" class="copy-details hidden">
+        <summary>Details</summary>
+        <p id="scanner-detail-text" class="muted"></p>
+      </details>
       <div id="scanner-list" class="scanner-list"></div>
-      <div class="controls"><button id="scanner-check" class="quiet" type="button">Check again</button></div>
+      <div class="controls"><button id="scanner-check" class="quiet" type="button">Refresh</button></div>
       <!-- THE MANUAL-SCAN QUEUE, one line per job. A running scan is discoverable here after
            its sheet is closed, and clicking a row opens that job's sheet again. -->
-      <h3 class="scan-queue-title">Recent manual scans <span id="scan-queue-note" class="muted"></span></h3>
+      <h3 class="scan-queue-title">Recent scans <span id="scan-queue-note" class="muted"></span></h3>
       <div id="scan-queue" class="scan-queue"></div>
     </div>
 
