@@ -40,6 +40,7 @@ flows_aggregated_diversity | feature-now
 flows_aggregated_temporal | feature-now
 host_fingerprints | join-only
 host_hour_features | output
+health | excluded
 host_hour_scores | output
 host_identity | join-only
 host_reference_samples | output

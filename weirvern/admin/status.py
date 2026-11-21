@@ -408,6 +408,67 @@ def _ingest_freshness_probe(client) -> Probe:
                  value=verdict.as_value(), latency_ms=(time.perf_counter() - started) * 1000)
 
 
+def _watchdog_probe(client) -> Probe:
+    """What the DEAD-MAN WATCHDOG last concluded, including whether it could page at all.
+
+    ── WHY THIS READS A TABLE INSTEAD OF RE-RUNNING THE CHECKS (measured 2026-11-21) ─────────────
+
+    The watchdog runs in its own CronJob precisely so the worker cannot take it down, which means
+    its verdicts are not in this process's memory. `weirvern.health` is that handoff: one row per
+    check, written every five minutes, including `watchdog_delivery`.
+
+    `watchdog_delivery=unconfigured` is the row this probe exists for. Without it, the Health tab
+    reports on the pipeline and says nothing about the channel that is supposed to carry a fault
+    out of the building -- which is exactly how 32,897 `log-only` rows became an eighteen-hour
+    outage. A watchdog whose keys are empty must make the health page RED, not quietly work.
+
+    Tri-state, like the rest of this report: a schema older than `066_health.sql` has no table,
+    and that is "not measured here" (`ok=None`), not a pipeline fault. A table that EXISTS but
+    holds no rows is a fault -- the watchdog is deployed and has never run.
+    """
+    try:
+        rows = client.query(
+            "SELECT check_name, status, detail, updated_at "
+            "FROM weirvern.health FINAL ORDER BY check_name"
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        return Probe("watchdog", ok=None,
+                     detail=(f"the watchdog ledger could not be read ({type(exc).__name__}: "
+                             f"{exc}); this deployment's schema may predate 066_health.sql, so "
+                             f"watchdog health is NOT MEASURED here"))
+
+    if not rows:
+        return Probe(
+            "watchdog", ok=False,
+            detail=("the watchdog has written NO health rows: the CronJob exists but has never "
+                    "completed a run. Check `kubectl -n weirvern get jobs | grep watchdog` and "
+                    "the CronJob's pod log."),
+            value=[],
+        )
+
+    problems = []
+    for row in rows:
+        name = str(row[0] if len(row) > 0 else "?")
+        status = str(row[1] if len(row) > 1 else "")
+        if status != "ok":
+            detail = str(row[2] if len(row) > 2 else "")
+            problems.append(f"{name}={status}" + (f" ({detail[:160]})" if detail else ""))
+    if problems:
+        return Probe(
+            "watchdog", ok=False,
+            detail=("the watchdog is reporting faults: " + "; ".join(problems[:6])),
+            value=[{"check": str(r[0]), "status": str(r[1])} for r in rows],
+        )
+    newest = max((row[3] for row in rows if len(row) > 3 and row[3] is not None), default=None)
+    return Probe(
+        "watchdog", ok=True,
+        detail=(f"{len(rows)} check(s) healthy"
+                + (f", last written {_human_age(max(0.0, age_seconds(newest)))} ago"
+                   if newest is not None else "")),
+        value=[{"check": str(r[0]), "status": str(r[1])} for r in rows],
+    )
+
+
 def _feed_probe(client, settings=None) -> Probe:
     """Is the capture port carrying the NETWORK, or only the noise every port sees?
 
@@ -1276,6 +1337,20 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
         report.add(_controls_probe(settings))
     except Exception as exc:  # noqa: BLE001
         _probe_failed(report, "controls", exc, (time.perf_counter() - started) * 1000)
+    if report.probes:
+        report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
+
+    # 11. DID THE OUT-OF-BAND WATCHDOG RUN, AND COULD IT ACTUALLY PAGE?
+    #
+    # The watchdog is a separate CronJob (k8s/36-watchdog-cronjob.yaml), so this process cannot
+    # see it by asking its own memory. Its last verdicts are in `weirvern.health`; the one that
+    # matters most is `watchdog_delivery`. A deployment whose keys are empty has a watchdog that
+    # runs and cannot tell anyone, and this row is the only place that is said out loud.
+    started = time.perf_counter()
+    try:
+        report.add(_watchdog_probe(client))
+    except Exception as exc:  # noqa: BLE001
+        _probe_failed(report, "watchdog", exc, (time.perf_counter() - started) * 1000)
     if report.probes:
         report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 

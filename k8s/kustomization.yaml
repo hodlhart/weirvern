@@ -39,6 +39,9 @@ resources:
   # the log directory. See the file's header for why it is a CronJob and not a loop
   # inside the sensor or the worker.
   - 35-prune-cronjob.yaml
+  # THE DEAD-MAN WATCHDOG. Deliberately separate from the worker: a crash loop, an OOMKill or a
+  # pod that is never scheduled must not take the alarm with it. See the manifest's header.
+  - 36-watchdog-cronjob.yaml
   - 50-schema-job.yaml
   - 60-rbac.yaml
   # THE mTLS INGEST EDGE IS NOT OPTIONAL. Every adopted weirling talks to this gateway, and

@@ -237,6 +237,7 @@ def detector_rows(
         row["artifact_version"] = str(artifact.get("version") or "")
         row["calibration_stale"] = calibration_stale
         row["insufficient_telemetry"] = insufficient
+        row["calibrating"] = bool(evidence.calibrating)
         row["calibration_age_h"] = evidence.age_hours
         row["coverage_note"] = coverage_note(row)
         row["status"] = _status(row, evidence=evidence, decision=decision, outcome=outcome)

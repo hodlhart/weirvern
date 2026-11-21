@@ -1,0 +1,135 @@
+# DEAD-MAN WATCHDOG — the monitor that is NOT the worker.
+#
+# WHY A SEPARATE CRONJOB. On 2026-11-20 23:33 both flow sinks stopped and nothing reached a human
+# for eighteen hours. The worker kept logging honest lines about its own last action ("Ingested 0
+# flow records", "examined NOTHING"), and its freshness verdict was an ERROR line nobody read.
+# A watchdog folded into the worker inherits every failure of the worker: a crash loop, an
+# OOMKill or a pod that is never scheduled takes the alarm with it. This runs on its own
+# schedule, in its own pod, under its own ServiceAccount.
+#
+# WHY EVERY 5 MINUTES: the ingest bar is 600s (two buckets). A five-minute cadence detects a
+# stall within 10-15 minutes and gives the rate limiter enough history to tell "still down" from
+# "went down again".
+#
+# WHY concurrencyPolicy: Forbid: two watchdogs racing would both read the same `last_notified_at`
+# and both send, defeating the cooldown. The run is seconds; Forbid costs nothing.
+#
+# EXIT CODES ARE LOAD BEARING: 1 = a page was delivered, 3 = the pager is unconfigured, 4 = a
+# configured delivery failed. `backoffLimit: 0` is deliberate -- a retry would re-evaluate and
+# could double-page; the next scheduled run is five minutes away. `failedJobsHistoryLimit: 3`
+# keeps the unconfigured exit visible in `kubectl get jobs` without accumulating a thousand pods.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weirvern-watchdog
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-watchdog
+    app.kubernetes.io/part-of: weirvern
+    app.kubernetes.io/component: watchdog
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  # If the API server cannot start the Job within five minutes, skip this cycle rather than
+  # queue a stale verdict behind it; the next schedule is five minutes away.
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # A hung API call must not hold the slot into the next cycle. 240s leaves headroom under
+      # the 300s schedule and the 10s per-request timeout in the script.
+      activeDeadlineSeconds: 240
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: weirvern-watchdog
+            app.kubernetes.io/part-of: weirvern
+        spec:
+          restartPolicy: Never
+          # THE VIEWER ROLE, NOT THE OPERATOR ROLE. It already grants get/list on pods, jobs and
+          # cronjobs in this namespace -- the two API reads this watchdog makes. No RBAC change
+          # is needed, and a monitor has no business holding the operator's write verbs.
+          serviceAccountName: weirvern-viewer
+          automountServiceAccountToken: true
+          # The node filesystem is read through a hostPath mount, and the sensor node is where
+          # both capture and ClickHouse live on this single-node deployment.
+          nodeSelector:
+            weirvern.io/sensor-node: "true"
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: watchdog
+              image: weirvern-worker
+              imagePullPolicy: IfNotPresent
+              # The script is copied into the worker image by the Containerfile. It is a script
+              # rather than a CLI subcommand because the watchdog is an operator tool first: it
+              # must be runnable from a checkout with --dry-run before it is trusted to page.
+              command: ["python3", "/app/scripts/watchdog.py"]
+              envFrom:
+                - configMapRef:
+                    name: weirvern-env
+                # PUSHOVER_* keys and CLICKHOUSE_PASSWORD. The Secret is mounted by the kubelet;
+                # the viewer role still cannot read it through the API.
+                - secretRef:
+                    name: weirvern-secrets
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: WATCHDOG_NAMESPACE
+                  value: weirvern
+                - name: WATCHDOG_HOST_ROOT
+                  value: /host
+                - name: WATCHDOG_TLS_CERT
+                  value: /tls/tls.crt
+                # The task's bar: beyond 600s the sink is STALLED. Kept in the environment so a
+                # deployment with a slower cadence can widen it without rebuilding the image.
+                - name: WATCHDOG_STALE_S
+                  value: "600"
+              volumeMounts:
+                # READ-ONLY: the watchdog measures the node's filesystem; it must not be able to
+                # write to it. `statvfs` needs no read permission, only path resolution.
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+                # The certificate is PUBLIC material; mounting it avoids granting the monitor
+                # `get` on every Secret in the namespace (the viewer role grants none).
+                # `optional: true` so a missing Secret is reported as tls_cert=unreadable by a
+                # running watchdog, instead of leaving the pod in CreateContainerConfigError
+                # where it can report nothing at all.
+                - name: ingest-tls
+                  mountPath: /tls
+                  readOnly: true
+                # readOnlyRootFilesystem leaves no writable /tmp; Python and OpenSSL both
+                # occasionally want one for transient files, and a failed write here would
+                # look like a probe failure rather than a manifest omission.
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: host-root
+              hostPath:
+                path: /
+                type: Directory
+            - name: ingest-tls
+              secret:
+                secretName: weirling-ingest-tls
+                optional: true
+            - name: tmp
+              emptyDir: {}
