@@ -2715,9 +2715,11 @@ function openInstallSheet(item) {
   if (els.copy) els.copy.classList.toggle("hidden", canInstall || item.nmap_available || !command);
   if (els.answer) els.answer.textContent = item.install_answer || "";
   if (els.os) els.os.textContent = item.os_label || "";
-  if (els.why) els.why.textContent = item.install_privileged
-    ? "This weirling can run the install itself."
-    : "No privilege path on this host: copy the command and run it as root.";
+  if (els.why) els.why.textContent = item.nmap_available
+    ? "Nmap is already present; there is nothing to install."
+    : (item.install_privileged
+      ? "This weirling can run the install itself."
+      : "No privilege path on this host: copy the command and run it as root.");
   if (els.setcap) els.setcap.textContent = item.setcap_command || "";
   installSay(stale ? `No report in ${item.age || "over 15m"}.`
     : (item.nmap_available ? "Nmap is already installed." : ""));
