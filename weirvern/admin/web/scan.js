@@ -460,7 +460,8 @@ function scanRenderBody() {
   }
   // ONE SHORT LINE, ONE FACT: the consequence of this state, never a sentence chain.
   let line = "";
-  if (missing) line = "Job not found.";
+  if (SCAN_STATE.receipt) line = "";
+  else if (missing) line = "Job not found.";
   else if (job && job.derived_state === "abandoned") line = "Nothing will run this job.";
   else if (job && job.derived_state === "stale") line = "This job timed out.";
   else if (job && job.state === "error") line = "Scan failed.";

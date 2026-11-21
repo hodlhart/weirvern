@@ -10878,6 +10878,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("...and the sheet shows the server's receipt after the row is gone",
           /recorded in the audit trail/.test(needEl("scan-body").textContent),
           needEl("scan-body").textContent.slice(0, 200));
+    const receiptWords = visibleWords(needEl("scan-sheet").querySelector(".scan-receipt"));
+    check("the scan sheet stays inside the copy budget (a receipt is a consequence)",
+          visibleWords(needEl("scan-sheet")) - receiptWords <= 25,
+          `${visibleWords(needEl("scan-sheet"))} - ${receiptWords}`);
 
     H.closeScanSheet();
     await new Promise((r) => setTimeout(r, 260));
