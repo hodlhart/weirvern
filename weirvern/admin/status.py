@@ -447,9 +447,16 @@ def _watchdog_probe(client) -> Probe:
         )
 
     problems = []
+    delivery_note = ""
     for row in rows:
         name = str(row[0] if len(row) > 0 else "?")
         status = str(row[1] if len(row) > 1 else "")
+        if name == "watchdog_delivery" and status == "disabled":
+            # A POLICY, not a fault: this version records alerts in the console and sends
+            # nothing. It is stated on the panel, but it must not make the panel red -- a
+            # permanent red for a documented choice hides the red that means capture is down.
+            delivery_note = " · external delivery off by policy (alerts are recorded only)"
+            continue
         if status != "ok":
             detail = str(row[2] if len(row) > 2 else "")
             problems.append(f"{name}={status}" + (f" ({detail[:160]})" if detail else ""))
@@ -464,7 +471,8 @@ def _watchdog_probe(client) -> Probe:
         "watchdog", ok=True,
         detail=(f"{len(rows)} check(s) healthy"
                 + (f", last written {_human_age(max(0.0, age_seconds(newest)))} ago"
-                   if newest is not None else "")),
+                   if newest is not None else "")
+                + delivery_note),
         value=[{"check": str(r[0]), "status": str(r[1])} for r in rows],
     )
 
@@ -1344,8 +1352,9 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
     #
     # The watchdog is a separate CronJob (k8s/36-watchdog-cronjob.yaml), so this process cannot
     # see it by asking its own memory. Its last verdicts are in `weirvern.health`; the one that
-    # matters most is `watchdog_delivery`. A deployment whose keys are empty has a watchdog that
-    # runs and cannot tell anyone, and this row is the only place that is said out loud.
+    # matters most is `watchdog_delivery`. `disabled` is this version's documented policy
+    # (alerts are console records, nothing is sent) and is reported as a note, not a fault;
+    # `unconfigured` means someone asked for delivery and is not getting it, and is red.
     started = time.perf_counter()
     try:
         report.add(_watchdog_probe(client))

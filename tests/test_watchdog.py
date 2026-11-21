@@ -11,7 +11,8 @@ So these tests drive the TRANSITIONS, not just the happy path:
   * fresh -> stalled            (the stall is detected, with the age and the limit)
   * stalled -> recovered        (one recovery notice, not silence and not a repeat page)
   * unreadable != no_data       (a failed query must never be reported as zero/quiet)
-  * unconfigured delivery       (exit 3, a loud structured error, a Health row -- and no POST)
+  * unconfigured delivery       (only when pushover was asked for: exit 3, loud, no POST)
+  * record-only delivery        (this version's policy: exit 0, stated, still records faults)
   * cooldown                    (a still-firing check does not page every five minutes)
 """
 from __future__ import annotations
@@ -272,14 +273,15 @@ def test_unconfigured_delivery_is_loud_never_posts_and_exits_three(tmp_path, cap
 
     with caplog.at_level(logging.ERROR, logger="weirvern.watchdog"):
         code, report = watchdog.run(
-            env=env(PUSHOVER_ENABLED="0", PUSHOVER_USER_KEY="", PUSHOVER_API_TOKEN=""),
+            env=env(ALERT_DELIVERY="pushover", PUSHOVER_ENABLED="0",
+                    PUSHOVER_USER_KEY="", PUSHOVER_API_TOKEN=""),
             now=NOW, client=client, kube=FakeKube(), previous={},
             post=lambda *a, **k: posted.append(a) or SimpleNamespace(status_code=200),
             host_root=str(tmp_path), cert_path=cert_file(tmp_path, 60),
             disk_usage=lambda _p: usage(50),
         )
 
-    assert code == 3, "an unconfigured pager must not report success"
+    assert code == 3, "an opted-in pager that cannot send must not report success"
     assert posted == [], "nothing may be POSTed when the keys are empty"
     assert report["delivery"]["status"] == "unconfigured"
     delivery_row = next(c for c in report["checks"] if c["check"] == "watchdog_delivery")
@@ -304,11 +306,58 @@ def test_unconfigured_delivery_is_loud_never_posts_and_exits_three(tmp_path, cap
                and "flows" in event["alarms_that_could_not_be_sent"] for event in structured)
 
 
-def test_an_enabled_but_empty_key_is_the_same_unconfigured_state():
-    assert not watchdog.delivery_config(env(PUSHOVER_USER_KEY="")).configured
-    assert not watchdog.delivery_config(env(PUSHOVER_API_TOKEN="  ")).configured
-    delivery = watchdog.delivery_config(env(PUSHOVER_ENABLED="0"))
+def test_record_delivery_is_a_policy_and_does_not_fail_the_cronjob(tmp_path, caplog):
+    """This version sends nothing. That choice must not leave a red CronJob behind.
+
+    Measured 2026-11-21: three consecutive watchdog Jobs sat in `Error` because delivery was
+    never configured -- a documented product decision reported as a fault. A permanent red for a
+    policy trains an operator to ignore the colour that must mean "capture is down".
+    """
+    client = FakeCH(flow_age=3600.0)  # a real fault is present and still recorded
+    posted: list = []
+
+    with caplog.at_level(logging.INFO, logger="weirvern.watchdog"):
+        code, report = watchdog.run(
+            env=env(ALERT_DELIVERY="record", PUSHOVER_ENABLED="0",
+                    PUSHOVER_USER_KEY="", PUSHOVER_API_TOKEN=""),
+            now=NOW, client=client, kube=FakeKube(), previous={},
+            post=lambda *a, **k: posted.append(a) or SimpleNamespace(status_code=200),
+            host_root=str(tmp_path), cert_path=cert_file(tmp_path, 60),
+            disk_usage=lambda _p: usage(50),
+        )
+
+    assert code == 0, "record-only delivery is a policy, not a failure"
+    assert posted == [], "record mode must never POST"
+    assert report["delivery"]["status"] == "disabled"
+    row = next(c for c in report["checks"] if c["check"] == "watchdog_delivery")
+    assert row["status"] == "disabled" and row["firing"] is False
+    assert row["severity"] == "info"
+    assert "recorded in the console" in row["detail"]
+
+    # The fault is still recorded, and the reason says it was policy that kept it local.
+    flows = next(a for a in report["alarms"] if a["check"] == "flows")
+    assert flows["suppressed"] is True
+    assert "delivery-disabled-by-policy" in flows["reason"]
+
+    table, rows, _columns = client.inserted[0]
+    by_name = {r[0]: r for r in rows}
+    assert by_name["watchdog_delivery"][1] == "disabled"
+    events = [json.loads(r.getMessage()) for r in caplog.records
+              if r.getMessage().startswith('{"')]
+    assert any(e["event"] == "watchdog_delivery_disabled" for e in events)
+    assert not any(e["event"] == "watchdog_delivery_unconfigured" for e in events)
+
+
+def test_an_enabled_but_empty_key_is_unconfigured_only_when_delivery_was_asked_for():
+    asked = {"ALERT_DELIVERY": "pushover"}
+    assert not watchdog.delivery_config(env(**asked, PUSHOVER_USER_KEY="")).configured
+    assert not watchdog.delivery_config(env(**asked, PUSHOVER_API_TOKEN="  ")).configured
+    delivery = watchdog.delivery_config(env(**asked, PUSHOVER_ENABLED="0"))
     assert delivery.status == "unconfigured" and "PUSHOVER_ENABLED" in delivery.reason
+    # With no policy set, an unconfigured pager is the shipped record-only mode.
+    default = watchdog.delivery_config(env(PUSHOVER_ENABLED="0", PUSHOVER_USER_KEY="",
+                                           PUSHOVER_API_TOKEN=""))
+    assert default.status == "disabled" and default.mode == "record"
 
 
 # ── dry-run ─────────────────────────────────────────────────────────────────────────────────
@@ -455,6 +504,25 @@ def test_the_health_probe_turns_unconfigured_delivery_red():
     probe = status_mod._watchdog_probe(_HealthStub())
     assert probe.ok is False
     assert "watchdog_delivery=unconfigured" in probe.detail
+
+
+def test_the_health_probe_states_record_policy_without_going_red():
+    """Record-only delivery is policy: said plainly, not painted as a fault."""
+    from weirvern.admin import status as status_mod
+
+    class _HealthStub:
+        def query(self, sql, *a, **kw):
+            assert "weirvern.health" in sql
+            return SimpleNamespace(result_rows=[
+                ("flows", "ok", "", NOW),
+                ("watchdog_delivery", "disabled",
+                 "external delivery is off for this version; alerts are recorded", NOW),
+            ])
+
+    probe = status_mod._watchdog_probe(_HealthStub())
+    assert probe.ok is True
+    assert "external delivery off by policy" in probe.detail
+    assert "watchdog_delivery=disabled" not in probe.detail
 
 
 @pytest.mark.parametrize("status_value", ["ok", "stalled", "no_data", "unreadable"])

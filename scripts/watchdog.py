@@ -26,20 +26,19 @@ WHAT IT CHECKS
   * the `weirling-ingest-tls` leaf certificate expiring within 30 days.
 
 DELIVERY, AND THE HONEST FAILURE MODE
-Pushover is POSTed directly. When `PUSHOVER_ENABLED` is 0 (or either key is empty) the run
-writes a structured ERROR line, writes a `weirvern.health` row named `watchdog_delivery` with
-status `unconfigured`, and exits 3. It does NOT return success for a page it did not send: a
-green CronJob over a disconnected pager is the same lie as `log-only` in `alert_events`.
+External delivery is POLICY (`ALERT_DELIVERY`). This version ships `record`: alerts are console
+records, nothing is sent, the run writes a `watchdog_delivery` row with status `disabled` and
+exits 0. That is a documented choice, not a fault, and it must not leave a red CronJob behind --
+a permanently failed Job teaches an operator to ignore the colour that means "capture is down".
 
-REPEATS AND RECOVERY
-Per-check state lives in `weirvern.health` (ReplacingMergeTree, one row per check), so a five
-minute CronJob can rate-limit itself without a filesystem: the same firing status is re-sent only
-after `WATCHDOG_COOLDOWN_S` (default 1800), a changed status is sent immediately, and the
-firing -> ok edge sends a recovery notice once.
+`ALERT_DELIVERY=pushover` opts in. When Pushover is then enabled but a key is empty, the run
+writes a structured ERROR line, writes `watchdog_delivery=unconfigured`, exits 3 and does NOT
+return success for a page it did not send: a green CronJob over a disconnected pager is the same
+lie as `log-only` in `alert_events`.
 
 USAGE
     python3 scripts/watchdog.py --dry-run     # verdict + exact payloads, sends/writes nothing
-    python3 scripts/watchdog.py               # normal CronJob path; exit 3 means "pager unconfigured"
+    python3 scripts/watchdog.py               # CronJob path; exit 3 = asked for delivery, cannot send
 """
 from __future__ import annotations
 
@@ -87,10 +86,21 @@ PRESSURE = "pressure"
 FAILED = "failed"
 EXPIRING = "expiring"
 UNCONFIGURED = "unconfigured"
+DISABLED = "disabled"
 DELIVERY_ERROR = "error"
+
+# External delivery is a POLICY, not an accident. This version records alerts in the console and
+# sends nothing; `ALERT_DELIVERY=pushover` opts in. A deployment that never configured a pager
+# must not report a permanent failure -- on 2026-11-21 three consecutive watchdog Jobs sat in
+# `Error` for a configuration choice, which trains an operator to ignore the colour that is
+# supposed to mean "capture is down".
+ALERT_DELIVERY_ENV = "ALERT_DELIVERY"
+DELIVERY_RECORD = "record"
+DELIVERY_PUSHOVER = "pushover"
 
 # Every status that is not OK is a fault. `watchdog_delivery=unconfigured` is in this set for the
 # Health panel's overall verdict, but `plan_actions` never tries to page about the pager.
+# `disabled` is the deliberate policy state and is NOT a fault.
 FIRING_STATES = {STALLED, NO_DATA, UNREADABLE, RESTART, OOMKILLED, PRESSURE, FAILED,
                  EXPIRING, DELIVERY_ERROR, UNCONFIGURED}
 
@@ -172,6 +182,7 @@ class Delivery:
     configured: bool
     status: str
     reason: str = ""
+    mode: str = DELIVERY_PUSHOVER
 
     def as_dict(self) -> dict[str, Any]:
         return {"configured": self.configured, "status": self.status, "reason": self.reason}
@@ -536,31 +547,55 @@ def check_tls_cert(path: str, now: datetime, *, min_days: float = CERT_MIN_DAYS)
 # ── delivery ───────────────────────────────────────────────────────────────────────────────────
 
 def delivery_config(env: Mapping[str, str]) -> Delivery:
-    """Whether a page could actually leave the cluster.
+    """Whether a page could actually leave the cluster, and whether that is even the policy.
+
+    Three states, deliberately distinct:
+
+    * `record` (the default) -- this version does not send external alerts. Every alert is a
+      console record. The watchdog says so once, in plain words, and exits 0.
+    * `pushover` with both halves set -- pages are attempted; a failed POST is a real fault.
+    * `pushover` with a half missing -- `unconfigured`, loud, and exit 3. This is the state that
+      is worth waking someone for, because someone asked for delivery and is not getting it.
 
     BOTH HALVES ARE CHECKED. `PUSHOVER_ENABLED=1` with empty keys is the same silent state as
     `PUSHOVER_ENABLED=0`; the deployment measured on 2026-11-21 had both halves wrong, and the
     only visible fact was 32,897 rows saying `log-only`.
     """
+    explicit = (env.get(ALERT_DELIVERY_ENV) or "").strip().lower()
     raw = (env.get("PUSHOVER_ENABLED") or "0").strip().lower()
     enabled = raw in {"1", "true", "yes", "on"}
     missing = [key for key in ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")
                if not (env.get(key) or "").strip()]
-    if not enabled:
-        return Delivery(False, UNCONFIGURED,
-                        f"PUSHOVER_ENABLED is {env.get('PUSHOVER_ENABLED', '<unset>')!r}, not 1")
-    if missing:
-        return Delivery(False, UNCONFIGURED, f"{', '.join(missing)} is empty")
-    return Delivery(True, OK, "")
+
+    if explicit == DELIVERY_RECORD:
+        return Delivery(False, DISABLED,
+                        "external delivery is off for this version (ALERT_DELIVERY=record); "
+                        "alerts are recorded in the console", mode=DELIVERY_RECORD)
+    if enabled and not missing:
+        return Delivery(True, OK, "", mode=DELIVERY_PUSHOVER)
+    if explicit == DELIVERY_PUSHOVER:
+        reason = (f"PUSHOVER_ENABLED is {env.get('PUSHOVER_ENABLED', '<unset>')!r}, not 1"
+                  if not enabled else f"{', '.join(missing)} is empty")
+        return Delivery(False, UNCONFIGURED, reason, mode=DELIVERY_PUSHOVER)
+    # Nothing was asked for. That is this version's documented behaviour, not a fault.
+    return Delivery(False, DISABLED,
+                    "external delivery is off for this version; alerts are recorded in the "
+                    "console and nothing is sent", mode=DELIVERY_RECORD)
 
 
 def delivery_check(delivery: Delivery) -> Check:
     if delivery.configured:
         return Check("watchdog_delivery", OK,
                      "Pushover is configured; delivery is attempted below", severity="warning")
+    if delivery.status == DISABLED:
+        return Check("watchdog_delivery", DISABLED,
+                     "External delivery is off for this version: alerts are recorded in the "
+                     "console and nothing is sent. Set ALERT_DELIVERY=pushover to enable it.",
+                     severity="info")
     return Check("watchdog_delivery", UNCONFIGURED,
-                 f"ALERTS CANNOT BE DELIVERED: {delivery.reason}. This row is the signal -- "
-                 f"the watchdog is running, but no page can leave the cluster.",
+                 f"ALERTS CANNOT BE DELIVERED: {delivery.reason}. Someone asked for delivery "
+                 f"and is not getting it; the watchdog is running, but no page can leave the "
+                 f"cluster.",
                  severity="critical")
 
 
@@ -646,8 +681,10 @@ def plan_actions(checks: list[Check], previous: Mapping[str, Any], delivery: Del
 
         if check.firing:
             if not delivery.configured:
-                actions.append(Action(check, "alarm", suppressed=True,
-                                      reason=f"delivery-unconfigured: {delivery.reason}"))
+                reason = ("delivery-disabled-by-policy: alerts are recorded only"
+                          if delivery.status == DISABLED
+                          else f"delivery-unconfigured: {delivery.reason}")
+                actions.append(Action(check, "alarm", suppressed=True, reason=reason))
                 continue
             if (prev_firing and prev_status == check.status and last is not None
                     and (now - last).total_seconds() < cooldown_s):
@@ -658,8 +695,10 @@ def plan_actions(checks: list[Check], previous: Mapping[str, Any], delivery: Del
                                   payload=build_payload(check, env, now)))
         elif prev_firing and check.status == OK:
             if not delivery.configured:
-                actions.append(Action(check, "recovery", suppressed=True,
-                                      reason=f"delivery-unconfigured: {delivery.reason}"))
+                reason = ("delivery-disabled-by-policy: alerts are recorded only"
+                          if delivery.status == DISABLED
+                          else f"delivery-unconfigured: {delivery.reason}")
+                actions.append(Action(check, "recovery", suppressed=True, reason=reason))
                 continue
             actions.append(Action(check, "recovery",
                                   payload=build_payload(check, env, now,
@@ -753,7 +792,7 @@ def evaluate(*, client: Any, kube: Any, env: Mapping[str, str], now: datetime,
 
 
 def _exit_code(delivery: Delivery, actions: list[Action]) -> int:
-    if not delivery.configured:
+    if delivery.mode == DELIVERY_PUSHOVER and not delivery.configured:
         return 3
     if any(action.sent is False for action in actions if not action.suppressed):
         return 4
@@ -764,7 +803,7 @@ def _exit_code(delivery: Delivery, actions: list[Action]) -> int:
 
 def _would_exit(delivery: Delivery, actions: list[Action]) -> int:
     """The exit code a real run would produce, for `--dry-run`."""
-    if not delivery.configured:
+    if delivery.mode == DELIVERY_PUSHOVER and not delivery.configured:
         return 3
     if any(action.kind == "alarm" and not action.suppressed for action in actions):
         return 1
@@ -775,6 +814,15 @@ def _structured_failure(delivery: Delivery, actions: list[Action], now: datetime
     """One JSON line an operator (or a log query) can act on without reading the prose."""
     owed = [action.check.name for action in actions
             if action.kind == "alarm" and action.suppressed]
+    if delivery.status == DISABLED:
+        LOG.info("%s", json.dumps({
+            "event": "watchdog_delivery_disabled",
+            "severity": "info",
+            "reason": delivery.reason,
+            "alarms_recorded_only": owed,
+            "checked_at": _iso(now),
+        }, sort_keys=True))
+        return
     LOG.error("%s", json.dumps({
         "event": "watchdog_delivery_unconfigured",
         "severity": "error",

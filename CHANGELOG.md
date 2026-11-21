@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.23.128 — 2026-11-21
+
+A DEPLOYMENT THAT DOES NOT SEND ALERTS IS A POLICY, NOT A BROKEN CRONJOB.
+
+This version records alerts in the console and sends nothing externally. The watchdog did not
+know that: it treated "no pager configured" as a critical fault, so every five-minute run exited
+3 and left `weirvern-watchdog-*` Jobs in `Error` — three in a row on the live cluster today. A
+permanent red for a documented product decision is worse than silence, because it teaches an
+operator to ignore the colour that must mean "capture is down".
+
+- **`ALERT_DELIVERY` states the policy.** `record` (the default, and this version's decision):
+  alerts are console records; `watchdog_delivery` reports `disabled` with severity `info`; the
+  run exits 0 and still records every fault with `delivery-disabled-by-policy` as the reason it
+  stayed local. `pushover` opts in: delivery is attempted, and an enabled-but-empty key is
+  `unconfigured`, a structured ERROR and exit 3 — the state worth waking someone for, because
+  someone asked for delivery and is not getting it.
+- **The Health panel distinguishes the two.** `disabled` adds one plain sentence to a green row
+  ("external delivery off by policy (alerts are recorded only)"); `unconfigured` still turns the
+  row red with the reason. A panel that goes red for a choice cannot report a fault.
+- Tests: the record-only run exits 0, POSTs nothing, writes `disabled`, and logs
+  `watchdog_delivery_disabled` at INFO; the pushover run keeps the loud contract; the probe test
+  asserts the policy row stays green and the opted-in row does not.
+
 ## 0.23.127 — 2026-11-21
 
 INGEST CAN NO LONGER CHECKPOINT A FAILED WRITE, A LOST CHECKPOINT CAN NO LONGER DUPLICATE THE FLOW
