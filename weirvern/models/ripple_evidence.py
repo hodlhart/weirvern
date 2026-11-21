@@ -1145,13 +1145,17 @@ def service_snapshots(
     parameters = {"since": since, "until": moment}
     where = _service_scope_where(scope_cidrs)
     scans = list(client.query(
-        "SELECT scan_id, ip, max(finished_at) AS finished_at "
+        # THE AGGREGATE ALIAS IS NOT `finished_at`. ClickHouse substitutes a SELECT alias into
+        # the WHERE clause, so `max(finished_at) AS finished_at` reads as an aggregate in WHERE
+        # and the query fails with code 184 (measured live, first run of this channel). The
+        # alias is `last_finished` for exactly that reason.
+        "SELECT scan_id, ip, max(finished_at) AS last_finished "
         "FROM weirvern.asset_scans "
         "WHERE kind = 'service' AND status = 'done' AND scan_complete = 1 "
         "  AND finished_at IS NOT NULL "
         "  AND finished_at >= %(since)s AND finished_at < %(until)s"
         + where +
-        " GROUP BY scan_id, ip ORDER BY finished_at",
+        " GROUP BY scan_id, ip ORDER BY last_finished",
         parameters=parameters,
     ).result_rows)
     rows = list(client.query(

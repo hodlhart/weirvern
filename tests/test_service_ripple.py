@@ -46,8 +46,10 @@ class ScanClient:
         self.scans = scans
         self.history = history
         self.inserted: list[tuple[str, list, list]] = []
+        self.queries: list[str] = []
 
     def query(self, sql: str, parameters=None):
+        self.queries.append(sql)
         if "weirvern.network_scopes" in sql:
             return _Rows([(NET,)])
         if "system.columns" in sql:
@@ -238,3 +240,21 @@ def test_the_family_and_statistic_are_DECLARED_not_implied():
     assert set(spec.required_columns) <= {"scan_id", "ip", "port", "protocol", "service",
                                           "product", "version", "observed_at"}
     assert "previous complete scan" in ripple_evidence.statistic(spec)
+
+
+def test_the_scan_read_does_not_alias_an_aggregate_to_the_column_it_filters():
+    """Measured live: `max(finished_at) AS finished_at` is an aggregate in WHERE (code 184).
+
+    ClickHouse substitutes a SELECT alias into the WHERE clause. The alias must differ, or the
+    channel reads nothing and `compute()` swallows the failure as 'no evidence' -- a silence
+    with no error, which is the defect class this module keeps naming.
+    """
+    scans, history = _build([{SSH96}] * 3)
+    client = ScanClient(scans, history)
+
+    ripple_evidence.compute(client, now=NOW, retention_days=30,
+                            specs=ripple_evidence.SERVICE_SPECS)
+
+    scan_sql = next(sql for sql in client.queries if "weirvern.asset_scans" in sql)
+    assert "AS finished_at" not in scan_sql
+    assert "AS last_finished" in scan_sql
