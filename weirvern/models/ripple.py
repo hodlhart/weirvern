@@ -52,10 +52,14 @@ DEFAULT_MIN_SCALES = 2
 # family `flow`), so a retired specialist is excluded without banning the legitimate phase-1
 # channel that measures the same protocol from a different pipeline.
 RETIRED_FAMILIES = frozenset({"changepoint", "candidate", "temporal", "exposure", "graph"})
-RETIRED_CHANNELS = frozenset({
-    "HDBSCAN", "GraphSpecialist", "External exposure", "Temporal", "change-point",
-    "FlowSpecialist", "DNSSpecialist", "TLSSpecialist", "BeaconSpecialist",
-})
+# DERIVED FROM THE INVENTORY, not a second list that can drift from it. `retire` has no consumer;
+# `merge` says a named production feature already consumes the unique signal. Both are refusals
+# to be independent evidence.
+RETIRED_CHANNELS = frozenset(
+    str(item.get("channel") or "")
+    for item in _dispositions.INVENTORY
+    if str(item.get("disposition") or "").lower() in {"retire", "merge"}
+)
 RETIRED_PREFIXES = ("changepoint:", "temporal:")
 
 
