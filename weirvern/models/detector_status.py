@@ -438,6 +438,9 @@ def detector_summary(rows: list[dict[str, Any]],
         return (f"{head} Fused false-alarm rate {observed:.2f} {where}{sample}; the "
                 f"{float(decision_threshold):g} decision bar was not measured against a "
                 f"population. Target {target:.2f}.")
+    if where:
+        return (f"{head} Fused false-alarm rate {observed:.2f} {where}{sample} against a "
+                f"{target:.2f} target.")
     return (f"{head} Fused false-alarm rate {observed:.2f}{sample} against a "
             f"{target:.2f} target.")
 
