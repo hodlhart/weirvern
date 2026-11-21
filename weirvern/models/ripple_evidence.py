@@ -42,12 +42,13 @@ back from `system.tables` -- and caps it at what that scale needs:
 
 The 100-window requirement above is the empirical test's. A validated fitted tail needs only the
 30-window floor plus its spare (2/9/33/231 days), which is why the 7d scale is no longer
-structurally unreachable: at 234 days of retention it holds 32 windows, enough to fit -- but only
-if this deployment actually has that history. On 2026-11-20 it did not (the tables held eight
-days, so 7d held zero windows), and the scale reports 'insufficient baseline' rather than a
-number. Declaring the capability and reporting the measured shortfall are different acts.
+structurally unreachable: at 231 days of retention it holds 32 windows, enough to fit -- but only
+if this deployment actually has that history. On 2026-11-21 the TTL in force was 107 days and the
+oldest Zeek table held 37 days, so 24h had 30 windows at most and 7d held 4: both scales report
+'insufficient baseline' rather than a number. Declaring the capability and reporting the measured
+shortfall are different acts.
 
-MEASURED ON THE LIVE BOX 2026-11-20: the TTLs in force were 234 days while `retention.derive()`
+MEASURED ON THE LIVE BOX 2026-11-21: the TTLs in force were 107 days while `retention.derive()`
 would have said more. The TTL is what decides which rows still exist, so that is what the ripple
 lookback is derived from -- re-deriving on the read path would advertise history the cluster has
 not applied yet.
@@ -154,6 +155,7 @@ from weirvern.models.ripple import (
     PARAMETRIC_METHODS,
     RIPPLE_WINDOW_S,
     ChannelEvidence,
+    channel_family,
     empirical_pvalue_two_sided,
     group_evidence,
     min_baseline_samples,
@@ -209,51 +211,63 @@ TAIL_KINDS = frozenset({"count", "diversity", "novelty"})
 #: The reason is part of the value so a disabled scale can say why in `/api/ripples` and the
 #: Models card, rather than silently disappearing.
 #:
-#: 2026-11-20: 6h validated on live held-out windows. The measurement: 9 held-out windows (the
-#: deployment held 94 six-hour windows, one per host); the raw FAR was 1/9 (11.1%, 95% CI
-#: 2.0-43.5%), and the single fire was a window the empirical test already ranked at p=0.024
-#: (its own floor) -- a resolution gain, not a manufactured ripple. On the 8 windows the
-#: empirical test called ordinary (p > 0.05) the tail fired 0 times (0%, 95% CI 0-32.4%). The
-#: sample is small, so this is PROVISIONAL and must be re-measured as history accumulates.
+#: 2026-11-21: 6h RE-MEASURED as history grew. The measurement: 97 six-hour windows at most (the
+#: production rule still prefers the fit because 97 < 100), 40 held-out tests across the eight
+#: count channels; the raw FAR was 2/40 (5.0%, 95% CI 1.4-16.5%), and on the 35 windows the
+#: empirical test calls ordinary (p > 0.05) the tail fired 0 times (0%, 95% CI 0-9.9%). Both
+#: fires were windows the rank test already ranked between its floor (p=0.0102) and 0.05 -- a
+#: resolution gain, not a manufactured ripple. The 2026-11-20 reading was 1/9 (11.1%); the rate
+#: FELL as the sample grew, which is what a calibrated tail should do.
 TAIL_ENABLED: dict[str, str] = {
-    "6h": "validated 2026-11-20 on live held-out windows",
+    "6h": "validated 2026-11-21 on live held-out windows (40 tests)",
 }
 
 TAIL_DISABLED_REASON: dict[str, str] = {
     "1h": "the empirical test already resolves the bar at 100+ windows",
-    "24h": "29 live windows on 2026-11-20; 30 are required for a fit",
-    "7d": "4 live windows on 2026-11-20; 30 are required for a fit",
+    "24h": ("30 live windows at most on 2026-11-21 (one host/channel), an empirical p floor of "
+            "0.032 and ONE held-out fit; a single sample cannot accept a tail"),
+    "7d": "4 live windows on 2026-11-21; 30 are required for a fit (about 210 days of history)",
 }
 
 #: THE MEASUREMENT BEHIND `TAIL_ENABLED`, per scale, as data. `scripts/ripple_tail_far.py`
 #: produces it; the API and the Models card print it so an enabled scale is never an unexplained
 #: switch. `None` means the scale could not be measured on this deployment, which is different
-#: from a measured zero.
+#: from a measured zero. `held_out_windows` is the DENOMINATOR of `far`: one held-out window per
+#: (host, channel), which is the largest sample that carries no information from the window it
+#: scores.
 TAIL_VALIDATION: dict[str, dict[str, Any]] = {
     "6h": {
-        "as_of": "2026-11-20",
-        "held_out_windows": 9,
-        "far": 0.111111,
-        "far_interval": [0.019890, 0.435006],
-        "ordinary_windows": 8,
+        "as_of": "2026-11-21",
+        "held_out_windows": 40,
+        "far": 0.05,
+        "far_interval": [0.013820, 0.165042],
+        "ordinary_windows": 35,
         "fires_on_ordinary": 0,
         "far_on_ordinary": 0.0,
-        "far_on_ordinary_interval": [0.0, 0.324416],
-        "method_counts": {"negbin": 4, "poisson": 5},
-        "provisional": True,
-        "note": ("the single fire was a window the empirical test ranked at its own floor "
-                 "(p=0.024), not an ordinary window"),
+        "far_on_ordinary_interval": [0.0, 0.098904],
+        "method_counts": {"negbin": 34, "poisson": 6},
+        "observed_windows_max": 97,
+        "p_floor": 0.010204,
+        "provisional": False,
+        "note": ("both fires were windows the empirical test already ranked between its floor "
+                 "(p=0.0102) and 0.05; 0 of 35 ordinary windows fired"),
     },
     "24h": {
-        "as_of": "2026-11-20", "held_out_windows": 0, "far": None, "far_interval": None,
-        "reason": "29 windows of history; the 30-window minimum is not met",
+        "as_of": "2026-11-21", "held_out_windows": 1, "far": 0.0,
+        "far_interval": [0.0, 0.793457], "observed_windows_max": 30,
+        "p_floor": 0.032258, "provisional": True,
+        "reason": ("30 windows on one host/channel, and one held-out fit; a single sample has a "
+                   "95% interval of 0-79%, so it can neither accept nor reject the tail"),
     },
     "7d": {
-        "as_of": "2026-11-20", "held_out_windows": 0, "far": None, "far_interval": None,
+        "as_of": "2026-11-21", "held_out_windows": 0, "far": None, "far_interval": None,
+        "observed_windows_max": 4,
         "reason": "4 windows of history; the 30-window minimum is not met",
-        "synthetic_at_32_windows": {
-            "far": 0.026, "far_interval": [0.019882, 0.033935],
-            "note": "negative-binomial draws; measures the estimator, not the live deployment",
+        "synthetic_at_14_windows": {
+            "far": 0.05, "far_interval": [0.041281, 0.060444],
+            "draws": 2000,
+            "note": ("negative-binomial draws at the live 6h fit's parameters; measures the "
+                     "estimator, not the live deployment"),
         },
     },
 }
@@ -496,6 +510,46 @@ SPECS: tuple[ChannelSpec, ...] = (
     FLOW_SPECS + CONN_SPECS + DNS_SPECS + IDENTITY_SPECS
     + TLS_SPECS + HTTP_SPECS + SSH_SPECS + NOTICE_SPECS + SERVICE_SPECS
 )
+
+# ── which channels a Normalize feed row can be corroborated by ──────────────────────────────
+#
+# THE LANE RULE USED TO BE A FAMILY LIST, AND IT HID MOST OF ZEEK. `normalize_store` mapped a
+# feed row to `{"dns"}` for a DNS row and `{"conn", "flow"}` for everything else. A Zeek session
+# is a `zeek_conn` row, so a tls, http, ssh, identity or notice ripple for the SAME host in the
+# SAME hour was visible on the Ripples page and invisible on the row -- and a host observed only
+# through the Zeek lane (no NetFlow row) could never show what Zeek itself had measured. On the
+# live box that withheld 211 tls rows (9 hosts), 134 http rows (4), 42 ssh rows (1) and 399
+# notice rows (10) from the Zeek lane.
+#
+# THE TABLE NAMES THE LANE, THE SPEC NAMES THE CHANNEL. A feed lane is a COLLECTION PIPELINE: the
+# tables its collector writes. `feed_lane_channels()` then asks every ChannelSpec whether its OWN
+# table belongs to that lane, and whether that table has the columns it requires (the live
+# `availability()` reply). There is no second family list to drift: adding a channel on a Zeek
+# table makes it evaluable from a Zeek row, and a channel whose table lacks a required column is
+# not offered at all -- its evidence is 'insufficient', never a zero that reads as measured.
+#
+# FLOW STAYS IN THE ZEEK LANE. A `zeek_conn` session and a `flows_window` row describe the same
+# connection population through two collectors; the join already paired them, and removing it
+# would narrow the lane while widening the rest.
+#
+# DNS IS ITS OWN ROW LANE, NOT ITS OWN COLLECTOR. `zeek_dns` is written by the same Zeek
+# pipeline, so a Zeek session row can be corroborated by the DNS evidence that pipeline produced
+# for the same host in the same hour -- "every channel whose required columns exist". What does
+# NOT change is the other direction: a DNS ROW still matches only DNS channels (a DNS ripple is
+# not evidence for a flow row, the operator's existing rule), and a FLOW row still matches only
+# flow+conn, because NetFlow never saw a name. `asset_service_history` is the scanner's pipeline,
+# not a feed lane, so `service_set_change` is not offered on any feed row.
+FEED_LANE_TABLES: dict[str, tuple[str, ...]] = {
+    "flow": ("weirvern.flows_window", "weirvern.flows_window_endpoint", "weirvern.zeek_conn"),
+    "dns": ("weirvern.zeek_dns",),
+    "zeek": (
+        "weirvern.flows_window", "weirvern.flows_window_endpoint",
+        "weirvern.zeek_conn", "weirvern.zeek_dns", "weirvern.zeek_ssl", "weirvern.zeek_http",
+        "weirvern.zeek_ssh", "weirvern.zeek_kerberos", "weirvern.zeek_ntlm",
+        "weirvern.zeek_smb_files", "weirvern.zeek_notice", "weirvern.zeek_weird",
+    ),
+}
+
 
 #: channel -> family for the channels a signature can name a value on. Derived from the specs,
 #: never maintained as a second list: a channel becomes signable by declaring a value column and
@@ -831,6 +885,51 @@ def availability(client: Any, *,
                       f"{spec.table} is missing column(s): {', '.join(missing)}",
         })
     return out
+
+
+def available_channels(client: Any, *,
+                       specs: tuple[ChannelSpec, ...] = SPECS) -> dict[str, bool]:
+    """channel -> whether its OWN table carries every column the channel requires.
+
+    One `system.columns` read, the same one `availability()` makes; the join and the compute path
+    therefore agree about which channels exist today.
+    """
+    return {str(row["channel"]): bool(row["available"])
+            for row in availability(client, specs=specs)}
+
+
+def feed_lane_channels(lane: str, *, specs: tuple[ChannelSpec, ...] = SPECS,
+                       available: dict[str, bool] | None = None) -> dict[str, str]:
+    """channel -> family for every channel a row from `lane` can be corroborated by.
+
+    THE LANE IS A PIPELINE, NOT A FAMILY. A channel is offered when its OWN source table is one
+    the lane's collector writes (`FEED_LANE_TABLES`) and, when a live `available` map is given,
+    when that table has the columns the channel requires. A channel whose table is unavailable is
+    absent rather than offered-and-silent: its evidence cannot exist, and the compute path records
+    it as insufficient with the missing column names.
+
+    `available=None` is the static answer (a test, or a caller with no catalogue): every channel
+    on a lane table is offered. An unknown lane is an empty answer, never "every channel" -- a
+    lane this module has not been told about must not widen the join by accident.
+    """
+    tables = set(FEED_LANE_TABLES.get(str(lane or "").strip().lower(), ()))
+    if not tables:
+        return {}
+    out: dict[str, str] = {}
+    for spec in specs:
+        if spec.table not in tables:
+            continue
+        if available is not None and not available.get(spec.channel, True):
+            continue
+        out[spec.channel] = channel_family(spec.channel, spec.family)
+    return out
+
+
+def feed_lane_families(lane: str, *, specs: tuple[ChannelSpec, ...] = SPECS,
+                       available: dict[str, bool] | None = None) -> frozenset[str]:
+    """The FAMILIES a row from `lane` can be corroborated by (the join's own unit)."""
+    return frozenset(feed_lane_channels(lane, specs=specs, available=available).values())
+
 
 
 # ── measuring ───────────────────────────────────────────────────────────────────────────────
@@ -1702,12 +1801,13 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
     }
 
 
-__all__ = ["COLUMNS", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
+__all__ = ["COLUMNS", "FEED_LANE_TABLES", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
            "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SERVICE_CHANNEL",
            "SERVICE_SCAN_LOOKBACK_CAP_DAYS", "SERVICE_SCAN_MAX_BASELINE", "SERVICE_SPECS",
            "SET_KINDS", "SIGNATURE_CHANNELS", "SPECS", "TAIL_DISABLED_REASON", "TAIL_ENABLED",
            "TAIL_KINDS", "TAIL_VALIDATION",
-           "availability", "baseline_windows", "compute", "effective_lookback_days", "inventory",
+           "availability", "available_channels", "baseline_windows", "compute",
+           "effective_lookback_days", "feed_lane_channels", "feed_lane_families", "inventory",
            "lookbacks_for", "overview", "read", "required_lookback_days", "retention_in_force",
            "run", "scale_lookback_days", "scale_report", "service_change_sentence",
            "service_snapshots", "statistic", "store", "supported_scales", "tail_supported",

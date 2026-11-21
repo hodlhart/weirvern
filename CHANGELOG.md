@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.23.122 — 2026-11-21
+
+THE ZEEK ROW STOPS BEING BLIND TO ZEEK'S OWN EVIDENCE, THE COARSE SCALES ARE RE-MEASURED, AND THE
+ENSEMBLE IS RE-CHECKED AGAINST ITS LIVE NUMBERS.
+
+- **A Normalize row's Alert column is now joined by PIPELINE, not by a hard-coded family list.**
+  The rule was `{"dns"}` for a DNS row and `{"conn", "flow"}` for everything else, so a Zeek
+  session row could only ever claim conn/flow evidence: tls, http, ssh, identity, notice and dns
+  ripples for the same host in the same hour were visible on the Ripples page and invisible on the
+  row. `ripple_evidence.feed_lane_channels()` now answers the question from the ChannelSpecs
+  themselves -- a channel is offered when its own source table belongs to the lane's collector and
+  its `required_columns` are present in the live `availability()` reply -- so a new channel on a
+  Zeek table is evaluable from a Zeek row with no second list to maintain. A channel whose table
+  lacks a required column is not offered at all; it reports insufficient, never zero.
+- **Measured on the live 45-hour feed: a Zeek row goes from 10 evaluable channels / 2 families to
+  26 / 8** (all but `service_set_change`, which is the scanner's pipeline, not a feed lane). 429
+  (host, family, hour) evidence keys that were unreachable are now reachable; 304 of 336 Zeek rows
+  gain evidence from a family beyond conn/flow (dns 144, tls 108, notice 105, http 56, ssh 16) and
+  0 rows change from "—" to "Ripple", because those hosts already had conn/flow evidence. The
+  blind spot was real even where the headline did not move; a host observed only through Zeek can
+  now show what Zeek measured. One key per (host, family, hour): no row multiplication.
+- **The tail validator now reports the DETECTOR, not the data's potential.** `_verdict` refuses a
+  scale whose fitted tail is disabled even when the window count looks sufficient, and refuses one
+  with no usable held-out fit; it gained a `p_floor` per scale and a `tail_only` block that
+  measures the fit on its own at the full sample instead of hiding behind the 100-window
+  preference for the rank test.
+- **6h re-validated as history grew.** 97 six-hour windows at most (so production still uses the
+  fit), 40 held-out tests: raw FAR 2/40 = 5.0% (95% CI 1.4-16.5%), and 0/35 on windows the
+  empirical test calls ordinary (0%, 95% CI 0-9.9%). The 2026-11-20 reading was 1/9 (11.1%); the
+  rate fell as the sample grew. Still enabled.
+- **24h and 7d stay disabled, with the measurement named.** 24h holds 30 windows on ONE
+  host/channel, an empirical p floor of 0.032, and one held-out fit (95% CI 0-79%): not
+  measurable, and `ml_ripple_evidence` has produced no 24h rows. 7d holds 4 windows (30 are
+  needed; about 210 days of history). Enabling either would be a claim with no measurement behind
+  it.
+- **The ensemble is re-checked live and the gate is left alone.** At 11:24 the pool held
+  Isolation Forest FAR 0.0103 (0.0087-0.0122, n=13171), Gradient Boosting 0.0130
+  (0.0110-0.0154, n=10507) and Adaptive Baseline 0.0433 (0.0392-0.0479, n=8425) -- all three
+  `not-eligible` because their pooled row records NO coverage (`ML_MISSING_FEATURES` is off, so
+  the reference fell back to stored anomaly scores with no feature vector), and Adaptive Baseline
+  is also above the 3% tolerance. KNN and LOF have no pooled row at all; their newest is 17.7h old
+  with n=12. Contributing detectors: none. Fused rate on the freshest 24h of window time: 178/3104
+  = 5.73% (95% CI 4.97-6.61%) at the 0.35 decision bar, and 31.4% at the fused calibration's own
+  0.1611 threshold -- against a 1% target. Not hand-tuned: the eligibility machinery holds them.
+- **Measured, not inferred: the NetFlow feed stopped at 2026-11-20 23:33 UTC.** goflow2 logs
+  `template error` for the NetFlow v9 templates and `/data/flows.jsonl` stops growing, so there is
+  no detection population after that window; the next sweeps have nothing new to score. This is a
+  collector fault, reported here rather than papered over by the ripple numbers above.
+
 ## 0.23.121 — 2026-11-21
 
 THE INVENTORY'S "CURRENT" SERVICES ARE TRUE, AND A SERVICE CHANGE NOW FEEDS DETECTION — the

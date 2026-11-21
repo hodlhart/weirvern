@@ -1,0 +1,187 @@
+{
+  "channels": {
+    "dns": {
+      "new": [
+        "dns_nxdomain_ratio",
+        "dns_query_diversity",
+        "dns_reverse_ratio",
+        "dns_volume"
+      ],
+      "old": [
+        "dns_nxdomain_ratio",
+        "dns_query_diversity",
+        "dns_reverse_ratio",
+        "dns_volume"
+      ]
+    },
+    "flow": {
+      "new": [
+        "conn_dst_diversity",
+        "conn_reset_ratio",
+        "conn_service_diversity",
+        "conn_volume",
+        "flow_bytes",
+        "flow_dst_diversity",
+        "flow_in_bytes",
+        "flow_in_peer_diversity",
+        "flow_in_volume",
+        "flow_volume"
+      ],
+      "old": [
+        "conn_dst_diversity",
+        "conn_reset_ratio",
+        "conn_service_diversity",
+        "conn_volume",
+        "flow_bytes",
+        "flow_dst_diversity",
+        "flow_in_bytes",
+        "flow_in_peer_diversity",
+        "flow_in_volume",
+        "flow_volume"
+      ]
+    },
+    "zeek": {
+      "new": [
+        "conn_dst_diversity",
+        "conn_reset_ratio",
+        "conn_service_diversity",
+        "conn_volume",
+        "dns_nxdomain_ratio",
+        "dns_query_diversity",
+        "dns_reverse_ratio",
+        "dns_volume",
+        "flow_bytes",
+        "flow_dst_diversity",
+        "flow_in_bytes",
+        "flow_in_peer_diversity",
+        "flow_in_volume",
+        "flow_volume",
+        "http_host_diversity",
+        "http_ua_novelty",
+        "kerberos_service_diversity",
+        "kerberos_volume",
+        "ntlm_user_diversity",
+        "ntlm_volume",
+        "smb_file_volume",
+        "smb_path_diversity",
+        "ssh_version_change",
+        "tls_fingerprint_diversity",
+        "zeek_notice_volume",
+        "zeek_weird_volume"
+      ],
+      "old": [
+        "conn_dst_diversity",
+        "conn_reset_ratio",
+        "conn_service_diversity",
+        "conn_volume",
+        "flow_bytes",
+        "flow_dst_diversity",
+        "flow_in_bytes",
+        "flow_in_peer_diversity",
+        "flow_in_volume",
+        "flow_volume"
+      ]
+    }
+  },
+  "evidence_hosts": 21,
+  "evidence_keys": 2002,
+  "generated_at": "2026-11-21T17:35:32+00:00",
+  "hours": 45,
+  "lanes": {
+    "dns": {
+      "gained_by_family": {},
+      "hosts": 18,
+      "hosts_gained": 0,
+      "hosts_new": 14,
+      "hosts_newly_alerting": 0,
+      "hosts_old": 14,
+      "keys_gained": 0,
+      "keys_new": 62,
+      "keys_old": 62,
+      "new_families": [
+        "dns"
+      ],
+      "old_families": [
+        "dns"
+      ],
+      "rows": 417,
+      "rows_gained": 0,
+      "rows_new": 318,
+      "rows_newly_alerting": 0,
+      "rows_old": 318
+    },
+    "flow": {
+      "gained_by_family": {},
+      "hosts": 2324,
+      "hosts_gained": 0,
+      "hosts_new": 19,
+      "hosts_newly_alerting": 0,
+      "hosts_old": 19,
+      "keys_gained": 0,
+      "keys_new": 535,
+      "keys_old": 535,
+      "new_families": [
+        "conn",
+        "flow"
+      ],
+      "old_families": [
+        "conn",
+        "flow"
+      ],
+      "rows": 19247,
+      "rows_gained": 0,
+      "rows_new": 7064,
+      "rows_newly_alerting": 0,
+      "rows_old": 7064
+    },
+    "zeek": {
+      "gained_by_family": {
+        "dns": 144,
+        "http": 56,
+        "notice": 105,
+        "ssh": 16,
+        "tls": 108
+      },
+      "hosts": 34,
+      "hosts_gained": 0,
+      "hosts_new": 19,
+      "hosts_newly_alerting": 0,
+      "hosts_old": 19,
+      "keys_gained": 429,
+      "keys_new": 764,
+      "keys_old": 335,
+      "new_families": [
+        "conn",
+        "dns",
+        "flow",
+        "http",
+        "identity",
+        "notice",
+        "ssh",
+        "tls"
+      ],
+      "old_families": [
+        "conn",
+        "flow"
+      ],
+      "rows": 336,
+      "rows_gained": 304,
+      "rows_new": 313,
+      "rows_newly_alerting": 0,
+      "rows_old": 313
+    }
+  },
+  "note": "Normalize Alert join coverage before/after the lane rule change. Both rules are evaluated against the same live snapshot; `OLD_LANE_FAMILIES` is the rule shipped at sha-a252162. Rows are the feed's own lane queries over 45 hours (the flow lane hit the 20,000-row read cap; the zeek and dns lanes are complete). Gained keys are one (host, family, hour) each, so this measures reach, not row multiplication.",
+  "totals": {
+    "hosts_gained": 0,
+    "hosts_new": 20,
+    "hosts_old": 20,
+    "keys_gained": 390,
+    "keys_new": 1038,
+    "keys_old": 648,
+    "rows": 20000,
+    "rows_gained": 304,
+    "rows_new": 7695,
+    "rows_old": 7695
+  }
+}

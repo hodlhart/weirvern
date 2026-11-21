@@ -151,3 +151,100 @@ def test_a_real_evidence_channel_matches_through_its_family():
         _Client(ripples=[("192.0.2.40", "dns_volume", "dns",
                           _dt.datetime(2026, 11, 20, 8))]), other, hours=24)
     assert other[0]["alert_kind"] == "—", "a DNS ripple is not evidence for a flow row"
+
+
+# ── the Zeek lane: a session row can carry every family Zeek itself measures ──────────────────
+#
+# MEASURED LIVE 2026-11-21 before this: a zeek row matched only conn/flow, so 211 tls evidence
+# rows (9 hosts), 134 http (4), 42 ssh (1) and 399 notice (10) were visible on the Ripples page
+# and invisible on the row. The rule is now derived from each channel's own table and its live
+# required_columns, not from a hard-coded family list.
+
+
+def _zeek_row(**over):
+    return _row(source="zeek", dns_name="ssl", dst_port=443, **over)
+
+
+def test_a_zeek_row_carries_every_family_its_pipeline_measures():
+    for channel, family in (
+        ("tls_fingerprint_diversity", "tls"),
+        ("http_host_diversity", "http"),
+        ("ssh_version_change", "ssh"),
+        ("kerberos_volume", "identity"),
+        ("zeek_notice_volume", "notice"),
+        ("conn_volume", "conn"),
+        ("flow_volume", "flow"),
+    ):
+        rows = [_zeek_row()]
+        normalize_store._annotate_alerts(
+            _Client(ripples=[("192.0.2.40", channel, family, _dt.datetime(2026, 11, 20, 8))]),
+            rows, hours=24)
+        assert rows[0]["alert_kind"] == "Ripple", (
+            f"{family} evidence must surface on a Zeek row observed in the same hour")
+
+
+def test_a_zeek_row_can_carry_dns_evidence_but_a_flow_row_cannot():
+    """Both the session and the lookup are Zeek observations; NetFlow never saw a name."""
+    zeek_rows = [_zeek_row()]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "dns_volume", "dns",
+                          _dt.datetime(2026, 11, 20, 8))]), zeek_rows, hours=24)
+    assert zeek_rows[0]["alert_kind"] == "Ripple"
+
+    flow_rows = [_row()]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "dns_volume", "dns",
+                          _dt.datetime(2026, 11, 20, 8))]), flow_rows, hours=24)
+    assert flow_rows[0]["alert_kind"] == "—", (
+        "the DNS lane is still separate for a NetFlow row; a name-resolution ripple says "
+        "nothing about a flow claim")
+
+
+def test_the_scanner_pipeline_is_not_a_feed_lane():
+    rows = [_zeek_row()]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[("192.0.2.40", "service_set_change", "service",
+                          _dt.datetime(2026, 11, 20, 8))]), rows, hours=24)
+    assert rows[0]["alert_kind"] == "—"
+
+
+def test_a_zeek_row_reports_one_window_per_host_family_hour_not_one_per_evidence_row():
+    """Three channels of one family in one hour are ONE alert, not three."""
+    rows = [_zeek_row()]
+    normalize_store._annotate_alerts(
+        _Client(ripples=[
+            ("192.0.2.40", "conn_volume", "conn", _dt.datetime(2026, 11, 20, 8)),
+            ("192.0.2.40", "conn_dst_diversity", "conn", _dt.datetime(2026, 11, 20, 8)),
+            ("192.0.2.40", "conn_reset_ratio", "conn", _dt.datetime(2026, 11, 20, 8)),
+        ]), rows, hours=24)
+    assert rows[0]["alert_kind"] == "Ripple"
+    assert rows[0]["alert_ref"]["ripple_window"].startswith("2026-11-20 08:00")
+    assert rows[0]["alert_ref"]["ripple_window"].count(",") == 0
+
+
+def test_the_lane_map_is_derived_from_the_specs_not_a_family_list():
+    from weirvern.models import ripple_evidence as rev
+
+    zeek = rev.feed_lane_channels("zeek")
+    assert set(zeek.values()) == {"flow", "conn", "dns", "tls", "http", "ssh", "identity",
+                                  "notice"}
+    # Every channel whose OWN table is a Zeek table is offered; nothing on a non-Zeek table is.
+    for spec in rev.SPECS:
+        if spec.table.startswith("weirvern.zeek_"):
+            assert spec.channel in zeek, spec.channel
+        if spec.table == "weirvern.asset_service_history":
+            assert spec.channel not in zeek
+    assert rev.feed_lane_families("flow") == frozenset({"conn", "flow"})
+    assert rev.feed_lane_families("dns") == frozenset({"dns"})
+    assert rev.feed_lane_families("unknown") == frozenset(), (
+        "an unknown lane must not widen into every family")
+
+
+def test_a_channel_whose_table_lacks_a_required_column_is_not_offered():
+    """availability() is the gate: a missing column means 'insufficient', never a zero."""
+    from weirvern.models import ripple_evidence as rev
+
+    offered = rev.feed_lane_channels("zeek", available={"tls_fingerprint_diversity": False})
+    assert "tls_fingerprint_diversity" not in offered
+    assert "http_host_diversity" in offered
+    assert "tls" not in set(offered.values())

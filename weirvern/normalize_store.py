@@ -16,6 +16,7 @@ from clickhouse_connect.driver.client import Client
 from weirvern import normalize
 from weirvern.admin import timewindow
 from weirvern.models import ripple as _ripple
+from weirvern.models import ripple_evidence as _rev
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,16 @@ def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) 
     SERVER-SIDE, ONE TRUTH (operator, 2026-11-20: "normalize needs an Alert column"). The feed
     row is matched against the SAME two sources the Alerts tab reads:
 
-      * `ml_ripple_evidence` for the host, the feed lane's channel (`dns` for a DNS row,
-        `conn`/`flow` for a flow or Zeek row) and the hour the traffic was last seen;
+      * `ml_ripple_evidence` for the host, the lane's channels and the hour the traffic was last
+        seen;
       * `netflow_anomalies` for the host and that same hour.
+
+    THE LANE IS A PIPELINE, NOT A FAMILY LIST. A feed row's `source` names the collector that saw
+    it, and `ripple_evidence.feed_lane_families()` answers which channel families that collector
+    can corroborate -- derived from each ChannelSpec's own table and its live `required_columns`
+    (`availability()`), never from a hard-coded list here. This is what closes the Zeek blind
+    spot: a Zeek session row used to match only conn/flow, so tls, http, ssh, identity and notice
+    evidence for the same host in the same hour could not appear on the row at all.
 
     Both reads obey the console's global window (`timewindow.w`), so an absolute range answered
     here is the range the rest of the page answers. A FAILED READ IS NOT "NO ALERT": it sets
@@ -69,7 +77,7 @@ def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) 
             parameters=params,
         )
         for r in getattr(res, "result_rows", None) or []:
-            # THE EVIDENCE ROW IS KEYED BY CHANNEL, THE FEED LANE BY FAMILY. A stored channel is
+            # THE EVIDENCE ROW IS KEYED BY CHANNEL, THE FEED LANE BY PIPELINE. A stored channel is
             # `conn_volume`, `dns_nxdomain_ratio`, `flow_bytes` -- not the lane name the feed
             # uses. Comparing them literally matched NOTHING on the live box (measured
             # 2026-11-20: 4,225 evidence keys, 0 matches), so every row claimed no ripple. The
@@ -79,6 +87,17 @@ def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) 
     except Exception as exc:  # noqa: BLE001 - one source, never the feed
         logger.warning("normalize alert join (ripples) failed: %s", exc)
         errors["ripples"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+    # WHICH FAMILIES EACH LANE CAN CORROBORATE, ONCE PER PAGE. The availability map is the live
+    # `system.columns` answer; a channel whose table is missing a required column is not offered
+    # at all, because its evidence is 'insufficient', never a zero.
+    try:
+        available = _rev.available_channels(client)
+    except Exception:  # noqa: BLE001 - an unreadable catalogue leaves the static answer
+        available = None
+    lane_families = {
+        lane: _rev.feed_lane_families(lane, available=available)
+        for lane in ("flow", "dns", "zeek")
+    }
     try:
         res = client.query(
             "SELECT src_addr, window_start, severity FROM weirvern.netflow_anomalies "
@@ -97,9 +116,9 @@ def _annotate_alerts(client: Client, rows: list[dict[str, Any]], *, hours: int) 
     for r in rows:
         src = str(r.get("src_addr") or "")
         keys = {k for k in (_hour_key(r.get("first_seen")), _hour_key(r.get("last_seen"))) if k}
-        channels = {"dns"} if r.get("source") == "dns" else {"conn", "flow"}
-        ripple_hit = sorted({h for (host, ch, h) in ripples
-                             if host == src and ch in channels and h in keys})
+        families = lane_families.get(str(r.get("source") or ""), frozenset())
+        ripple_hit = sorted({h for (host, family, h) in ripples
+                             if host == src and family in families and h in keys})
         model_hits = sorted({h for (host, h) in models if host == src and h in keys})
         kinds = []
         if ripple_hit:

@@ -109,13 +109,19 @@ def _series(client: Any, spec: Any, scale: str, moment: datetime, lookback: int,
 
 
 def _score_host(by_index: dict[int, tuple[float, float, float]], spec: Any, *, scale: str,
-                limit_reference: int | None) -> dict[str, Any] | None:
+                limit_reference: int | None, force_tail: bool = False) -> dict[str, Any] | None:
     """One held-out measurement: fit on the windows older than the held-out one.
 
     THE SELECTION RULE IS THE PRODUCTION RULE. At 100+ baseline windows the empirical rank p is
     used and no fit is made; below 100 the fitted tail is used. A validation that always fitted
     would report a method the detector never uses, which is exactly the kind of silent drift this
     script exists to catch.
+
+    `force_tail=True` measures the TAIL ITSELF at whatever sample the history holds, including
+    100+ windows where production would prefer the rank test. That is how a scale's tail is
+    re-measured as history grows: the question "would this fit have cried wolf on a window the
+    assumption-free test called ordinary" does not stop being askable at n=100, and a tail that
+    is only validated at n=9 has not been validated at all.
 
     The held-out window is the most recent window the host has (production scores the window
     ending at `now`, which is the same one when the feed is current). `limit_reference` truncates
@@ -138,10 +144,12 @@ def _score_host(by_index: dict[int, tuple[float, float, float]], spec: Any, *, s
     count = len(reference)
     empirical = rev.empirical_pvalue_two_sided(value, reference)
     fit = None
-    if count >= rev.EMPIRICAL_MIN_WINDOWS:
+    tail_eligible = (spec.kind in rev.TAIL_KINDS if force_tail
+                     else rev.tail_supported(scale, spec.kind))
+    if count >= rev.EMPIRICAL_MIN_WINDOWS and not force_tail:
         method = "empirical"
         p = empirical
-    elif rev.tail_supported(scale, spec.kind):
+    elif tail_eligible:
         fit = ripple_tail.fit_counts(reference)
         method = fit.method
         p = ripple_tail.tail_pvalue(value, fit) if fit.usable else float("nan")
@@ -164,6 +172,72 @@ def _score_host(by_index: dict[int, tuple[float, float, float]], spec: Any, *, s
     }
 
 
+def _verdict(report: dict[str, Any], *, scale: str, total: int, normal_total: int,
+             normal_fires: int) -> None:
+    """Set `method`, `usable` and `reason` from the numbers, never from a wish.
+
+    THE PRODUCTION RULE DECIDES. A scale is usable at a sample below 100 only when its fitted
+    tail is ENABLED (`TAIL_ENABLED`): otherwise `_measure` writes 'insufficient' for every row
+    and the scale produces no evidence at all. Reporting 'parametric, usable' from the window
+    count alone would claim a capability the detector does not have -- the 24h scale on
+    2026-11-21 held 30 windows and one held-out fit while producing zero evidence rows.
+
+    A WINDOW COUNT IS NOT A MEASUREMENT. Even an enabled scale is refused here when no held-out
+    baseline produced a usable fit, because there is then no realised FAR to accept.
+    """
+    observed = int(report["observed_max_windows"])
+    if observed >= rev.EMPIRICAL_MIN_WINDOWS:
+        report["method"] = "empirical"
+        report["usable"] = True
+        report["reason"] = "the empirical test resolves the bar at the observed window count"
+        return
+    if observed < rev.MIN_BASELINE_SAMPLES:
+        report["method"] = "insufficient"
+        report["usable"] = False
+        report["reason"] = (f"the data holds {observed} window(s); "
+                            f"{rev.MIN_BASELINE_SAMPLES} are required for a fit")
+        return
+    if total == 0:
+        report["method"] = "insufficient"
+        report["usable"] = False
+        report["reason"] = "no host had a complete held-out measurement"
+        return
+    if not rev.tail_supported(scale, "count"):
+        report["method"] = "insufficient"
+        report["usable"] = False
+        report["reason"] = (
+            f"the data holds {observed} window(s); its empirical p floor is {report['p_floor']}, "
+            f"above the {ALPHA:g} bar. The fitted tail is disabled at this scale: "
+            f"{rev.TAIL_DISABLED_REASON.get(scale, 'not validated at this deployment')}")
+        return
+    if report["tail_only"]["tests"] == 0:
+        report["method"] = "insufficient"
+        report["usable"] = False
+        report["reason"] = (
+            f"the data holds {observed} window(s), but no held-out baseline produced a usable "
+            f"fitted tail; there is no measured FAR to accept")
+        return
+    report["method"] = "parametric"
+    far = report["far"] or 0.0
+    normal_far = report["far_on_normal"]
+    # THE ACCEPTANCE RULE IS ABOUT MANUFACTURED RIPPLES. A tail that fires only on windows the
+    # assumption-free rank test already saw as extreme (empirical p <= 0.05) is doing its job; a
+    # tail that fires on windows the rank test calls ordinary is inventing significance. The raw
+    # FAR is reported beside it, because a reader is entitled to both.
+    if normal_far is None:
+        report["usable"] = far <= MAX_ACCEPTABLE_FAR
+        report["reason"] = (
+            f"realised FAR {far:.2%} on {total} held-out window(s); no window was ordinary by "
+            f"the empirical test, so the manufactured-ripple rate is unmeasured")
+        return
+    report["usable"] = normal_far <= MAX_ACCEPTABLE_FAR
+    report["reason"] = (
+        f"realised FAR {far:.2%} on {total} held-out window(s); on the {normal_total} window(s) "
+        f"the empirical test calls ordinary (p>0.05) the tail fired {normal_fires} time(s) "
+        f"({normal_far:.2%}), {'at or below' if report['usable'] else 'above'} the "
+        f"{MAX_ACCEPTABLE_FAR:.0%} acceptance line")
+
+
 def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
                   channels: tuple[str, ...], max_hosts: int,
                   cidrs: tuple[str, ...]) -> dict[str, Any]:
@@ -178,6 +252,7 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
         "method": "insufficient",
         "usable": False,
         "reason": "",
+        "p_floor": None,
         "channels": {},
         "tests": 0,
         "fires_001": 0,
@@ -188,11 +263,27 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
         "fit_size_median": None,
         "p01_upper_median": None,
         "p01_lower_median": None,
+        # THE TAIL MEASURED ON ITS OWN, not through the production selection rule. At a scale
+        # that now holds 100+ windows production uses the rank test, so the production numbers
+        # cannot say whether the FIT is still calibrated; this block can.
+        "tail_only": {
+            "tests": 0, "fires": 0, "far": None, "far_interval": None,
+            "normal_tests": 0, "fires_on_normal": 0, "far_on_normal": None,
+            "far_on_normal_interval": None, "method_counts": {},
+            "fit_mean_median": None, "fit_size_median": None,
+            "p01_upper_median": None, "p01_lower_median": None,
+        },
     }
     total = fires = fires_extreme = emp_fires = 0
     normal_total = normal_fires = 0
     small_total = small_fires = 0
     small_methods: dict[str, int] = {}
+    tail_total = tail_fires = tail_normal = tail_normal_fires = 0
+    tail_methods: dict[str, int] = {}
+    tail_means: list[float] = []
+    tail_sizes: list[float] = []
+    tail_uppers: list[float] = []
+    tail_lowers: list[float] = []
     means: list[float] = []
     sizes: list[float] = []
     uppers: list[float] = []
@@ -211,6 +302,8 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
             "empirical_fires": 0, "method_counts": {},
             "normal_tests": 0, "fires_on_normal": 0,
             "small_n": {"n": 0, "fires": 0, "method_counts": {}},
+            "tail_only": {"n": 0, "fires": 0, "fires_on_normal": 0, "normal_tests": 0,
+                          "method_counts": {}},
             "fit_mean_median": None, "fit_size_median": None,
             "p01_upper_median": None, "p01_lower_median": None,
         }
@@ -257,6 +350,25 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
                     row["small_n"]["method_counts"].get(small["method"], 0) + 1)
                 if math.isfinite(small["p"]) and small["p"] <= ALPHA:
                     row["small_n"]["fires"] += 1
+            tail = _score_host(by_index, spec, scale=scale, limit_reference=None,
+                               force_tail=True)
+            if tail is not None and math.isfinite(tail["p"]):
+                row["tail_only"]["n"] += 1
+                row["tail_only"]["method_counts"][tail["method"]] = (
+                    row["tail_only"]["method_counts"].get(tail["method"], 0) + 1)
+                tail_fired = tail["p"] <= ALPHA
+                if tail_fired:
+                    row["tail_only"]["fires"] += 1
+                if math.isfinite(tail["p_empirical"]) and tail["p_empirical"] > 0.05:
+                    row["tail_only"]["normal_tests"] += 1
+                    if tail_fired:
+                        row["tail_only"]["fires_on_normal"] += 1
+                if tail["method"] == ripple_tail.NEGBIN:
+                    tail_means.append(tail["fit_mean"])
+                    tail_sizes.append(tail["fit_size"])
+                for key, bucket in (("p01_upper", tail_uppers), ("p01_lower", tail_lowers)):
+                    if tail[key] is not None:
+                        bucket.append(float(tail[key]))
         if row["n"]:
             row["far"] = round(row["fires"] / row["n"], 6)
             row["far_interval"] = wilson(row["fires"], row["n"])
@@ -264,6 +376,17 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
             row["small_n"]["far"] = round(row["small_n"]["fires"] / row["small_n"]["n"], 6)
             row["small_n"]["far_interval"] = wilson(row["small_n"]["fires"],
                                                     row["small_n"]["n"])
+            if row["tail_only"]["n"]:
+                row["tail_only"]["far"] = round(
+                    row["tail_only"]["fires"] / row["tail_only"]["n"], 6)
+                row["tail_only"]["far_interval"] = wilson(
+                    row["tail_only"]["fires"], row["tail_only"]["n"])
+                row["tail_only"]["far_on_normal"] = (
+                    round(row["tail_only"]["fires_on_normal"]
+                          / row["tail_only"]["normal_tests"], 6)
+                    if row["tail_only"]["normal_tests"] else None)
+                row["tail_only"]["far_on_normal_interval"] = wilson(
+                    row["tail_only"]["fires_on_normal"], row["tail_only"]["normal_tests"])
             row["fit_mean_median"] = _median(row_means)
             row["fit_size_median"] = _median(row_sizes)
             row["p01_upper_median"] = _median(row_uppers)
@@ -282,6 +405,12 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
             small_fires += row["small_n"]["fires"]
             for method, count in row["small_n"]["method_counts"].items():
                 small_methods[method] = small_methods.get(method, 0) + count
+            tail_total += row["tail_only"]["n"]
+            tail_fires += row["tail_only"]["fires"]
+            tail_normal += row["tail_only"]["normal_tests"]
+            tail_normal_fires += row["tail_only"]["fires_on_normal"]
+            for method, count in row["tail_only"]["method_counts"].items():
+                tail_methods[method] = tail_methods.get(method, 0) + count
         report["observed_max_windows"] = max(report["observed_max_windows"], row["windows_max"])
         report["channels"][channel] = row
     report["tests"] = total
@@ -295,12 +424,27 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
     report["fires_on_normal"] = normal_fires
     report["far_on_normal"] = round(normal_fires / normal_total, 6) if normal_total else None
     report["far_on_normal_interval"] = wilson(normal_fires, normal_total)
+    # THE EMPIRICAL FLOOR AT THIS SAMPLE: 1/(n+1) for the widest baseline the data holds. It is
+    # the reason a scale with 30-99 windows needs a fitted tail at all.
+    report["p_floor"] = (round(1.0 / (report["observed_max_windows"] + 1.0), 6)
+                         if report["observed_max_windows"] else None)
     report["small_n"] = {
         "size": SMALL_N, "tests": small_total, "fires": small_fires,
         "far": round(small_fires / small_total, 6) if small_total else None,
         "far_interval": wilson(small_fires, small_total),
         "method_counts": small_methods,
     }
+    report["tail_only"].update({
+        "tests": tail_total, "fires": tail_fires,
+        "far": round(tail_fires / tail_total, 6) if tail_total else None,
+        "far_interval": wilson(tail_fires, tail_total),
+        "normal_tests": tail_normal, "fires_on_normal": tail_normal_fires,
+        "far_on_normal": (round(tail_normal_fires / tail_normal, 6) if tail_normal else None),
+        "far_on_normal_interval": wilson(tail_normal_fires, tail_normal),
+        "method_counts": tail_methods,
+        "fit_mean_median": _median(tail_means), "fit_size_median": _median(tail_sizes),
+        "p01_upper_median": _median(tail_uppers), "p01_lower_median": _median(tail_lowers),
+    })
     report["fit_mean_median"] = _median(means)
     report["fit_size_median"] = _median(sizes)
     report["p01_upper_median"] = _median(uppers)
@@ -308,46 +452,25 @@ def measure_scale(client: Any, scale: str, *, moment: datetime, retention: int,
     for channel_row in report["channels"].values():
         for method, count in (channel_row.get("method_counts") or {}).items():
             report["method_counts"][method] = report["method_counts"].get(method, 0) + count
-    # THE VERDICT, from the numbers above and the acceptance rule, not from a wish. It is based
-    # on the windows THIS DATA holds, not only on what the lookback could hold: a 102-window
-    # capability with 29 windows of history is not an empirical baseline.
-    if report["observed_max_windows"] >= rev.EMPIRICAL_MIN_WINDOWS:
-        report["method"] = "empirical"
-        report["usable"] = True
-        report["reason"] = "the empirical test resolves the bar at the observed window count"
-    elif report["observed_max_windows"] < rev.MIN_BASELINE_SAMPLES:
-        report["method"] = "insufficient"
-        report["usable"] = False
-        report["reason"] = (f"the data holds {report['observed_max_windows']} window(s); "
-                            f"{rev.MIN_BASELINE_SAMPLES} are required for a fit")
-    elif total == 0:
-        report["method"] = "insufficient"
-        report["usable"] = False
-        report["reason"] = "no host had a complete held-out measurement"
-    else:
-        report["method"] = "parametric"
-        far = report["far"] or 0.0
-        normal_far = report["far_on_normal"]
-        # THE ACCEPTANCE RULE IS ABOUT MANUFACTURED RIPPLES. A tail that fires only on windows
-        # the assumption-free rank test already saw as extreme (empirical p <= 0.05) is doing
-        # its job; a tail that fires on windows the rank test calls ordinary is inventing
-        # significance. The raw FAR is reported beside it, because a reader is entitled to both.
-        if normal_far is None:
-            report["usable"] = far <= MAX_ACCEPTABLE_FAR
-            report["reason"] = (
-                f"realised FAR {far:.2%} on {total} held-out window(s); no window was ordinary "
-                f"by the empirical test, so the manufactured-ripple rate is unmeasured")
-        else:
-            report["usable"] = normal_far <= MAX_ACCEPTABLE_FAR
-            report["reason"] = (
-                f"realised FAR {far:.2%} on {total} held-out window(s); on the "
-                f"{normal_total} window(s) the empirical test calls ordinary (p>0.05) the tail "
-                f"fired {normal_fires} time(s) ({normal_far:.2%}), "
-                f"{'at or below' if report['usable'] else 'above'} the "
-                f"{MAX_ACCEPTABLE_FAR:.0%} acceptance line")
-    # A SMALL HELD-OUT SAMPLE IS A PROVISIONAL ANSWER, not a certification. The interval is the
+    _verdict(report, scale=scale, total=total, normal_total=normal_total,
+             normal_fires=normal_fires)
+    # THE SMALL HELD-OUT SAMPLE IS A PROVISIONAL ANSWER, not a certification. The interval is the
     # honest part; this flag keeps a caller from reading 0/8 as proof of a 0% rate.
     report["provisional"] = total < 30
+    # THE TAIL'S OWN ACCEPTANCE, on the same rule as a scale's: the manufactured-ripple rate (on
+    # windows the assumption-free test calls ordinary) must be at or below the line when it can
+    # be measured, otherwise the raw rate decides. Reported separately from `usable`, because a
+    # scale can be empirically usable while its fitted tail is not, and vice versa.
+    tail_rate = report["tail_only"]["far_on_normal"]
+    if tail_rate is None:
+        tail_rate = report["tail_only"]["far"]
+    # A 0/1 IS NOT AN ACCEPTANCE. The scale-level rule refuses to certify a rate on fewer than
+    # 30 held-out windows; the tail uses the same bar, so a single lucky window cannot put a
+    # scale on the board.
+    report["tail_only"]["provisional"] = report["tail_only"]["tests"] < 30
+    report["tail_only"]["accepted"] = (
+        None if tail_rate is None or report["tail_only"]["tests"] < 30
+        else bool(tail_rate <= MAX_ACCEPTABLE_FAR))
     return report
 
 
