@@ -18,6 +18,8 @@ tested, and shares the schema/config modules.
 """
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 import logging
 import os
@@ -26,6 +28,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from typing import Any, Protocol
 
@@ -204,7 +207,8 @@ def _excluded(row: dict[str, Any]) -> bool:
     return f.excluded(str(row.get("src_addr") or ""), str(row.get("dst_addr") or "")) is not None
 
 
-def insert_batch(client: Inserter, rows: list[dict[str, Any]]) -> int:
+def insert_batch(client: Inserter, rows: list[dict[str, Any]],
+                 token: str | None = None) -> int:
     """Write flow rows, dropping any that name an excluded address.
 
     FILTERED HERE BECAUSE THIS IS THE FUNNEL. Every flow row reaches the store through this one
@@ -239,7 +243,7 @@ def insert_batch(client: Inserter, rows: list[dict[str, Any]]) -> int:
     # -- refusing the batch -- loses every good record alongside the bad one AND stops all future
     # ingestion.
     return _insert_batch(client, "weirvern.flows",
-                         [[r[c] for c in _COLUMNS] for r in keep], _COLUMNS)
+                         [[r[c] for c in _COLUMNS] for r in keep], _COLUMNS, token)
 
 
 # =============================================================================
@@ -1289,8 +1293,62 @@ def observations_from_dns(rec: dict[str, str], row: dict[str, Any]) -> list[dict
              "source": "dns_name", "raw": name, "note": "from dns"}]
 
 
+@lru_cache(maxsize=64)
+def _insert_accepts_settings(cls: type) -> bool:
+    """Whether this client's `insert` takes ClickHouse `settings=`.
+
+    The deduplication token is only useful on a client that forwards it. Asking the SIGNATURE
+    (rather than catching a TypeError from the insert) is deliberate: a TypeError caught around an
+    insert would swallow a genuine argument error from the driver, and this file has paid for
+    error-swallowing before. Tests use small stand-ins that take only `(table, rows, column_names)`
+    and they keep working unchanged.
+    """
+    try:
+        insert = getattr(cls, "insert", None)
+        if insert is None:
+            return False
+        params = inspect.signature(insert).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "settings" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _client_insert(client: Inserter, table: str, rows: list[list[Any]],
+                   columns: list[str], token: str | None = None) -> Any:  # noqa: ANN401
+    """`client.insert`, with a deduplication token when the client can carry one."""
+    if token and _insert_accepts_settings(type(client)):
+        return client.insert(table, rows, column_names=columns,
+                             settings={"insert_deduplication_token": token})
+    return client.insert(table, rows, column_names=columns)
+
+
+def _dedupe_token(table: str, inode: int, start: int, end: int,
+                  digest: Any) -> str:  # noqa: ANN401 - a hashlib hash object
+    """A deterministic token for ONE batch, so a retried insert cannot duplicate it.
+
+    ClickHouse collapses two inserts that carry the same `insert_deduplication_token`. The token
+    therefore has to identify the SOURCE BYTES a batch came from, not the moment of the attempt:
+    a retry re-reads the same byte range and must produce the same token, while a genuinely new
+    batch must not. Four components, each load-bearing:
+
+      * `inode` and the byte range keep two IDENTICAL records at different positions distinct --
+        a sensor legitimately re-sends a flow, and that second one is a real row;
+      * the content digest keeps a batch at the SAME offsets in a REWRITTEN file distinct. A cap
+        trim preserves the inode, so offsets alone would let a token minted before the trim
+        suppress a different record that now occupies that range -- data loss, silently;
+      * `table`, because one source file can feed more than one destination.
+
+    Returns a 32-hex-character digest rather than the material itself: ClickHouse stores tokens
+    for its deduplication window, and a long path-and-offset string per batch is needless weight.
+    """
+    material = f"{table}|{int(inode)}|{int(start)}|{int(end)}|{digest.hexdigest()}"
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
 def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
-                  columns: list[str]) -> int:
+                  columns: list[str], token: str | None = None) -> int:
     """Insert one batch, isolating a bad row so it cannot wedge the whole tail.
 
     ── THE POISON PILL (audit F013, CONFIRMED BY RUNNING IT) ────────────────────────────────────
@@ -1318,11 +1376,29 @@ def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
     the first failure's detail, because losing flow records silently is exactly the class of bug
     this file keeps documenting.
 
-    A SINGLE-ROW BATCH IS NOT RETRIED -- there is no smaller unit to fall back to, and retrying the
-    same row would produce the same error. It is reported and skipped, so the cursor advances.
+    A SINGLE-ROW BATCH IS NOT RETRIED -- there is no smaller unit to fall back to, and retrying
+    the same row would produce the same error. It is reported and skipped, so the cursor advances.
+
+    ── A BATCH WHERE *NOTHING* LANDED RAISES (data-durability fix, measured) ───────────────────
+
+    The row-by-row fallback above answers ONE bad record. It also, silently, answered a database
+    that was not answering at all: every row fails for the same transient reason, `landed == 0`,
+    and the caller advanced its cursor past the whole file. MEASURED with a client whose insert
+    raised: `inserted=0, offset=<file size>` -- the entire file was checkpointed as read and
+    nothing was written. Nothing retried it, because the cursor said it was done.
+
+    So when a multi-row batch lands NOTHING, the failure cannot be isolated to a row and must not
+    be absorbed: raise, leave the caller's cursor where it is, and let the next pass re-read the
+    same bytes. The retry is idempotent for the batches that DID land earlier in the file: their
+    deduplication token is derived from the same byte range (see `_dedupe_token`), and the flow
+    path additionally checks natural keys on a re-read.
+
+    The single-row case keeps the old trade on purpose: a one-record batch has no neighbours to
+    protect, and a raise there would leave a genuinely unparseable single record blocking every
+    later record in the file forever. That record is named at WARNING and skipped.
     """
     try:
-        client.insert(table, batch, column_names=columns)
+        _client_insert(client, table, batch, columns, token)
         return len(batch)
     except Exception as exc:  # noqa: BLE001 - any insert failure has the same remedy
         first_error = f"{type(exc).__name__}: {exc}"
@@ -1334,9 +1410,12 @@ def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
 
     dropped: list[str] = []
     landed = 0
-    for row in batch:
+    for index, row in enumerate(batch):
         try:
-            client.insert(table, [row], column_names=columns)
+            # A distinct token per row: reusing the batch token would make ClickHouse collapse
+            # every retry after the first into one row, turning a partial failure into data loss.
+            _client_insert(client, table, [row], columns,
+                           f"{token}:{index}" if token else None)
             landed += 1
         except Exception as exc:  # noqa: BLE001
             # Identify the row by its most useful column rather than by its contents. `ts` and the
@@ -1353,6 +1432,14 @@ def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
             "%d of %d row(s) into %s were REJECTED and skipped, so the tail can advance past them: "
             "%s",
             len(dropped), len(batch), table, "; ".join(dropped[:3]),
+        )
+    if landed == 0 and len(batch) > 1:
+        # NOTHING landed, so this is not a bad row -- it is the destination refusing the whole
+        # batch, and a cursor advance here would checkpoint data that was never written.
+        raise IngesterError(
+            f"none of the {len(batch)} row(s) into {table} could be inserted "
+            f"({dropped[0] if dropped else first_error}); the read cursor is left in place so the "
+            f"next pass retries the file instead of checkpointing records that never landed"
         )
     # THE RETURN IS WHAT ACTUALLY LANDED, not what was attempted. The caller adds this to its
     # `inserted` total, and a total that counts rejected rows would be precisely the kind of
@@ -1450,6 +1537,12 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
     inserted = 0
     consumed = start_offset
     batch: list[list[Any]] = []
+    # The byte range and content digest of the batch under construction, so a retried insert can
+    # be given the SAME `insert_deduplication_token` it had on the failed attempt. Both are reset
+    # when a batch starts and are only read when it is flushed.
+    batch_hash = hashlib.sha256()
+    batch_start = start_offset
+    batch_end = start_offset
     # Whether this file's mapper/columns pair has been verified against each other. Once per file,
     # not once per row: the pair is static, so one check settles it for every record.
     columns_checked = columns is None
@@ -1462,6 +1555,7 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
     with open(path, encoding="utf-8", errors="replace") as fh:
         fh.seek(start_offset)
         while True:
+            line_start = consumed
             raw = fh.readline()
             if not raw:
                 break
@@ -1643,18 +1737,31 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             assert table_name is not None, f"{log_type} is table-backed but resolved to no table"
             assert column_list is not None, f"{log_type} is table-backed but has no column list"
             batch.append([row.get(c) for c in column_list])
+            if len(batch) == 1:
+                batch_start, batch_hash = line_start, hashlib.sha256()
+            batch_hash.update(raw.encode("utf-8", "replace"))
+            batch_end = consumed
             if len(batch) >= BATCH_SIZE:
-                inserted += _insert_batch(client, table_name, batch, column_list)
+                inserted += _insert_batch(
+                    client, table_name, batch, column_list,
+                    _dedupe_token(table_name, st.st_ino, batch_start, batch_end, batch_hash),
+                )
                 batch = []
         # THE FINAL FLUSH USES THE SAME LOCALS, and it has to: it sits outside the `with` block, so
         # it is the one call site mypy saw as still-optional. It is also the site most likely to be
         # forgotten when this loop changes -- the last partial batch is easy to overlook, and losing
         # it would drop the tail of every run.
         if batch and table_name is not None and column_list is not None:
-            inserted += _insert_batch(client, table_name, batch, column_list)
+            inserted += _insert_batch(
+                client, table_name, batch, column_list,
+                _dedupe_token(table_name, st.st_ino, batch_start, batch_end, batch_hash),
+            )
 
     if state is not None:
         state.separator, state.fields = separator, fields
+        # ONLY REACHED WHEN EVERY FLUSH SUCCEEDED: `_insert_batch` raises when a multi-row batch
+        # lands nothing, and that leaves this function before the cursor is written -- so the next
+        # pass retries the same bytes rather than skipping a file it never stored.
         state.note_read(st, consumed)
 
     return inserted, consumed, st.st_ino, (separator, fields)
@@ -2202,6 +2309,11 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     already_present = 0
     batch: list[dict[str, Any]] = []
     consumed = start_offset
+    # The batch's byte range and content digest, so a retry of the SAME bytes carries the same
+    # deduplication token. See `_dedupe_token` for why all of it is needed.
+    batch_hash = hashlib.sha256()
+    batch_start = start_offset
+    batch_end = start_offset
 
     # ── THE RE-READ IDEMPOTENCE GUARD ───────────────────────────────────────────────────────────
     #
@@ -2213,9 +2325,23 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     #
     # The check is only for the re-read path: a normal append has no prior rows by construction,
     # and asking the database about every batch would add a round trip to the hot path for nothing.
-    can_dedupe = reread and hasattr(client, "query")
+    #
+    # ── AND IT IS ALSO ON WHEN THE PASS STARTS AT ZERO (data-durability fix, measured) ─────────
+    #
+    # `reread` is set only when `reset_reason` explains a reset. A LOST CHECKPOINT is the other way
+    # to arrive at offset 0: `load_tail_state` returns a fresh state for six different loss
+    # conditions (missing file, unparsable JSON, offset <= 0, absent file, boundary mismatch, a
+    # non-dict payload), and `reset_reason` deliberately answers "" at offset 0 because "no cursor"
+    # is not "a reset". MEASURED: four records, checkpoint deleted, next pass re-read them from 0
+    # and `flows` held EIGHT rows -- the whole file duplicated with the guard switched off.
+    #
+    # Starting at zero IS the case a re-read guard is for, whatever brought us there: every row the
+    # file holds has been read before if the worker has ever run, and the existence check answers
+    # exactly that. The extra query only happens on a pass that begins at zero, not on the steady
+    # state, which resumes at a non-zero checkpoint.
+    can_dedupe = (reread or start_offset == 0) and hasattr(client, "query")
 
-    def flush(rows: list[dict[str, Any]]) -> None:
+    def flush(rows: list[dict[str, Any]], token: str | None = None) -> None:
         nonlocal inserted, already_present
         if not rows:
             return
@@ -2232,11 +2358,12 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
                 skipped = 0
             if skipped:
                 already_present += skipped
-        inserted += insert_batch(client, rows)
+        inserted += insert_batch(client, rows, token)
 
     with open(path, encoding="utf-8", errors="replace") as fh:
         fh.seek(start_offset)
         while True:
+            line_start = consumed
             raw = fh.readline()
             if not raw:
                 break
@@ -2273,8 +2400,13 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
                 unverified += 1
                 unverified_why[verdict] = unverified_why.get(verdict, 0) + 1
             batch.append(row)
+            if len(batch) == 1:
+                batch_start, batch_hash = line_start, hashlib.sha256()
+            batch_hash.update(raw.encode("utf-8", "replace"))
+            batch_end = consumed
             if len(batch) >= BATCH_SIZE:
-                flush(batch)
+                flush(batch, _dedupe_token("weirvern.flows", st.st_ino,
+                                           batch_start, batch_end, batch_hash))
                 batch = []
     if rejected:
         # WARNING, not debug: an unexpected exporter is a security-relevant event, and the whole
@@ -2299,9 +2431,13 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
             unverified, ", ".join(f"{k}: {v}" for k, v in sorted(unverified_why.items())),
         )
     if batch:
-        flush(batch)
+        flush(batch, _dedupe_token("weirvern.flows", st.st_ino,
+                                   batch_start, batch_end, batch_hash))
     final_offset = consumed
     if state is not None:
+        # ONLY REACHED WHEN EVERY FLUSH SUCCEEDED. `insert_batch` raises when a multi-row batch
+        # lands nothing, and that exception leaves this function BEFORE this line -- so a failed
+        # pass re-reads its bytes next time instead of checkpointing past records it never wrote.
         state.note_read(st, final_offset)
     if already_present:
         # WARNING, not INFO: a re-read happened at all, and it was the source of a measured

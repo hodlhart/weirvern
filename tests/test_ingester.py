@@ -1663,14 +1663,17 @@ def test_a_re_read_cannot_insert_a_row_that_is_already_present(monkeypatch, tmp_
 
 
 def test_a_normal_append_never_pays_for_the_dedupe_query(tmp_path):
-    """The hot path stays a plain insert: the guard is for re-reads only."""
+    """The hot path stays a plain insert. A pass that begins at a NON-ZERO cursor has nothing to
+    check -- everything before that offset was consumed by definition. Only a pass from zero (a
+    reset, or a LOST CHECKPOINT) pays for the existence query; see
+    `test_a_lost_checkpoint_does_not_insert_the_file_twice` for that half."""
     path = str(tmp_path / "flows.jsonl")
     with open(path, "w") as fh:
         fh.write(json.dumps(_flow_record(1)) + "\n")
     fake = _DedupCH()
     st = TailState()
-    tail_and_insert(fake, path, state=st)
-    assert fake.queries == 0
+    assert tail_and_insert(fake, path, state=st)[0] == 1
+    fake.queries = 0  # the first pass begins at zero and does check; measure the APPEND only
     with open(path, "a") as fh:
         fh.write(json.dumps(_flow_record(2)) + "\n")
     assert tail_and_insert(fake, path, state=st)[0] == 1
@@ -1706,3 +1709,138 @@ def test_the_key_query_names_every_key_column_so_one_cannot_be_dropped():
     sql = seen["sql"]
     for column in FLOW_KEY_COLUMNS:
         assert column in sql, f"{column} missing from the existence query"
+
+
+# ── data durability: a failed write must not be checkpointed as read ──────────────────────────
+#
+# MEASURED DEFECT. `_insert_batch` isolated a bad row by retrying one row at a time and returned
+# `landed`; when EVERY row failed it returned 0, and BOTH callers advanced their cursor anyway.
+# With a client whose insert raised, a file was reported as `inserted=0, offset=<file size>`: the
+# whole file marked consumed, nothing written, nothing left to retry it. A database blip was
+# indistinguishable from a poison record, and it cost the file.
+
+
+class _BlipCH:
+    """A destination that is DOWN for one pass and healthy afterwards.
+
+    It records the deduplication token BEFORE deciding to fail, which is the point: a retried
+    batch must present the same token it presented on the failed attempt.
+    """
+
+    def __init__(self) -> None:
+        self.down = True
+        self.rows: list[list] = []
+        self.tokens: list[str | None] = []
+
+    def insert(self, table, rows, column_names=None, settings=None):
+        self.tokens.append((settings or {}).get("insert_deduplication_token"))
+        if self.down:
+            raise RuntimeError("Code: 210. DB::NetException: Connection reset by peer")
+        self.rows.extend(rows)
+
+    def query(self, sql):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(result_rows=[])
+
+
+def test_a_database_blip_does_not_checkpoint_the_file(tmp_path):
+    """The cursor must survive a pass that stored nothing, and the next pass must land it all."""
+    from weirvern.ingester import IngesterError
+
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(3):
+            fh.write(json.dumps(_flow_record(i + 1)) + "\n")
+
+    client = _BlipCH()
+    st = TailState()
+    with pytest.raises(IngesterError):
+        tail_and_insert(client, path, state=st)
+
+    assert st.offset == 0, (
+        f"the failed pass checkpointed {st.offset} of {os.path.getsize(path)}: those records are "
+        f"now unreachable, because the cursor says they were read"
+    )
+    assert client.rows == []
+
+    client.down = False
+    inserted, offset, _ = tail_and_insert(client, path, state=st)
+
+    assert inserted == 3, f"the retry landed {inserted} of the 3 records the blip left unread"
+    assert offset == os.path.getsize(path)
+    assert len(client.rows) == 3, "the retry inserted rows the failed pass had already stored"
+
+
+def test_a_retried_batch_presents_the_same_deduplication_token(tmp_path):
+    """ClickHouse collapses two inserts that carry the same token, so a retry must reproduce it.
+
+    The token is derived from the source bytes, the byte range and the file instance -- not from
+    the moment of the attempt -- which is what makes the retry recognisable as the same batch.
+    """
+    from weirvern.ingester import IngesterError
+
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(3):
+            fh.write(json.dumps(_flow_record(i + 1)) + "\n")
+
+    client = _BlipCH()
+    st = TailState()
+    with pytest.raises(IngesterError):
+        tail_and_insert(client, path, state=st)
+    failed_attempt = list(client.tokens)
+    client.down = False
+    tail_and_insert(client, path, state=st)
+
+    assert failed_attempt[0], "the failed attempt carried no deduplication token"
+    assert len(failed_attempt[0]) == 32
+    assert client.tokens[0] == failed_attempt[0], (
+        f"the retry minted a different token ({client.tokens[0]!r} vs {failed_attempt[0]!r}), so "
+        f"the destination cannot tell it is the same batch"
+    )
+
+
+def test_the_dedup_token_is_unique_per_source_bytes():
+    """Same token = same insert; a token that ignores any component suppresses real records."""
+    import hashlib
+
+    from weirvern.ingester import _dedupe_token
+
+    a = hashlib.sha256(b"record-a\n")
+    b = hashlib.sha256(b"record-b\n")
+
+    def token(digest, *, inode=1, start=0, end=9, table="weirvern.flows"):
+        return _dedupe_token(table, inode, start, end, digest)
+
+    assert token(a) == token(a), "the same bytes must produce the same token"
+    assert token(a) != token(b), "different content at the same offsets must not be deduped"
+    assert token(a, inode=2) != token(a), "a new file instance must not reuse the token"
+    assert token(a, start=9, end=18) != token(a), "the same bytes elsewhere are a REAL repeat"
+    assert token(a, table="weirvern.zeek_conn") != token(a), "two tables must not share a token"
+
+
+def test_a_lost_checkpoint_does_not_insert_the_file_twice(tmp_path):
+    """MEASURED: four records, checkpoint gone, re-read from zero, EIGHT rows in `flows`.
+
+    `load_tail_state` returns offset 0 for six different loss conditions, and `reset_reason`
+    answers "" at offset 0 because a missing cursor is not a reset. So `reread` was False and the
+    idempotence guard was switched OFF in precisely the case it exists for. Starting at zero IS
+    the re-read case, whatever brought us there.
+    """
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(4):
+            fh.write(json.dumps(_flow_record(i + 1)) + "\n")
+
+    fake = _DedupCH()
+    assert tail_and_insert(fake, path, state=TailState())[0] == 4
+    assert fake.inserted == 4
+
+    # A LOST checkpoint is a FRESH state, which is exactly what load_tail_state returns when the
+    # file is unreadable, unparsable, absent, or belongs to a previous instance.
+    inserted, _, _ = tail_and_insert(fake, path, state=TailState())
+
+    assert inserted == 0, f"the lost checkpoint inserted {inserted} duplicate row(s)"
+    assert fake.inserted == 4, f"`flows` grew to {fake.inserted} rows from a 4-row file"
+    assert fake.queries >= 1, "the pass from zero never asked what was already there"
