@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 from typing import Any
 
 from clickhouse_connect.driver.client import Client
@@ -511,7 +512,7 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
     """
     from weirvern.models import cards as cards_mod  # noqa: PLC0415
     from weirvern.models import eligibility as eligibility_mod  # noqa: PLC0415
-    from weirvern.models.detector_status import detector_rows, detector_summary  # noqa: PLC0415
+    from weirvern.models.detector_status import detector_rows  # noqa: PLC0415
     from weirvern.models.detectors import DETECTOR_NAMES  # noqa: PLC0415
 
     data = status_mod.model_overview(client, hours=hours, settings=settings)
@@ -570,7 +571,8 @@ def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
         # "not trained: degenerate reference" instead of as an ordinary absence.
         outcomes={name: str((row or {}).get("outcome") or "")
                   for name, row in data["model_training"].items()})
-    data["detector_summary"] = detector_summary(data["detectors"], calibration.get(FUSED_MODEL))
+    data["detector_summary"] = detector_summary_for(
+        data, calibration, report, settings, client)
     return web_api.models_payload(data)
 
 
@@ -1008,7 +1010,8 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
             "argMax(coverage_observed, computed_at), argMax(coverage_expected, computed_at), "
             "argMax(missing_mode, computed_at), argMax(validation_count, computed_at), "
             "argMax(threshold, computed_at), argMax(far_lower, computed_at), "
-            "argMax(far_upper, computed_at) "
+            "argMax(far_upper, computed_at), argMax(model_version, computed_at), "
+            "argMax(computed_at, computed_at) "
             "FROM weirvern.ml_calibration FINAL WHERE scope = 'global' GROUP BY model_name")
     except Exception as exc:  # noqa: BLE001 - a missing table is a panel, not a page
         # THE COVERAGE COLUMNS ARRIVED IN 056 AND THE COUNTS IN 058. A deployment still on an
@@ -1038,7 +1041,7 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
                 return {}
     out: dict[str, dict[str, Any]] = {}
     for row in (getattr(res, "result_rows", None) or []):
-        values = list(row) + [None] * 13
+        values = list(row) + [None] * 15
         out[str(values[0])] = {
             "observed_far": values[1],
             "target_far": values[2],
@@ -1053,8 +1056,115 @@ def calibration_latest(client: Client) -> dict[str, dict[str, Any]]:
             "threshold": values[10],
             "far_lower": values[11],
             "far_upper": values[12],
+            # THE VERSION AND THE INSTANT make the rate reproducible: the report measures the
+            # decision-bar rate over the same population (same engine version, same window).
+            "model_version": str(values[13] or ""),
+            "computed_at": values[14],
         }
     return out
+
+
+def _number(value: Any) -> float | None:
+    """A finite float, or None. A blank/garbage cell is absence, never zero."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def fused_far_counts(client: Client, thresholds: list[float], *, model_version: str = "",
+                     days: int = 7) -> tuple[int, list[int]] | None:
+    """Count the fused population at each threshold, in ONE read.
+
+    The report must compare two thresholds on the SAME windows. Counting them in one aggregate
+    over `ml_window_scores` (the population the ensemble scored before any alert gate) makes the
+    two rates directly comparable and avoids shipping every score into Python.
+
+    `model_version` is the version the calibration row was measured under. A reference that
+    straddles a model change is the mixture `calibration._population_scores` already refuses, and
+    the report must not reintroduce it through a different query.
+    """
+    bars = [float(t) for t in thresholds if math.isfinite(float(t))]
+    if not bars:
+        return None
+    columns = ", ".join(f"countIf(score >= {bar:.10g})" for bar in bars)
+    sql = ("SELECT count(), " + columns + " FROM weirvern.ml_window_scores FINAL "
+           "WHERE model_name = %(name)s AND computed_at >= now() - INTERVAL %(days)s DAY")
+    params: dict[str, Any] = {"name": FUSED_MODEL, "days": int(days)}
+    if model_version:
+        sql += " AND model_version = %(version)s"
+        params["version"] = str(model_version)
+    try:
+        rows = client.query(sql, parameters=params).result_rows
+    except Exception as exc:  # noqa: BLE001 - a panel, not a page
+        logger.warning("fused false-alarm population unavailable: %s", exc)
+        return None
+    if not rows:
+        return None
+    values = list(rows[0])
+    if not values or values[0] is None:
+        return None
+    try:
+        windows = int(values[0])
+        hits = [int(value or 0) for value in values[1:]]
+    except (TypeError, ValueError):
+        return None
+    return windows, hits
+
+
+def detector_summary_for(data: dict[str, Any], calibration: dict[str, dict[str, Any]],
+                          report: Any, settings: Any, client: Client) -> str:
+    """The Models card's headline, measured at the bar the running decision uses.
+
+    WHICH BAR THAT IS. `ensemble.detect_flows` compares the fused score against
+    `settings.base_threshold` when every active member has a calibrated threshold (the per-detector
+    scale is active); otherwise it compares against the fused calibration's own conformal
+    threshold. The report must name the one in force, and show the other beside it, or the number
+    and the behaviour disagree.
+    """
+    from weirvern.models.detector_status import (  # noqa: PLC0415
+        detector_summary,
+        far_reading_from_counts,
+    )
+
+    fused = calibration.get(FUSED_MODEL)
+    if fused is None:
+        return detector_summary(data.get("detectors") or [], None)
+    calibration_threshold = _number(fused.get("threshold"))
+    if report is None and bool(getattr(settings, "ml_calibrated_threshold", True)):
+        # THE MEMBERSHIP COULD NOT BE MEASURED, so the bar in force is unknown. Do not let the
+        # calibration threshold stand in for it: say the decision bar was not measured.
+        return detector_summary(
+            data.get("detectors") or [], fused,
+            decision_threshold=float(getattr(settings, "base_threshold", 0.35) or 0.35))
+    members = [decision for decision in (getattr(report, "decisions", {}) or {}).values()
+               if getattr(decision, "contributing", False)]
+    scaled = (bool(getattr(settings, "ml_calibrated_threshold", True))
+              and bool(members) and all(
+                  getattr(getattr(decision, "evidence", None), "threshold", None) is not None
+                  for decision in members))
+    decision_threshold = (float(getattr(settings, "base_threshold", 0.35) or 0.35)
+                          if scaled else calibration_threshold)
+    if decision_threshold is None:
+        return detector_summary(data.get("detectors") or [], fused)
+
+    wanted = [decision_threshold]
+    if calibration_threshold is not None and abs(calibration_threshold - decision_threshold) > 1e-12:
+        wanted.append(calibration_threshold)
+    days = int(getattr(settings, "ml_calibration_days", 7) or 7)
+    counts = fused_far_counts(client, wanted, model_version=str(fused.get("model_version") or ""),
+                              days=days)
+    if counts is None:
+        return detector_summary(data.get("detectors") or [], fused,
+                                decision_threshold=decision_threshold)
+    windows, hits = counts
+    decision = far_reading_from_counts(decision_threshold, hits[0], windows)
+    calibration_reading = None
+    if len(wanted) > 1 and len(hits) > 1:
+        calibration_reading = far_reading_from_counts(wanted[1], hits[1], windows)
+    return detector_summary(data.get("detectors") or [], fused,
+                            decision=decision, calibration=calibration_reading)
 
 
 def model_retrain(client: Client) -> dict[str, Any]:

@@ -31,7 +31,7 @@ tests exercise every status without a live ClickHouse.
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from weirvern.config import FUSED_MODEL
@@ -43,6 +43,7 @@ from weirvern.models.eligibility import (
     Decision,
     evidence_from_row,
 )
+from weirvern.models.eval_report import wilson
 
 # The policy target when no calibration row carries one. Mirrors `Settings.ml_target_far`; the
 # caller passes the live setting so an environment override is never silently replaced by this.
@@ -284,26 +285,142 @@ def _status(row: dict[str, Any], *, evidence: Any, decision: Decision | None,
     return ELIGIBLE
 
 
+@dataclass(frozen=True)
+class FARReading:
+    """One false-alarm rate, with the threshold and the sample it was measured at.
+
+    A RATE IS NOT A PROPERTY OF A MODEL; IT IS A PROPERTY OF A MODEL AT A THRESHOLD. The fused
+    calibration row's `observed_far` is measured at the conformal threshold it fitted (1% of the
+    reference), while the ensemble's decision compares against `base_threshold` whenever the
+    per-detector calibrated scale is active. Those are two different bars and they produce two
+    different rates; printing one and deciding at the other is how a 8.37% detector came to be
+    reported as 0.00%.
+    """
+
+    threshold: float
+    windows: int
+    hits: int
+    rate: float | None
+    lower: float | None
+    upper: float | None
+
+    @classmethod
+    def from_counts(cls, threshold: float, hits: int, windows: int) -> FARReading:
+        total = max(0, int(windows))
+        count = max(0, min(int(hits), total))
+        rate = (count / total) if total else None
+        bounds = wilson(count, total) if total else None
+        return cls(threshold=float(threshold), windows=total, hits=count, rate=rate,
+                   lower=bounds[0] if bounds else None,
+                   upper=bounds[1] if bounds else None)
+
+    @classmethod
+    def from_scores(cls, threshold: float, scores: Any) -> FARReading:
+        values: list[float] = []
+        for score in scores or ():
+            number = _number(score)
+            if number is not None:
+                values.append(number)
+        bar = _number(threshold)
+        if bar is None:
+            return cls.from_counts(float("nan"), 0, 0)
+        return cls.from_counts(bar, sum(1 for value in values if value >= bar), len(values))
+
+    def rate_text(self) -> str:
+        return f"{self.rate:.2%}" if self.rate is not None else "not measured"
+
+    def interval_text(self) -> str:
+        if self.windows <= 0:
+            return "n=0"
+        if self.lower is None or self.upper is None:
+            return f"n={self.windows}"
+        return (f"95% CI {self.lower:.2%}-{self.upper:.2%}, "
+                f"n={self.windows}")
+
+    def sentence(self) -> str:
+        return (f"{self.rate_text()} at the {self.threshold:g} threshold "
+                f"({self.interval_text()})")
+
+
+def far_reading(threshold: float, scores: Any) -> FARReading:
+    """The realised false-alarm rate at `threshold` over `scores`.
+
+    THE CALLER MUST PASS THE POPULATION THE DECISION SCORED, not the alert tail: a rate measured
+    on windows that already alerted cannot say how often the bar fires on ordinary traffic.
+    """
+    return FARReading.from_scores(threshold, scores)
+
+
+def far_reading_from_counts(threshold: float, hits: int, windows: int) -> FARReading:
+    """The same reading when ClickHouse has already counted the population."""
+    return FARReading.from_counts(threshold, hits, windows)
+
+
 def detector_summary(rows: list[dict[str, Any]],
-                     fused: dict[str, Any] | None) -> str:
+                     fused: dict[str, Any] | None,
+                     *,
+                     decision: FARReading | None = None,
+                     calibration: FARReading | None = None,
+                     scores: Any = None,
+                     decision_threshold: float | None = None) -> str:
     """One line: how many detectors are eligible, then the fused score against its target.
 
     NEVER A NUMBER WITHOUT ITS TARGET. The fused row is the number the decision actually compares,
     so it is quoted with the target it was calibrated for. When there is no fused row the sentence
     says `nothing measured yet` rather than falling back to a count with no reading behind it.
 
-    THE SAMPLE SIZE AND INTERVAL RIDE BESIDE THE FAR. A fused rate of 0.00 on 34 validation
-    windows is not evidence of a met 0.01 target; printing the bare number was the same defect
-    the eligibility rule just fixed, one layer up.
+    THE RATE IS REPORTED AT THE BAR THE DECISION USES. The calibration row's threshold is the
+    conformal bar fitted for the target false-alarm rate; the ensemble alerts at `base_threshold`
+    when the per-detector calibrated scale is active. This sentence names the decision bar first
+    and shows the calibration threshold beside it, each with its own rate and interval, so the
+    printed number matches the behaviour. A caller that has the population may pass `scores` and
+    `decision_threshold`; a caller with counts already in hand may pass the two readings.
     """
     total = len(rows)
     contributing = sum(1 for row in rows if row.get("contributing"))
+    # A PROVISIONAL DETECTOR IS CONTRIBUTING, NOT VALIDATED. Counting it as `eligible` in the
+    # headline is the same defect the row sentence fixed one layer down: the sample is too small
+    # to decide, and the state it keeps is the state it held before.
+    provisional = sum(1 for row in rows
+                      if row.get("contributing") and row.get("calibrating"))
+    confirmed = max(0, contributing - provisional)
     if not total:
         return "nothing measured yet"
-    head = f"{total} detector{'s' if total != 1 else ''}: {contributing} eligible."
-    observed = _number((fused or {}).get("observed_far"))
+    if provisional:
+        head = (f"{total} detector{'s' if total != 1 else ''}: {confirmed} eligible, "
+                f"{provisional} provisional.")
+    else:
+        head = f"{total} detector{'s' if total != 1 else ''}: {contributing} eligible."
     target = _number((fused or {}).get("target_far"))
-    if observed is None or target is None:
+    if fused is None or target is None:
+        return f"{head} Nothing measured yet: the fused score has no calibration row."
+
+    calibration_threshold = _number((fused or {}).get("threshold"))
+    if decision is None and scores is not None and decision_threshold is not None:
+        decision = far_reading(decision_threshold, scores)
+    if calibration is None and scores is not None and calibration_threshold is not None:
+        calibration = far_reading(calibration_threshold, scores)
+
+    if decision is not None and calibration is not None:
+        if abs(decision.threshold - calibration.threshold) <= 1e-12:
+            return (f"{head} Fused false-alarm rate {decision.rate_text()} at the "
+                    f"{decision.threshold:g} decision bar ({decision.interval_text()}) "
+                    f"against a {target:.2%} target.")
+        return (f"{head} Fused false-alarm rate {decision.rate_text()} at the "
+                f"{decision.threshold:g} decision bar ({decision.interval_text()}); "
+                f"{calibration.rate_text()} at the {calibration.threshold:g} calibration "
+                f"threshold ({calibration.interval_text()}) against a {target:.2%} target.")
+
+    if decision is not None:
+        # No separate calibration reading: the decision bar is the only measurement we can state.
+        return (f"{head} Fused false-alarm rate {decision.rate_text()} at the "
+                f"{decision.threshold:g} decision bar ({decision.interval_text()}) "
+                f"against a {target:.2%} target.")
+
+    # NO DECISION-BAR MEASUREMENT. Say which threshold the rate below belongs to instead of
+    # letting the calibration threshold pass for the bar the decision uses.
+    observed = _number((fused or {}).get("observed_far"))
+    if observed is None:
         return f"{head} Nothing measured yet: the fused score has no calibration row."
     n = _number((fused or {}).get("validation_count"))
     lower = _number((fused or {}).get("far_lower"))
@@ -314,12 +431,19 @@ def detector_summary(rows: list[dict[str, Any]],
         sample = f" (n={int(n)})"
     else:
         sample = " (n=0)"
+    where = (f"at the {calibration_threshold:g} calibration threshold"
+             if calibration_threshold is not None else "")
+    if decision_threshold is not None:
+        return (f"{head} Fused false-alarm rate {observed:.2f} {where}{sample}; the "
+                f"{float(decision_threshold):g} decision bar was not measured against a "
+                f"population. Target {target:.2f}.")
     return (f"{head} Fused false-alarm rate {observed:.2f}{sample} against a "
             f"{target:.2f} target.")
 
 
 __all__ = [
     "DEFAULT_ELIGIBILITY_MULTIPLE", "DEFAULT_GRACE_H", "DEFAULT_MIN_COVERAGE",
-    "DEFAULT_RETRAIN_EVERY_H", "DEFAULT_TARGET_FAR", "ELIGIBLE", "INSUFFICIENT_TELEMETRY",
-    "NOT_TRAINED", "REFUSED", "coverage_note", "detector_rows", "detector_summary",
+    "DEFAULT_RETRAIN_EVERY_H", "DEFAULT_TARGET_FAR", "ELIGIBLE", "FARReading",
+    "INSUFFICIENT_TELEMETRY", "NOT_TRAINED", "REFUSED", "coverage_note", "detector_rows",
+    "detector_summary", "far_reading", "far_reading_from_counts",
 ]

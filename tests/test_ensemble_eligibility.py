@@ -384,7 +384,8 @@ def test_a_110_window_far_reading_cannot_bench_a_detector(tmp_path):
     assert decision.calibrating is True
     assert decision.state == STATE_ELIGIBLE, "an unjudgeable sample benched a working detector"
     assert decision.contributing is True
-    assert "n=110" in decision.sentence() and "need 300" in decision.sentence()
+    assert "110 of 300 validation windows" in decision.sentence()
+    assert decision.sentence().startswith("provisional")
     # Its calibrated scale is still the one it earned; the gap did not erase it.
     assert after.thresholds["KNN distance"] == 0.86
 
@@ -417,7 +418,8 @@ def test_a_far_is_never_sentenced_without_its_sample_size():
     cal = _evidence(observed_far=5 / 110, validation_count=110)
     waiting = Decision(name="LOF", state=STATE_CALIBRATING, evidence=cal,
                        calibrating=True, reason=cal.reason)
-    assert "n=110" in waiting.sentence() and "need 300" in waiting.sentence()
+    assert "110 of 300 validation windows" in waiting.sentence()
+    assert "provisional" in waiting.sentence()
 
     summary = detector_summary(
         [{"name": "LOF", "contributing": False, "status": waiting.sentence()}],

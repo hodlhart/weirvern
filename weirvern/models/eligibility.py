@@ -199,29 +199,53 @@ class Decision:
         return (f"calibrating (n={self.validation_count}, "
                 f"need {self.min_validation_windows})")
 
+    def provisional_text(self) -> str:
+        """The sentence for a detector kept in place on an under-sampled measurement.
+
+        AN INCUMBENT IS NOT VALIDATED JUST BECAUSE IT IS STILL CONTRIBUTING. The old sentence
+        began with `eligible` and pushed the sample into a parenthetical, so a 67-window reading
+        read as a verdict when the measurement could not yet answer the question. The state is
+        `provisional`: the detector is running on the strength of the state it already held, and
+        the sample that will decide it is named as `67 of 300 validation windows`. The FAR and
+        its interval still travel -- dropping them would hide the measurement the sentence is
+        about -- but they are evidence toward a decision, not the decision itself.
+        """
+        ev = self.evidence
+        count = self.validation_count
+        need = self.min_validation_windows
+        text = f"provisional — {count} of {need} validation windows"
+        observed = _number(ev.observed_far) if ev is not None else None
+        if observed is not None:
+            text += f"; FAR {observed:.3f}"
+            lower = _number(ev.far_lower) if ev is not None else None
+            upper = _number(ev.far_upper) if ev is not None else None
+            if lower is not None and upper is not None:
+                text += f" (95% CI {lower:.3f}-{upper:.3f})"
+        return text
+
     def sentence(self) -> str:
         """The one line the Detectors table renders for this decision.
 
         A FAR is never quoted without its interval and sample size. Below the sample floor the
-        sentence says `calibrating`, names the n it has and the n it needs, and then says which
+        sentence says `provisional`, names the n it has and the n it needs, and then says which
         state the detector keeps -- it is never rendered as a failure the measurement cannot
-        support.
+        support, and it is never rendered as if the small sample had validated it.
         """
         if self.state == STATE_ELIGIBLE:
             if self.calibrating:
-                return f"{STATE_ELIGIBLE} ({self.reason or self.calibrating_text()})"
+                return self.provisional_text()
             return STATE_ELIGIBLE
         if self.state == STATE_EXCLUDED:
             return "calibrated, excluded from fusion (ML_FUSION_EXCLUDE)"
         if self.state == STATE_HELD:
             if self.calibrating:
-                return f"{self.reason or self.calibrating_text()}; held for budget"
+                return f"{self.provisional_text()}; held for budget"
             if self.rate_with is None or self.rate_without is None:
                 return f"calibrated, held for budget ({self.reason})"
             return (f"calibrated, held for budget (fused {self.rate_with:.1%} with it vs "
                     f"{self.rate_without:.1%} without; budget {(self.budget or 0.0):.1%})")
         if self.state == STATE_CALIBRATING:
-            return self.reason or self.calibrating_text()
+            return self.provisional_text()
         return f"not contributing: {self.reason}"
 
 
