@@ -1544,6 +1544,17 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .tablewrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .tablewrap::-webkit-scrollbar-track { background: transparent; }
 
+/* THE SCANNER TABLE AT PHONE WIDTH. Four columns plus an action do not fit 390px, and an
+ * unwrapped table clipped its own Details button. The Nmap VERSION is the least load-bearing
+ * column -- the status line already says whether Nmap is present -- so it is dropped rather
+ * than letting the row overflow. */
+.scanner-table { width: 100%; }
+@media (max-width: 640px) {
+  .scanner-table .scanner-nmap { display: none; }
+  .scanner-table th, .scanner-table td { padding-left: 5px; padding-right: 5px; }
+  .scanner-table th:last-child, .scanner-table td:last-child { padding-right: 0; }
+}
+
 @media (max-width: 720px) {
   #view-logs .controls select { min-height: 44px; }
   /* A sheet on a phone is the whole width (C-8). */

@@ -2881,7 +2881,8 @@ async function loadScannerStatus() {
   const table = el("table", { class: "scanner-table" });
   table.appendChild(el("thead", {}, [el("tr", {}, [
     el("th", { text: "Scanner" }), el("th", { text: "Profile" }),
-    el("th", { text: "Nmap" }), el("th", { text: "Last check" }), el("th", { text: "" }),
+    el("th", { class: "scanner-nmap", text: "Nmap" }),
+    el("th", { text: "Last check" }), el("th", { text: "" }),
   ])]));
   const body = el("tbody");
   for (const item of sensors) {
@@ -2891,14 +2892,19 @@ async function loadScannerStatus() {
       el("td", {}, [el("span", { class: "mono", text: item.sensor_id }),
         item.sensor_id === d.local_sensor ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
       el("td", {}, [scannerChip(item)]),
-      el("td", {}, [el("span", { class: "mono", text: item.nmap_version || "—" })]),
+      el("td", { class: "scanner-nmap" }, [el("span", { class: "mono", text: item.nmap_version || "—" })]),
       el("td", { class: "muted", text: scannerAge(item.last_check) }),
       el("td", {}, [toggle]),
     ]);
     body.appendChild(row);
   }
   table.appendChild(body);
-  list.appendChild(table);
+  // THE TABLE SCROLLS INSIDE THE CARD, NOT THROUGH IT. At 390px four columns plus the action
+  // overflow the card and clip the Details button; the wrapper keeps the overflow contained
+  // (and .scanner-nmap is dropped at phone width, see style.css).
+  const wrap = el("div", { class: "tablewrap" });
+  wrap.appendChild(table);
+  list.appendChild(wrap);
 }
 
 const scannerCheck = document.getElementById("scanner-check");

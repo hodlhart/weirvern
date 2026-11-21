@@ -25,6 +25,9 @@ the installer documentation matches the containers it actually starts.
   deployer instead of in the helper, and a non-netflow `start` branch ended with status 1 and
   aborted the script before the heartbeat check. A fresh unit now starts, and the installer's last
   step prints `heartbeat OK`.
+- **The scanner table fits a phone.** At 390 px the four columns plus the row action overflowed
+  the card and clipped its Details button; the table now scrolls inside its own wrapper and drops
+  the Nmap-version column below 640 px, so the action is whole at every width.
 - **The fleet note is one line, and the reasoning is behind Details.** The 30-word paragraph above
   the scanner card is now the count and the network (`1 declared network has no sensor:
   203.0.113.0/24.`); why declared and seen differ moved into the card's Details disclosure. This
