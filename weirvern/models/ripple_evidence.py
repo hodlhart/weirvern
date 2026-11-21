@@ -101,6 +101,16 @@ can see, so it can CORROBORATE rather than re-count. See `ripple.CHANNEL_FAMILIE
          thirty-window floor. The channel is declared and correct; at this site it currently
          emits nothing, and that is reported rather than papered over.
 
+THE ACTIVE-INVENTORY FAMILY ADDED 2026-11-21. `service_set_change` reads the scanner's per-scan
+history (`asset_service_history`, written once per COMPLETE scan) and compares the newest scan's
+service set with the previous one: a port opened, a port closed, or a product/version changed on
+the same port. It is its own family because no passive pipeline can see a listener that never
+sent a packet. Its comparison unit is the SCAN, not an hour -- see `SERVICE_SPECS` -- because a
+scan is episodic and bucketing it by clock time would merge two scans or starve the window. The
+p-value is still the host's own history of scan-to-scan changes, under the same 100-window
+empirical rule and the same 30-window floor; `change` is not a count, so below 100 it reports
+'insufficient' rather than a fitted number.
+
 WHAT WAS REFUSED, AND WHY. Every source below is collected and none of it is channelised.
 Adding a channel that re-counts an existing population would repeat the defect this module
 already fixed once (`flow_bytes` and `flow_volume` counted as two pieces of evidence).
@@ -130,6 +140,7 @@ from typing import Any
 from weirvern import monitored as monitored_mod
 from weirvern import retention as retention_mod
 from weirvern import ripple_signatures
+from weirvern.asset_changes import detect_service_changes
 from weirvern.models import ripple_tail
 from weirvern.models.generic_channels import ChannelSpec
 from weirvern.models.ripple import (
@@ -433,9 +444,57 @@ NOTICE_SPECS: tuple[ChannelSpec, ...] = (
                 scales=EVIDENCE_SCALES, retention_days=7),
 )
 
+# ── the ACTIVE INVENTORY pipeline: one more independent view ─────────────────────────────────
+#
+# THE SCANNER WAS PRODUCING FACT THIS LAYER COULD NOT HEAR. `asset_service_history` records one
+# row per open service per COMPLETE scan, keyed by scan_id; the current table is a snapshot (see
+# `scanner.record_scan_result`). A service that appears, disappears or changes its product or
+# version on a host is not visible to any passive family: flow/conn see bytes, dns sees names,
+# tls/http/ssh see protocols the host SPEAKS, and notice sees Zeek's conclusions. None of them
+# can report a listener that never sent a packet, which is why `service` is a family of its own
+# rather than a view of `conn` or `ssh` -- it is an independent measurement, so it can corroborate.
+#
+# THE COMPARISON UNIT IS ONE SCAN, NOT ONE HOUR. A scan is episodic (the rescan clock decides
+# when), so bucketing it into clock windows would either merge two scans or starve the window.
+# The channel therefore compares the NEWEST complete scan's snapshot with the one before it, and
+# takes its p-value from the host's own history of scan-to-scan changes. `scale='1h'` is the
+# ripple grouping window this evidence lands in, not a claim that the series is hourly; the
+# sample count on the row is the number of earlier scan transitions, which is what the empirical
+# rank test actually ranks.
+#
+# A PARTIAL SCAN IS NOT A CLOSED PORT. Only `asset_scans.scan_complete = 1` rows are read; a
+# timed-out run's port list never enters the series, so it cannot manufacture a closure. A host
+# with one complete scan gets an 'insufficient' row (there is no previous scan to compare with),
+# never a zero that would read as "measured, no change".
+#
+# THE STATISTIC IS A BOOLEAN `change`, the same kind as `ssh_version_change`: 1 when the set
+# differs from the previous scan, 0 when it does not. That also makes it ineligible for the fitted
+# count tail, so below 100 transitions it reports 'insufficient' under the same rule as every
+# other non-count channel rather than inventing a model.
+SERVICE_CHANNEL = "service_set_change"
+
+#: How many completed scans of ONE host may enter the baseline. The empirical test needs 100 and
+#: resolves p<0.001 at 1,000; 400 bounds the read while giving better than the family bar. A
+#: rescan clock faster than one per hour can otherwise turn a 30-day lookback into thousands of
+#: rows per host.
+SERVICE_SCAN_MAX_BASELINE = 400
+
+#: The widest scan history this channel will read, whatever retention allows. A scan series is
+#: not a traffic table: the useful question is "how has THIS host changed recently", and a year
+#: of hourly scans would be 8,760 samples per host for no extra resolution below 1e-3.
+SERVICE_SCAN_LOOKBACK_CAP_DAYS = 30
+
+SERVICE_SPECS: tuple[ChannelSpec, ...] = (
+    ChannelSpec(SERVICE_CHANNEL, "service", "weirvern.asset_service_history", "ip",
+                time_column="observed_at", kind="change",
+                required_columns=("scan_id", "ip", "port", "protocol", "service", "product",
+                                  "version", "observed_at"),
+                scales=("1h",), retention_days=7),
+)
+
 SPECS: tuple[ChannelSpec, ...] = (
     FLOW_SPECS + CONN_SPECS + DNS_SPECS + IDENTITY_SPECS
-    + TLS_SPECS + HTTP_SPECS + SSH_SPECS + NOTICE_SPECS
+    + TLS_SPECS + HTTP_SPECS + SSH_SPECS + NOTICE_SPECS + SERVICE_SPECS
 )
 
 #: channel -> family for the channels a signature can name a value on. Derived from the specs,
@@ -679,6 +738,8 @@ def supported_scales(spec: ChannelSpec, lookback_days: int | None = None,
 
 def statistic(spec: ChannelSpec) -> str:
     """One phrase naming what the channel measures, for the inventory and the operator."""
+    if spec.channel == SERVICE_CHANNEL:
+        return "services opened, closed or changed since the previous complete scan"
     if spec.kind == "count":
         return "rows per window"
     if spec.kind == "sum":
@@ -923,7 +984,7 @@ def _change_series(by_index: dict[int, set[str]]) -> tuple[float, list[float]]:
 
 
 def _measure(spec: ChannelSpec, *, scale: str, host: str, moment: datetime, value: float,
-             reference: list[float], coverage: float) -> ChannelEvidence | None:
+             reference: list[float], coverage: float, clause: str = "") -> ChannelEvidence | None:
     """One measurement, or None when there is nothing a p-value could be computed from.
 
     THE SELECTION RULE, IN ONE PLACE AND IN THIS ORDER:
@@ -973,6 +1034,12 @@ def _measure(spec: ChannelSpec, *, scale: str, host: str, moment: datetime, valu
         method = P_METHOD_INSUFFICIENT
         detail = "insufficient: the current value is not a non-negative integer count"
     direction = "rose" if value > median else "fell" if value < median else "unchanged"
+    # A CHANNEL MAY CARRY A PLAIN-LANGUAGE CLAUSE. `clause` is what the operator reads ("<host>
+    # opened 8080/tcp ..."); `p_detail` stays the stored provenance, so it holds both the clause
+    # and the test's own note. Other channels pass nothing here and their rows are unchanged.
+    p_detail = detail
+    if clause:
+        p_detail = f"{clause} — {detail}" if detail else clause
     return ChannelEvidence(
         channel=spec.channel, family=spec.family, scale=scale,
         model_id=f"source:{spec.channel}", model_version=MODEL_VERSION,
@@ -983,7 +1050,7 @@ def _measure(spec: ChannelSpec, *, scale: str, host: str, moment: datetime, valu
         # A parametric or insufficient row is not "short": it has the per-scale minimum. The
         # short flag is reserved for the floor the grouping also refuses.
         baseline_short=count < min_baseline_samples(scale),
-        p_method=method, p_detail=detail,
+        p_method=method, p_detail=p_detail, detail=clause,
     )
 
 
@@ -1040,6 +1107,178 @@ def _evidence_for_scale(spec: ChannelSpec, *, scale: str, buckets: dict[str, dic
         reference = [_value(spec, bucket) for bucket in history.values()]
         item = _measure(spec, scale=scale, host=host, moment=moment, value=value,
                         reference=reference, coverage=coverage)
+        if item is not None:
+            out.append(item)
+    return out
+
+
+def _service_scope_where(scope_cidrs: tuple[str, ...] | None) -> str:
+    """The monitored-scope predicate for the scanner tables, which key the host as `ip`.
+
+    Same rule as every other channel: `None` means a caller without a scope list (tests), an
+    empty list means nothing is ours and the query must match nothing rather than everything.
+    """
+    if scope_cidrs is None:
+        return ""
+    if not scope_cidrs:
+        return " AND 0"
+    checks = " OR ".join(f"isIPAddressInRange(ip, '{cidr}')" for cidr in scope_cidrs)
+    return f" AND ({checks})"
+
+
+def service_snapshots(
+    client: Any, *, moment: datetime, lookback_days: int,
+    scope_cidrs: tuple[str, ...] | None,
+) -> dict[str, list[tuple[datetime, str, set[tuple[int, str, str, str, str]]]]]:
+    """Each host's COMPLETE scans, oldest first, with the service set each one measured.
+
+    The two reads are the scan LEDGER and the append-only HISTORY, never the current snapshot:
+    a baseline must be built from what each scan measured, and `asset_services` is only the
+    newest of those by design.
+
+    A SCAN WITH NO HISTORY ROWS IS AN EMPTY SET, NOT A MISSING MEASUREMENT -- but only because
+    the ledger says `scan_complete = 1`. That is the distinction the column exists for: a host
+    that closed every port and a scan that timed out both produce no service rows, and only the
+    first is evidence of closure.
+    """
+    since = moment - timedelta(days=int(lookback_days))
+    parameters = {"since": since, "until": moment}
+    where = _service_scope_where(scope_cidrs)
+    scans = list(client.query(
+        "SELECT scan_id, ip, max(finished_at) AS finished_at "
+        "FROM weirvern.asset_scans "
+        "WHERE kind = 'service' AND status = 'done' AND scan_complete = 1 "
+        "  AND finished_at IS NOT NULL "
+        "  AND finished_at >= %(since)s AND finished_at < %(until)s"
+        + where +
+        " GROUP BY scan_id, ip ORDER BY finished_at",
+        parameters=parameters,
+    ).result_rows)
+    rows = list(client.query(
+        "SELECT scan_id, ip, port, protocol, service, product, version "
+        "FROM weirvern.asset_service_history "
+        "WHERE observed_at >= %(since)s AND observed_at < %(until)s"
+        + where,
+        parameters=parameters,
+    ).result_rows)
+    measured: dict[tuple[str, str], set[tuple[int, str, str, str, str]]] = {}
+    for row in rows:
+        try:
+            port = int(row[2] or 0)
+        except (TypeError, ValueError):
+            continue
+        key = (str(row[1] or ""), str(row[0] or ""))
+        if not key[0] or not key[1]:
+            continue
+        measured.setdefault(key, set()).add((
+            port, str(row[3] or "tcp").lower(), str(row[4] or ""), str(row[5] or ""),
+            str(row[6] or ""),
+        ))
+    series: dict[str, list[tuple[datetime, str, set[tuple[int, str, str, str, str]]]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in scans:
+        scan_id, host = str(row[0] or ""), str(row[1] or "")
+        if not scan_id or not host or row[2] is None:
+            continue
+        if (host, scan_id) in seen:
+            continue
+        seen.add((host, scan_id))
+        series.setdefault(host, []).append(
+            (_aware(row[2]), scan_id, measured.get((host, scan_id), set())))
+    for entries in series.values():
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+    return series
+
+
+def _service_label(row: tuple[int, str, str, str, str]) -> str:
+    """What a person calls this service: its product and version, else its name."""
+    _, _, service, product, version = row
+    label = " ".join(part for part in (product, version) if part)
+    return label or service or "open service"
+
+
+def service_change_sentence(host: str, previous: Any, current: Any) -> str:
+    """The change between two scans, in words an operator can act on.
+
+    `192.0.2.10 opened 8080/tcp (Golang net/http) since the previous scan` is the contract; a
+    version change names BOTH versions (`changed 22/tcp from OpenSSH 9.6 to OpenSSH 10.0`).
+    The classification is `asset_changes.detect_service_changes`, the same definition the change
+    ledger uses, so the sentence and the ledger cannot disagree about what kind of change it is.
+    """
+    before = {(row[0], row[1]): row for row in previous}
+    after = {(row[0], row[1]): row for row in current}
+    clauses: list[str] = []
+    for change in detect_service_changes(sorted(previous), sorted(current)):
+        key = (change.port, change.protocol)
+        if change.kind == "port_opened" and key in after:
+            row = after[key]
+            clauses.append(f"opened {row[0]}/{row[1]} ({_service_label(row)})")
+        elif change.kind == "port_closed" and key in before:
+            row = before[key]
+            clauses.append(f"closed {row[0]}/{row[1]} ({_service_label(row)})")
+        elif key in before and key in after:
+            old, new = before[key], after[key]
+            clauses.append(f"changed {new[0]}/{new[1]} from {_service_label(old)} "
+                           f"to {_service_label(new)}")
+    if not clauses:
+        return f"{host} has no service change since the previous scan"
+    return f"{host} " + "; ".join(clauses) + " since the previous scan"
+
+
+def _service_insufficient(spec: ChannelSpec, *, host: str, moment: datetime,
+                          sentence: str) -> ChannelEvidence:
+    """A measurement that exists but cannot be compared: no previous scan, or no baseline.
+
+    EMITTED, NOT SKIPPED. "There is no previous scan" and "nothing changed" are different facts,
+    and a missing row would read as the second. `pvalue` is NaN (never 1.0) and
+    `baseline_short` is True, so `_usable` refuses it exactly as it refuses any other
+    insufficient row.
+    """
+    return ChannelEvidence(
+        channel=spec.channel, family=spec.family, scale="1h",
+        model_id=f"source:{spec.channel}", model_version=MODEL_VERSION,
+        score=float("nan"), pvalue=float("nan"), freshness_s=0.0, present=True,
+        host=host, observed_at=moment, value=float("nan"), baseline_median=float("nan"),
+        sample_count=0, coverage=1.0, direction="",
+        p_floor=pvalue_floor(0), baseline_short=True,
+        p_method=P_METHOD_INSUFFICIENT, p_detail=sentence, detail=sentence,
+    )
+
+
+def _service_evidence(
+    spec: ChannelSpec, *, series: dict[str, list[tuple[datetime, str, set]]],
+    wanted: set[str] | None,
+) -> list[ChannelEvidence]:
+    """One evidence row per host for its newest complete scan against the previous one."""
+    out: list[ChannelEvidence] = []
+    for host, entries in series.items():
+        if wanted is not None and host not in wanted:
+            continue
+        if not entries:
+            continue
+        entries = entries[-SERVICE_SCAN_MAX_BASELINE:]
+        latest_at, _latest_id, latest = entries[-1]
+        if len(entries) < 2:
+            out.append(_service_insufficient(
+                spec, host=host, moment=latest_at,
+                sentence=(f"insufficient: {host} has one complete scan, so there is no "
+                          f"previous scan to compare it with")))
+            continue
+        previous = entries[-2][2]
+        sentence = service_change_sentence(host, previous, latest)
+        transitions = [
+            1.0 if entries[index][2] != entries[index - 1][2] else 0.0
+            for index in range(1, len(entries))
+        ]
+        value, reference = transitions[-1], transitions[:-1]
+        if not reference:
+            out.append(_service_insufficient(
+                spec, host=host, moment=latest_at,
+                sentence=(f"insufficient: {sentence}; this host has one earlier scan, which "
+                          f"is a comparison but not a baseline")))
+            continue
+        item = _measure(spec, scale="1h", host=host, moment=latest_at, value=value,
+                        reference=reference, coverage=1.0, clause=sentence)
         if item is not None:
             out.append(item)
     return out
@@ -1114,6 +1353,19 @@ def compute(client: Any, *, now: datetime | None = None, hosts: list[str] | None
     out: list[ChannelEvidence] = []
     for spec in specs:
         if spec.channel in missing_columns:
+            continue
+        if spec.channel == SERVICE_CHANNEL:
+            # THE ONE CHANNEL WHOSE WINDOW IS A SCAN, NOT A CLOCK INTERVAL. It cannot use the
+            # generic SQL shapes (`sql_anchored` aggregates a table by time; this compares two
+            # rows of a scan ledger), so it has its own reader, but the p-value, the floors, the
+            # evidence row and the grouping are the SAME machinery as every other channel.
+            try:
+                scan_lookback = min(max(lookbacks.values()), SERVICE_SCAN_LOOKBACK_CAP_DAYS)
+                series = service_snapshots(client, moment=moment,
+                                           lookback_days=scan_lookback, scope_cidrs=cidrs)
+                out.extend(_service_evidence(spec, series=series, wanted=wanted))
+            except Exception:  # noqa: BLE001 - one unreadable source must not silence the rest
+                pass
             continue
         scales = supported_scales(spec, lookback_days, retention)
         if not scales:
@@ -1270,6 +1522,10 @@ def read(client: Any, *, hours: int = 24, now: datetime | None = None) -> list[C
             baseline_short=int(sample_count or 0) < min_baseline_samples(str(scale or "")),
             p_method=str(p_method or P_METHOD_EMPIRICAL),
             p_detail=str(p_detail or ""),
+            # A SERVICE ROW'S p_detail IS ITS SENTENCE. Every other channel's p_detail is the
+            # fit's provenance, so restoring `detail` unconditionally would put "ranks n=254"
+            # in the operator's sentence. Only the channel that WRITES a clause reads one back.
+            detail=(str(p_detail or "") if str(channel or "") == SERVICE_CHANNEL else ""),
         ))
     return out
 
@@ -1443,10 +1699,12 @@ def overview(client: Any, *, hours: int = 24, now: datetime | None = None) -> di
 
 
 __all__ = ["COLUMNS", "LOOKBACK_DAYS", "LOOKBACK_MARGIN_WINDOWS", "MAX_HOSTS",
-           "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SET_KINDS",
-           "SIGNATURE_CHANNELS", "SPECS", "TAIL_DISABLED_REASON", "TAIL_ENABLED", "TAIL_KINDS",
-           "TAIL_VALIDATION",
+           "MIN_BASELINE_SAMPLES", "MIN_COVERAGE", "MODEL_VERSION", "SERVICE_CHANNEL",
+           "SERVICE_SCAN_LOOKBACK_CAP_DAYS", "SERVICE_SCAN_MAX_BASELINE", "SERVICE_SPECS",
+           "SET_KINDS", "SIGNATURE_CHANNELS", "SPECS", "TAIL_DISABLED_REASON", "TAIL_ENABLED",
+           "TAIL_KINDS", "TAIL_VALIDATION",
            "availability", "baseline_windows", "compute", "effective_lookback_days", "inventory",
            "lookbacks_for", "overview", "read", "required_lookback_days", "retention_in_force",
-           "run", "scale_lookback_days", "scale_report", "statistic", "store",
-           "supported_scales", "tail_supported", "windows_for_bar"]
+           "run", "scale_lookback_days", "scale_report", "service_change_sentence",
+           "service_snapshots", "statistic", "store", "supported_scales", "tail_supported",
+           "windows_for_bar"]

@@ -475,8 +475,14 @@ def test_no_channel_claims_a_scale_the_lookback_cannot_support():
         assert "6h" not in row["scales"], row
         assert "24h" not in row["scales"], row
         assert row["scales"] == ["1h"], row
-        assert row["scale_detail"]["6h"]["usable"] is False, row
-        assert "baseline too short" in row["scale_detail"]["6h"]["reason"], row
+        # `scale_detail` carries the scales the spec DECLARES; the scan-driven service channel
+        # declares only 1h (its comparison unit is a scan, not a clock window), so a hardcoded
+        # lookup for 6h would assert a scale it never claimed. Every declared-away scale that IS
+        # present must still say why it is unusable.
+        for scale in ("6h", "24h", "7d"):
+            if scale in row["scale_detail"]:
+                assert row["scale_detail"][scale]["usable"] is False, row
+                assert "baseline too short" in row["scale_detail"][scale]["reason"], row
 
 
 def test_a_two_sided_p_value_sees_a_fall_as_clearly_as_a_rise():

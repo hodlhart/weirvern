@@ -494,7 +494,7 @@ def asset_exposure(client: Any, addr: str) -> dict:
     )
     services = _rows(
         client,
-        "SELECT port, protocol, service, product, version, cpe, observed_at "
+        "SELECT port, protocol, service, product, version, cpe, observed_at, last_seen_scan_id "
         "FROM weirvern.asset_services FINAL WHERE ip = %(ip)s ORDER BY port",
         {"ip": addr},
         "host exposure (services)",
@@ -517,7 +517,8 @@ def asset_exposure(client: Any, addr: str) -> dict:
             "services": [{"port": int(r[0] or 0), "protocol": str(r[1] or ""),
                           "service": str(r[2] or ""), "product": str(r[3] or ""),
                           "version": str(r[4] or ""), "cpe": str(r[5] or ""),
-                          "observed_at": _scan_ts(r[6])}
+                          "observed_at": _scan_ts(r[6]),
+                          "scan_id": str(r[7] or "") if len(r) > 7 else ""}
                          for r in services or []],
         }
     r = registry[0]
@@ -532,7 +533,8 @@ def asset_exposure(client: Any, addr: str) -> dict:
         "services": [{"port": int(x[0] or 0), "protocol": str(x[1] or ""),
                       "service": str(x[2] or ""), "product": str(x[3] or ""),
                       "version": str(x[4] or ""), "cpe": str(x[5] or ""),
-                      "observed_at": _scan_ts(x[6])}
+                      "observed_at": _scan_ts(x[6]),
+                      "scan_id": str(x[7] or "") if len(x) > 7 else ""}
                      for x in services or []],
     }
 

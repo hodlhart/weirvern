@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.23.121 — 2026-11-21
+
+THE INVENTORY'S "CURRENT" SERVICES ARE TRUE, AND A SERVICE CHANGE NOW FEEDS DETECTION — the
+scanner stops accumulating ports a host no longer exposes, and the change becomes a ripple
+channel instead of a table nobody compares.
+
+- **`asset_services` is a snapshot of the newest COMPLETE scan.** Measured defect: one host listed
+  twelve services while its latest scan found one, and another listed six while its latest scan
+  found four. `ReplacingMergeTree` only replaces a row with the same `(asset_key, port, protocol)`,
+  so a port that disappeared was never removed. A complete scan now inserts its set and deletes
+  that host's rows which the scan did not produce; `asset_service_history` keeps every scan, so
+  nothing measured is lost. `last_seen_scan_id` names the scan behind each current row.
+- **A partial scan cannot erase a snapshot, and `asset_scans.scan_complete` says why.** Nmap's own
+  XML decides (`runstats/finished/@exit`, `<host timedout>`); a run that timed out keeps the
+  previous snapshot and records `scan_complete = 0`. An observation-only result (no completeness
+  marker) changes nothing. A genuinely empty complete scan produces an empty snapshot — which is
+  a measurement, not a hole.
+- **`service_set_change` is a ripple channel over the per-scan history.** It compares the newest
+  complete scan with the previous one and fires on a port opened, a port closed, or a product or
+  version changed on the same port. The p-value is the host's own history of scan-to-scan changes
+  under the same empirical/100-window rule (a `change` is not a count, so a short baseline reports
+  `insufficient`, never a fitted number); the evidence row lands in `ml_ripple_evidence` and the
+  ripple takes its severity from the one `severity_bands()` table. A host's first scan is
+  `insufficient`, never "no change".
+- **The sentence names the change in plain words.** `192.0.2.10 opened 8080/tcp (Golang net/http)
+  since the previous scan`; a version change names both versions. It rides in the evidence row so
+  the operator reads it on the Ripples surface, not a numeric delta.
+- **`service` is a new family, deliberately.** No passive pipeline can see a listener that never
+  sent a packet: flow/conn measure traffic, dns measures names, tls/http/ssh measure protocols the
+  host speaks, and notice is Zeek's own conclusion. The scanner is an independent measurement and
+  can corroborate them.
+
 ## 0.23.120 — 2026-11-21
 
 A CONTAINERISED WEIRLING CAN SCAN — the agent image ships Nmap with raw-socket capabilities, and

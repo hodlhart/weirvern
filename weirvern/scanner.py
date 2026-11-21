@@ -30,6 +30,9 @@ DESIGN RULES
   move under DHCP, so the MAC is the better long-lived key when one exists.
 * Every invocation is recorded in `asset_scans`, including failures. "No services" and
   "the scan did not run" must not look the same in the UI.
+* `asset_services` is a SNAPSHOT, `asset_service_history` is the LEDGER. A complete scan
+  replaces the host's current set; a partial run changes nothing (see `scan_complete`), because
+  a port missing from an unfinished scan is not a port that closed.
 * Scanning is scoped by the weirling registry and never scans the whole internet.
 """
 from __future__ import annotations
@@ -62,12 +65,18 @@ REGISTRY_COLUMNS = [
 ]
 SERVICE_COLUMNS = [
     "asset_key", "ip", "port", "protocol", "service", "product", "version", "cpe", "observed_at",
+    # Appended (065): the scan that produced this row. It is what lets the writer delete exactly
+    # the rows a newer scan did NOT find, and what lets a reader answer "which scan is this?".
+    "last_seen_scan_id",
 ]
 OBSERVATION_COLUMNS = [
     "asset_key", "ip", "port", "script", "key", "value", "observed_at",
 ]
 SCAN_COLUMNS = [
     "scan_id", "asset_key", "ip", "kind", "started_at", "finished_at", "status", "error", "command",
+    # Appended (065): Nmap's own verdict on whether the run completed. A partial scan's port list
+    # must never be compared with a previous snapshot as if the missing ports had closed.
+    "scan_complete",
 ]
 SCANNER_STATUS_COLUMNS = [
     "sensor_id", "profile", "nmap_available", "nmap_version", "nmap_path",
@@ -222,6 +231,39 @@ def parse_service_xml(text: str) -> list[Service]:
                 cpe=",".join(cpes),
             ))
     return services
+
+
+def scan_complete(text: str) -> bool:
+    """Whether Nmap's own report says this was a COMPLETE measurement of the host.
+
+    THE SNAPSHOT RULE NEEDS THIS, AND GUESSING IS NOT ENOUGH. Replacing a host's current service
+    set is only honest when the scan actually finished: a run that timed out on the host, or an
+    XML document truncated by a killed process, returns a partial port list. Treating "fewer
+    ports than last time" as evidence would let a broken scan erase a real snapshot, which is a
+    worse lie than the accumulation this replaces.
+
+    Nmap states the two facts this needs in its XML:
+      * `runstats/finished/@exit` is `success` for a completed run; a timed-out or aborted run
+        says so, and a document without `runstats` is not a completed run at all.
+      * a `<host timedout="true">` means the per-host deadline fired mid-scan, so its port list
+        is partial even though the process exited 0.
+
+    A document with no `<host>` is also refused: this scanner scans one address with `-Pn`, so a
+    reply with no host element is not a measurement of anything.
+    """
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return False
+    finished = root.find("./runstats/finished")
+    if finished is None:
+        return False
+    if (finished.get("exit") or "").strip().lower() not in ("", "success"):
+        return False
+    hosts = root.findall("host")
+    if not hosts:
+        return False
+    return all((host.get("timedout") or "").strip().lower() != "true" for host in hosts)
 
 
 def _script_rows(script: ET.Element, prefix: str = "") -> list[tuple[str, str]]:
@@ -1105,12 +1147,13 @@ def _mark(client: Any, asset: dict[str, Any], state: str, error: str = "", *, sc
 
 def _record_scan(
     client: Any, scan_id: str, asset: dict[str, Any], kind: str, *,
-    status: str, error: str = "", command: str = "",
+    status: str, error: str = "", command: str = "", complete: bool = False,
 ) -> None:
     now = _now()
     _insert(client, "asset_scans", SCAN_COLUMNS, [[
         scan_id, asset["asset_key"], asset["ip"], kind, now,
         None if status == "running" else now, status, _clip(error, 500), _clip(command, 1000),
+        1 if complete else 0,
     ]])
 
 
@@ -1175,12 +1218,16 @@ def run_service_scan(settings: Settings, ip: str, *, raw: bool = False,
             "ok": True,
             "command": command,
             "error": "",
+            # WHETHER THIS WAS A COMPLETE MEASUREMENT, decided by Nmap's own report. The hub
+            # replaces a host's current service set only when this is True; a partial run keeps
+            # the previous snapshot rather than erasing ports it never got to probe.
+            "complete": scan_complete(result.stdout),
             "services": [asdict(service) for service in parse_service_xml(result.stdout)],
             "observations": [asdict(obs) for obs in parse_script_xml(result.stdout)],
         }
     except Exception as exc:  # noqa: BLE001 - an invocation failure is a measured result
         return {"ok": False, "command": command, "error": str(exc),
-                "cancelled": isinstance(exc, ScanCancelled),
+                "cancelled": isinstance(exc, ScanCancelled), "complete": False,
                 "services": [], "observations": []}
 
 
@@ -1222,6 +1269,40 @@ def _observation_rows(payload: object) -> list[Observation]:
     return rows
 
 
+def replace_service_snapshot(client: Any, *, asset_key: str, scan_id: str) -> int:
+    """Delete the rows of ONE host that the CURRENT scan did not produce.
+
+    THE SNAPSHOT RULE, IN ONE STATEMENT. `asset_services` is the current state of a host, so a
+    completed scan REPLACES its set: the new rows were just inserted carrying `scan_id`, and
+    every other row for that host belongs to an older scan and is no longer current. Deleting
+    by `last_seen_scan_id != scan_id` rather than by an explicit port list means the predicate
+    cannot delete what this scan inserted, whatever order the insert and delete reach the
+    server in, and it repairs rows written before the column existed (`''`).
+
+    CLICKHOUSE LIGHTWEIGHT DELETE, deliberately: the `DELETE FROM` form returns after marking
+    the rows, while an `ALTER TABLE ... DELETE` mutation is asynchronous and (measured in this
+    repo) can hold an insert for minutes. This runs inside a scan's recording path, where a
+    stalled writer would stop the inventory rather than just this host.
+
+    Returns the number of rows the server reports as deleted (0 when ClickHouse cannot say).
+    """
+    result = client.query(
+        "SELECT count() FROM weirvern.asset_services FINAL "
+        "WHERE asset_key = %(asset_key)s AND last_seen_scan_id != %(scan_id)s",
+        parameters={"asset_key": asset_key, "scan_id": scan_id},
+    ).result_rows
+    stale = int(result[0][0]) if result else 0
+    client.command(
+        "DELETE FROM weirvern.asset_services "
+        "WHERE asset_key = %(asset_key)s AND last_seen_scan_id != %(scan_id)s",
+        parameters={"asset_key": asset_key, "scan_id": scan_id},
+    )
+    if stale:
+        logger.info("scanner: %s: snapshot replaced, %d stale service row(s) removed",
+                    asset_key, stale)
+    return stale
+
+
 def record_scan_result(client: Any, asset: dict[str, Any], result: dict[str, Any], *,
                        scan_id: str) -> bool:
     """Record ONE measured scan: services, history, changes, posture, observations.
@@ -1229,13 +1310,27 @@ def record_scan_result(client: Any, asset: dict[str, Any], result: dict[str, Any
     `result` is the shape `run_service_scan` returns, so a result measured on a weirling and
     sent over the mTLS gateway is written by THIS function -- the fleet cannot grow a second
     definition of what a scan row is. A failed invocation is marked `error`, never `done`.
+
+    THE CURRENT TABLE IS A SNAPSHOT. A COMPLETE scan (`result["complete"] is True`) replaces the
+    host's service set: new rows are inserted with this `scan_id` and every row that does not
+    carry it is deleted. The per-scan history in `asset_service_history` is untouched, so nothing
+    measured is lost -- only the "current" table stops accumulating ports that are gone. A result
+    without a completeness marker (an observation-only run, or an older weirling) leaves the
+    snapshot exactly as it was; `result["complete"] is False` (a partial or timed-out Nmap) does
+    the same.
     """
     ok = bool(result.get("ok"))
     command = str(result.get("command") or "")
+    # COMPLETENESS IS A PROPERTY OF THE MEASUREMENT, and only a complete one may replace the
+    # snapshot or feed the change ledger. `is True` is deliberate: absent (an observation-only
+    # result, or an older weirling) and False (a partial or timed-out run) both mean "not known
+    # to be complete", and neither is evidence that a port closed.
+    complete = result.get("complete") is True
     if not ok:
         error = str(result.get("error") or "the scan failed")
         _mark(client, asset, "error", error, scanned=True)
-        _record_scan(client, scan_id, asset, "service", status="error", error=error, command=command)
+        _record_scan(client, scan_id, asset, "service", status="error", error=error,
+                     command=command)
         return False
     services = _service_rows(result.get("services"))
     observations = _observation_rows(result.get("observations"))
@@ -1264,16 +1359,28 @@ def record_scan_result(client: Any, asset: dict[str, Any], result: dict[str, Any
             for service in services
         ])
 
-        _insert(client, "asset_services", SERVICE_COLUMNS, [[
-            asset["asset_key"], asset["ip"], service.port, service.protocol, service.service,
-            service.product, service.version, service.cpe, now,
-        ] for service in services])
+        if complete:
+            _insert(client, "asset_services", SERVICE_COLUMNS, [[
+                asset["asset_key"], asset["ip"], service.port, service.protocol, service.service,
+                service.product, service.version, service.cpe, now, scan_id,
+            ] for service in services])
+        # THE SNAPSHOT IS REPLACED, NOT APPENDED. Only a scan whose own report says it completed
+        # may write the current table at all -- a partial run's port list is not the host's set,
+        # so it neither adds rows nor deletes another scan's. The per-scan history below still
+        # records what Nmap measured, and `asset_scans.scan_complete` lets a reader tell the two
+        # apart.
+        if complete:
+            replace_service_snapshot(client, asset_key=asset["asset_key"], scan_id=scan_id)
+        else:
+            logger.warning(
+                "scanner: %s: scan did not report completeness; the current service snapshot "
+                "was left unchanged", asset.get("ip"))
         if services:
             _insert(client, "asset_service_history", HISTORY_COLUMNS, [[
                 asset["asset_key"], asset["ip"], scan_id, service.port, service.protocol,
                 service.service, service.product, service.version, service.cpe, now,
             ] for service in services])
-        if changes:
+        if complete and changes:
             existing_changes = {
                 str(row[0]): row for row in client.query(
                     "SELECT change_key, first_seen, review_state FROM weirvern.asset_changes FINAL "
@@ -1315,7 +1422,8 @@ def record_scan_result(client: Any, asset: dict[str, Any], result: dict[str, Any
         return False
 
     _mark(client, asset, "done", scanned=True)
-    _record_scan(client, scan_id, asset, "service", status="done", command=command)
+    _record_scan(client, scan_id, asset, "service", status="done", command=command,
+                 complete=complete)
     return True
 
 

@@ -201,6 +201,14 @@ CHANNEL_FAMILIES: dict[str, str] = {
     "ssh_version_change": "ssh",
     "zeek_notice_volume": "notice",
     "zeek_weird_volume": "notice",
+    # ── the ACTIVE INVENTORY family added 2026-11-21 ──────────────────────────────────────────
+    # `asset_service_history` (Nmap): what is LISTENING on the host and what it calls itself.
+    # No passive family can see a listener that never sent a packet -- flow/conn measure traffic,
+    # dns measures names, tls/http/ssh measure protocols the host speaks, notice is Zeek's own
+    # conclusion -- so this is an independent measurement that can corroborate them. It is one
+    # family with one channel: a second view of the same scan (e.g. a per-protocol split) would
+    # be the same measurement counted twice.
+    "service_set_change": "service",
 }
 
 
@@ -272,6 +280,11 @@ class ChannelEvidence:
     #: The fitted parameters, as text, for a parametric row (empty otherwise). A reader can see
     #: the mean, variance, dispersion index and size that produced the p without a second query.
     p_detail: str = ""
+    #: A channel's own PLAIN-LANGUAGE clause for this measurement, when it has one (the service
+    #: channel names the port that opened or closed). The generic explanation falls back to
+    #: "value vs median" when this is empty, so no other channel's sentence changes. It travels
+    #: with the row in `p_detail` when stored, and `read()` restores it from there.
+    detail: str = ""
 
     def floor(self) -> float:
         """The attainable floor, computed from the row when the writer did not carry it."""
@@ -318,6 +331,7 @@ class ChannelEvidence:
             "p_floor": _round(self.floor(), 8),
             "p_method": self.p_method,
             "p_detail": self.p_detail,
+            "detail": self.detail,
             "at_floor": self.at_floor(),
             "baseline_short": bool(self.baseline_short),
             "sample_count": int(self.sample_count),
@@ -559,6 +573,13 @@ def _explain(host: str, window_start: datetime, chosen: list[ChannelEvidence],
                       f"windows")
         else:
             p_text = f"p={item.pvalue:.3g} over {item.sample_count} baseline windows"
+        if item.detail:
+            # A CHANNEL THAT NAMES ITS OWN CHANGE WINS OVER THE NUMBER. "<host> opened 8080/tcp
+            # since the previous scan" is what an operator acts on; "1 vs median 0" is not. The
+            # p-value and its baseline still follow, so the sentence never claims significance
+            # on its own.
+            parts.append(f"{family} family: {item.detail} ({p_text})")
+            continue
         parts.append(
             f"{family} family: {item.channel} {_fmt(item.value)} vs median "
             f"{_fmt(item.baseline_median)} ({item.direction or 'changed'} at {item.scale}; "
