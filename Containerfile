@@ -80,6 +80,10 @@ WORKDIR /app
 # and there is no repo-level schema directory to add.
 COPY pyproject.toml README.md LICENSE ./
 COPY weirvern ./weirvern
+# THE DEAD-MAN WATCHDOG is an operator script, not a package module: it must be runnable with
+# `--dry-run` from a checkout before it is trusted to page. The CronJob runs this exact file, so
+# the reviewed artifact and the scheduled artifact are the same bytes.
+COPY scripts/watchdog.py /app/scripts/watchdog.py
 # OP-3: the archived monthly reviews are read by /api/ml/review. They are docs, not package
 # data, so they need an explicit copy; without this the dashboard correctly says no archive.
 COPY docs/reviews ./docs/reviews

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.23.126 — 2026-11-21
+
+A DEAD-MAN WATCHDOG THAT PAGES ON THE OUTAGES THE PIPELINE COULD NOT SEE -- AND SAYS
+`unconfigured` INSTEAD OF PRETENDING TO ALERT WHEN THE PAGER IS UNPLUGGED.
+
+- **The eighteen-hour outage the worker could not report is now an out-of-band alarm.**
+  `scripts/watchdog.py` runs as its own CronJob (`k8s/36-watchdog-cronjob.yaml`) every five
+  minutes, independent of the worker, so a crash loop, an OOMKill or a pod that is never
+  scheduled cannot take the alarm with it. It measures BOTH raw sinks (`weirvern.flows` and
+  `weirvern.zeek_conn`) through the same `ingest_freshness` definition the worker and the Health
+  panel use, with three distinct states -- STALLED beyond 600s, NO_DATA when the sink has never
+  held a row, and UNREADABLE when the query failed -- never a bare zero. It also pages on
+  container restarts in the last interval and any OOMKilled container, node filesystem above
+  85%, ClickHouse free space below its merge headroom, any Job with `Failed`/`FailureTarget` in
+  the last hour, and a `weirling-ingest-tls` certificate expiring within 30 days.
+- **Delivery cannot silently succeed.** When `PUSHOVER_ENABLED` is 0 or either key is empty the
+  run emits a structured `watchdog_delivery_unconfigured` error, writes a `weirvern.health` row
+  named `watchdog_delivery` with status `unconfigured`, and exits 3 -- so the CronJob itself is
+  Failed until the channel is connected. The watchdog's own Jobs are excluded from the
+  failed-Jobs check, so a missing pager cannot become a self-sustaining page storm.
+- **Repeats are rate-limited and recovery is announced.** `weirvern.health` (new
+  `066_health.sql`) holds one row per check, including `consecutive` and `last_notified_at`, so
+  a five-minute CronJob suppresses a duplicate page inside `WATCHDOG_COOLDOWN_S` (default 1800)
+  while sending a changed state immediately and a recovery notice once on the firing -> ok edge.
+  The Health panel gains a `watchdog` probe that reads the ledger, so the same
+  `watchdog_delivery=unconfigured` row makes the console red rather than leaving the gap to a
+  log nobody greps.
+- **`--dry-run` prints the verdict and the exact Pushover payloads, sends nothing and writes
+  nothing.** It is safe to run from a checkout before trusting the CronJob. Tests cover
+  fresh -> stalled, stalled -> recovered, unreadable != no_data, unconfigured delivery (exit 3,
+  no POST, a red Health row), the cooldown, OOMKilled/restart detection, failed-Job filtering,
+  disk and certificate pressure.
+
 ## 0.23.125 — 2026-11-21
 
 TWO PRIVILEGE-ESCALATION HOLES CLOSED, EACH WITH AN AUDIT ROW AND A TEST THAT CANNOT LET THE CLASS

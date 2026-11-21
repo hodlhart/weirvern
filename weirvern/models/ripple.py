@@ -9,6 +9,8 @@ Design rules:
   * a missing or stale channel is UNKNOWN, never zero;
   * a family is one measurement, not one channel: two views of the same events cannot
     corroborate each other;
+  * a family counts only when its own p-value clears the decision bar, and a channel the
+    inventory retired or merged is not evidence at all;
   * one family cannot make a ripple on its own except at the extreme bar (p <= 0.001);
   * one scale is an observation, not a ripple;
   * an empirical p-value at the baseline's resolution floor is a bound, not a result: a
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from weirvern.models import dispositions as _dispositions
 from weirvern.monitored import in_scope as _in_scope
 
 SCALES = ("5m", "1h", "24h")
@@ -33,6 +36,57 @@ DEFAULT_MAX_P = 0.05
 DEFAULT_MAX_FRESHNESS_S = 900
 DEFAULT_MIN_FAMILIES = 2
 DEFAULT_MIN_SCALES = 2
+
+# ── WHAT MAY NOT CORROBORATE ANYTHING ───────────────────────────────────────────────────────
+#
+# A CHANNEL THE INVENTORY RETIRED IS NOT EVIDENCE. `models.dispositions` gives every shadow
+# channel one of promote / merge / retire. A RETIRED channel has no consumer and no measured
+# fixed-budget win; a MERGED channel's unique signal is already consumed by a named production
+# feature, so its shadow score is a second reading of the same measurement. Either way, fusing it
+# as independent evidence resurrects a decision the inventory already made -- and the live 24-hour
+# population showed exactly that: 21 of 21 fused ripples carried `changepoint`/`candidate`/
+# `temporal`, 19 carried `exposure`, and 9 carried `graph`, every one of them retired or merged.
+#
+# The families below are the retired channels' family labels. The named channels cover the
+# specialists that present under a family the production layer also owns (`FlowSpecialist` is
+# family `flow`), so a retired specialist is excluded without banning the legitimate phase-1
+# channel that measures the same protocol from a different pipeline.
+RETIRED_FAMILIES = frozenset({"changepoint", "candidate", "temporal", "exposure", "graph"})
+RETIRED_CHANNELS = frozenset({
+    "HDBSCAN", "GraphSpecialist", "External exposure", "Temporal", "change-point",
+    "FlowSpecialist", "DNSSpecialist", "TLSSpecialist", "BeaconSpecialist",
+})
+RETIRED_PREFIXES = ("changepoint:", "temporal:")
+
+
+def is_retired_channel(channel: str, family: str = "") -> bool:
+    """Whether this channel's inventory disposition forbids it from corroborating a ripple.
+
+    The check is deliberately by NAME and PREFIX first: a family label is shared by legitimate
+    phase-1 channels (`flow_volume` and the retired `FlowSpecialist` are both family `flow`), so
+    excluding the whole family would throw away the measurement that is still in use. The five
+    families in `RETIRED_FAMILIES` have no surviving producer elsewhere and are excluded whole.
+    """
+    name = str(channel or "").strip()
+    if name in RETIRED_CHANNELS:
+        return True
+    folded = name.lower()
+    if any(folded.startswith(prefix) for prefix in RETIRED_PREFIXES):
+        return True
+    return channel_family(name, family) in RETIRED_FAMILIES
+
+
+def inventory_disposition(channel: str) -> str:
+    """The inventory's own disposition for a channel, or '' when it was never declared.
+
+    Exposed for the tests and for a reader trying to answer "why is this channel not in the
+    fusion?" without grepping a second module.
+    """
+    for item in _dispositions.INVENTORY:
+        if str(item.get("channel") or "") == str(channel or ""):
+            return str(item.get("disposition") or "")
+    return ""
+
 
 # ── the multi-scale evidence layer (phase 1) ────────────────────────────────────────────────
 #
@@ -411,6 +465,12 @@ def fuse(
     unknown: list[dict[str, str]] = []
     valid: list[ChannelEvidence] = []
     for ch in channels:
+        # A RETIRED CHANNEL IS NOT EVIDENCE. It is named in `unknown` so a reader can see why a
+        # channel that is still writing rows does not corroborate anything -- silently dropping it
+        # would make the retirement (and the cost still being paid to collect it) invisible.
+        if is_retired_channel(ch.channel, ch.family):
+            unknown.append({"channel": ch.channel, "family": ch.family, "reason": "retired"})
+            continue
         if ch.valid(max_freshness_s=max_freshness_s):
             valid.append(ch)
             continue
@@ -432,17 +492,32 @@ def fuse(
             combined_p=1.0, unknown=unknown,
         )
 
-    # Conservative family-wise guard: many channels should not manufacture significance.
-    raw_p = fisher_combined_p([ch.pvalue for ch in valid])
-    combined_p = min(1.0, raw_p * max(1, len(valid)))
-    families = sorted({ch.family for ch in valid})
-    scales = sorted({ch.scale for ch in valid}, key=SCALES.index)
+    # ONE VOICE PER FAMILY, THEN A SIGNIFICANCE BAR PER VOICE. A family used to be counted
+    # whenever ANY of its channels had a finite p-value -- so a channel at p=0.9 voted for
+    # corroboration and the live table listed six families behind a single significant one. Keep
+    # each family's strongest member (two views of one measurement cannot vote twice) and count
+    # the family only when that member clears `max_p`, the same bar the combined decision uses.
+    strongest: dict[str, ChannelEvidence] = {}
+    for ch in valid:
+        held = strongest.get(ch.family)
+        if held is None or (ch.pvalue, ch.channel) < (held.pvalue, held.channel):
+            strongest[ch.family] = ch
+    significant = [ch for ch in strongest.values() if ch.pvalue <= float(max_p)]
+    significant.sort(key=lambda c: (c.pvalue, c.channel))
+    families = sorted({ch.family for ch in significant})
+    scales = sorted({ch.scale for ch in significant}, key=SCALES.index)
     contributors = [
         {"channel": ch.channel, "family": ch.family, "scale": ch.scale,
          "model_id": ch.model_id, "model_version": ch.model_version,
          "score": round(float(ch.score), 6), "pvalue": round(float(ch.pvalue), 6)}
-        for ch in sorted(valid, key=lambda c: c.pvalue)
+        for ch in significant
     ]
+
+    # Conservative family-wise guard: many channels should not manufacture significance. The
+    # combination still uses EVERY independent fresh family -- significant or not -- because a
+    # quiet measurement is evidence too, and dropping it would make the guard less conservative.
+    raw_p = fisher_combined_p([ch.pvalue for ch in strongest.values()])
+    combined_p = min(1.0, raw_p * max(1, len(strongest)))
 
     if combined_p > max_p:
         return RippleResult("observation", "combined evidence does not clear the ripple bar",
@@ -663,6 +738,8 @@ def group_evidence(
         # three times for itself.
         strongest: dict[str, ChannelEvidence] = {}
         for item in items:
+            if is_retired_channel(item.channel, item.family):
+                continue
             if not _usable(item, max_p=max_p):
                 continue
             family = channel_family(item.channel, item.family)
@@ -741,7 +818,9 @@ __all__ = ["CHANNEL_FAMILIES", "ChannelEvidence", "DEFAULT_EXTREME_P", "DEFAULT_
            "EMPIRICAL_MIN_WINDOWS", "EVIDENCE_SCALES", "EVIDENCE_SCALE_SECONDS",
            "MIN_BASELINE_BY_SCALE", "MIN_BASELINE_SAMPLES", "PARAMETRIC_METHODS", "P_METHODS",
            "P_METHOD_EMPIRICAL", "P_METHOD_INSUFFICIENT", "P_METHOD_NEGBIN", "P_METHOD_POISSON",
-           "RIPPLE_WINDOW_S", "Ripple", "RippleResult", "SCALES", "channel_family",
+           "RETIRED_CHANNELS", "RETIRED_FAMILIES", "RETIRED_PREFIXES", "RIPPLE_WINDOW_S",
+           "Ripple", "RippleResult", "SCALES", "channel_family",
            "empirical_pvalue", "empirical_pvalue_two_sided", "evidence_from_shadow",
-           "fisher_combined_p", "fuse", "group_evidence", "min_baseline_samples", "pvalue_floor",
+           "fisher_combined_p", "fuse", "group_evidence", "inventory_disposition",
+           "is_retired_channel", "min_baseline_samples", "pvalue_floor",
            "severity_band", "severity_bands"]

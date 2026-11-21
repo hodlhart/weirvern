@@ -30,7 +30,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern.clock import utcnow
 from weirvern.models import generic_channels, operating_point
-from weirvern.models.ripple import ChannelEvidence, evidence_from_shadow, fuse
+from weirvern.models.ripple import ChannelEvidence, evidence_from_shadow, fuse, is_retired_channel
 
 MODEL_VERSION = "ripple-1"
 
@@ -91,9 +91,10 @@ WHERE computed_at >= now() - INTERVAL {lookback} SECOND
 
 _RECENT_CHANGEPOINTS = """
 SELECT src_addr, concat('changepoint:', metric, ':', direction) AS model,
-       probability AS score, model_version, computed_at, run_length
+       probability AS score, model_version, computed_at, run_length, changepoint_at
 FROM weirvern.ml_changepoints
 WHERE computed_at >= now() - INTERVAL {lookback} SECOND
+  AND changepoint_at >= now() - INTERVAL {lookback} SECOND
 """
 
 
@@ -120,6 +121,24 @@ def changepoint_scale(run_length: int) -> str:
     if run_length >= SCALE_1H_SAMPLES:
         return "1h"
     return "5m"
+
+
+def changepoint_stale(changepoint_at: datetime | None, now: datetime,
+                      *, lookback_s: int = EVIDENCE_LOOKBACK_S) -> bool:
+    """Whether a change point's own timestamp is older than the evidence window.
+
+    `computed_at` is when the shadow pass LAST RAN, not when the change happened: the detector
+    re-reads a week of flows each pass and re-inserts every historical change point with a fresh
+    `computed_at`. On 2026-11-21 the table held 10,120 rows in 24 hours whose `computed_at` was
+    current and whose `changepoint_at` was 13-15 November -- six-day-old regime boundaries
+    presented as this window's evidence. A change point belongs to the window containing the
+    moment it describes; if that moment is outside the lookback, it is stale no matter how
+    recently the row was rewritten.
+    """
+    if changepoint_at is None:
+        return True
+    age = (now - _aware(changepoint_at)).total_seconds()
+    return age > float(lookback_s) or age < -float(lookback_s)
 
 
 def family_scale_for(model: str) -> tuple[str, str]:
@@ -154,7 +173,8 @@ def reference_population(client: Client) -> dict[str, list[float]]:
         for model, value in _query(client, sql):
             if model is None or value is None:
                 continue
-            out.setdefault(str(model), []).append(float(value))
+            name = str(model)
+            out.setdefault(name, []).append(float(value))
     return out
 
 
@@ -195,11 +215,16 @@ def recent_rows(client: Client, now: datetime,
             _row(str(src), channel, float(score), str(version), computed_at,
                  family="temporal", scale="5m", now=now))
 
-    for src, model, score, version, computed_at, run_length in _query(
+    for src, model, score, version, computed_at, run_length, changepoint_at in _query(
             client, _RECENT_CHANGEPOINTS.format(lookback=lookback_s)):
         if not src or score is None:
             continue
         channel = str(model)
+        # A FRESHLY-WRITTEN ROW IS NOT A FRESH CHANGE. The detector re-inserts historical
+        # change points on every pass, so `computed_at` is always current; `changepoint_at`
+        # is the only timestamp that says when the regime actually changed.
+        if changepoint_stale(changepoint_at, now, lookback_s=lookback_s):
+            continue
         by_host.setdefault(str(src), []).append(
             _row(str(src), channel, float(score), str(version), computed_at,
                  family="changepoint", scale=changepoint_scale(int(run_length or 0)), now=now))
@@ -220,6 +245,8 @@ def missing_channels(references: dict[str, list[float]],
         if model in have:
             continue
         family, scale = family_scale_for(model)
+        if is_retired_channel(model, family):
+            continue
         out.append(ChannelEvidence(
             channel=model, family=family, scale=scale, model_id=model, model_version="unknown",
             score=0.0, pvalue=float("nan"), freshness_s=float("inf"), present=False))
@@ -282,7 +309,11 @@ def evaluate(client: Client, *, now: datetime | None = None,
 
     if not by_host:
         result = fuse(missing_channels(references))
-        return [_record("", result, moment)]
+        record = _record("", result, moment)
+        if abstain_reason:
+            record["status"] = "unknown"
+            record["reason"] = abstain_reason
+        return [record]
 
     # Sources with no specialist of their own still carry signal (http, files, ssh, weird,
     # quic, dhcp). They are scored the same way and enter the same fusion; a source that is
@@ -291,8 +322,11 @@ def evaluate(client: Client, *, now: datetime | None = None,
 
     out: list[dict[str, Any]] = []
     for host in sorted(by_host)[:MAX_HOSTS]:
-        evidence = strongest_per_channel(
-            evidence_from_shadow(by_host[host], reference_by_model=references))
+        evidence = [
+            item for item in strongest_per_channel(
+                evidence_from_shadow(by_host[host], reference_by_model=references))
+            if not is_retired_channel(item.channel, item.family)
+        ]
         evidence.extend(missing_channels(references, {ch.channel for ch in evidence}))
         evidence.extend(from_source.get(host, []))
         verdict = fuse(evidence) if max_p is None else fuse(evidence, max_p=max_p)
@@ -365,6 +399,6 @@ def run(client: Client, *, now: datetime | None = None,
 
 
 __all__ = ["CANDIDATE_FAMILIES", "EVIDENCE_LOOKBACK_S", "FUSED_HISTORY_SQL", "MAX_HOSTS",
-           "MODEL_VERSION", "fused_history",
+           "MODEL_VERSION", "fused_history", "changepoint_stale",
            "REFERENCE_DAYS", "REFERENCE_SAMPLE", "changepoint_scale", "evaluate",
            "family_scale_for", "missing_channels", "recent_rows", "reference_population", "run"]

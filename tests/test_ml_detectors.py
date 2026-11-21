@@ -130,6 +130,32 @@ def test_a_detector_the_engine_no_longer_builds_has_no_row() -> None:
     assert "DBSCAN" not in json.dumps(rows)
 
 
+def test_the_fused_rate_is_reported_at_the_decision_bar_not_the_calibration_threshold() -> None:
+    """MEASURED LIVE: 66/789 = 8.37% at base_threshold 0.35, 15/789 = 1.90% at 0.5807.
+
+    The Models card printed only the second (as 0.00% in a smaller sample) while the ensemble
+    alerted at the first. The headline must lead with the decision bar and show the calibration
+    threshold beside it, labelled.
+    """
+    scores = [0.9] * 15 + [0.4] * 51 + [0.1] * (789 - 66)
+    summary = detector_summary(
+        [{"contributing": True}],
+        {"observed_far": 15 / 789, "target_far": 0.01, "validation_count": 789,
+         "threshold": 0.5807, "far_lower": 0.011, "far_upper": 0.031},
+        scores=scores, decision_threshold=0.35)
+    assert "8.37% at the 0.35 decision bar" in summary
+    assert "1.90% at the 0.5807 calibration threshold" in summary
+    assert "n=789" in summary and "1.00% target" in summary
+
+
+def test_a_provisional_detector_is_not_counted_as_eligible_in_the_headline() -> None:
+    summary = detector_summary(
+        [{"contributing": True, "calibrating": True}],
+        {"observed_far": 0.0, "target_far": 0.01, "validation_count": 67,
+         "threshold": 0.5807, "far_lower": 0.0, "far_upper": 0.054})
+    assert "0 eligible, 1 provisional" in summary
+
+
 def test_the_fused_score_is_never_shown_without_its_target() -> None:
     names = ("Isolation Forest", "Gradient Boosting", "KNN distance", "Adaptive Baseline")
     rows = detector_rows(
@@ -235,7 +261,9 @@ def test_the_models_fetcher_derives_the_rows_from_the_live_reads(monkeypatch, tm
     assert [row["name"] for row in out["detectors"]] == ["KNN distance"]
     assert out["detectors"][0]["status"].startswith("not contributing: FAR")
     assert "retired" not in json.dumps(out["detectors"]).lower()
-    assert "0.04" in out["detector_summary"] and "0.01 target" in out["detector_summary"]
+    assert "42.00%" in out["detector_summary"]
+    assert "decision bar" in out["detector_summary"]
+    assert "1.00% target" in out["detector_summary"]
     assert out["detector_budget"]["budget"] == 0.30
 
 
