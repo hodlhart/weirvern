@@ -1,5 +1,18 @@
 # Environment for every Weirvern workload.
 #
+# ── THIS FILE IS NOT THE SAFE WAY TO CHANGE A RUNNING DEPLOYMENT ────────────────────────────────
+#
+# It is manifest-owned, so `kubectl apply -k k8s/` RESTORES every value here over the live
+# ConfigMap. The capture keys below ship as PLACEHOLDERS ("eth1", ""), and applying them over a
+# configured sensor stops capture at once: measured 2026-11-20 23:33:43, when CAPTURE_IFACE and
+# NETFLOW_IFACE became empty, ZEEK_IFACES and INTERCEPT_PLANS emptied, SENSOR_MODE went siphon ->
+# loch, and the DaemonSet rolled two seconds later. Flow and Zeek capture were down for ~18 hours.
+#
+# APPLY WITH `sh scripts/apply_safe.sh` (or `weirvern apply`). The guard
+# (weirvern/admin/config_guard.py) reads the weirvern.io/gui-written-keys annotation, merges the
+# operator's values back into the render, and REFUSES -- before kubectl is invoked -- if a setting
+# that is non-empty live would be blanked. A raw `kubectl apply -k k8s/` has no such guard.
+#
 # These are the NON-SECRET settings, mirroring .env.example. The values are
 # read by weirvern/config.py with the same names as the .env file, so a local
 # run and a cluster run are configured identically.

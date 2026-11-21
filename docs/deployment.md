@@ -318,7 +318,7 @@ git clone https://github.com/hodlhart/weirvern.git   # or your fork
 cd weirvern
 
 # Review what the cluster will run (no changes made):
-kubectl apply -k k8s/ --dry-run=client
+sh scripts/apply_safe.sh --check
 
 # Adjust the non-secret settings — most importantly the two sensor interfaces:
 #   ZEEK_IFACE  the CAPTURE port (dedicated NIC fed by a switch mirror/SPAN)
@@ -326,8 +326,11 @@ kubectl apply -k k8s/ --dry-run=client
 # Check them against the node first: weirvern interfaces --node <sensor-node>
 $EDITOR k8s/20-configmap-env.yaml
 
-# Deploy. The namespace and every workload except the Secret come from here.
-kubectl apply -k k8s/
+# Deploy. THE GUARD RUNS FIRST: it renders the manifests, compares them with the live
+# ConfigMap, restores anything the GUI recorded, and REFUSES before kubectl is invoked if a
+# setting that is non-empty live would be blanked. A raw `kubectl apply -k k8s/` did exactly
+# that on 2026-11-20 and stopped both captures for 18 hours — do not use it.
+sh scripts/apply_safe.sh
 
 # Now create the Secret — AFTER the apply, and never as a committed manifest.
 # (A Secret manifest in the kustomization would be re-applied with placeholder
@@ -352,7 +355,7 @@ kubectl -n weirvern create secret generic weirvern-secrets \
 # that it exists.
 kubectl -n weirvern rollout restart deploy/weirvern-worker
 kubectl -n weirvern delete job weirvern-schema --ignore-not-found
-kubectl apply -k k8s/
+sh scripts/apply_safe.sh
 ```
 
 > **Order matters.** The Secret is created by you, not by `apply -k`, precisely
@@ -473,7 +476,7 @@ kubectl -n weirvern exec deploy/weirvern-worker -- \
 
 # Point the tailer at the generated file (in k8s/20-configmap-env.yaml):
 #   TAIL_FILE: "/data/demo.jsonl"
-kubectl apply -k k8s/ && kubectl -n weirvern rollout restart deploy/weirvern-worker
+sh scripts/apply_safe.sh && kubectl -n weirvern rollout restart deploy/weirvern-worker
 
 # Watch the worker; within a sweep or two you should see detections
 weirvern logs weirvern-worker
@@ -510,16 +513,18 @@ podman push registry.example.com/weirvern-worker:0.13.0
 # 2. Point the manifests at it (single place)
 cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.13.0 && cd ..
 
-# 3. Apply. The Deployments roll automatically because they use the Recreate
+# 3. Apply THROUGH THE GUARD. It merges the GUI's recorded settings back into the
+#    render and refuses before kubectl is invoked if a capture setting would be
+#    blanked. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
 #    (required — see the note in k8s/31-goflow2.yaml).
-kubectl apply -k k8s/
+sh scripts/apply_safe.sh
 
 # 4. If the SCHEMA changed, re-run the schema Job. `kubectl apply` will NOT
 #    re-run an unchanged Job object, so delete it first — the Job is idempotent
 #    (every statement is CREATE ... IF NOT EXISTS), so re-running is safe.
 kubectl -n weirvern delete job weirvern-schema --ignore-not-found
-kubectl apply -k k8s/
+sh scripts/apply_safe.sh
 
 # 5. Confirm
 weirvern wait

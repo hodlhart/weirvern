@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.23.124 — 2026-11-21
+
+TWO OUTAGE-CLASS DEFECTS FIXED AT THE CAUSE. A MANIFEST APPLY CAN NO LONGER BLANK THE SETTINGS THE
+GUI OWNS, AND A CAP-TRIM RACE CAN NO LONGER RE-INSERT THE FLOW FILE. THE DAMAGE FROM THE SECOND IS
+CLEANED UP AND COUNTED.
+
+- **THE 18-HOUR DUAL CAPTURE OUTAGE WAS AN APPLY, AND AN APPLY IS NOW GUARDED.** The 2026-11-20
+  23:33:43 deploy restored `k8s/20-configmap-env.yaml`'s placeholders over the live ConfigMap:
+  `CAPTURE_IFACE` and `NETFLOW_IFACE` emptied, `ZEEK_IFACES` and `INTERCEPT_PLANS` emptied,
+  `SENSOR_MODE` siphon -> loch; the DaemonSet rolled two seconds later and the tap selected zero
+  targets. Nothing enforced the `weirvern.io/gui-written-keys` annotation that still held the lost
+  values. `weirvern/admin/config_guard.py` now does, at the only point that can: BEFORE kubectl is
+  invoked. It renders the manifests, merges the recorded GUI values back into the env ConfigMap,
+  and refuses when a key that is non-empty live would become empty (or when a capture setting would
+  change with no GUI record). The refusal names every key and its live value, e.g. `CAPTURE_IFACE
+  (live "eth1")`, and the override is explicit (`--allow-blank KEY[,KEY]`). `weirvern apply` and
+  `scripts/apply_safe.sh` both call it; the wrapper then applies the merged render and reads the
+  ConfigMap back, failing if a capture setting did not survive. The effective data starts from the
+  LIVE values, so a deploy can add or change a setting but can never make one disappear. Raw
+  `kubectl apply -k k8s/` is documented as unsafe in `k8s/README.md` and `docs/deployment.md`.
+- **1,070,782 DUPLICATE `flows` ROWS WERE A TRIM RACE, AND THE RACE IS CLOSED.** A cap trim rewrites
+  the sink in place and THEN atomically replaces `<sink>.trimhint`. A tailer that landed between the
+  two saw a valid file whose cursor the old hint could not explain, fell back to a full re-read, and
+  re-inserted the whole surviving file. Two prunes (12:20/12:25) meant two re-reads. `tail_and_insert`
+  now retries `_apply_trim_chain` three times with a growing delay before concluding the hint cannot
+  explain the cursor -- the window is milliseconds, and the retry removes it. As defence in depth, a
+  fallback re-read now checks each batch's NATURAL KEY (flow start/end, addresses, ports, protocol,
+  bytes, packets, sampler, interface -- never `timestamp`, which is ingest time) against `flows` in
+  bounded queries and does not insert a row the database already has. The check runs only on the
+  re-read path; a normal append still pays nothing. A failed existence query logs an error and
+  admits the batch (data over exactness) rather than stopping ingest.
+- **THE DAMAGE IS CLEANED UP, NOT MERELY STOPPED.** Targeted `ALTER TABLE ... DELETE` removed the
+  re-read population (`timestamp >= 2026-11-21 00:00 AND time_flow_start < 2026-11-21 00:00`):
+  1,070,782 rows from `flows`. 84,189 rows whose natural key had NO older copy (records the re-read
+  ingested for the first time) were preserved and re-inserted with `timestamp = time_flow_start`.
+  The affected window range (`2026-11-16 13:05` .. `2026-11-21 00:00`) was then rebuilt from raw
+  `flows` for `flows_window`, `flows_window_endpoint`, `flows_aggregated`,
+  `flows_aggregated_diversity` and `flows_aggregated_temporal`. Measured before/after in the
+  repaired range: `flows` 1,070,782 duplicates -> 0; `flows_window` 354,148 rows /
+  78,309,038 states -> 168,155 / 1,077,984; `flows_window_endpoint` 507,536 / 4,129,154 ->
+  352,045 / 2,155,968; `flows_aggregated` 4,291,257 rows / 78,309,038 flows -> 168,155 / 1,077,984;
+  and the two side tables 168,155 and 166,517 rows. The rebuilt totals now equal the raw flow count
+  exactly (1,077,984), and `flows_window_endpoint` is exactly twice it (2,155,968).
+- **Tests, not just fixes.** `tests/test_config_guard.py` proves a blanking apply refuses and names
+  the interfaces, that a recorded value is restored (including a value a PREVIOUS apply blanked),
+  that a capture change with no record is refused, that a legitimate change still applies, and that
+  no live key is ever dropped. `tests/test_ingester.py` proves a hint that appears one retry late
+  causes no re-read, that a forced re-read inserts only genuinely new rows, and that a normal append
+  never queries the table.
+
 ## 0.23.123 — 2026-11-21
 
 THE NETFLOW OUTAGE IS DIAGNOSED FROM THE EVIDENCE, THE CAPTURE PATH IS RESTORED, AND A STALLED

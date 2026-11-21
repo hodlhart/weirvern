@@ -38,10 +38,24 @@ main README's Quick start ("The deployment Secret"). Do not re-add a `secretGene
 ## Applying it
 
 ```bash
-kubectl apply -k k8s/            # everything, in dependency order
-kustomize build k8s/             # render without applying, to review
+sh scripts/apply_safe.sh --check   # decide: render vs live; applies nothing (exit 3 = refused)
+sh scripts/apply_safe.sh           # the supported apply: merges GUI settings, refuses a blank
+kustomize build k8s/               # render without applying, to review
 kubeconform -strict -ignore-missing-schemas k8s/   # validate offline
 ```
+
+**`kubectl apply -k k8s/` is not a deploy.** The env ConfigMap is manifest-owned, so an apply
+restores the manifest's placeholders over the live values. On 2026-11-20 23:33:43 that emptied
+`CAPTURE_IFACE`/`NETFLOW_IFACE`, emptied `ZEEK_IFACES` and `INTERCEPT_PLANS`, set `SENSOR_MODE`
+back to `loch`, and rolled the DaemonSet two seconds later; flow **and** Zeek capture stopped for
+~18 hours while every surface still looked configured.
+
+`scripts/apply_safe.sh` (and `weirvern apply`, which calls the same guard) renders the manifests,
+compares them with the live ConfigMap, restores the values recorded in the
+`weirvern.io/gui-written-keys` annotation, and **refuses before kubectl is invoked** when a setting
+that is non-empty live would be blanked. It then applies the merged render and reads the ConfigMap
+back, failing if a capture setting did not survive. Overrides are explicit and audited:
+`--allow-blank KEY[,KEY]` and `--allow-capture-change`.
 
 `kustomize build k8s/` and `kubeconform -strict -ignore-missing-schemas k8s/` are
 safe: they render and validate the manifests locally, and change nothing. To

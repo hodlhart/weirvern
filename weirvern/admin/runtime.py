@@ -621,6 +621,23 @@ class K8sBackend:
             args += ["--dry-run=client"]
         return self._kubectl(*args, timeout=180)
 
+    def apply_checked(self, dry_run: bool = False) -> CommandResult:
+        """Apply through the config guard: merge GUI-owned settings, refuse a blank.
+
+        THE RAW `apply` ABOVE IS NOT A DEPLOY ANYMORE. It is what shipped, and on 2026-11-20 it
+        restored the manifest's placeholders over the live ConfigMap and stopped both captures for
+        18 hours. `weirvern apply` calls THIS method; the guard lives in
+        `weirvern/admin/config_guard.py` so the CLI, the shell wrapper and the tests all execute
+        one implementation.
+        """
+        from weirvern.admin import config_guard
+
+        result = config_guard.apply(
+            self.dir, dry_run=dry_run, runner=lambda argv, cwd: _run(argv, cwd, timeout=180),
+        )
+        return CommandResult(ok=result.ok, stdout=result.text if result.ok else "",
+                             stderr="" if result.ok else result.message, code=result.code)
+
     def wait_ready(self, timeout_s: int = 300) -> CommandResult:
         """Block until every workload reports ready — or time out with the
         failing workload named, which is far more useful than a bare timeout."""

@@ -29,7 +29,7 @@ from datetime import datetime
 from ipaddress import ip_address, ip_network
 from typing import Any, Protocol
 
-from .clock import from_epoch, utcnow
+from .clock import as_aware, from_epoch, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,33 @@ class IngesterError(RuntimeError):
 PROTO_MAP = {"ICMP": 1, "TCP": 6, "UDP": 17}
 ETYPE_MAP = {"IPV4": 2048, "IPV6": 34525}
 BATCH_SIZE = 10_000
+
+# ── A CAP TRIM IS TWO WRITES, AND THE READER CAN LAND BETWEEN THEM ───────────────────────────
+#
+# `enforce_netflow` rewrites the sink in place, then atomically replaces `<sink>.trimhint`. A
+# reader that stats the file after the rewrite but reads the hint BEFORE the replace sees a valid
+# file whose cursor cannot be explained -- and the fallback is a full re-read. MEASURED on
+# 2026-11-21: the prune at 12:20/12:25 raced the hint write twice, both full re-reads landed, and
+# 1,070,782 duplicate rows went into `flows` (old `time_flow_start`, new `timestamp`), doubling
+# the affected `flows_window` states.
+#
+# The window is milliseconds. Retrying the chain a few times costs 0.6s in the rare case the hint
+# genuinely cannot explain the cursor, and removes the race entirely in the common case. The
+# delay grows so a reader does not spin against a pruner that is still copying a large file.
+TRIM_HINT_RETRY_ATTEMPTS = 3
+TRIM_HINT_RETRY_DELAY_S = 0.2
+
+# THE NATURAL KEY OF A SOURCE FLOW RECORD, in `flows` column order. Used only by the re-read
+# idempotence guard below: two rows produced from the SAME JSONL record share all of these, while
+# `timestamp` (ingest time) and `updated_at` do not. IPs and ports are included because a busy host
+# legitimately emits many flows in the same millisecond.
+FLOW_KEY_COLUMNS: tuple[str, ...] = (
+    "time_flow_start", "time_flow_end", "src_addr", "dst_addr", "src_port", "dst_port",
+    "proto", "bytes", "packets", "sampler_address", "in_iface",
+)
+# Rows per existence query. The tuple literal is ~90 bytes, so 200 stays far below ClickHouse's
+# default max_query_size while keeping the number of round trips small.
+FLOW_KEY_QUERY_CHUNK = 500
 
 # Zeek's "no value" sentinel.
 ZEEK_NULL = "-"
@@ -1973,6 +2000,123 @@ def _offset_is_on_boundary(path: str, offset: int) -> bool:
         return True
 
 
+def _flow_key(row: dict[str, Any]) -> tuple:
+    """The natural key of one SOURCE RECORD, as comparable primitives.
+
+    Timestamps become epoch milliseconds, not formatted strings: ClickHouse stores DateTime64 in
+    the server's timezone and the driver hands it back naive, while the ingester builds aware UTC
+    values. Comparing the two as text would fail for every row and silently disable the guard.
+
+    `timestamp` is deliberately absent -- it is INGEST time, which is exactly what changes on a
+    re-read. Including it would make every duplicate look new, which is the bug.
+    """
+    return (
+        _epoch_ms(row.get("time_flow_start")),
+        _epoch_ms(row.get("time_flow_end")),
+        str(row.get("src_addr") or ""),
+        str(row.get("dst_addr") or ""),
+        _safe_int(row.get("src_port"), 0),
+        _safe_int(row.get("dst_port"), 0),
+        _safe_int(row.get("proto"), 0),
+        _safe_int(row.get("bytes"), 0),
+        _safe_int(row.get("packets"), 0),
+        str(row.get("sampler_address") or ""),
+        str(row.get("in_iface") or ""),
+    )
+
+
+def _epoch_ms(value: Any) -> int:
+    if isinstance(value, datetime):
+        try:
+            return int(as_aware(value).timestamp() * 1000)
+        except (OverflowError, OSError, ValueError):
+            return 0
+    return 0
+
+
+def _sql_literal(value: Any) -> str:
+    if isinstance(value, bool):  # bool is an int; never expected in a key, but be explicit
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{text}'"
+
+
+def existing_flow_keys(client: Any, keys: list[tuple]) -> set[tuple]:
+    """Which of these natural keys are ALREADY in `weirvern.flows`.
+
+    One bounded query per chunk. The time bound is derived from the batch itself, so ClickHouse
+    prunes to the partitions the rows could be in rather than scanning the retained history. The
+    tuple comparison uses `toUnixTimestamp64Milli`, which is timezone-free on both sides.
+
+    A key is only skipped when the DATABASE confirms it exists. If this query fails the caller
+    inserts the batch (availability over exactness) and says so loudly -- refusing to ingest on a
+    transient read error would convert a duplicate problem into a data-loss one.
+    """
+    found: set[tuple] = set()
+    unique = list(dict.fromkeys(keys))
+    for start in range(0, len(unique), FLOW_KEY_QUERY_CHUNK):
+        part = unique[start:start + FLOW_KEY_QUERY_CHUNK]
+        if not part:
+            continue
+        low = min(int(k[0]) for k in part)
+        high = max(int(k[0]) for k in part)
+        tuples = ",".join("(" + ",".join(_sql_literal(v) for v in key) + ")" for key in part)
+        sql = (
+            "SELECT toUnixTimestamp64Milli(time_flow_start), "
+            "toUnixTimestamp64Milli(time_flow_end), src_addr, dst_addr, src_port, dst_port, "
+            "proto, bytes, packets, sampler_address, in_iface FROM weirvern.flows "
+            f"WHERE time_flow_start >= fromUnixTimestamp64Milli({low}) "
+            f"AND time_flow_start <= fromUnixTimestamp64Milli({high}) "
+            "AND (toUnixTimestamp64Milli(time_flow_start), toUnixTimestamp64Milli(time_flow_end), "
+            "src_addr, dst_addr, src_port, dst_port, proto, bytes, packets, sampler_address, "
+            f"in_iface) IN ({tuples})"
+        )
+        result = client.query(sql)
+        for row in getattr(result, "result_rows", None) or []:
+            found.add(tuple(
+                int(v) if isinstance(v, int) else str(v) for v in row
+            ))
+    return found
+
+
+def _drop_already_present(client: Any, batch: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Split a re-read batch into (new rows, count already present)."""
+    keys = [_flow_key(row) for row in batch]
+    present = existing_flow_keys(client, keys)
+    if not present:
+        return batch, 0
+    keep = [row for row, key in zip(batch, keys, strict=True) if key not in present]
+    return keep, len(batch) - len(keep)
+
+
+def _apply_trim_chain_retry(path: str, st: os.stat_result, offset: int, inode: int) -> int | None:
+    """`_apply_trim_chain`, retried briefly to lose the trim-hint write race.
+
+    A cap trim rewrites the file and THEN replaces the hint. Between those two steps the chain
+    legitimately cannot explain the new cursor, and the old code treated that as "re-read the whole
+    file" -- twice on 2026-11-21, which is where 1.07M duplicate rows came from. The hint write is
+    an atomic replace, so a short retry either sees it or establishes that it is genuinely absent.
+    """
+    for attempt in range(TRIM_HINT_RETRY_ATTEMPTS):
+        shifted = _apply_trim_chain(path, st, offset, inode)
+        if shifted is not None:
+            if attempt:
+                logger.info(
+                    "Trim hint for %s appeared after %d retr%s: cursor shifted to %d, no re-read",
+                    path, attempt, "y" if attempt == 1 else "ies", shifted,
+                )
+            return shifted
+        if attempt + 1 < TRIM_HINT_RETRY_ATTEMPTS:
+            time.sleep(TRIM_HINT_RETRY_DELAY_S * (attempt + 1))
+            try:
+                st = os.stat(path)
+            except OSError:
+                return None
+    return None
+
+
 def tail_and_insert(client: Inserter, path: str, once: bool = False,
                     offset: int | None = None, known_inode: int | None = None,
                     state: TailState | None = None,
@@ -2027,10 +2171,11 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
         elif start_offset and not _offset_is_on_boundary(path, start_offset):
             why = "content replaced (offset is not on a record boundary)"
 
+    reread = False
     if why:
         shifted = None
         if state is not None:
-            shifted = _apply_trim_chain(path, st, state.offset, state.inode)
+            shifted = _apply_trim_chain_retry(path, st, state.offset, state.inode)
         if shifted is not None:
             # A cap trim explains the change: subtract instead of re-reading. Exact, because
             # both offsets sit on record boundaries (the trim cuts at one; the tailer stops
@@ -2043,6 +2188,7 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
         else:
             logger.info("Re-reading %s from start (%s)", path, why)
             start_offset = 0
+            reread = True
 
     allowed = _exporter_networks(allow)
     rejected = 0
@@ -2053,8 +2199,41 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     unverified = 0
     unverified_why: dict[str, int] = {}
     inserted = 0
+    already_present = 0
     batch: list[dict[str, Any]] = []
     consumed = start_offset
+
+    # ── THE RE-READ IDEMPOTENCE GUARD ───────────────────────────────────────────────────────────
+    #
+    # A fallback re-read is rare but it re-reads a capped file in full, so one duplicate is not one
+    # row -- it is the whole surviving file. MEASURED 2026-11-21: two re-reads put 1,070,782 rows
+    # into `flows` and doubled the affected `flows_window` states. The trim-hint retry above removes
+    # the race that caused them; this guard means a re-read CANNOT duplicate even if some other
+    # path forces one (an older pruner, a hint volume that is not shared, a manual edit).
+    #
+    # The check is only for the re-read path: a normal append has no prior rows by construction,
+    # and asking the database about every batch would add a round trip to the hot path for nothing.
+    can_dedupe = reread and hasattr(client, "query")
+
+    def flush(rows: list[dict[str, Any]]) -> None:
+        nonlocal inserted, already_present
+        if not rows:
+            return
+        if can_dedupe:
+            try:
+                rows, skipped = _drop_already_present(client, rows)
+            except Exception as exc:  # noqa: BLE001
+                # Availability over exactness: a failed existence check must not stop ingest. The
+                # cost is visible in this line, and the cleanup path exists.
+                logger.error(
+                    "Could not check flows for duplicates before a re-read of %s; %d record(s) "
+                    "may be inserted again: %s", path, len(rows), exc,
+                )
+                skipped = 0
+            if skipped:
+                already_present += skipped
+        inserted += insert_batch(client, rows)
+
     with open(path, encoding="utf-8", errors="replace") as fh:
         fh.seek(start_offset)
         while True:
@@ -2095,7 +2274,7 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
                 unverified_why[verdict] = unverified_why.get(verdict, 0) + 1
             batch.append(row)
             if len(batch) >= BATCH_SIZE:
-                inserted += insert_batch(client, batch)
+                flush(batch)
                 batch = []
     if rejected:
         # WARNING, not debug: an unexpected exporter is a security-relevant event, and the whole
@@ -2120,10 +2299,17 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
             unverified, ", ".join(f"{k}: {v}" for k, v in sorted(unverified_why.items())),
         )
     if batch:
-        inserted += insert_batch(client, batch)  # type: ignore[arg-type]
+        flush(batch)
     final_offset = consumed
     if state is not None:
         state.note_read(st, final_offset)
+    if already_present:
+        # WARNING, not INFO: a re-read happened at all, and it was the source of a measured
+        # duplication incident. The count is what turns "a re-read is safe" into a checked fact.
+        logger.warning(
+            "Re-read of %s: %d record(s) were already in flows (same natural key) and were NOT "
+            "inserted again", path, already_present,
+        )
     logger.info("Ingested %d flow records from %s (offset %d)", inserted, path, final_offset)
     return inserted, final_offset, st.st_ino
 
@@ -2364,7 +2550,7 @@ def load_tail_state(path: str) -> TailState:
             st_now = os.stat(path)
         except OSError:
             return TailState()
-        shifted = _apply_trim_chain(path, st_now, offset, inode)
+        shifted = _apply_trim_chain_retry(path, st_now, offset, inode)
         if shifted:
             logger.info(
                 "Tail cursor for %s shifted by a cap trim: %d -> %d (no re-read)",

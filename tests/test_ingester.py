@@ -1548,3 +1548,161 @@ def test_tail_targets_reads_the_per_nic_map():
         ("/data/flows.jsonl", "eth1"),
         ("/data/flows-eth2.jsonl", "eth2"),
     ]
+
+
+# ── the trim race that duplicated 1,070,782 rows (2026-11-21) ────────────────────────────────
+#
+# `enforce_netflow` rewrites the sink in place and THEN atomically replaces the trim hint. The
+# reader could land between the two: the file is already trimmed, the hint still describes the
+# previous rewrite, and `_apply_trim_chain` correctly said "I cannot explain this cursor". The old
+# fallback was a full re-read, which is the whole file re-inserted. Measured: two prunes at
+# 12:20/12:25, two re-reads, 1,070,782 duplicate rows in `flows`, doubled `flows_window` states.
+
+class _DedupCH:
+    """A client that can ANSWER the existence query, not only insert.
+
+    Production `clickhouse_connect` clients have `.query`; the guard is only active for a re-read,
+    so the plain `FakeCH` used by the other tailer tests keeps the legacy path.
+    """
+
+    def __init__(self):
+        self.rows: list[list] = []
+        self.inserted = 0
+        self.queries = 0
+
+    def insert(self, table, rows, column_names=None):
+        self.rows.extend(rows)
+        self.inserted += len(rows)
+
+    def query(self, sql):
+        from types import SimpleNamespace
+
+        from weirvern.ingester import _COLUMNS, _flow_key
+
+        self.queries += 1
+        assert "FROM weirvern.flows" in sql and "time_flow_start >=" in sql, sql[:200]
+        # Emulate the SELECT faithfully enough for the guard: return the natural key of every
+        # row this fake has ever stored. The guard does the membership filter itself.
+        return SimpleNamespace(result_rows=[
+            list(_flow_key(dict(zip(_COLUMNS, row, strict=True)))) for row in self.rows
+        ])
+
+
+def _trim_with_hint(path: str, keep_from_line: int) -> None:
+    """Rewrite `path` like a cap trim and record the same hint `enforce` records."""
+    from weirvern.ingester import TRIM_HINT_SUFFIX
+
+    with open(path, "rb") as fh:
+        lines = fh.readlines()
+    removed = sum(len(line) for line in lines[:keep_from_line])
+    inode = os.stat(path).st_ino
+    tmp = path + ".trim"
+    with open(tmp, "wb") as fh:
+        fh.write(b"".join(lines[keep_from_line:]))
+    os.replace(tmp, path)
+    with open(path + TRIM_HINT_SUFFIX, "w") as fh:
+        json.dump({"chain": [{"from": inode, "to": os.stat(path).st_ino, "removed": removed}]}, fh)
+
+
+def test_a_hint_that_appears_one_retry_late_does_not_force_a_re_read(monkeypatch, tmp_path):
+    """The measured race: the file is trimmed, the hint replacement lands milliseconds later."""
+    from weirvern import ingester
+
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(30):
+            fh.write(json.dumps(_flow_record(i + 1)) + "\n")
+
+    fake = _DedupCH()
+    st = TailState()
+    assert tail_and_insert(fake, path, state=st)[0] == 30
+    before = fake.inserted
+
+    _trim_with_hint(path, 10)
+
+    real = ingester._apply_trim_chain
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # the hint had not been replaced yet
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ingester, "_apply_trim_chain", flaky)
+    inserted, offset, _ = tail_and_insert(fake, path, state=st)
+
+    assert inserted == 0, "the retry did not prevent the re-read"
+    assert fake.inserted == before, "duplicate rows reached the inserter"
+    assert calls["n"] >= 2, "the chain was not retried at all"
+    assert offset > 0 and st.offset > 0
+
+
+def test_a_re_read_cannot_insert_a_row_that_is_already_present(monkeypatch, tmp_path):
+    """Even if the hint is genuinely lost, the natural-key guard makes the re-read idempotent."""
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(5):
+            fh.write(json.dumps(_flow_record(i + 1)) + "\n")
+
+    fake = _DedupCH()
+    st = TailState()
+    assert tail_and_insert(fake, path, state=st)[0] == 5
+    before = fake.inserted
+
+    # Force the fallback deterministically: claim the file we read had another inode, so the
+    # reset branch fires, the hint cannot explain it, and the tailer re-reads from zero.
+    st.identity = (st.inode + 1, st.offset, 0)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(_flow_record(6)) + "\n")
+
+    inserted, _, _ = tail_and_insert(fake, path, state=st)
+    assert inserted == 1, f"the guard inserted duplicates: {inserted} new rows instead of 1"
+    assert fake.inserted == before + 1
+    assert fake.queries >= 1, "the re-read never asked the database what was already there"
+
+
+def test_a_normal_append_never_pays_for_the_dedupe_query(tmp_path):
+    """The hot path stays a plain insert: the guard is for re-reads only."""
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        fh.write(json.dumps(_flow_record(1)) + "\n")
+    fake = _DedupCH()
+    st = TailState()
+    tail_and_insert(fake, path, state=st)
+    assert fake.queries == 0
+    with open(path, "a") as fh:
+        fh.write(json.dumps(_flow_record(2)) + "\n")
+    assert tail_and_insert(fake, path, state=st)[0] == 1
+    assert fake.queries == 0, "an append must not query the table per batch"
+
+
+def test_the_natural_key_ignores_ingest_time_and_keeps_the_source_identity():
+    """`timestamp` (ingest time) changes on every re-read; the key must not include it."""
+    from weirvern.ingester import FLOW_KEY_COLUMNS, _flow_key, map_flow
+
+    row = map_flow(_flow_record(7))
+    other = map_flow(_flow_record(7))
+    assert row["timestamp"] != other["timestamp"] or True  # same clock tick is allowed
+    assert _flow_key(row) == _flow_key(other)
+    assert "timestamp" not in FLOW_KEY_COLUMNS
+    # A different source port is a different record, not a duplicate.
+    changed = map_flow(_flow_record(8))
+    assert _flow_key(row) != _flow_key(changed)
+
+
+def test_the_key_query_names_every_key_column_so_one_cannot_be_dropped():
+    from weirvern.ingester import FLOW_KEY_COLUMNS, existing_flow_keys
+
+    seen = {}
+
+    class _Q:
+        def query(self, sql):
+            from types import SimpleNamespace
+            seen["sql"] = sql
+            return SimpleNamespace(result_rows=[])
+
+    existing_flow_keys(_Q(), [(0, 0, "a", "b", 1, 2, 6, 3, 4, "s", "eth1")])
+    sql = seen["sql"]
+    for column in FLOW_KEY_COLUMNS:
+        assert column in sql, f"{column} missing from the existence query"

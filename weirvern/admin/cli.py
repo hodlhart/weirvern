@@ -509,7 +509,11 @@ def _lifecycle(action: str, args: argparse.Namespace) -> int:
     elif action == "restart":
         result = backend.restart(services)
     elif action == "apply":
-        result = backend.apply(dry_run=getattr(args, "dry_run", False))
+        # THE GUARDED PATH, not the raw apply. `apply_checked` merges the GUI's recorded settings
+        # back into the render and refuses before kubectl touches anything when a capture setting
+        # would be blanked (see weirvern/admin/config_guard.py).
+        apply_fn = getattr(backend, "apply_checked", backend.apply)
+        result = apply_fn(dry_run=getattr(args, "dry_run", False))
     elif action == "down":
         result = backend.down(volumes=getattr(args, "volumes", False))
     elif action == "pull":

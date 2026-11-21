@@ -654,3 +654,46 @@ def test_manifests_declare_every_workload_the_backend_drives():
                          rf"[\s\S]{{0,200}}?name:\s*{re.escape(name)}", text) or \
                re.search(rf"name:\s*{re.escape(name)}", text), \
             f"{kind}/{name} not found in k8s/*.yaml"
+
+
+def test_apply_checked_uses_the_guard_and_reports_its_refusal(tmp_path, monkeypatch):
+    """`weirvern apply` must go through the guard, not the raw `apply -k`.
+
+    The guard is tested on its own in tests/test_config_guard.py; this pins the WIRING, because a
+    guard nothing calls is decoration -- and the raw apply is what stopped capture for 18 hours.
+    """
+    from weirvern.admin import config_guard
+
+    b = _backend(tmp_path)
+    seen = _capture(monkeypatch)
+
+    def refuse(*args, **kwargs):
+        return config_guard.ApplyResult(
+            ok=False, code=3,
+            message='REFUSING TO APPLY: the manifests would BLANK 1 setting(s) ...',
+        )
+
+    monkeypatch.setattr(config_guard, "apply", refuse)
+    result = b.apply_checked()
+    assert result.ok is False
+    assert result.code == 3
+    assert "REFUSING TO APPLY" in result.stderr
+    assert seen == [], "kubectl ran despite the guard refusing"
+
+
+def test_apply_checked_passes_the_project_dir_and_dry_run(tmp_path, monkeypatch):
+    from weirvern.admin import config_guard
+
+    b = _backend(tmp_path)
+    calls = {}
+
+    def fake_apply(project_dir, **kwargs):
+        calls["project_dir"] = project_dir
+        calls.update(kwargs)
+        return config_guard.ApplyResult(ok=True, code=0, message="apply ok")
+
+    monkeypatch.setattr(config_guard, "apply", fake_apply)
+    result = b.apply_checked(dry_run=True)
+    assert result.ok is True
+    assert calls["project_dir"] == tmp_path
+    assert calls["dry_run"] is True
