@@ -57,6 +57,11 @@ class ComponentResult:
     actions: int = 0
     skipped: str = ""
     errors: list[str] = field(default_factory=list)
+    # Over cap, but only because every remaining file is inside the grace window. That is a
+    # transient, self-clearing state: the next run deletes those files when they age out. It is
+    # NOT the failure the exit code exists for, and it must not make the CronJob red on every
+    # busy hour -- a job that fails whenever the sensor is writing is a job nobody reads.
+    deferred_mb: float = 0.0
 
     @property
     def over_cap(self) -> bool:
@@ -98,6 +103,13 @@ def enforce_zeek(cap_mb: float, grace_s: int = 3600) -> ComponentResult:
     after = prune.total_bytes(ZEEK_DIR)
     r.after_mb = _mb(after)
     r.freed_mb = _mb(before - after)
+    # Distinguish "still over cap" from "at cap, waiting for the grace window". The second is
+    # self-clearing; treating it as a failure makes the CronJob red during ordinary traffic.
+    cap_bytes = int(cap_mb * 1048576)
+    if after > cap_bytes:
+        still_deletable = prune.plan_prune(ZEEK_DIR, int(cap_mb), grace_s=0)
+        if not still_deletable:
+            r.deferred_mb = _mb(after - cap_bytes)
     r.actions = res.deleted_files
     r.errors = list(res.errors)
     if res.skipped_recent:

@@ -1699,10 +1699,21 @@ def cmd_prune(args: argparse.Namespace) -> int:
     # Exit non-zero when a component is STILL over cap after a real prune pass. This is what
     # makes the CronJob's failure state meaningful: a Job that "succeeded" while the disk is
     # over budget would hide the exact condition worth alerting on.
-    stuck = [r for r in results if r.cap_mb > 0 and r.after_mb > r.cap_mb]
+    #
+    # `deferred_mb` is the exception, and it is not a loophole: it is set only when the prune
+    # has nothing left it is ALLOWED to delete, because every remaining file is inside the
+    # grace window that protects records the worker may not have ingested yet. That state
+    # clears itself on a later run; failing here would paint the CronJob red during ordinary
+    # traffic and teach the operator to ignore it.
+    stuck = [r for r in results if r.cap_mb > 0 and r.after_mb > r.cap_mb and not r.deferred_mb]
     if stuck:
         _bad("still over cap after pruning: " + ", ".join(r.component for r in stuck))
         return EXIT_FAIL
+    deferred = [r for r in results if r.deferred_mb > 0]
+    if deferred:
+        print("  at cap, waiting for the grace window: " + ", ".join(
+            f"{r.component} is {r.deferred_mb:.1f} MB over with nothing left it may delete yet"
+            for r in deferred))
     return EXIT_OK
 
 

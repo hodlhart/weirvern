@@ -60,13 +60,17 @@ spec:
         spec:
           restartPolicy: OnFailure
           securityContext:
-            # The worker image runs as uid 10001. The log and flow directories are written
-            # by the sensor (uid 0 in the zeek container) and by goflow2, so the pruner
-            # needs write access to files it does not own -- hence fsGroup so the volume
-            # is group-writable rather than needing root.
+            # ROOT IS REQUIRED HERE, and the earlier reasoning was wrong (measured 2026-11-21):
+            # `fsGroup` does not chown a hostPath volume, and the sensor writes its logs as
+            # uid 0 with mode 0644 in directories owned root:10001 mode 2755. UID 10001 has
+            # read and execute there, not write -- so every delete failed with EACCES and the
+            # CronJob went red while the disk stayed over cap. This container's only job is
+            # deleting rotated logs and trimming flow files inside the mounts it is given;
+            # it keeps allowPrivilegeEscalation=false, a read-only root filesystem and ALL
+            # capabilities dropped.
             fsGroup: 10001
-            runAsNonRoot: true
-            runAsUser: 10001
+            runAsNonRoot: false
+            runAsUser: 0
           containers:
             - name: prune
               image: weirvern-worker

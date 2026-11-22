@@ -499,3 +499,52 @@ def test_a_symlink_in_a_log_tree_is_never_followed_or_deleted(tmp_path):
     assert prune.rotated_files(tmp_path) == []
     prune.prune(tmp_path, cap_mb=0.0001, grace_s=1)
     assert outside.exists(), "a cap must never be satisfied by deleting through a symlink"
+
+
+# ── the grace window is not a failure ────────────────────────────────────────────────────────
+#
+# MEASURED 2026-11-21: with a 1-hour grace and 2 GB cap, the prune deleted everything it was
+# allowed to and landed 13 MB over because the newest hour was still inside the window. The CLI
+# called that "still over cap" and exited 1, so the CronJob went red on ordinary traffic while
+# doing exactly the right thing.
+
+def _prune_args():
+    from argparse import Namespace
+    return Namespace(dry_run=False, cap=None, component="zeek", grace=3600)
+
+
+def test_over_cap_only_because_of_the_grace_window_is_not_a_failure(monkeypatch, capsys):
+    from weirvern import enforce
+    from weirvern.admin import cli as wcli
+
+    monkeypatch.setenv("ZEEK_MAX_MB", "2048")
+    monkeypatch.delenv("NETFLOW_MAX_MB", raising=False)
+    monkeypatch.delenv("ML_MAX_MB", raising=False)
+    monkeypatch.setattr(enforce, "render", lambda results: "rendered")
+    monkeypatch.setattr(enforce, "enforce", lambda caps, grace_s=3600: [
+        enforce.ComponentResult(component="zeek", cap_mb=2048, before_mb=3400, after_mb=2060.8,
+                                freed_mb=1339.2, deferred_mb=12.8)])
+
+    rc = wcli.cmd_prune(_prune_args())
+    out = capsys.readouterr().out
+    assert rc == wcli.EXIT_OK, "a self-clearing grace overage must not fail the CronJob"
+    assert "waiting for the grace window" in out
+    assert "12.8 MB over" in out
+
+
+def test_an_over_cap_with_deletable_files_left_is_still_a_failure(monkeypatch, capsys):
+    from weirvern import enforce
+    from weirvern.admin import cli as wcli
+
+    monkeypatch.setenv("ZEEK_MAX_MB", "2048")
+    monkeypatch.delenv("NETFLOW_MAX_MB", raising=False)
+    monkeypatch.delenv("ML_MAX_MB", raising=False)
+    monkeypatch.setattr(enforce, "render", lambda results: "rendered")
+    monkeypatch.setattr(enforce, "enforce", lambda caps, grace_s=3600: [
+        enforce.ComponentResult(component="zeek", cap_mb=2048, before_mb=3400, after_mb=3000,
+                                freed_mb=400, deferred_mb=0.0)])
+
+    rc = wcli.cmd_prune(_prune_args())
+    captured = capsys.readouterr()
+    assert rc == wcli.EXIT_FAIL
+    assert "still over cap" in (captured.out + captured.err)

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.23.130 — 2026-11-21
+
+THE PRUNE CAN DELETE THE FILES IT WAS POINTED AT, AND THE GRACE WINDOW IS NOT A FAILURE.
+
+0.23.129 made the cap see per-interface logs, and the first real run then failed twice for two
+different reasons — both measured, both fixed here.
+
+- **UID 10001 cannot delete root-owned sensor logs.** The CronJob ran as `runAsUser: 10001`
+  with `fsGroup: 10001`, on the belief that fsGroup makes the volume group-writable. It does
+  not: kubelet does not chown a `hostPath` volume, and Zeek writes as uid 0, mode 0644, into
+  directories owned `root:10001` mode 2755. Every delete returned `EACCES`, the component
+  reported errors, and the Job went red while the disk stayed over cap. The prune now runs as
+  uid 0 — its only job is deleting inside the mounts it is given — and keeps
+  `allowPrivilegeEscalation: false`, a read-only root filesystem and all capabilities dropped.
+- **"Over cap because everything left is inside the grace window" is not a failure.** With a
+  1-hour grace and a 2 GB cap the prune deleted everything it was allowed to and landed 13 MB
+  over. The CLI called that "still over cap" and exited 1, painting the CronJob red on ordinary
+  traffic for doing exactly the right thing. `ComponentResult.deferred_mb` now records that
+  state, the CLI prints it in one sentence and exits 0; a genuine over-cap (deletable files
+  remaining) still exits 1.
+- Tests: a rotated log in `eth1/` is a candidate and is counted; the oldest subdir file is the
+  one deleted; symlinks are never followed; a grace-only overage exits 0 with the sentence; an
+  overage with deletable files remaining exits 1.
+
 ## 0.23.129 — 2026-11-21
 
 THE ZEEK CAP CAN NOW SEE THE LOGS IT IS SUPPOSED TO CAP.
