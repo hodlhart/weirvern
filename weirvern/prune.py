@@ -100,12 +100,17 @@ def rotated_files(log_dir: Path) -> list[PruneCandidate]:
     Sorted by name-embedded time rather than mtime so the ordering survives a copy or
     restore. A file whose name does not match the rotation pattern is skipped entirely:
     better to leave an unrecognised file than to delete the wrong one.
+
+    RECURSIVE, because Zeek in per-interface mode writes `conn.<ts>.log` inside `eth1/` and
+    `eth2/`, not at the top level. Walking only `log_dir.iterdir()` measured 1.39 GB against a
+    2 GB cap while ~3 GB sat in those subdirectories, unbounded and invisible -- the cap
+    reported "within budget" the whole time. A cap that cannot see a file cannot prune it.
     """
     out: list[PruneCandidate] = []
     if not log_dir.is_dir():
         return out
-    for entry in log_dir.iterdir():
-        if not entry.is_file():
+    for entry in log_dir.rglob("*"):
+        if not entry.is_file() or entry.is_symlink():
             continue
         m = ROTATED_RE.match(entry.name)
         if not m:
@@ -253,16 +258,20 @@ def prune(log_dir: Path, cap_mb: int, grace_s: int = DEFAULT_GRACE_S,
 
 
 def total_bytes(log_dir: Path) -> int:
-    """Size of the whole log directory, including the current files.
+    """Size of the whole log directory tree, including the current files.
 
     Includes the live files because the CAP is about disk usage, and the current files
     occupy disk. A cap that ignored them would overshoot by however much the sensor is
     writing right now.
+
+    RECURSIVE for the same reason as `rotated_files`: per-interface Zeek writes into
+    `eth1/` and `eth2/`, and a top-level-only sum reports a fraction of the disk the
+    sensor actually occupies.
     """
     total = 0
     if not log_dir.is_dir():
         return 0
-    for entry in log_dir.iterdir():
+    for entry in log_dir.rglob("*"):
         if entry.is_file():
             try:
                 total += entry.stat().st_size

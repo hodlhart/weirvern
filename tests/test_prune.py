@@ -451,3 +451,51 @@ def test_the_cli_dry_run_reports_the_real_plan(tmp_path, monkeypatch, capsys):
     # The regression: a non-empty plan must never read as "0.0 MB (0 file(s))".
     assert "would free 0.0 MB (0 file(s))" not in out
     assert "would free 0.4 MB (1 file(s))" in out, out
+
+
+# ── per-interface Zeek directories ─────────────────────────────────────────────────────────────
+#
+# MEASURED DEFECT (2026-11-21): Zeek in per-interface mode writes into `eth1/` and `eth2/`, but
+# both `rotated_files()` and `total_bytes()` walked only the top level. The cap therefore saw
+# 1.39 GB against a 2 GB budget while ~3 GB sat in those subdirectories, unpruned and invisible;
+# the sensor reported "within budget" the whole time it was filling the disk.
+
+def test_a_rotated_log_in_an_interface_subdirectory_is_a_candidate(tmp_path):
+    sub = tmp_path / "eth1"
+    sub.mkdir()
+    f = sub / f"conn.{old_ts(30)}.log"
+    f.write_bytes(b"x" * MB)
+    names = {c.path.name for c in prune.rotated_files(tmp_path)}
+    assert f.name in names, "a per-interface rotated log is still a rotated log"
+
+
+def test_the_cap_counts_per_interface_bytes(tmp_path):
+    sub = tmp_path / "eth1"
+    sub.mkdir()
+    (sub / f"conn.{old_ts(30)}.log").write_bytes(b"x" * MB)
+    (tmp_path / f"dns.{old_ts(20)}.log").write_bytes(b"x" * MB)
+    assert prune.total_bytes(tmp_path) == 2 * MB
+
+
+def test_a_per_interface_log_is_actually_deleted_when_over_the_cap(tmp_path):
+    sub = tmp_path / "eth2"
+    sub.mkdir()
+    (sub / f"conn.{old_ts(30)}.log").write_bytes(b"x" * MB)
+    (tmp_path / f"dns.{old_ts(20)}.log").write_bytes(b"x" * MB)
+    r = prune.prune(tmp_path, cap_mb=1, grace_s=60)
+    assert r.deleted_files == 1
+    assert not (sub / f"conn.{old_ts(30)}.log").exists(), "the oldest file lived in the subdir"
+    assert (tmp_path / f"dns.{old_ts(20)}.log").exists()
+
+
+def test_a_symlink_in_a_log_tree_is_never_followed_or_deleted(tmp_path):
+    outside = tmp_path.parent / "outside-log.log"
+    outside.write_bytes(b"x" * MB)
+    link = tmp_path / f"conn.{old_ts(30)}.log"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable on this filesystem")
+    assert prune.rotated_files(tmp_path) == []
+    prune.prune(tmp_path, cap_mb=0.0001, grace_s=1)
+    assert outside.exists(), "a cap must never be satisfied by deleting through a symlink"

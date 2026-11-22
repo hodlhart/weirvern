@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.129 — 2026-11-21
+
+THE ZEEK CAP CAN NOW SEE THE LOGS IT IS SUPPOSED TO CAP.
+
+Zeek in per-interface mode writes `conn.<ts>.log` inside `eth1/` and `eth2/`, not at the top of
+the log directory. Both `rotated_files()` and `total_bytes()` walked only the top level
+(`log_dir.iterdir()`), so the cap measured 1.39 GB against a 2 GB budget while roughly 3 GB sat
+in those subdirectories — unpruned, uncounted, and invisible. The prune reported "within budget"
+for as long as the sensor was filling the disk.
+
+- `rotated_files()` walks the tree (`rglob("*")`) and skips symlinks, so a per-interface rotated
+  log is a candidate like any other and a link can never be used to delete outside the tree.
+- `total_bytes()` sums the same tree, so the cap is about the disk the sensor actually occupies
+  rather than the fraction at the top level.
+- Tests: a rotated log in `eth1/` is a candidate; the cap counts it; the oldest file in a subdir
+  is the one deleted; a symlink is never followed or deleted.
+
 ## 0.23.128 — 2026-11-21
 
 A DEPLOYMENT THAT DOES NOT SEND ALERTS IS A POLICY, NOT A BROKEN CRONJOB.
