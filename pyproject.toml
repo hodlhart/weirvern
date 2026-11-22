@@ -11,7 +11,7 @@ license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Samuel Hart" }]
 dependencies = [
-    "clickhouse-connect>=0.8.0,<1.0",
+    "clickhouse-connect>=0.8.0,<2.0",
     "numpy>=1.26,<3",
     "scikit-learn>=1.5,<2",
     # DECLARED, NOT INHERITED. The fitted count tail (`models/ripple_tail.py`) uses the
