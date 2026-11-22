@@ -548,3 +548,34 @@ def test_an_over_cap_with_deletable_files_left_is_still_a_failure(monkeypatch, c
     captured = capsys.readouterr()
     assert rc == wcli.EXIT_FAIL
     assert "still over cap" in (captured.out + captured.err)
+
+
+def _enforce_zeek_with(monkeypatch, tmp_path, *, after_mb, skipped_recent=273):
+    from types import SimpleNamespace
+
+    from weirvern import enforce, prune
+
+    z = tmp_path / "zeek"
+    z.mkdir()
+    monkeypatch.setattr(enforce, "ZEEK_DIR", z)
+    monkeypatch.setattr(prune, "total_bytes", lambda d: int(after_mb * 1048576))
+    monkeypatch.setattr(prune, "prune", lambda d, cap, grace_s=3600: SimpleNamespace(
+        deleted_files=1200, deleted_bytes=0, skipped_recent=skipped_recent,
+        skipped_protected=0, skipped_current=0, errors=[]))
+    return enforce.enforce_zeek(2048, grace_s=3600)
+
+
+def test_a_rounding_error_over_cap_with_skipped_recent_files_is_deferred(monkeypatch, tmp_path):
+    r = _enforce_zeek_with(monkeypatch, tmp_path, after_mb=2060)
+    assert r.after_mb > r.cap_mb
+    assert r.deferred_mb > 0, "11 MB over with 273 recent files is the grace window, not a fault"
+
+
+def test_a_materially_over_cap_result_is_not_deferred(monkeypatch, tmp_path):
+    r = _enforce_zeek_with(monkeypatch, tmp_path, after_mb=3000)
+    assert r.deferred_mb == 0, "a 950 MB overage is a real failure whatever the grace window says"
+
+
+def test_no_recent_skips_means_no_deferral(monkeypatch, tmp_path):
+    r = _enforce_zeek_with(monkeypatch, tmp_path, after_mb=2060, skipped_recent=0)
+    assert r.deferred_mb == 0, "if nothing was skipped for recency, the residue is unexplained"

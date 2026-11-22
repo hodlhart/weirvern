@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.131 — 2026-11-21
+
+THE GRACE-WINDOW EXCEPTION NOW ACTUALLY FIRES.
+
+0.23.130 added `deferred_mb`, then asked `plan_prune(grace_s=0)` whether anything else was
+deletable. On the live cluster that answered "yes" while the pass had just skipped 273 files as
+too recent, so a prune that landed 11 MB over a 2048 MB cap still exited 1 and the Job stayed
+red. The test now matches the measurement: the result is deferred only when the pass skipped
+files for recency AND the residue is within max(32 MB, 1 % of cap). A 950 MB overage stays a
+failure, and a residue with no recency skips stays a failure too — an unexplained overage is
+not a grace window.
+
 ## 0.23.130 — 2026-11-21
 
 THE PRUNE CAN DELETE THE FILES IT WAS POINTED AT, AND THE GRACE WINDOW IS NOT A FAILURE.

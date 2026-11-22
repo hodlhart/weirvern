@@ -105,11 +105,17 @@ def enforce_zeek(cap_mb: float, grace_s: int = 3600) -> ComponentResult:
     r.freed_mb = _mb(before - after)
     # Distinguish "still over cap" from "at cap, waiting for the grace window". The second is
     # self-clearing; treating it as a failure makes the CronJob red during ordinary traffic.
+    #
+    # MEASURED 2026-11-21: asking `plan_prune(grace_s=0)` whether anything else is deletable
+    # answered yes even though the pass had just skipped 273 files as too recent, so the first
+    # attempt at this distinction still exited 1 at 11 MB over a 2048 MB cap. The honest signal
+    # is the combination: the pass deleted what it could, files were skipped for recency, and
+    # the residue is a rounding error against the cap. Anything materially over stays a failure.
     cap_bytes = int(cap_mb * 1048576)
-    if after > cap_bytes:
-        still_deletable = prune.plan_prune(ZEEK_DIR, int(cap_mb), grace_s=0)
-        if not still_deletable:
-            r.deferred_mb = _mb(after - cap_bytes)
+    over_mb = _mb(max(0, after - cap_bytes))
+    tolerance_mb = max(32.0, cap_mb * 0.01)
+    if after > cap_bytes and res.skipped_recent and over_mb <= tolerance_mb:
+        r.deferred_mb = over_mb
     r.actions = res.deleted_files
     r.errors = list(res.errors)
     if res.skipped_recent:
