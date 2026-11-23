@@ -108,7 +108,7 @@ address from a real network appears in any screenshot.
 | --- | --- |
 | ![Alerts: ripples first, model detections as corroboration](docs/screenshots/anomalies.png) | ![Models: detectors calibrated with FAR, CI and n](docs/screenshots/models.png) |
 | **Weirlings** | **Assets** |
-| ![The fleet: two sensors, their plans and scan history](docs/screenshots/weirlings-fleet.png) | ![Assets: an inventory with services and posture-scored changes](docs/screenshots/assets.png) |
+| ![The fleet: three weirlings, their modes and NIC roles](docs/screenshots/weirlings-fleet.png) | ![Assets: an inventory with services and posture-scored changes](docs/screenshots/assets.png) |
 | **Network map** | **Health in demo mode** |
 | ![Force map of hosts and connections](docs/screenshots/network-3site.png) | ![Health: demo mode green, live feed checks not applicable](docs/screenshots/health.png) |
 
