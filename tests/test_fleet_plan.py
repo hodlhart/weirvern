@@ -33,7 +33,8 @@ from weirvern.fleet import FleetError, Registration, SensorPlan
 NOW = datetime.datetime(2026, 10, 17, 12, 0, 0, tzinfo=datetime.UTC)
 
 GOOD = dict(mode="siphon", iface="eth2", segment="198.51.100.0/24",
-            addr="198.51.100.250", gateway="198.51.100.1", targets="*")
+            addr="198.51.100.250", gateway="198.51.100.1", targets="*",
+            channel_upstream="", channel_downstream="")
 
 
 class _StubResult:
@@ -285,5 +286,7 @@ def test_a_remote_sensor_can_carry_two_nic_plans_without_overwriting_either():
     assert len(p.to_intercept_configs()) == 1
     assert p.to_intercept_configs()[0].iface == "eth1"
     assert p.nics == nics
-    # The legacy six-field payload is unchanged for every pre-upgrade reader.
-    assert set(p.as_dict()) == {"mode", "iface", "segment", "addr", "gateway", "targets"}
+    # The plan payload is the editable field set, now including the channel pair (the same
+    # eight keys the write accepts); `plan_nics` deliberately stays a separate document.
+    assert set(p.as_dict()) == {"mode", "iface", "segment", "addr", "gateway", "targets",
+                                "channel_upstream", "channel_downstream"}

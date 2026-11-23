@@ -61,6 +61,11 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY weirvern ./weirvern
+# THE INLINE BRIDGE HELPER, for the same reason the worker image ships it: the agent invokes it
+# to create or tear down a channel bridge, and a helper absent from the image is a feature that
+# can only report DEGRADED. The agent image is the default unit image, so it needs its own copy.
+COPY scripts/weirling-inline.sh /app/scripts/weirling-inline.sh
+RUN chmod 0755 /app/scripts/weirling-inline.sh
 RUN pip install --no-cache-dir .
 
 RUN useradd --system --uid 10001 --create-home weirvern

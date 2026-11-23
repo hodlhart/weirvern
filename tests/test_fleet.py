@@ -677,8 +677,7 @@ def test_revoking_clears_the_plan_so_a_readded_sensor_starts_clean():
     assert out.revoked_at == NOW and out.enabled is False
     assert not out.plan.configured
     assert out.plan.nics == ""
-    assert out.plan.as_dict() == {f: "" for f in ("mode", "iface", "segment", "addr",
-                                                  "gateway", "targets")}
+    assert out.plan.as_dict() == {f: "" for f in fleet.PLAN_FIELDS}
 
 
 def test_the_summary_counts_each_collected_network_once_not_each_nic():

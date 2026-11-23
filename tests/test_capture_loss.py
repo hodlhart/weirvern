@@ -101,8 +101,13 @@ def test_the_new_columns_are_last_in_the_positional_insert():
     i = src.index("column_names=[\"sensor_id\"")
     names = src[i:src.index("]", i)]
     order = re.findall(r'"(\w+)"', names)
-    assert order[-5:] == ["capture_loss_pct", "packets_recv", "packets_dropped",
-                         "host_stats", "interfaces"], (
+    # THE EARLIER BATCH STAYS BEFORE THE NEWEST. The channel columns are the most recent
+    # addition (068_weirling_channel.sql), so they are the ones that must be last now; a
+    # subsequent addition must extend THIS assertion rather than move an older column.
+    assert order[-9:] == ["capture_loss_pct", "packets_recv", "packets_dropped",
+                          "host_stats", "interfaces",
+                          "channel_active", "channel_upstream", "channel_downstream",
+                          "channel_bridge"], (
         f"the newest columns are not last in column_names: {order}"
     )
     # And the value tuples must have the same length as the names.

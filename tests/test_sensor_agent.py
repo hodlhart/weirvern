@@ -563,3 +563,172 @@ def test_a_revoked_gateway_stops_a_live_intercept_instead_of_preserving_it():
     assert _wait(lambda: factory.children[0].terminated == 1), (
         "the revoked unit kept an in-path intercept alive")
     assert controller.mode == "loch"
+
+
+# ── THE INLINE CHANNEL BRIDGE, THROUGH THE REVIEWED HELPER ───────────────────────────────────
+#
+# A channel is only real when it is in the kernel. These tests inject a fake runner, so they
+# never touch a bridge or need root; what they pin is the ARGUMENT CONTRACT with
+# scripts/weirling-inline.sh and the three state transitions the plan can ask for:
+#   * a new/changed pair -> create (after a teardown of the old pair if there was one),
+#   * an unchanged pair  -> NOTHING,
+#   * a cleared pair      -> teardown with the OLD ports.
+# The failure tests pin the named refusal that rides the heartbeat; `channel_active` is never
+# asserted here because it is not this class's to claim -- `channel.detect` owns it.
+
+CHANNEL_NICS = '{"eth0": {}, "eth1": {}, "eth2": {}, "eth3": {}}'
+
+
+def _channel_plan(up: str, down: str):
+    return fleet_mod.make_plan(nics=CHANNEL_NICS, channel_upstream=up, channel_downstream=down)
+
+
+class FakeBridgeRunner:
+    def __init__(self, *, fail_action: str = "", fail_detail: str = "",
+                 raise_error: Exception | None = None) -> None:
+        self.calls: list[list[str]] = []
+        self.fail_action = fail_action
+        self.fail_detail = fail_detail
+        self.raise_error = raise_error
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if self.raise_error is not None:
+            raise self.raise_error
+        if argv[1] == self.fail_action:
+            return sensor_agent.InlineResult(1, "", self.fail_detail)
+        return sensor_agent.InlineResult(0, "ok", "")
+
+
+def _bridge_controller(sid: str, runner, tmp_path, helper="/fake/weirling-inline.sh",
+                       bridge_exists=None):
+    return sensor_agent.InterceptController(
+        sid, bridge_runner=runner, bridge_helper=helper,
+        bridge_state_dir=str(tmp_path / "inline"),
+        bridge_exists=bridge_exists or (lambda _name: True))
+
+
+def test_the_channel_plan_INVOKES_the_helper_with_the_right_arguments(tmp_path):
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth2"))
+
+    bridge = sensor_agent.inline_bridge_name("unit-a")
+    assert len(bridge) <= 15, "the helper refuses a bridge name over Linux's 15-char limit"
+    assert runner.calls == [[
+        "/fake/weirling-inline.sh", "create", "--id", "unit-a", "--bridge", bridge,
+        "--port-a", "eth1", "--port-b", "eth2",
+    ]], runner.calls
+    assert controller.channel == ("eth1", "eth2"), (
+        "a successful create is the only thing that makes the pair reportable")
+
+
+def test_an_UNCHANGED_channel_plan_does_not_invoke_the_helper(tmp_path):
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    plan = _channel_plan("eth1", "eth2")
+    controller.apply(plan)
+    controller.apply(plan)
+    controller.apply(plan)
+    assert len(runner.calls) == 1, (
+        f"an unchanged pair invoked the privileged helper again: {runner.calls}")
+
+
+def test_a_RESTARTED_agent_reads_the_helpers_state_and_does_not_recreate(tmp_path):
+    """The helper's state file is the memory across a container restart. A plan that still names
+    the applied pair must invoke nothing; otherwise every restart would hit `create`'s
+    'bridge already exists' refusal and report a fault on a healthy unit."""
+    state_dir = tmp_path / "inline"
+    state_dir.mkdir()
+    (state_dir / "inline-unit-a.state").write_text(
+        "id=unit-a\nbridge=wvbr-aaaaaaaaaa\nport_a=eth1\nport_b=eth2\ncreated=2026-01-01T00:00:00Z\n")
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth2"))
+    assert runner.calls == [], f"an unchanged restart pair invoked the helper: {runner.calls}"
+    assert controller.channel == ("eth1", "eth2")
+
+
+def test_a_RESTARTED_agent_refreshes_a_pair_the_helper_state_says_is_old(tmp_path):
+    state_dir = tmp_path / "inline"
+    state_dir.mkdir()
+    (state_dir / "inline-unit-a.state").write_text(
+        "id=unit-a\nbridge=wvbr-aaaaaaaaaa\nport_a=eth1\nport_b=eth2\ncreated=2026-01-01T00:00:00Z\n")
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth3"))
+
+    assert runner.calls[0] == [
+        "/fake/weirling-inline.sh", "teardown", "--id", "unit-a",
+        "--bridge", "wvbr-aaaaaaaaaa", "--port-a", "eth1", "--port-b", "eth2",
+    ], runner.calls
+    assert runner.calls[1][1] == "create" and runner.calls[1][-1] == "eth3", runner.calls
+
+
+def test_a_STALE_state_with_no_bridge_is_recreated(tmp_path):
+    """A host reboot loses the kernel bridge but keeps the state file. The agent must not
+    conclude 'already applied' from state alone; a missing bridge is recreated."""
+    state_dir = tmp_path / "inline"
+    state_dir.mkdir()
+    (state_dir / "inline-unit-a.state").write_text(
+        "id=unit-a\nbridge=wvbr-aaaaaaaaaa\nport_a=eth1\nport_b=eth2\ncreated=2026-01-01T00:00:00Z\n")
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path,
+                                    bridge_exists=lambda _name: False)
+    controller.apply(_channel_plan("eth1", "eth2"))
+    assert runner.calls[-1][1] == "create", runner.calls
+    assert controller.channel == ("eth1", "eth2")
+
+
+def test_a_CHANGED_pair_tears_down_the_old_bridge_and_creates_the_new_one(tmp_path):
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth2"))
+    controller.apply(_channel_plan("eth1", "eth3"))
+
+    bridge = sensor_agent.inline_bridge_name("unit-a")
+    assert runner.calls[1][1] == "teardown"
+    assert runner.calls[1][-4:] == ["--port-a", "eth1", "--port-b", "eth2"], (
+        "the old pair is what must be un-enslaved, not the new one")
+    assert runner.calls[2] == [
+        "/fake/weirling-inline.sh", "create", "--id", "unit-a", "--bridge", bridge,
+        "--port-a", "eth1", "--port-b", "eth3",
+    ], runner.calls
+
+
+def test_CLEARING_the_pair_tears_the_bridge_down_with_the_old_ports(tmp_path):
+    runner = FakeBridgeRunner()
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth2"))
+    controller.apply(_channel_plan("", ""))
+
+    assert runner.calls[1][1] == "teardown"
+    assert runner.calls[1][-4:] == ["--port-a", "eth1", "--port-b", "eth2"], runner.calls
+    assert controller.channel == ("", ""), "a cleared pair must not stay reportable"
+
+
+def test_a_helper_FAILURE_is_a_named_refusal_on_the_heartbeat(tmp_path):
+    runner = FakeBridgeRunner(fail_action="create",
+                              fail_detail="weirling-inline: create needs root (ip link changes)")
+    controller = _bridge_controller("unit-a", runner, tmp_path)
+    controller.apply(_channel_plan("eth1", "eth2"))
+
+    assert controller.channel == ("", ""), "a failed create must not report the plan's pair"
+    refusal = " ".join(controller.failures())
+    assert "channel bridge NOT applied" in refusal and "needs root" in refusal, refusal
+
+    client = FakeClient()
+    assert sensor_agent.beat(client, "unit-a", "eth2", mode="loch",
+                             failures=controller.failures()) is True
+    row = client.rows[-1]["row"]
+    assert any("channel bridge NOT applied" in f for f in row["failures"]), row["failures"]
+
+
+def test_an_UNAVAILABLE_helper_is_a_named_refusal_not_a_crash(tmp_path):
+    # THE DEFAULT RUNNER, not an injected one: a missing script must come back as a sentence.
+    bridge = sensor_agent.ChannelBridge(
+        "unit-a", helper=str(tmp_path / "missing-weirling-inline.sh"),
+        state_dir=str(tmp_path / "inline"))
+    bridge.apply("eth1", "eth2")
+    assert bridge.applied == ("", "")
+    assert "not available" in " ".join(bridge.failures), bridge.failures

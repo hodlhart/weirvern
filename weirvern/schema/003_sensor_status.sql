@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS weirvern.sensor_status
     -- "why did it drop" is answerable from the same row that shows it dropped.
     failures      Array(String),
 
+    -- THE SENSOR'S OWN IN-LINE CHANNEL, AS IT OBSERVES IT. NULL `channel_active` means the
+    -- sensor did not report a channel at all (an older agent), which is different from 0 =
+    -- measured and not active. The pair is the one the sensor is actually using, so the console
+    -- can compare it with the plan and say "staged, sensor has not applied it yet".
+    channel_active     Nullable(UInt8),
+    channel_upstream   LowCardinality(String) DEFAULT '',
+    channel_downstream LowCardinality(String) DEFAULT '',
+    channel_bridge     LowCardinality(String) DEFAULT '',
+
     -- When the heartbeat was written. STALENESS IS THE LIVENESS SIGNAL: readers compute
     -- age from this and must report "not running" past a threshold, never the last state.
     ts            DateTime DEFAULT now()

@@ -30,7 +30,13 @@ features that do and do not cross that boundary.
 - **Inline topology declaration** — a registration can declare `topology: inline`; the unit is
   expected to capture on a two-NIC bridge. `scripts/weirling-inline.sh` creates/tears down the
   bridge explicitly, and `deploy-weirling.sh --inline` refuses unless that bridge already has
-  exactly two address-free ports. The deploy helper never rewires a host on its own.
+  exactly two address-free ports. The deploy helper never rewires a host on its own. Once a unit
+  has the in-path capability grant (the siphon overlay's root + NET_ADMIN), a channel pair in its
+  plan is applied by the agent through the same helper: a changed pair is torn down with the old
+  ports and recreated, a cleared pair is torn down, and an unchanged pair invokes nothing. The
+  helper's managed-bridge state lives in the unit's persistent state directory, so a restarted
+  agent does not adopt or recreate a bridge it did not manage. `channel_active` still comes from
+  the kernel (`channel.detect`), never from the plan.
 - **Certificate renewal** — the agent renews inside the 30-day window, reusing its private
   key and atomically replacing the chain.
 - **Revocation** — the gateway refuses a revoked client on its next request; the agent stops

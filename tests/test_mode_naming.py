@@ -27,7 +27,12 @@ OLD = re.compile(r"(?<![A-Za-z])weir(?![A-Za-z])|MODE_WEIR\b|(?<![A-Za-z])weirne
 # A line is allowed to name the old spelling when it is ABOUT the old spelling: an
 # acceptance construct (it also names `siphon`), a migration note, or the changelog entry
 # that records the rename itself. Anything else is a stale rename.
-ALLOWED = re.compile(r"former|legacy|renam|siphon", re.IGNORECASE)
+#
+# `weir-site-a` IS A SEEDED SENSOR ID, not a mode: the hyphen satisfies the whole-word
+# boundary, so the demo fleet tripped this guard even though no config value was stale. The
+# product's own sensor names belong in the exemption for the same reason `siphon` is here --
+# the line is explicitly not about the old mode.
+ALLOWED = re.compile(r"former|legacy|renam|siphon|weir-site-", re.IGNORECASE)
 
 # This file necessarily contains the thing it forbids.
 SELF_EXEMPT = {"tests/test_mode_naming.py"}

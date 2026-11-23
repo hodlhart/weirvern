@@ -45,12 +45,15 @@ entire point, and an env var inherited through `envFrom` is exactly the leak tha
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import signal
+import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -875,6 +878,183 @@ def plan_for(client, sid: str) -> tuple[object | None, str]:
         return None, str(exc)[:200]
 
 
+# ── the inline channel bridge, through the reviewed host helper ─────────────────────────────
+#
+# A CHANNEL IS A BRIDGE, NOT A MODE. `scripts/weirling-inline.sh` is the reviewed mechanism: its
+# `create` refuses a bridge it did not create, refuses a management/default-route port, refuses a
+# port with an IPv4 address, and writes a state file so `teardown` can refuse anything it did not
+# create. The agent already runs as root with NET_ADMIN/NET_RAW on an in-path unit (the siphon
+# overlay), which is exactly what `ip link` needs, so this calls the helper rather than
+# reimplementing its safety checks in Python.
+#
+# THE HELPER'S `create` IS NOT IDEMPOTENT: it refuses when the bridge already exists. So the
+# agent tracks the pair it has put into service, reads the helper's own state file after a
+# restart, and invokes `teardown` with the OLD ports before `create` for a changed pair. A
+# repeated unchanged plan invokes NOTHING. `channel_active` is never derived from any of this;
+# `_channel_fields` still asks `channel.detect` what the kernel says.
+
+INLINE_HELPER_DEFAULT = "/app/scripts/weirling-inline.sh"
+
+
+@dataclass(frozen=True)
+class InlineResult:
+    """The helper's exit status and output, shaped for the injectable runner."""
+
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def inline_bridge_name(sensor_id: str) -> str:
+    """A stable bridge name for one unit, within Linux's 15-character limit.
+
+    A hash rather than the sensor id: ids may be 63 characters, and truncating them would let two
+    units in one fleet collide on a bridge name. `wvbr-` plus 10 hex is exactly 15 characters.
+    """
+    digest = hashlib.sha256((sensor_id or "").encode("utf-8")).hexdigest()[:10]
+    return f"wvbr-{digest}"
+
+
+def _inline_state_dir() -> str:
+    """The directory the helper writes its managed-bridge state to.
+
+    It MUST persist across a container restart: the state file is what lets `teardown` refuse a
+    bridge the helper did not create, and what lets a restarted agent know the old pair. Units
+    mount a per-unit state directory at `/models`; a host run uses the helper's own default.
+    """
+    explicit = (os.environ.get("WEIRVERN_INLINE_STATE") or "").strip()
+    if explicit:
+        return explicit
+    if os.path.isdir("/models"):
+        return "/models/inline"
+    return "/var/lib/weirvern-weirling"
+
+
+def _bridge_exists(name: str) -> bool:
+    """Whether the named bridge exists in this host's network namespace."""
+    return bool(name) and Path("/sys/class/net", name).is_dir()
+
+
+class ChannelBridge:
+    """Create, refresh or tear down this unit's inline bridge through the reviewed helper.
+
+    NEVER raises: a bridge failure must leave the agent capturing and heartbeating. The failure
+    is a named sentence in `failures`, which rides the heartbeat so the fleet view can say why a
+    pair is staged rather than active.
+    """
+
+    def __init__(self, sensor_id: str, *, runner=None, helper: str = "",
+                 bridge: str = "", state_dir: str = "", bridge_exists=None) -> None:
+        self.sensor_id = sensor_id
+        self.helper = (helper or os.environ.get("WEIRVERN_INLINE_HELPER")
+                       or INLINE_HELPER_DEFAULT).strip()
+        self.bridge = bridge or inline_bridge_name(sensor_id)
+        self.state_dir = state_dir or _inline_state_dir()
+        self.runner = runner or self._default_runner
+        self.bridge_exists = bridge_exists or _bridge_exists
+        # The pair the helper has actually put into service. Empty until a successful create,
+        # or until the helper's state file tells a restarted agent what it applied.
+        self.applied: tuple[str, str] = ("", "")
+        self.failures: list[str] = []
+
+    def _default_runner(self, argv: list[str]) -> InlineResult:
+        env = dict(os.environ)
+        # THE AGENT'S state_dir IS THE AUTHORITY, not whatever the process happened to inherit:
+        # `_state()` reads from this directory, so the helper must write there too.
+        env["WEIRVERN_INLINE_STATE"] = self.state_dir
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                                  env=env, check=False)
+        except FileNotFoundError:
+            return InlineResult(
+                127, "", f"the inline helper {self.helper!r} is not available on this unit; "
+                         f"the agent image must ship scripts/weirling-inline.sh")
+        except subprocess.TimeoutExpired:
+            return InlineResult(124, "", "the inline helper timed out after 30s")
+        except Exception as exc:  # noqa: BLE001 -- a status path must not raise
+            return InlineResult(125, "", f"the inline helper could not run: {exc}")
+        return InlineResult(proc.returncode, proc.stdout or "", proc.stderr or "")
+
+    def _state(self) -> dict[str, str]:
+        """The helper's own managed-bridge state, or {} when it has none."""
+        path = Path(self.state_dir) / f"inline-{self.sensor_id}.state"
+        try:
+            text = path.read_text()
+        except OSError:
+            return {}
+        out: dict[str, str] = {}
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                out[key.strip()] = value.strip()
+        return out
+
+    def _run(self, action: str, pair: tuple[str, str], *, bridge: str, what: str) -> bool:
+        argv = [self.helper, action, "--id", self.sensor_id, "--bridge", bridge,
+                "--port-a", pair[0], "--port-b", pair[1]]
+        try:
+            result = self.runner(argv)
+        except Exception as exc:  # noqa: BLE001 -- a status path must not raise
+            result = InlineResult(125, "", f"the inline helper could not run: {exc}")
+        if result.returncode == 0:
+            return True
+        detail = (result.stderr or result.stdout or "").strip()
+        detail = detail.splitlines()[-1] if detail else f"exit {result.returncode}"
+        self.failures = [
+            f"channel bridge NOT {what}: {detail}. The pair stays out of service until the "
+            f"helper succeeds; channel_active is still read from the kernel."
+        ]
+        logger.warning("channel bridge %s failed: %s", action, detail)
+        return False
+
+    def apply(self, upstream: str, downstream: str) -> None:
+        """Make the kernel bridge match the plan's pair. No-op when it already does."""
+        up = str(upstream or "").strip()
+        down = str(downstream or "").strip()
+        if bool(up) != bool(down):
+            self.failures = [
+                "channel bridge NOT applied: the plan names only one port; a bridge needs both "
+                "channel_upstream and channel_downstream (send both empty to remove it)."
+            ]
+            return
+        pair = (up, down)
+        state = self._state()
+        current = self.applied
+        current_bridge = self.bridge
+        if state.get("port_a") and state.get("port_b"):
+            # THE HELPER'S STATE IS THE TRUTH about what it has managed. If it differs from this
+            # process's memory (a manual run, or a change made while the agent was down), treat
+            # the state file's pair as current so the next step tears the right ports down.
+            state_pair = (state["port_a"], state["port_b"])
+            if state_pair != current:
+                current = state_pair
+                current_bridge = state.get("bridge") or current_bridge
+        if any(current) and not self.bridge_exists(current_bridge):
+            # THE STATE SAYS APPLIED, BUT THE BRIDGE IS GONE. A host reboot loses the kernel
+            # bridge while the state file survives; leaving it would make teardown refuse ("state
+            # exists but bridge is absent") and create refuse the stale state forever. The
+            # bridge is verifiably absent, so the stale state is dropped and the plan is applied
+            # below (or a cleared plan simply has nothing left to remove).
+            with contextlib.suppress(OSError):
+                (Path(self.state_dir) / f"inline-{self.sensor_id}.state").unlink()
+            current = ("", "")
+            current_bridge = self.bridge
+        if pair == current:
+            self.applied = pair
+            self.failures = []
+            return
+        self.failures = []
+        if any(current):
+            if not self._run("teardown", current, bridge=current_bridge, what="removed"):
+                return
+            self.applied = ("", "")
+        if any(pair):
+            if not self._run("create", pair, bridge=self.bridge, what="applied"):
+                self.applied = ("", "")
+                return
+            self.applied = pair
+
+
 class InterceptController:
     """Runs (or refuses to run) this unit's intercept, from its declared plan.
 
@@ -891,7 +1071,9 @@ class InterceptController:
     instead of a toggle that appears to have worked.
     """
 
-    def __init__(self, sid: str, *, supervisor_factory=None, group_factory=None) -> None:
+    def __init__(self, sid: str, *, supervisor_factory=None, group_factory=None,
+                 bridge_runner=None, bridge_helper: str = "",
+                 bridge_state_dir: str = "", bridge_exists=None) -> None:
         self.sid = sid
         self._factory = supervisor_factory or self._default_factory
         self._group_factory = group_factory or self._default_group_factory
@@ -908,6 +1090,13 @@ class InterceptController:
         # configured-but-unarmed siphon sensor, and what lets the fleet view say "declared
         # siphon, reporting siphon, zero mappings".
         self.mode = "loch"
+        # The IN-LINE CHANNEL pair this unit has actually put into service. Not a sensor mode:
+        # the unit may stay `loch` and still be the bridge traffic crosses. Empty on both sides
+        # = no channel. The pair comes from ChannelBridge (which may have read the helper's
+        # state file); it is NEVER copied from the plan, so a failed create reads as staged.
+        self.bridge = ChannelBridge(sid, runner=bridge_runner, helper=bridge_helper,
+                                    state_dir=bridge_state_dir, bridge_exists=bridge_exists)
+        self.channel: tuple[str, str] = ("", "")
 
     @staticmethod
     def _default_factory(cfg):
@@ -924,8 +1113,20 @@ class InterceptController:
     def apply(self, plan) -> None:
         """Make reality match the declared plan. Never raises."""
         configs = plan.to_intercept_configs() if plan is not None else []
+        # A CHANNEL IS PART OF THE PLAN BUT NOT PART OF THE INTERCEPT. The helper is invoked only
+        # when the pair CHANGES (or the helper's state shows a different one); its success is
+        # what makes the pair reportable. `channel.detect` still decides whether it is ACTIVE.
+        pair = ((str(plan.channel_upstream or ""), str(plan.channel_downstream or ""))
+                if plan is not None else ("", ""))
+        self.bridge.apply(*pair)
+        self.channel = self.bridge.applied
         key = plan.as_dict() if plan is not None else None
         if key is not None:
+            # THE CHANNEL IS NOT PART OF THE INTERCEPT. Leaving it in this key would rebuild a
+            # healthy siphon supervisor -- a restore/re-poison seam -- every time somebody edited
+            # the bridge pair, which has nothing to do with the intercept child.
+            key = {k: v for k, v in key.items()
+                   if k not in ("channel_upstream", "channel_downstream")}
             key = {**key, "nics": plan.nics}
         if not configs:
             self.stop(why="the plan does not ask for an intercept")
@@ -972,13 +1173,15 @@ class InterceptController:
         return self._supervisor is None or self._supervisor.worker_should_publish
 
     def failures(self) -> list[str]:
-        """Supervision problems, for the heartbeat's `failures` -- never raises."""
+        """Supervision and bridge problems, for the heartbeat's `failures` -- never raises."""
+        notes: list[str] = []
         try:
             from weirvern.admin import siphon_supervisor  # noqa: PLC0415
 
-            return list(siphon_supervisor.notes())
+            notes = list(siphon_supervisor.notes())
         except Exception:  # noqa: BLE001
-            return []
+            notes = []
+        return notes + list(self.bridge.failures)
 
     def stop(self, *, why: str = "") -> None:
         """Orderly shutdown: SIGTERM the child so it RESTORES, and wait for it.
@@ -1009,10 +1212,11 @@ def refresh_plan(client, sid: str, controller: InterceptController) -> None:
     plan, why = plan_for(client, sid)
     if why:
         if why.startswith("REVOKED:"):
-            logger.error("intercept: this unit was revoked (%s); stopping any in-path intercept",
-                         why)
-            controller.stop(why="the hub revoked this unit")
-            controller.mode = "loch"
+            logger.error("intercept: this unit was revoked (%s); stopping any in-path intercept "
+                         "and removing its channel bridge", why)
+            # `apply(None)` is the ONE stop path: it SIGTERMs a live intercept (orderly restore)
+            # and tears down a bridge this unit created, because a revoked plan has no pair.
+            controller.apply(None)
             return
         logger.warning(
             "intercept: this unit's plan could not be read (%s); keeping the current "
@@ -1021,8 +1225,31 @@ def refresh_plan(client, sid: str, controller: InterceptController) -> None:
     controller.apply(plan)
 
 
+def _channel_fields(channel: tuple[str, str] | None) -> dict:
+    """Heartbeat fields for this unit's inline channel, read from the kernel. Never raises.
+
+    The PAIR is what `ChannelBridge` actually put into service (never the plan); `active` comes
+    from `channel.detect`, which checks the bridge, both ports' carrier and forwarding state,
+    bridge-nf and the node's FORWARD path. A successful helper run is not allowed to make this
+    say True on its own -- only the kernel can.
+    """
+    if channel is None:
+        return {}
+    up, down = (str(channel[0] or ""), str(channel[1] or ""))
+    try:
+        from weirvern.admin import channel as channel_mod  # noqa: PLC0415
+
+        state = channel_mod.detect(up, down)
+        return {"channel_active": state.active, "channel_upstream": state.upstream,
+                "channel_downstream": state.downstream, "channel_bridge": state.bridge}
+    except Exception:  # noqa: BLE001 -- reporting must never break the heartbeat
+        # The pair is still a fact from the plan; active is UNKNOWN, not False.
+        return {"channel_active": None, "channel_upstream": up, "channel_downstream": down}
+
+
 def beat(client, sid: str, iface: str, *, mode: str = "loch",
-         failures: list[str] | None = None) -> bool:
+         failures: list[str] | None = None,
+         channel: tuple[str, str] | None = None) -> bool:
     """One heartbeat from observation. Never raises; returns whether it landed.
 
     `mode` is what this unit is RUNNING (its plan's mode, via the controller) -- never the
@@ -1039,6 +1266,7 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
     # carried [] while the hub's carried its NICs -- this call site predated the column).
     fields.setdefault("interfaces", status.sensor_interfaces())
+    fields.update(_channel_fields(channel))
     if getattr(client, "is_gateway", False):
         try:
             return bool(client.heartbeat(fields))
@@ -1048,7 +1276,8 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     return status.heartbeat(client, sensor_id=sid, **fields)
 
 
-def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
+def _final_beat(client, sid: str, iface: str, *, mode: str = "loch",
+                channel: tuple[str, str] | None = None) -> None:
     """A last row saying running=False, so the fleet reads "stopped cleanly" immediately
     instead of "stale" minutes later. Best-effort: a kill -9 gets no such courtesy and
     staleness covers it."""
@@ -1059,6 +1288,7 @@ def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
         fields["running"] = False
         fields["host_stats"] = host_stats()
         fields.setdefault("interfaces", status.sensor_interfaces())
+        fields.update(_channel_fields(channel))
         if getattr(client, "is_gateway", False):
             client.heartbeat(fields)
         else:
@@ -1208,7 +1438,8 @@ def main() -> None:
                 stop.wait(interval)
                 continue
             if not beat(client, sid, iface, mode=controller.mode,
-                        failures=controller.failures()):
+                        failures=controller.failures(),
+                        channel=controller.channel):
                 # The write failed; drop the client so the next cycle reconnects rather than
                 # hammering a dead connection.
                 logger.warning("heartbeat write failed; will reconnect and retry")
@@ -1227,7 +1458,7 @@ def main() -> None:
     try:
         if client is None:
             client = connect(settings)
-        _final_beat(client, sid, iface, mode=controller.mode)
+        _final_beat(client, sid, iface, mode=controller.mode, channel=controller.channel)
     except Exception:  # noqa: BLE001
         pass
     logger.info("sensor unit %r: stopped", sid)

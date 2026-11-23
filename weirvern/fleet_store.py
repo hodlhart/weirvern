@@ -668,10 +668,23 @@ def _health_to_json(h: SensorHealth) -> dict:
         # first formatter call -- and an absent key is exactly how a per-sensor control ends
         # up silently editing nothing.
         "plan": h.plan.as_dict(),
+        # THE DECLARED NIC DOCUMENT, beside the plan rather than inside it: `as_dict()` is the
+        # editable legacy plan (and the round-trip test pins exactly those keys), while
+        # `plan_nics` is the JSON keyed by interface. The sheet falls back to these names when
+        # the sensor has not reported its own interfaces yet.
+        "plan_nics": h.plan.nics,
         "interfaces": list(h.interfaces),
         "iface": h.iface,
         "mappings": h.mappings,
         "running": h.running,
+        # WHAT THE SENSOR SAYS ABOUT ITS INLINE CHANNEL. NULL `channel_active` is
+        # not-measured, never "off": the sheet renders a staged pair as staged, and only a
+        # measured True as active.
+        "channel_active": h.channel_active,
+        "channel_upstream": h.channel_upstream,
+        "channel_downstream": h.channel_downstream,
+        "channel_bridge": h.channel_bridge,
+        "channel_error": h.channel_error,
         "enabled": h.enabled,
         "registered": h.registered,
         "age_s": h.age_s,

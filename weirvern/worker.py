@@ -2029,6 +2029,29 @@ def _heartbeat_thread(settings, siphon=None) -> None:
             except Exception:  # noqa: BLE001
                 logger.debug("siphon supervisor notes unavailable", exc_info=True)
             fields.setdefault("interfaces", status.sensor_interfaces())
+            # THE IN-LINE CHANNEL, READ FROM THE KERNEL. This worker's own pair comes from the
+            # deployment's ConfigMap (a remote unit's comes from its plan, in sensor_agent), and
+            # `detect` is the ONLY thing allowed to call it active: bridge, carrier and the
+            # forward hook are all checked there. The console compares this reported pair with
+            # the plan's and says "staged, sensor has not applied it yet" when they differ.
+            #
+            # THE PLAN IS DELIBERATELY NOT THE LOCAL RUNTIME SOURCE. This worker's forwarding
+            # and enforcement were configured from the ConfigMap at start; reading a second pair
+            # here would move the bridge while the gate still pointed at the old interface. A
+            # plan pair that differs is therefore honest as STAGED until the same pair reaches
+            # this deployment's settings.
+            try:
+                from weirvern.admin import channel as channel_mod  # noqa: PLC0415
+
+                channel = channel_mod.detect(
+                    getattr(settings, "channel_upstream", ""),
+                    getattr(settings, "channel_downstream", ""))
+                fields["channel_active"] = channel.active
+                fields["channel_upstream"] = channel.upstream
+                fields["channel_downstream"] = channel.downstream
+                fields["channel_bridge"] = channel.bridge
+            except Exception:  # noqa: BLE001 -- a status read must not kill the heartbeat
+                logger.debug("channel state unavailable", exc_info=True)
             with db.connect(settings, retries=1, delay_s=1) as client:
                 status.heartbeat(client, sensor_id=sid, **fields)
         except Exception as exc:  # noqa: BLE001

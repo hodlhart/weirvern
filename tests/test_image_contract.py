@@ -175,3 +175,22 @@ def test_the_weirling_installer_runs_the_agent_with_raw_socket_caps():
     assert "weirvern-scan:$WORKER_TAG" in text, (
         "deploy-weirling.sh no longer resolves the nmap-capable scan image for the agent"
     )
+
+
+def test_both_agent_images_ship_the_inline_bridge_helper():
+    """A channel plan with no helper in the image can only report a refusal forever.
+
+    `sensor_agent.ChannelBridge` invokes `scripts/weirling-inline.sh` to create/tear down a
+    channel bridge. Both images that can run the agent (the worker image, and the scan image that
+    `deploy-weirling.sh` prefers) must carry it at the path the agent uses. The coupling is
+    asserted in both directions: the copies and the Python path.
+    """
+    for name in ("Containerfile", "Containerfile.scanner"):
+        text = (ROOT / name).read_text()
+        assert "COPY scripts/weirling-inline.sh /app/scripts/weirling-inline.sh" in text, (
+            f"{name} does not ship the inline bridge helper the agent invokes")
+        assert "chmod 0755 /app/scripts/weirling-inline.sh" in text, (
+            f"{name} copies the helper without making it executable")
+    source = (ROOT / "weirvern" / "admin" / "sensor_agent.py").read_text()
+    assert "weirling-inline.sh" in source, (
+        "the agent no longer references the inline helper; the image copies have become stale")

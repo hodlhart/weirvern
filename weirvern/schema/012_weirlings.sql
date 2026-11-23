@@ -80,7 +80,14 @@ CREATE TABLE IF NOT EXISTS weirvern.weirlings
     plan_segment String DEFAULT '',
     plan_addr    String DEFAULT '',
     plan_gateway String DEFAULT '',
-    plan_targets String DEFAULT ''
+    plan_targets String DEFAULT '',
+
+    -- THE PER-WEIRLING IN-LINE CHANNEL (068_weirling_channel.sql carries the reasoning).
+    -- A channel is a bridge between two NICs, not a sensor mode: the sensor stays in `loch`
+    -- and the pair is what traffic crosses. Stored here so EVERY weirling can carry one, not
+    -- just the hub whose ConfigMap happens to name the two ports.
+    plan_channel_upstream   LowCardinality(String) DEFAULT '',
+    plan_channel_downstream LowCardinality(String) DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (sensor_id);
