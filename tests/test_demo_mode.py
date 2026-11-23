@@ -59,8 +59,8 @@ def test_demo_state_read_tolerates_an_older_schema():
 def test_fleet_seeds_both_sensors_and_their_evidence():
     client = _Client()
     written = demo_extras.seed_fleet(client, hosts=4)
-    assert written["weirlings"] == 4
-    assert written["sensor_status"] == 3, "the siphon has no heartbeat: it is not intercepting"
+    assert written["weirlings"] == 3
+    assert written["sensor_status"] == 2, "the siphon has no heartbeat: it is not intercepting"
     for table, rows, columns in client.inserts:
         for row in rows:
             assert len(row) == len(columns), f"{table}: {len(row)} values for {len(columns)} columns"

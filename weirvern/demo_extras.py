@@ -59,10 +59,8 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
          "edge sensor, HQ clients (10.10.0.0/24)", True),
         ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "loch",
          "edge sensor, branch clients (192.168.20.0/24)", True),
-        ("weir-site-c", "172.16.30.253", "172.16.30.0/24", "loch",
-         "edge sensor, warehouse clients (172.16.30.0/24)", True),
-        ("weir-edge-02", "192.168.50.251", "192.168.50.0/24", "siphon",
-         "demo only: planned branch sensor, siphon mode shown without ARP", False),
+        ("weir-site-c", "172.16.30.253", "172.16.30.0/24", "siphon",
+         "edge sensor, warehouse; siphon mode shown without ARP, so no heartbeat", False),
     ]
     written: dict[str, Any] = {}
     wl_rows = []

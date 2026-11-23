@@ -287,7 +287,7 @@ The default seed is a three-site company, not one flat range. HQ is `10.10.0.0/2
 documentation ranges. Thirty-six clients generate 144 hours of traffic in both directions, and the
 three blocks are deliberately different so a reader can tell a site by its address.
 
-The fleet has an edge sensor at each site, all reporting, plus a siphon unit shown without a heartbeat because the demo performs no ARP redirects. The **Network** tab carries a weirling
+The fleet is one edge sensor per site. HQ and the branch report as loch sensors; the warehouse is shown in siphon mode without a heartbeat because the demo performs no ARP redirects. The **Network** tab carries a weirling
 selector: choosing a site narrows the map to that segment and the peers it reaches (about 20 nodes
 per site against 44 for the whole company).
 
