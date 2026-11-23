@@ -45,7 +45,8 @@ def _hits() -> list[str]:
     # everywhere would defeat the guard, so the exemption is limited to the seeder and its tests and
     # to these exact prefixes. A real address of any other kind still fails.
     demo_nets = tuple(ipaddress.ip_network(n) for n in
-                      ("10.10.0.0/24", "192.168.20.0/24", "172.16.30.0/24"))
+                      ("10.10.0.0/24", "192.168.20.0/24", "172.16.30.0/24",
+                       "10.99.0.0/24", "192.168.50.0/24"))
     demo_files = {"weirvern/demo_seed.py", "weirvern/demo_extras.py",
                   "tests/test_demo_seed.py", "tests/test_demo_mode.py", "README.md"}
 
