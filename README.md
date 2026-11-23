@@ -100,10 +100,17 @@ starts clean rather than inheriting the old cross-segment roles.
 
 ## Screenshots
 
-Every image is the shipping console rendered against synthetic, RFC 5737 documentation addresses.
-No address from a real network appears in any screenshot.
+Every image is the shipping console rendered against the seeded demo, with the **DEMO DATA** banner
+in frame. The data is synthetic and every address is in the RFC 5737 documentation ranges; no
+address from a real network appears in any screenshot.
 
-![Force map of hosts and connections](docs/screenshots/network.png)
+| Alerts | Models |
+| --- | --- |
+| ![Alerts: ripples first, model detections as corroboration](docs/screenshots/anomalies.png) | ![Models: detectors calibrated with FAR, CI and n](docs/screenshots/models.png) |
+| **Weirlings** | **Assets** |
+| ![The fleet: two sensors, their plans and scan history](docs/screenshots/weirlings.png) | ![Assets: an inventory with services and posture-scored changes](docs/screenshots/assets.png) |
+| **Network map** | **Health in demo mode** |
+| ![Force map of hosts and connections](docs/screenshots/network.png) | ![Health: demo mode green, live feed checks not applicable](docs/screenshots/health.png) |
 
 The connection map is a deterministic force layout: nodes are hosts, edges are conversations,
 size is bytes, and hop rings come from measured IP TTL where the export carries it. Click a node
@@ -171,6 +178,15 @@ curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh | sudo bash -s -- --siphon
 ```
 
+To see the whole product before pointing it at a network, seed the demo (about five minutes) and
+open the console. It shows a **DEMO DATA** banner and switches the live-feed checks off until you
+retire demo mode:
+
+```sh
+weirvern demo-seed
+weirvern demo-seed --clear-demo   # when you are ready to treat the box as real
+```
+
 The installer creates the namespace, database, schema, workloads and the `weirvern-secrets`
 Secret. The full procedure — requirements, refusal checks, the sensor's capture port and the
 ConfigMap — is in [Deployment](docs/deployment.md).
@@ -193,17 +209,23 @@ lab, or separately for a production segment.
 ## Demo data
 
 A fresh install is empty, and every query in the console is relative to now, so the dashboard
-has nothing to show until traffic arrives. To fill it for a demo:
+has nothing to show until traffic arrives. The supported way to see the whole product before
+pointing it at a network is the demo seed:
 
 ```sh
-weirvern demo-seed                  # six days of traffic, ending at the current minute
+weirvern demo-seed                  # the full test drive: traffic, fleet, inventory, ML, demo mode
 weirvern demo-seed --dry-run        # print the row counts, write nothing
-weirvern demo-seed --hours 6        # a quick fill, for a console that only needs traffic
+weirvern demo-seed --traffic-only   # traffic tables only; no fleet, inventory, ML or demo mode
+weirvern demo-seed --no-ml          # seed the data without training the detectors
+weirvern demo-seed --clear-demo     # retire demo mode; the seeded rows stay
 ```
 
-That writes `zeek_conn` (117,325 rows), `zeek_dns` (23,325), `zeek_ssl` (22,988), `zeek_weird`
-(5,427), `zeek_http` (23,377) and `flows` (117,325) for 22 simulated hosts, 309,767 rows in all.
-Two properties are deliberate.
+That writes **330,059 rows across 23 tables** and then runs the detection pipeline over them. The
+traffic half is six days ending at the current minute: `zeek_conn` (116,528), `zeek_dns` (23,088),
+`zeek_ssl` (22,647), `zeek_http` (23,317), `zeek_weird` (5,487) and `flows` (116,528) for 22
+simulated hosts. The other thirteen Zeek logs the console reads (notice, files, ssh, kerberos,
+dce_rpc, smb_mapping, smb_files, ntlm, dhcp, x509, tunnel, quic, ldap_search) carry 1,728 rows each,
+so no view is empty because the seeder forgot it existed. Two properties are deliberate.
 
 **The records go through the real mappers.** Every generated record is built in Zeek's own
 field shape and pushed through `ingester.map_zeek_*`, the same functions the tailer calls. A
@@ -229,6 +251,21 @@ Without this the demo fills 300,000 rows and still shows an empty Ripples card, 
 broken feature and is really a seed that asked too little of itself. Measured on a seeded
 database: `combined_p` 4.3e-05 across three families, one ripple.
 
+**The ML is the real pipeline, not a fixture.** After the rows land, the seeder builds the five
+detectors, trains them on the seeded windows, measures calibration, drains the detection sweep in
+bounded chunks, refreshes episodes, records each alert decision, runs the shadow specialists and
+fuses the ripples. Measured on the shipped seed: 5 detectors trained, 4 eligible, fused
+false-alarm rate **1.15%** (95% CI 0.77–1.70%, n=2090), **24 anomalies**, **6 episodes**, and 22
+hosts scored by the host-hour model. A demo whose Models tab says "no calibration" is a demo the
+pipeline never ran for.
+
+**Demo mode is a fact about the data.** The seeder writes a `demo_state` row; the console reads
+it, shows a **DEMO DATA** banner on every view including sign-in, and marks the live-feed checks
+not applicable instead of turning red for a capture that never existed. A seeded fleet heartbeat
+reads `alive` with the classifier's original `stale` kept on the row as `state_before_demo`.
+`weirvern demo-seed --clear-demo` retires the banner and restores the live checks without deleting
+the data.
+
 **It is generated, not a capture.** `--seed` makes it reproducible, and nothing is derived from
 real traffic. If you have your own capture and want genuine packets, replay it instead:
 
@@ -249,13 +286,19 @@ reader opens first rather than only the traffic tables.
 
 | Surface | What is there after one run |
 | --- | --- |
+| Alerts | 2 ripples and 24 model detections, grouped into 6 episodes with review state |
 | Ripples | Two incidents of different shapes, both high severity, four families each |
+| Models | 5 detectors trained, 4 eligible with FAR, CI and n; shadow specialists scored |
+| Weirlings | 2 sensors with heartbeats, a used enrollment and a completed capture probe |
+| Assets | 22 assets with MAC and hostname, 44 services, a scan and scan job each, 6 scored changes |
 | Sluice | One traffic block on a host, one DNS block on a name, each with the hits it caught |
 | Gate | Armed, reporting the two live rules and the packets those hits blocked |
 | Approvals | One block proposal waiting for a decision, with its reason and evidence |
 | Blocklists | Five sources and the blocked name on the custom list |
-| Network and Assets | All 22 hosts classified, with MAC, vendor and an operating system guess |
+| Network | All 22 hosts classified, with MAC, vendor and an operating system guess |
+| Zeek | Every log the console reads, not only conn, DNS, TLS, HTTP and weird |
 | Normalized | One value marked expected, with a reason and a review date |
+| Health | `demo_mode` green; the live feed checks marked not applicable, not failed |
 
 Both kinds of block matter. Blocking a host and blocking a name are different products: the first
 stops traffic to an address, the second removes the rendezvous, and a seed with only one of them
@@ -272,10 +315,18 @@ measurement read 4.
 **The gate is armed in the record only.** Nothing here touches nftables or the kernel, so a seeded
 laptop cannot accidentally block its own network. What the gate row says is what the console reads.
 
-**What it does not fill, and why.** The asset-posture bands and the detector calibrations are
-produced by the worker's shadow passes, so they stay empty until the worker has run over the seeded
-data. That is the honest state of a fresh install and the panels say so; a seeded score would be a
-number no model produced.
+**What it still cannot show, and why.** Three surfaces depend on the deployment rather than on the
+data. The account store is a Kubernetes ConfigMap, so a bare ClickHouse-plus-GUI run has no accounts
+and `/api/users` says so. The update feed asks GitHub for releases, which a private repository has
+none of. The fused Ripples model needs 100 evaluations of this deployment's own baseline before it
+can derive a threshold, so on a fresh seed it reports `unknown` with a cold-start reason and the
+Ripples card reads the evidence table instead. Each is a real limit, named in the panel, not a
+silent zero.
+
+**Every surface, measured.** `scripts/demo_coverage.py` calls every GET route and reports the ones
+with no data. Against the shipped seed it reports 49 of 53 carrying data; the four exceptions are
+the Kubernetes account store, the GitHub release feed, an archived evaluation report and an incident
+pinned to a window that has none.
 
 ### Why the default is six days
 

@@ -55,10 +55,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,13 @@ MIN_PASSWORD_LEN = 8
 MAX_PASSWORD_LEN = 256
 MIN_USERNAME_LEN = 1
 MAX_USERNAME_LEN = 32
+
+# THE DEMO CREDENTIAL, PUBLISHED ON PURPOSE. `demo` is four characters and would be refused by
+# every user-facing path; ensure_demo_admin() is the one writer that skips the floor. It exists
+# so a seeded box can be signed into with the username and password printed in the README, and
+# it is only created by the demo seed, never by bootstrap or registration.
+DEMO_USERNAME = "weirvern"
+DEMO_PASSWORD = "demo"  # noqa: S105 - published in the demo runbook, not a secret.
 
 # scrypt parameters. n=2^14 with r=8,p=1 is ~16 MiB and tens of milliseconds: expensive
 # enough to matter offline, fast enough that a login does not feel broken.
@@ -243,6 +252,50 @@ class UserRecord:
 
 def _stamp() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class FileUserClient:
+    """The account store as one JSON file, for a demo console that has no cluster.
+
+    The real store is a ConfigMap read through the Kubernetes API. That is the right home for
+    accounts in a deployment, and it is also why a laptop console could not show a sign-in gate:
+    there is no API to read. This implements the same three calls the store uses (read, create,
+    patch_data) over one file, selected ONLY by setting WEIRVERN_USERS_FILE. Nothing falls back
+    to it silently, so a cluster deployment keeps reading its ConfigMap and a misconfigured host
+    still fails loudly instead of quietly inventing an empty account store.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = Path(path)
+
+    def read(self) -> dict[str, Any]:
+        from weirvern.admin.cluster_config import NotFoundError  # noqa: PLC0415
+
+        if not self.path.exists():
+            raise NotFoundError(f"no user store at {self.path}")
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+
+    def create(self, data: dict[str, Any]) -> None:
+        if self.path.exists():
+            raise FileExistsError(str(self.path))
+        self._write(data)
+
+    def patch_data(self, patch: dict[str, Any]) -> None:
+        doc: dict[str, Any] = {}
+        if self.path.exists():
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                doc = loaded
+        doc.update(patch)
+        self._write(doc)
+
+    def _write(self, doc: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
 
 
 class UserStore:
@@ -455,6 +508,31 @@ class UserStore:
 
 
 # ── sessions ─────────────────────────────────────────────────────────────────────────────
+
+
+def ensure_demo_admin(store: UserStore) -> str:
+    """Create or reset the published demo admin and say which happened.
+
+    IDEMPOTENT BY DESIGN: re-running the demo seed must restore the documented login, not fail
+    on "already exists". The length floor is bypassed HERE AND ONLY HERE, because this password
+    is printed in the demo instructions; bootstrap still generates a random one and every
+    user-facing path still enforces the floor.
+    """
+    store.load()
+    now = _stamp()
+    record = store.find(DEMO_USERNAME)
+    if record is None:
+        store._persist(store.snapshot() + [UserRecord(
+            username=DEMO_USERNAME, role=ROLE_ADMIN, hash=hash_password(DEMO_PASSWORD),
+            must_change=False, created_at=now, updated_at=now,
+        )])
+        return "created"
+    record.role = ROLE_ADMIN
+    record.hash = hash_password(DEMO_PASSWORD)
+    record.must_change = False
+    record.updated_at = now
+    store._persist(store.snapshot())
+    return "reset"
 
 
 class SessionRegistry:

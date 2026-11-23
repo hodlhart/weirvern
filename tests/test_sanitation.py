@@ -26,6 +26,7 @@ tree is clean and that the guard would actually fire on the identifiers it exist
 
 from __future__ import annotations
 
+import ipaddress
 import subprocess
 import sys
 from pathlib import Path
@@ -39,11 +40,31 @@ from weirvern.tools import sanitize_identifiers as san  # noqa: E402
 
 
 def _hits() -> list[str]:
+    # THE DEMO TOPOLOGY IS SYNTHETIC, AND THE EXEMPTION IS NARROW. The three site networks exist
+    # only to make the seeded demo legible; they describe no observed infrastructure. Allowing them
+    # everywhere would defeat the guard, so the exemption is limited to the seeder and its tests and
+    # to these exact prefixes. A real address of any other kind still fails.
+    demo_nets = tuple(ipaddress.ip_network(n) for n in
+                      ("10.10.0.0/24", "192.168.20.0/24", "172.16.30.0/24"))
+    demo_files = {"weirvern/demo_seed.py", "weirvern/demo_extras.py",
+                  "tests/test_demo_seed.py", "tests/test_demo_mode.py"}
+
+    def demo_value(rel: str, value: str) -> bool:
+        if rel not in demo_files:
+            return False
+        try:
+            addr = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return any(addr in net for net in demo_nets)
+
     out: list[str] = []
     for path in san.tracked_files(ROOT):
         rel = str(path.relative_to(ROOT))
         text = path.read_text(encoding="utf-8", errors="replace")
         for lineno, kind, value in san.find_identifiers(text, rel):
+            if kind == "private-ipv4" and demo_value(rel, value):
+                continue
             out.append(f"{rel}:{lineno}: {kind}: {value}")
     return out
 

@@ -120,6 +120,34 @@
       : "Normalize selected";
     btn.disabled = n === 0;
     btn.setAttribute("aria-disabled", n === 0 ? "true" : "false");
+    syncPageBox();
+  }
+
+  /** THE HEADER CHECKBOX. It sits in the first column, left of Last seen, and it owns the page:
+   *  checking it checks every row below it, unchecking clears them. The indeterminate state is
+   *  real, so a partial page never claims to be fully selected. */
+  function pageSelectionState() {
+    const keys = visibleRows().map(keyOf);
+    const on = keys.filter((k) => SELECTED.has(k)).length;
+    return { total: keys.length, on, all: keys.length > 0 && on === keys.length };
+  }
+
+  function syncPageBox() {
+    const box = document.getElementById("nz-select-page");
+    if (!box) return;
+    const st = pageSelectionState();
+    box.checked = st.all;
+    box.indeterminate = st.on > 0 && !st.all;
+    box.disabled = st.total === 0;
+  }
+
+  function togglePage(ev) {
+    for (const r of visibleRows()) {
+      const k = keyOf(r);
+      if (ev.target.checked) SELECTED.set(k, r); else SELECTED.delete(k);
+    }
+    renderFeed(ROWS);
+    updateApply();
   }
 
   /** The criticality of a row's MATCHED alert; "" for the measured no-alert row. */
@@ -795,6 +823,8 @@ window.openNormalizeSheet = openNormalizeSheet;
     }
     const apply = document.getElementById("nz-apply");
     if (apply) apply.addEventListener("click", applySelected);
+    const pageBox = document.getElementById("nz-select-page");
+    if (pageBox) pageBox.addEventListener("change", togglePage);
     const card = document.getElementById("nz-detail-card");
     if (card && typeof wireSheet === "function") wireSheet(card, { scrimId: "nz-detail-scrim" });
     const close = document.getElementById("nz-detail-close");

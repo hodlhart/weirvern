@@ -6338,7 +6338,50 @@ function startAuto(seconds) {
   timer = setInterval(refreshAll, seconds * 1000);
 }
 
+// DEMO MODE, ON THE PAGE RATHER THAN IN A TOOLTIP. A seeded console is indistinguishable from a
+// live one at a glance, and the one thing a reader must not do is mistake demo traffic for their
+// own network. The server writes the marker when it seeds; this only reports it.
+async function loadDemoMode() {
+  let payload;
+  try {
+    const response = await fetch("/api/demo", { headers: { Accept: "application/json" } });
+    if (!response.ok) return;
+    payload = await response.json();
+  } catch (err) {
+    return;  // the banner is a courtesy; a failed read must not disturb the console
+  }
+  const demo = payload && payload.demo;
+  if (!demo || !demo.enabled) return;
+  const banner = document.getElementById("demo-banner");
+  const text = document.getElementById("demo-banner-text");
+  if (!banner || !text) return;
+  const when = demo.seeded_at ? new Date(demo.seeded_at).toLocaleString() : "";
+  text.textContent =
+    `Seeded demo data (${demo.hosts} hosts${when ? ", " + when : ""}). ` +
+    "Live feed checks are off; nothing here is a capture of a real network.";
+  banner.hidden = false;
+  document.body.classList.add("demo-mode");
+  syncDemoBannerHeight();
+}
+
+/* The banner is fixed, so its height is the offset every other top-anchored surface needs. Read
+   it after layout and on resize: a wrapped banner is taller than one line, and a guessed height
+   is exactly how the header ended up under the banner in the first place. */
+function syncDemoBannerHeight() {
+  const banner = document.getElementById("demo-banner");
+  if (!banner || banner.hidden) return;
+  const height = Math.ceil(banner.getBoundingClientRect().height);
+  if (height > 0) {
+    document.documentElement.style.setProperty("--demo-h", `${height}px`);
+  }
+}
+
+window.addEventListener("resize", () => {
+  if (document.body.classList.contains("demo-mode")) syncDemoBannerHeight();
+});
+
 document.addEventListener("DOMContentLoaded", () => {
+  loadDemoMode();
   // ── ONE PAGER FOR EVERY LONG TABLE (operator, 2026-11-20) ────────────────────────────────
   // Wired here, once, because every script is parsed by DOMContentLoaded. Registration is a
   // registry: the paginator test reads PAGED_TABLES plus BOUNDED_TABLES and fails on a table

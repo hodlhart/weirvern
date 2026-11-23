@@ -14,6 +14,13 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!-- DEMO DATA, BEFORE ANYTHING ELSE. Fixed above every surface including the sign-in gate: a
+     reader must know this console is seeded before they read a single number on it. Hidden unless
+     /api/demo says the deployment was seeded. -->
+<div id="demo-banner" class="demo-banner" hidden>
+  <strong>DEMO DATA</strong>
+  <span id="demo-banner-text">This console is showing seeded traffic. Live feed checks are off.</span>
+</div>
 <!--
   THE SIGN-IN GATE, and the forced-password-change gate beside it. Both sit at the top of
   <body> and cover the page until satisfied; the app boots only after /api/session says the
@@ -273,6 +280,11 @@
     <div class="card">
       <h2>Connection graph <button class="info-btn" data-info="nw-info" aria-label="how to read this map, and what clicking does" aria-expanded="false" title="how to read this map, and what clicking does">i</button> <span class="muted" id="nw-window"></span></h2>
       <div class="controls">
+        <label>weirling
+          <select id="nw-sensor" title="show one sensor's segment and what it reaches">
+            <option value="">all weirlings</option>
+          </select>
+        </label>
         <label>minimum edges
           <input type="number" id="nw-min" value="1" min="1" max="100">
         </label>
@@ -785,18 +797,9 @@
         <tbody></tbody>
       </table>
     
-      <!-- FIRED VS ACTED ON (BF-12): the alert-budget line. -->
-      <div class="muted" id="an-discipline"></div>
-      <!-- THE DETECTOR REGISTRY (BF-12): who owns what, and who is allowed to page a human.
-           Quiet is the default; a detector that is not here yet shows up unregistered. -->
-      <div class="card">
-        <h3>detectors <span class="muted">who owns what, who may page</span></h3>
-        <table id="detectors-table">
-          <thead><tr><th>detector</th><th>owner</th><th>paging</th><th>fired</th><th>acted on</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <p class="muted" id="an-detectors-note"></p>
-      </div>
+      <!-- The fired/acted-on line and the detector registry were removed from this tab on
+           2026-11-23. The Alerts tab shows alerts; ownership and paging bookkeeping does not
+           belong above them. The renderers remain and no-op when their elements are absent. -->
     </div>
   </section>
 
@@ -951,7 +954,8 @@
       <div id="nz-kind" class="chips" role="group" aria-label="filter the feed by alert kind"></div>
     </div>
     <table id="nz-feed">
-      <thead><tr><th></th><th>Last seen</th><th>Source</th><th>Alert</th><th>Host</th><th>Segment</th>
+      <thead><tr><th class="nz-check"><input type="checkbox" id="nz-select-page"
+        aria-label="select every pattern on this page" title="select every pattern on this page"></th><th>Last seen</th><th>Source</th><th>Alert</th><th>Host</th><th>Segment</th>
         <th>Port / proto</th><th>DNS / service</th><th>Bytes</th><th>Flows</th></tr></thead>
       <tbody></tbody>
     </table>

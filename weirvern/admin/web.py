@@ -46,6 +46,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -1413,9 +1414,15 @@ def build_context(connect_factory, settings, project_dir: Path,
     throttle = users_mod.LoginThrottle()
     accounts_note = ""
     try:
-        from weirvern.admin.cluster_config import ClusterConfig as _CC
+        users_file = os.environ.get("WEIRVERN_USERS_FILE", "").strip()
+        if users_file:
+            # A DEMO CONSOLE WITH NO CLUSTER. File-backed, and only when this variable names a
+            # path: users.FileUserClient explains why there is no silent fallback.
+            users_client = users_mod.FileUserClient(users_file)
+        else:
+            from weirvern.admin.cluster_config import ClusterConfig as _CC
 
-        users_client = _CC(configmap=users_mod.USERS_CONFIGMAP)
+            users_client = _CC(configmap=users_mod.USERS_CONFIGMAP)
         store = users_mod.UserStore(users_client)
         store.load()
         # THE BOOTSTRAP, at startup rather than at first login. It logs the generated

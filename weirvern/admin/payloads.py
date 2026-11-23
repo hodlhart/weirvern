@@ -1308,12 +1308,13 @@ def _attach_normalized(client: Client, payload: dict[str, Any]) -> dict[str, Any
     return payload
 
 
-def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
-    """The connection graph, optionally restricted to the tracked hosts.
+def graph(client: Client, *, hours: int, tracked: list[str], sensor: str = "") -> dict[str, Any]:
+    """The connection graph, optionally restricted to tracked hosts and to one weirling's segment.
 
     AN EMPTY SELECTION MEANS NO RESTRICTION and returns the whole graph, which is what an operator
-    expects from a cleared multi-select. The selection is echoed back when it is non-empty, so the UI
-    can draw it as selected even when an edge is missing.
+    expects from a cleared multi-select. `sensor` narrows the map to one sensor's segment plus the
+    peers its hosts talk to, so a deployment with several locations can read one at a time instead
+    of one hairball.
 
     RIPPLE PRESENCE RIDES THE SAME PAYLOAD. A host node and every edge it touches can then show
     the severity the Ripples page shows, without the Network view re-deriving a bar it does not own.
@@ -1324,12 +1325,68 @@ def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
         if tracked:
             payload = assets_mod.top_edges_for(client, tracked, hours=hours)
             payload.setdefault("tracked", tracked)
-            return _attach_normalized(client, _attach_ripples(client, payload, hours=hours))
-        return _attach_normalized(
-            client, _attach_ripples(client, assets_mod.connection_graph(client, hours=hours),
-                                    hours=hours))
+            payload = _attach_normalized(client, _attach_ripples(client, payload, hours=hours))
+        else:
+            payload = _attach_normalized(
+                client, _attach_ripples(client, assets_mod.connection_graph(client, hours=hours),
+                                        hours=hours))
+        if sensor:
+            payload = _restrict_to_sensor(client, payload, sensor)
+        return payload
     except Exception as exc:  # noqa: BLE001
         return graph_failure(exc)
+
+
+def _restrict_to_sensor(client: Client, payload: dict[str, Any], sensor_id: str) -> dict[str, Any]:
+    """Keep the sensor's own segment and one hop of peers, and say what was applied.
+
+    THE PEERS ARE THE POINT. A site map that dropped the web and the DMZ would show a cluster of
+    clients talking to nothing; the interesting question is what this location reaches. Nodes
+    inside the segment are kept, plus every node on an edge touching one of them.
+    """
+    import ipaddress  # noqa: PLC0415
+
+    try:
+        rows = client.query(
+            "SELECT segment FROM weirvern.weirlings WHERE sensor_id = %(s)s "
+            "ORDER BY updated_at DESC LIMIT 1",
+            parameters={"s": sensor_id},
+        ).result_rows
+    except Exception:  # noqa: BLE001
+        rows = []
+    segment = str(rows[0][0]) if rows else ""
+    if not segment:
+        payload["sensor"] = {"id": sensor_id, "available": False,
+                             "reason": f"no weirling named {sensor_id!r} has a segment"}
+        return payload
+    try:
+        net = ipaddress.ip_network(segment, strict=False)
+    except ValueError:
+        payload["sensor"] = {"id": sensor_id, "available": False,
+                             "reason": f"the segment {segment!r} is not a network"}
+        return payload
+
+    def inside(addr: str) -> bool:
+        try:
+            return ipaddress.ip_address(str(addr)) in net
+        except ValueError:
+            return False
+
+    nodes = payload.get("nodes") or []
+    edges = payload.get("edges") or []
+    own = {n.get("id") for n in nodes if inside(n.get("id"))}
+    keep = set(own)
+    for edge in edges:
+        if edge.get("source") in own:
+            keep.add(edge.get("target"))
+        if edge.get("target") in own:
+            keep.add(edge.get("source"))
+    payload["nodes"] = [n for n in nodes if n.get("id") in keep]
+    payload["edges"] = [e for e in edges
+                        if e.get("source") in keep and e.get("target") in keep]
+    payload["sensor"] = {"id": sensor_id, "segment": segment, "hosts": len(own),
+                         "available": True}
+    return payload
 
 
 def network_host(client: Client, *, addr: str, hours: int) -> dict[str, Any]:
@@ -3944,6 +4001,35 @@ def weirlings(with_client: Any, *, settings: Any, include_problems: bool,
     try:
         with with_client() as client:
             payload = fleet_store.build_fleet(client, problems_only=include_problems)
+            # ── DEMO MODE: A SEEDED HEARTBEAT IS NOT A LIVE SENSOR ────────────────────────────
+            #
+            # The staleness bar is 45 seconds (HEARTBEAT_S * 3), which is right for a fleet that
+            # reports continuously and wrong for a demo whose heartbeat was written once. Without
+            # this, every seeded sensor reads `stale` before the seed command has even finished
+            # printing, and the tab says the fleet is broken. The original state is kept in
+            # `state_before_demo` so the row does not hide what the classifier said.
+            from weirvern import demo_state  # noqa: PLC0415
+
+            demo = demo_state.read(client)
+            if demo and demo["enabled"]:
+                payload["demo"] = True
+                summary = payload.get("summary") or {}
+                moved = 0
+                for sensor in payload.get("sensors") or []:
+                    if sensor.get("is_problem"):
+                        sensor["state_before_demo"] = sensor.get("state")
+                        sensor["state"] = "alive"
+                        sensor["is_problem"] = False
+                        sensor["detail"] = ("demo mode: seeded heartbeat; liveness is not judged")
+                        moved += 1
+                # THE TILES ARE BUILT FROM THE SUMMARY, not from the rows, so moving a sensor
+                # without moving its count leaves the tab saying "stale 2" beside two live rows.
+                if moved and isinstance(summary, dict):
+                    summary["stale"] = max(0, int(summary.get("stale") or 0) - moved)
+                    summary["alive"] = int(summary.get("alive") or 0) + moved
+                    summary["problems"] = max(0, int(summary.get("problems") or 0) - moved)
+                    summary["demo"] = True
+                    payload["summary"] = summary
     except Exception as exc:  # noqa: BLE001
         # A connection failure is the same fact as an unreadable registry from the operator's
         # side, so it takes the same shape rather than a 5xx that would blank the whole tab.
@@ -4226,4 +4312,15 @@ def dns_reverse(client: Client, ip: str, hours: int) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("reverse lookup unavailable: %s", exc)
         return {"available": False, "domains": [], "reason": read_failure(exc)}
+
+
+def demo(client: Client) -> dict[str, Any]:
+    """Is this deployment showing seeded data? The banner and the health checks read one row.
+
+    A false answer is not a failure: a live deployment simply has no demo marker.
+    """
+    from weirvern import demo_state  # noqa: PLC0415
+
+    state = demo_state.read(client)
+    return {"available": True, "demo": state or {"enabled": False}}
 

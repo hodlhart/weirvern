@@ -85,10 +85,16 @@ def test_the_scan_is_high_port_count_and_low_volume(data):
 
 
 def test_the_flow_view_and_the_zeek_view_agree_on_volume(data):
-    """A demo where the two channels contradict each other reads as a product defect, not a seed."""
-    zeek = sum(int(row[9]) + int(row[10]) for row in data["zeek_conn"][:200])
-    flows = sum(int(row[10]) for row in data["flows"][:200])
-    assert abs(zeek - flows) <= max(zeek, flows) * 0.25, (
+    """A demo where the two channels contradict each other reads as a product defect, not a seed.
+
+    Compared over EVERY row, not the first 200: flows now carry one record per direction, so the
+    first 200 flow rows are 100 conversations and the first 200 Zeek rows are 200. Summing the two
+    channels in full is the only comparison that means anything; bytes must match exactly because
+    the forward record carries orig and the reverse carries resp.
+    """
+    zeek = sum(int(row[9]) + int(row[10]) for row in data["zeek_conn"])
+    flows = sum(int(row[10]) for row in data["flows"])
+    assert flows == zeek, (
         f"the two channels disagree about volume: zeek {zeek}, flows {flows}"
     )
 
@@ -180,7 +186,10 @@ def test_force_overrides_the_refusal(monkeypatch):
     monkeypatch.setattr("weirvern.db.connect", lambda settings, **k: _CM())
     monkeypatch.setattr("weirvern.config.get_settings", lambda: object())
 
-    code = demo_seed.main(["--hours", "1", "--hosts", "3", "--force"])
+    # --traffic-only: this test is about the REFUSAL being overridable, not about the full demo
+    # (fleet, assets, detector run), which needs a real client and a writable MODEL_DIR. The
+    # seeded tables above are the evidence that force got past the guard.
+    code = demo_seed.main(["--hours", "1", "--hosts", "3", "--force", "--traffic-only"])
     assert code == 0
     written = {table.split(".", 1)[-1] for table, _n, _c in client.inserts}
     missing = set(demo_seed.COLUMNS) - written
@@ -255,7 +264,8 @@ def test_the_default_span_can_produce_evidence():
 
 
 def test_a_covered_scope_is_reported_and_not_rewritten(capsys):
-    client = _FakeClient(nets=["192.0.2.0/24"])
+    client = _FakeClient(nets=["10.10.0.0/24", "192.168.20.0/24", "172.16.30.0/24",
+                               "198.51.100.0/24"])
     demo_seed._report_scope(client, declare=False)
     out = capsys.readouterr().out
     assert "is monitored" in out
@@ -273,16 +283,19 @@ def test_an_uncovered_scope_warns_and_writes_nothing(capsys):
 
 
 def test_declaring_the_scope_writes_it_when_asked(capsys):
+    # The DMZ is already monitored in this fake, so the three client sites are the ones declared.
     client = _FakeClient(nets=["198.51.100.0/24"])
     demo_seed._report_scope(client, declare=True)
     out = capsys.readouterr().out
-    assert "declared 192.0.2.0/24" in out
-    assert len(client.inserted) == 1
-    table, rows = client.inserted[0]
-    assert table == "weirvern.network_scopes"
-    assert rows[0][2] == "internal", "the label is a closed vocabulary; demo is not one of them"
-    assert "demo" in rows[0][5], "the description is where the synthetic origin belongs"
-    assert rows[0][3] == 1, "a demo scope has to be monitored to be attributed at all"
+    assert "declared 10.10.0.0/24" in out
+    assert "declared 192.168.20.0/24" in out
+    assert "declared 172.16.30.0/24" in out
+    assert len(client.inserted) == 3
+    for table, rows in client.inserted:
+        assert table == "weirvern.network_scopes"
+        assert rows[0][2] in ("internal", "vpn"), "the label is a closed vocabulary"
+        assert "demo" in rows[0][5], "the description is where the synthetic origin belongs"
+        assert rows[0][3] == 1, "a demo scope has to be monitored to be attributed at all"
 
 
 def test_a_short_seed_says_why_the_evidence_is_empty(capsys, monkeypatch):

@@ -2402,7 +2402,21 @@ def main() -> None:
                     client, zeek=bool(settings.zeek_log_dir)),
                 last_ingest)
 
-            verdicts = detection_sweep(client, detectors, settings, cfg)
+            # DEMO MODE TURNS DETECTION OFF. The seed writes the findings the console shows; running
+            # the ensemble over seeded data either duplicates them or invents hundreds of new ones.
+            # Episodes still refresh below, because they group the seeded anomalies.
+            demo_on = False
+            try:
+                from weirvern import demo_state  # noqa: PLC0415
+
+                demo_on = bool((demo_state.read(client) or {}).get("enabled"))
+            except Exception:  # noqa: BLE001
+                demo_on = False
+            if demo_on:
+                logger.info("demo mode: detection is off; findings and ripples are seeded")
+                verdicts = []
+            else:
+                verdicts = detection_sweep(client, detectors, settings, cfg)
             # THE EPISODE VIEW MUST TRACK THE CLOCK, NOT THE VERDICT LIST. It used to refresh
             # only when `verdicts` was non-empty. A quiet cycle therefore left `alert_episodes`
             # stale (measured: the table's last write was 6.5 hours before the worker's latest

@@ -1363,6 +1363,34 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
     if report.probes:
         report.probes[-1].latency_ms = (time.perf_counter() - started) * 1000
 
+    # ── DEMO MODE: THE LIVE-FEED VERDICTS DO NOT APPLY ─────────────────────────────────────────
+    #
+    # A seeded box has no capture, and it never had one, so `ingest_freshness`, `zeek_freshness`
+    # and `detect_loop` describe feeds and a loop that were never meant to exist. Left alone they
+    # read green for the first fifteen minutes after seeding and then turn red for a reason the
+    # operator cannot fix, which is exactly the always-failing panel people stop reading.
+    #
+    # They are KEPT AS ROWS, because a missing row is indistinguishable from a passing one (F081),
+    # and marked NOT APPLICABLE (`ok=None`) with the reason. The `demo_mode` row is what the GUI
+    # banner reads and what tells a reader the panel is not describing a live deployment.
+    try:
+        from weirvern import demo_state  # noqa: PLC0415
+
+        demo = demo_state.read(client)
+    except Exception:  # noqa: BLE001 - an older schema simply has no demo mode
+        demo = None
+    if demo and demo["enabled"]:
+        report.add(Probe(
+            "demo_mode", ok=True,
+            detail=(f"seeded demo data ({demo['hosts']} hosts, seed {demo['seed']}); "
+                    "live feed checks are off"),
+            value=demo,
+        ))
+        for probe in report.probes:
+            if probe.name in ("ingest_freshness", "zeek_freshness", "detect_loop", "feed",
+                              "watchdog", "controls"):
+                probe.ok = None
+                probe.detail = ("demo mode: seeded data, not a live feed. " + probe.detail)[:400]
     return report
 
 

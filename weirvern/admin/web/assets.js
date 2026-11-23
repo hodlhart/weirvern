@@ -18,9 +18,10 @@
 const ASSET_API = {
   assets: (hours) => `/api/assets?hours=${hours}`,
   assetChanges: (hours) => `/api/asset-changes?hours=${hours}`,
-  graph: (hours, hosts) =>
+  graph: (hours, hosts, sensor) =>
     `/api/graph?hours=${hours}` +
-    (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : ""),
+    (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : "") +
+    (sensor ? `&sensor=${encodeURIComponent(sensor)}` : ""),
   networkHost: (addr, hours) =>
     `/api/network/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
   zeeklog: (log, hours, filters = "") => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}${filters}`,
@@ -40,6 +41,7 @@ const ASSETS_STATE = {
   changes: null,     // the /api/asset-changes payload
   graph: null,       // the /api/graph payload
   tracked: [],       // addresses the operator selected on the Network view
+  sensor: "",        // the weirling whose segment the Network view is showing ("" = all)
   identity: {},      // address/name -> the identity verdict, for the inventory column
   identityError: "", // why the identity lookup could not fill that column
   sort: "anomalies",
@@ -621,8 +623,9 @@ function setTablePagerTotal(tableId, total, truncated) {
 
 function loadNetwork() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
+  loadWeirlingOptions();
   const hosts = ASSETS_STATE.tracked;
-  return getJSON(ASSET_API.graph(trHours(), hosts))
+  return getJSON(ASSET_API.graph(trHours(), hosts, ASSETS_STATE.sensor))
     .then((d) => {
       ASSETS_STATE.graph = d;
       renderNetwork();
@@ -632,6 +635,31 @@ function loadNetwork() {
       renderNetwork();
     });
 }
+
+/* THE WEIRLING SELECTOR. A deployment with several locations reads one site at a time: the list is
+   every registered sensor with a segment, and the value feeds /api/graph?sensor=. Populated once;
+   a fleet change is a reload. */
+function loadWeirlingOptions() {
+  const sel = document.getElementById("nw-sensor");
+  if (!sel || sel.dataset.loaded === "1") return;
+  sel.addEventListener("change", () => {
+    ASSETS_STATE.sensor = sel.value;
+    loadNetwork();
+  });
+  getJSON("/api/weirlings")
+    .then((d) => {
+      for (const s of d.sensors || []) {
+        if (!s.segment) continue;
+        const opt = document.createElement("option");
+        opt.value = s.sensor_id;
+        opt.textContent = `${s.sensor_id} \u00b7 ${s.segment}`;
+        sel.appendChild(opt);
+      }
+      sel.dataset.loaded = "1";
+    })
+    .catch(() => { /* the selector is a convenience; the map still loads without it */ });
+}
+
 
 function toggleTracked(addr) {
   const i = ASSETS_STATE.tracked.indexOf(addr);
@@ -1436,18 +1464,18 @@ function renderNetwork() {
  */
 const FORCE = {
   ticks: 320,       // fixed: the final map must not depend on how long a browser waited
-  repel: 5000,      // pairwise push, 1/d^2 falloff
-  repelCut: 360,    // beyond this two nodes do not feel each other -- bounds the FORCE, not
+  repel: 6500,      // pairwise push, 1/d^2 falloff
+  repelCut: 520,    // beyond this two nodes do not feel each other -- bounds the FORCE, not
                     // the loop: the pairwise distance test still runs for every pair (above)
-  linkDist: 112,    // the spring length an edge wants
+  linkDist: 150,    // the spring length an edge wants
   linkK: 0.045,     // spring stiffness
-  centerK: 0.005,   // gently pulls islands back toward the middle
+  centerK: 0.004,   // gently pulls islands back toward the middle
   ringK: 0.12,      // pull toward the host's hop ring (only where TTL was measured) --
                     // measured on the demo dataset: at gentler values (0.02-0.05) the springs
                     // through the shared servers smear the two classes together and the
                     // structure stops being readable; at 0.12 the classes hold apart
-  ringBase: 74,     // the same-segment ring's radius; deeper classes step outward
-  ringMax: 178,     // the outermost ring stays inside the frame at any hop count
+  ringBase: 96,     // the same-segment ring's radius; deeper classes step outward
+  ringMax: 240,     // the outermost ring stays inside the frame at any hop count
   damp: 0.85,
   maxSpeed: 14,
   // The circle/label footprint, not a decorative margin: the largest node radius is 14 and a
@@ -1688,9 +1716,10 @@ function edgeTitle(e) {
  * is known for, and the reason a map is worth arranging by hand). */
 function drawGraph(host, nodes, edges, truncated) {
   // A graph that is only 460px tall clamps its own outer ring against the frame. Give the
-  // map a taller, more generously inset canvas; the CSS height matches this viewBox.
-  const W = 1000;
-  const H = 620;
+  // map a taller, more generous canvas so an enterprise with several sites has room to spread;
+  // the CSS height matches this viewBox.
+  const W = 1240;
+  const H = 780;
   const { svg, plot } = chartFrame(W, H, { l: 40, r: 40, t: 40, b: 40 });
   const cx = (plot.l + plot.r) / 2;
   const cy = (plot.t + plot.b) / 2;

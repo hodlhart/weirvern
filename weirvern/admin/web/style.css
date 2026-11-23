@@ -1222,7 +1222,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * A fixed viewport height with the SVG filling it, so the layout has real bounds to work
  * within instead of growing the page as nodes are added.
  */
-.graph { width: 100%; height: clamp(420px, 62vh, 760px); background: var(--panel2);
+.graph { width: 100%; height: clamp(520px, 78vh, 900px); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .graph svg { display: block; width: 100%; height: 100%; }
 .graph .edge { stroke: var(--border); }
@@ -2271,3 +2271,25 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
  * scroller: the overflow widened the PAGE, so a phone opened every view scrolled sideways with
  * the left edge of each card off-screen. The card keeps its width; the table scrolls inside it. */
 .scanner-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ── DEMO MODE ──────────────────────────────────────────────────────────────────────────────
+ * A seeded console must say so before a reader trusts a number on it. Fixed above everything,
+ * including the sign-in gate, because the gate is the first surface a visitor sees. The colours
+ * are the warning ramp, not the accent: this is a fact about the data, not a navigation state. */
+.demo-banner {
+  position: fixed; inset: 0 0 auto 0; z-index: 9999;
+  display: flex; gap: 10px; align-items: center; justify-content: center;
+  padding: 7px 14px; font-size: var(--fs-1);
+  background: #3d2c00; color: #ffdd9a; border-bottom: 1px solid #7a5a00;
+}
+.demo-banner[hidden] { display: none; }
+.demo-banner strong { letter-spacing: .08em; color: #ffe9bc; }
+/* THE BANNER OWNS THE TOP OF THE VIEWPORT, so everything else starts below it. --demo-h is
+   measured in app.js after the banner renders, because the text wraps on a narrow window and a
+   hard-coded height then leaves the header tucked underneath. */
+:root { --demo-h: 34px; }
+body.demo-mode { padding-top: var(--demo-h); }
+body.demo-mode header { top: var(--demo-h); }
+body.demo-mode .gate { top: var(--demo-h); }
+body.demo-mode .sheet { top: var(--demo-h); }
+body.demo-mode .modal-panel { margin-top: max(8vh, calc(var(--demo-h) + 12px)); }

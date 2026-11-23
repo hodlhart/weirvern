@@ -230,6 +230,14 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def healthz():
         return jsonify({"ok": True})
 
+    # THE BANNER'S SOURCE. Public for the same reason healthz is: the login page must be able to
+    # say this deployment is a demo before anyone signs in, and the row carries no data.
+    @app.get("/api/demo")
+    def demo():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.demo)
+
     # NOT named `session`: a view function called `session` shadows flask.session inside this
     # factory, so every later `session.get(...)` in the rendered-UI helpers called the view instead
     # and raised AttributeError. Measured: 10 tests failed with "'function' object has no
@@ -973,7 +981,9 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             tracked = web.graph_hosts(request.args.getlist("host"))
         except ValueError as exc:
             return _json_error(400, str(exc))
-        return _soft_route(payloads.graph, payloads.graph_failure, hours=hours, tracked=tracked)
+        sensor = (request.args.get("sensor") or "").strip()
+        return _soft_route(payloads.graph, payloads.graph_failure, hours=hours,
+                           tracked=tracked, sensor=sensor)
 
     @app.get("/api/network/host")
     @gated
