@@ -208,11 +208,21 @@ def seed_assets(client, *, hosts: int, now: datetime | None = None) -> dict[str,
     put("asset_posture_scores", scores, [
         "asset_key", "change_key", "score", "band", "reasons", "features", "model_version",
         "scored_at", "review_state"])
-    # Scanner capability and one watch, so the Assets panel has a scanner row and a watch to show.
-    put("scanner_status", [[
-        "weir-hub-01", "demo", 1, "7.94", "/usr/bin/nmap", 1, "linux", "6.12",
-        "demo scanner profile", now - timedelta(minutes=10), 0, "demo", 0, "not-installed",
-        "Linux 6.12", "linux"]], [
+    # Scanner capability, one row per weirling, each with the OS its agent would report. The
+    # install command is derived from `os_id` by scanner.nmap_install_command, so a generic
+    # "linux" row produced one generic command for every sensor. Debian, Fedora and Alpine give
+    # three different, correct package-manager commands.
+    put("scanner_status", [
+        ["weir-site-a", "basic", 0, "", "", 0, "debian", "12",
+         "demo: nmap not installed", now - timedelta(minutes=5), 0, "demo", 0, "not-installed",
+         "Debian 12", "debian"],
+        ["weir-site-b", "basic", 0, "", "", 0, "fedora", "40",
+         "demo: nmap not installed", now - timedelta(minutes=5), 0, "demo", 0, "not-installed",
+         "Fedora 40", "fedora"],
+        ["weir-site-c", "basic", 0, "", "", 0, "alpine", "3.19",
+         "demo: nmap not installed", now - timedelta(minutes=5), 0, "demo", 0, "not-installed",
+         "Alpine 3.19", "alpine"],
+    ], [
         "sensor_id", "profile", "nmap_available", "nmap_version", "nmap_path", "nse_available",
         "os_id", "os_version", "detail", "last_check", "privileged", "scan_mode", "can_install",
         "sudo_state", "os_label", "os_family"])
