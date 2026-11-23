@@ -83,7 +83,7 @@ isolated segment.
 **Each NIC is planned independently.** A single weirling can have several NICs on different
 segments, and each one carries its own roles:
 
-- **capture** — mirror/SPAN/TAP traffic into Zeek for that segment
+- **loch** — mirror/SPAN/TAP traffic into Zeek for that segment
 - **siphon** — ARP redirect on that NIC's segment, with its own routing table and gateway
 - **sluice** — kernel blocking rules on that NIC, with its own nftables table pair
 - **management** — refused for every active role, so the console path is never intercepted
