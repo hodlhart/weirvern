@@ -388,8 +388,6 @@ function renderAssets() {
         }
         return cell;
       })(),
-      el("td", { class: "muted", text: (h.role || "unknown"),
-                 attrs: { title: h.role_source ? `role source: ${h.role_source}` : "no role proposal recorded" } }),
       el("td", { class: "mono", text: fmtBytes(h.bytes) }),
       el("td", {
         class: "mono",
