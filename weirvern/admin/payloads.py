@@ -2478,26 +2478,32 @@ def gate_sensor_name() -> str:
     return _gate_sensor_name()
 
 
-def plan_subject(connect: Any, sensor_id: str) -> tuple[Any, str]:
+def plan_subject(connect: Any, sensor_id: str, *, channel_only: bool = False) -> tuple[Any, str]:
     """Resolve the sensor a per-sensor plan write targets: (registration, refusal).
 
-    WHY THE LOCAL SENSOR IS REFUSED HERE, not silently accepted: this hub's OWN sensor is configured
-    where it runs -- the Settings tab writes SENSOR_MODE and the INTERCEPT_* keys into the cluster
-    ConfigMap, and the worker's supervisor reads them from its environment. Storing a registry plan
-    for it as well would create a second source of truth that nothing reads: a control that appears
-    applied and moves nothing. The refusal names where the real control is.
+    WHY THE LOCAL SENSOR IS USUALLY REFUSED HERE, not silently accepted: this hub's OWN sensor is
+    configured where it runs -- the Settings tab writes SENSOR_MODE and the INTERCEPT_* keys into
+    the cluster ConfigMap, and the worker's supervisor reads them from its environment. Storing a
+    registry plan for its MODE as well would create a second source of truth that nothing reads:
+    a control that appears applied and moves nothing. The refusal names where the real control is.
+
+    `channel_only` IS THE ONE EXCEPTION, AND IT IS NOT A HOLE IN THAT RULE. A channel is not a
+    sensor mode: nothing in the ConfigMap describes a remote unit's bridge, and the registry row
+    is the only per-sensor store. So a write that names ONLY the channel pair is allowed for this
+    hub's own sensor too -- the mode and intercept controls still stay on the Settings tab.
     """
     from weirvern import fleet_store  # noqa: PLC0415
 
     if not sensor_id:
         return None, ("a sensor id is required: a plan belongs to one weirling "
                       "(the drill-down knows which one)")
-    if sensor_id == gate_sensor_name():
+    if sensor_id == gate_sensor_name() and not channel_only:
         return None, (
             f"{sensor_id!r} is this hub's OWN sensor, and its runtime is configured where it runs: "
             f"the Settings tab writes SENSOR_MODE and the INTERCEPT_* keys into the cluster "
             f"ConfigMap, and this hub's worker reads them. A plan stored here would be a second "
-            f"source that nothing reads -- so the controls for this sensor stay on the Settings tab."
+            f"source that nothing reads -- so the controls for this sensor stay on the Settings tab "
+            f"(its channel pair is the exception: every weirling stores that in its plan)."
         )
     try:
         with connect() as client:
@@ -2615,22 +2621,69 @@ def weirling_revoke(connect: Any, *, sensor_id: str, reason: str, actor: str,
                  "settings_cleared": settings_cleared, "settings_error": settings_error}
 
 
-def weirling_plan(connect: Any, *, sensor_id: str,
-                  changes: dict) -> tuple[int, dict[str, Any]]:
+_CHANNEL_FIELDS = ("channel_upstream", "channel_downstream")
+
+
+def _channel_only(changes: dict) -> bool:
+    """Whether a plan write names ONLY the inline channel pair.
+
+    Used to decide whether the hub's own sensor may take a registry plan (see `plan_subject`):
+    a channel is a per-sensor bridge, not the mode the ConfigMap describes.
+    """
+    keys = set(changes or {})
+    return bool(keys) and keys <= set(_CHANNEL_FIELDS)
+
+
+def _touches_channel(changes: dict) -> bool:
+    """Whether a plan write names either side of the channel pair."""
+    return bool(set(changes or {}) & set(_CHANNEL_FIELDS))
+
+
+def _reported_nics(connect: Any, sensor_id: str) -> tuple[str, ...]:
+    """The interfaces this sensor reports on its newest heartbeat, or ().
+
+    `plan_nics` is authoritative when it exists. This is the fallback for a remote unit that has
+    no per-NIC plan yet: without it the console would offer ports the API could not verify, and
+    "every weirling can carry a channel" would be true only for seeded rows. A read failure
+    yields () -- the plan write then refuses for lack of a declaration rather than guessing.
+    """
+    from weirvern import fleet_store  # noqa: PLC0415
+
+    try:
+        with connect() as client:
+            rows, _why = fleet_store.read_heartbeats(client)
+    except Exception:  # noqa: BLE001 -- a refusal is better than a guessed NIC list
+        return ()
+    for row in rows:
+        if str(row.get("sensor_id") or "") == sensor_id:
+            return tuple(str(name) for name in (row.get("interfaces") or [])
+                         if str(name or "").strip() and str(name) != "lo")
+    return ()
+
+
+def weirling_plan(connect: Any, *, sensor_id: str, changes: dict,
+                  settings: Any = None) -> tuple[int, dict[str, Any]]:
     """What a per-sensor plan change WOULD do. Touches nothing.
 
     THE SAME VALIDATION THE WRITE WILL USE: `fleet.plan_from_changes` runs here, so the preview cannot
     be looser than the apply, and the in-path cost comes back as a WARNING on the change that carries
     it rather than being something a client could skip by staging a plan itself.
+
+    `settings` supplies the deployment's `mgmt_iface`, which is what the channel-pair validation
+    uses to refuse enslaving the management port. It is a read-only hint: a caller without one
+    still gets the conventional `eth0` fallback, the same one the sheet uses.
     """
     from weirvern import fleet as fleet_mod  # noqa: PLC0415
 
-    reg, refusal = plan_subject(connect, sensor_id)
+    reg, refusal = plan_subject(connect, sensor_id, channel_only=_channel_only(changes))
     if refusal:
         return 400, {"ok": False, "error": refusal}
     current = reg.plan if reg is not None else fleet_mod.SensorPlan()
+    known_nics = _reported_nics(connect, sensor_id) if _touches_channel(changes) else ()
     try:
-        merged = fleet_mod.plan_from_changes(current, changes)
+        merged = fleet_mod.plan_from_changes(
+            current, changes, mgmt_iface=str(getattr(settings, "mgmt_iface", "") or ""),
+            known_nics=known_nics)
     except fleet_mod.FleetError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2664,7 +2717,7 @@ def weirling_plan(connect: Any, *, sensor_id: str,
 
 
 def weirling_apply(connect: Any, *, sensor_id: str, changes: dict, reason: str,
-                   actor: str) -> tuple[int, dict[str, Any]]:
+                   actor: str, settings: Any = None) -> tuple[int, dict[str, Any]]:
     """Write a per-sensor plan. The sensor picks it up on its next refresh.
 
     THE WRITE PATH CANNOT BE LOOSER THAN THE PREVIEW, or the preview is theatre, so the same
@@ -2673,16 +2726,24 @@ def weirling_apply(connect: Any, *, sensor_id: str, changes: dict, reason: str,
     THE WRITE IS THE ONE THE PREVIEW VALIDATED: `register(plan=...)` replaces the plan as a group and
     keeps `expected_mode` in step with its mode, so the fleet view's declaration and the sensor's
     runbook stay one fact.
+
+    `expected_mode=reg.expected_mode` IS EXPLICIT because a CHANNEL-ONLY write must not touch the
+    declaration. `register`'s own default is `loch`, so passing nothing would quietly re-declare a
+    sensor as passive while the operator was only wiring a bridge; when the plan carries a mode,
+    `register` still overrides this with the plan's own mode (one fact, not two).
     """
     from weirvern import fleet as fleet_mod  # noqa: PLC0415
     from weirvern import fleet_store  # noqa: PLC0415
 
-    reg, refusal = plan_subject(connect, sensor_id)
+    reg, refusal = plan_subject(connect, sensor_id, channel_only=_channel_only(changes))
     if refusal:
         return 400, {"ok": False, "error": refusal}
     current = reg.plan if reg is not None else fleet_mod.SensorPlan()
+    known_nics = _reported_nics(connect, sensor_id) if _touches_channel(changes) else ()
     try:
-        merged = fleet_mod.plan_from_changes(current, changes)
+        merged = fleet_mod.plan_from_changes(
+            current, changes, mgmt_iface=str(getattr(settings, "mgmt_iface", "") or ""),
+            known_nics=known_nics)
     except fleet_mod.FleetError as exc:
         return 400, {"ok": False, "error": str(exc)}
 
@@ -2696,7 +2757,10 @@ def weirling_apply(connect: Any, *, sensor_id: str, changes: dict, reason: str,
                if k in changes and v != current.as_dict()[k]}
     try:
         with connect() as client:
-            fleet_store.register(client, sensor_id, plan=merged)
+            fleet_store.register(
+                client, sensor_id,
+                expected_mode=(reg.expected_mode if reg is not None else "loch"),
+                plan=merged)
     except fleet_store.FleetError as exc:
         return 400, {"ok": False, "error": str(exc)}
     except fleet_store.FleetStoreError as exc:

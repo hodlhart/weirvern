@@ -208,6 +208,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      loadModels, loadWeirlings, loadBlocked, loadNormalize,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      wlNicFacts, wlNicRows, wlPlans, wlShowNicSettings, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
+                     wlChannelOffered, wlChannelPlanPair, wlRenderChannelNote,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                      loadRipplePage, openRippleSheet, RIPPLES_STATE, rippleWindowOverlap,
@@ -6498,6 +6499,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && !!doc.getElementById("wl-sensor-channel-upstream")
           && !!doc.getElementById("wl-sensor-channel-downstream"),
           "the channel controls are not on the sensor sheet");
+    // A REMOTE WEIRLING CAN CARRY A CHANNEL, not only the hub. This uses the shipping helper,
+    // so it is a runtime check rather than a source grep: three reported interfaces (one
+    // management plus two) are offered, two are not, and a pair the sensor reports as inactive
+    // is never described as active.
+    const remoteChannel = {
+      sensor_id: "edge-remote", local: false, interfaces: ["eth0", "eth1", "eth2"],
+      plan_nics: "", plan: { channel_upstream: "eth1", channel_downstream: "eth2" },
+      channel_active: false, channel_upstream: "eth1", channel_downstream: "eth2",
+      channel_bridge: "",
+    };
+    const remoteOffer = H.wlChannelOffered(remoteChannel);
+    check("a REMOTE weirling with three NICs is offered a channel",
+          remoteOffer.show === true && remoteOffer.usable.join(",") === "eth1,eth2",
+          `show=${remoteOffer.show} usable=${remoteOffer.usable.join(",")}`);
+    check("...while a two-NIC sensor is not offered one",
+          H.wlChannelOffered({ interfaces: ["eth0", "eth1"], plan_nics: "" }).show === false,
+          "two NICs cannot form a bridge after management is removed");
+    H.wlRenderChannelNote(remoteChannel);
+    const chanNote = needEl("wl-sensor-channel-note").textContent || "";
+    check("...and a declared-but-inactive pair is never called active",
+          /NOT active/.test(chanNote) && !/Channel active/.test(chanNote), chanNote.slice(0, 160));
     needEl("wl-sensor-close").click();
     await new Promise((r) => setTimeout(r, 80));
     const capRow = (() => {

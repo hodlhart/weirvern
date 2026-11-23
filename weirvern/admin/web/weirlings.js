@@ -465,7 +465,7 @@ function wlSituation(r) {
   const mode = r.reported_mode || r.expected_mode;
   if (mode) cap.push(`mode ${mode}`);
   // The sheet's evidence line makes the same distinction: a siphon is not a channel.
-  if (wlChannelEnabled() && r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
+  if (wlChannelEnabled(r) && r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
   const nf = r.netflow || {};
   // OBSERVED IS NOT FRESH (operator, 2026-11-12: "look at weirling when netflow is enabled").
   // A 24-hour count keeps a dead exporter looking healthy for a whole day; the row now states
@@ -654,7 +654,7 @@ function wlNicFacts(r) {
       // A CHANNEL BELONGS TO THE NIC THAT CARRIES IT, AND ONLY WHEN THE BRIDGE PAIR IS SET.
       // Siphon is an in-path MODE, not a channel; saying "channel enabled" for a siphon-only
       // NIC read as if the two ports had been bridged. The mode column carries siphon.
-      channel: (siphon && wlChannelEnabled()) ? ((r.channel && r.channel.state) || "") : "",
+      channel: (siphon && wlChannelEnabled(r)) ? ((r.channel && r.channel.state) || "") : "",
     };
   });
   return { rows, capture, segment };
@@ -963,7 +963,7 @@ function wlSensorCard() {
       ]),
       el("p", { class: "muted", text: "Join these two ports into one in-line channel. They must be " +
         "different interfaces; the worker verifies the bridge before claiming it is active." }),
-      el("p", { class: "muted", text: "While a channel is enabled, siphon mode and passive " +
+      el("p", { class: "muted", text: "While a channel is active, siphon mode and passive " +
         "NetFlow are unavailable: they would fight the bridge." }),
       el("div", { class: "controls" }, [
         el("button", { attrs: { type: "button", id: "wl-sensor-channel-apply" },
@@ -993,14 +993,22 @@ function openSensorActions(r) {
   if (!r) return;
   WL_ACTION_ROW = r;
   const card = wlSensorCard();
-  // THE CHANNEL PAIR BELONGS TO THE SENSOR ROW (operator, 2026-10-19). A remote sensor's
-  // capture is configured on its own box, so only the local hub exposes an editable pair here.
+  // THE CHANNEL PAIR BELONGS TO EVERY WEIRLING, not just the hub. A channel is a bridge on
+  // the sensor's OWN NICs, and its plan row is where the pair lives (068_weirling_channel.sql);
+  // gating this on `r.local` hid the only control a remote unit needed. The section is offered
+  // when the sensor reports enough ports to bridge, and the selects use ITS interfaces.
   const channelBox = document.getElementById("wl-sensor-channel");
-  if (channelBox) channelBox.classList.toggle("hidden", !r.local);
-  if (r.local) {
-    const ready = (typeof loadSettings === "function") ? loadSettings().catch(() => {}) : Promise.resolve();
-    ready.then(() => wlPopulateSensorChannel(r)).catch(() => {});
-  }
+  const offered = wlChannelOffered(r);
+  if (channelBox) channelBox.classList.toggle("hidden", !offered.show);
+  // mgmt_iface comes from the deployment settings; the read is needed so the sheet excludes
+  // the same management port the plan write validates against. It does not gate the section.
+  const ready = (typeof loadSettings === "function")
+    ? loadSettings().catch(() => {}) : Promise.resolve();
+  // THE SHEET IS REUSED. If another sensor was opened while settings were loading, its row is
+  // the truth now; this captured one must not paint stale options over it.
+  ready.then(() => {
+    if (WL_ACTION_ROW === r) wlPopulateSensorChannel(r);
+  }).catch(() => {});
   document.getElementById("wl-sensor-title").textContent = r.sensor_id;
   document.getElementById("wl-sensor-state").textContent =
     `${r.state || "unknown"} · ${r.registered ? (r.enabled ? "enabled" : "disabled") : "not adopted"}`
@@ -1412,91 +1420,197 @@ function wlStagedValue(key) {
   return wlCfgValue(key);
 }
 
-/** THE CHANNEL PAIR IS ACTIVE ONLY WHEN BOTH SIDES ARE NAMED AND DIFFERENT. */
-function wlChannelEnabled() {
-  const up = wlStagedValue("channel_upstream");
-  const down = wlStagedValue("channel_downstream");
+/** The channel pair stored in a sensor's PLAN -- the only per-weirling channel store. */
+function wlChannelPlanPair(r) {
+  const plan = (r && r.plan) || {};
+  return {
+    up: String(plan.channel_upstream || "").trim(),
+    down: String(plan.channel_downstream || "").trim(),
+  };
+}
+
+/** The pair the SENSOR reports using, and whether it measured the bridge as active.
+ *  `active === null` means the sensor did not report a channel at all; that is NOT "off". */
+function wlChannelReported(r) {
+  const raw = r ? r.channel_active : null;
+  return {
+    up: String((r && r.channel_upstream) || "").trim(),
+    down: String((r && r.channel_downstream) || "").trim(),
+    bridge: String((r && r.channel_bridge) || "").trim(),
+    active: raw === true ? true : (raw === false ? false : null),
+  };
+}
+
+/** The NIC names a sensor can bridge: its own report first, its declared plan_nics second. */
+function wlChannelNicNames(r) {
+  const reported = (Array.isArray(r && r.interfaces) ? r.interfaces : [])
+    .filter((name) => name && name !== "lo");
+  if (reported.length) return reported;
+  try {
+    const parsed = JSON.parse(String((r && r.plan_nics) || "") || "{}");
+    return (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      ? Object.keys(parsed).filter((name) => name && name !== "lo") : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+/** Whether this sensor can be offered a channel, and which ports to offer.
+ *  THREE interfaces is the floor: one management port plus the two a bridge needs. A sensor
+ *  that has not reported any falls back to the NICs its plan declares. */
+function wlChannelOffered(r) {
+  const all = wlChannelNicNames(r);
+  const mgmt = String(wlCfgValue("mgmt_iface") || "eth0").trim() || "eth0";
+  const usable = all.filter((name) => name !== mgmt);
+  return { show: all.length >= 3 && usable.length >= 2, all, usable, mgmt };
+}
+
+/** The upstream port in use: the plan's, falling back to the local staged settings pair. */
+function wlChannelSide(r) {
+  const pair = wlChannelPlanPair(r);
+  return pair.up || String(wlStagedValue("channel_upstream") || "").trim();
+}
+
+/** THE CHANNEL PAIR IS ACTIVE ONLY WHEN BOTH SIDES ARE NAMED AND DIFFERENT.
+ *  A row's own plan wins; the staged settings pair is the local NIC sheet's fallback, where
+ *  an edit is staged before it is applied. */
+function wlChannelEnabled(r) {
+  let up = "";
+  let down = "";
+  if (r) {
+    const pair = wlChannelPlanPair(r);
+    up = pair.up;
+    down = pair.down;
+  }
+  if (!up && !down && (!r || r.local)) {
+    up = wlStagedValue("channel_upstream");
+    down = wlStagedValue("channel_downstream");
+  }
   return Boolean(up && down && up !== down);
+}
+
+/** What the sheet says about the pair: active / declared-not-active / staged, never a guess. */
+function wlRenderChannelNote(r) {
+  const note = document.getElementById("wl-sensor-channel-note");
+  if (!note) return;
+  const pair = wlChannelPlanPair(r);
+  const reported = wlChannelReported(r);
+  if (!pair.up || !pair.down) {
+    note.textContent = reported.active
+      ? `The sensor reports an active channel ${reported.up} <-> ${reported.down}` +
+        `${reported.bridge ? ` on ${reported.bridge}` : ""}, but no pair is stored in its plan.`
+      : "";
+    return;
+  }
+  const same = reported.up === pair.up && reported.down === pair.down;
+  if (!same || reported.active === null) {
+    note.textContent = `Channel ${pair.up} <-> ${pair.down} is staged, sensor has not applied ` +
+      `it yet` + (reported.up || reported.down
+        ? `; it reports ${reported.up || "—"} <-> ${reported.down || "—"}.`
+        : "; it has not reported a channel.");
+    return;
+  }
+  if (reported.active === true) {
+    note.textContent = `Channel active: ${pair.up} <-> ${pair.down}` +
+      `${reported.bridge ? ` bridged on ${reported.bridge}` : ""}. Siphon and passive NetFlow ` +
+      `are locked out while a channel is active.`;
+    return;
+  }
+  note.textContent = `Channel ${pair.up} <-> ${pair.down} is declared, but the sensor reports ` +
+    `it is NOT active (bridge, carrier or forwarding check). Siphon and passive NetFlow are ` +
+    `locked out while a channel is active.`;
 }
 
 function wlPopulateSensorChannel(r) {
   const box = document.getElementById("wl-sensor-channel");
-  if (!box || box.classList.contains("hidden")) return;
-  const mgmt = String(wlCfgValue("mgmt_iface") || "").trim() || "eth0";
-  const usable = (Array.isArray(r && r.interfaces) ? r.interfaces : [])
-    .filter((n) => n && n !== "lo" && n !== mgmt);
-  for (const [id, key] of [["wl-sensor-channel-upstream", "channel_upstream"],
-                           ["wl-sensor-channel-downstream", "channel_downstream"]]) {
+  if (!box) return;
+  const offered = wlChannelOffered(r);
+  box.classList.toggle("hidden", !offered.show);
+  if (!offered.show) return;
+  const pair = wlChannelPlanPair(r);
+  for (const [id, value] of [["wl-sensor-channel-upstream", pair.up],
+                             ["wl-sensor-channel-downstream", pair.down]]) {
     const sel = document.getElementById(id);
     if (!sel) continue;
-    const current = wlStagedValue(key);
-    const options = usable.slice();
-    if (current && !options.includes(current)) options.push(current);
+    const options = offered.usable.slice();
+    if (value && !options.includes(value)) options.push(value);
     sel.replaceChildren();
     sel.appendChild(el("option", { attrs: { value: "" }, text: "— none —" }));
     for (const name of options) {
       sel.appendChild(el("option", { attrs: { value: name }, text: name }));
     }
-    sel.value = current;
+    sel.value = value;
   }
-  const note = document.getElementById("wl-sensor-channel-note");
-  if (note) note.textContent = wlChannelEnabled()
-    ? "This sensor is bridged. Siphon and passive NetFlow are locked out while the channel is active; one side is used for Zeek and NetFlow so the bridge is not counted twice."
-    : "";
+  wlRenderChannelNote(r);
 }
 
 function wlSensorChannelChanged() {
   const up = document.getElementById("wl-sensor-channel-upstream");
   const down = document.getElementById("wl-sensor-channel-downstream");
   const note = document.getElementById("wl-sensor-channel-note");
-  if (!up || !down || !note) return;
+  const r = WL_ACTION_ROW;
+  if (!up || !down || !note || !r) return;
   if (up.value && down.value && up.value === down.value) {
     note.textContent = "Upstream and downstream must be different interfaces.";
+    return;
+  }
+  if (Boolean(up.value) !== Boolean(down.value)) {
+    note.textContent = "A channel needs BOTH ports: pick an upstream and a downstream, or " +
+      "clear both to remove it.";
+    return;
+  }
+  const pair = wlChannelPlanPair(r);
+  if (up.value === pair.up && down.value === pair.down) {
+    wlRenderChannelNote(r);
     return;
   }
   note.textContent = up.value && down.value
-    ? "Channel staged. Apply channel writes the pair and locks siphon/passive NetFlow out."
-    : "Channel staged for removal. Apply channel writes the change.";
+    ? `Channel ${up.value} <-> ${down.value} is staged, not saved. Apply channel writes it to ` +
+      `this weirling's plan.`
+    : "Channel staged for removal. Apply channel clears both ports from this weirling's plan.";
 }
 
 async function wlSensorChannelApply() {
+  const r = WL_ACTION_ROW;
   const up = document.getElementById("wl-sensor-channel-upstream");
   const down = document.getElementById("wl-sensor-channel-downstream");
   const note = document.getElementById("wl-sensor-channel-note");
-  if (!up || !down || !note) return;
-  if (up.value && down.value && up.value === down.value) {
+  if (!r || !up || !down || !note) return;
+  if (Boolean(up.value) !== Boolean(down.value)) {
+    note.textContent = "A channel needs BOTH ports: pick an upstream and a downstream, or " +
+      "clear both to remove it.";
+    return;
+  }
+  if (up.value && up.value === down.value) {
     note.textContent = "Upstream and downstream must be different interfaces.";
     return;
   }
-  const enabled = Boolean(up.value && down.value && up.value !== down.value);
-  stageChange("channel_upstream", up.value, wlCfgValue("channel_upstream"));
-  stageChange("channel_downstream", down.value, wlCfgValue("channel_downstream"));
-  if (enabled) {
-    // A BRIDGE CANNOT ALSO BE AN INTERCEPT POINT OR A PASSIVE FLOW TARGET. Write the safe
-    // companion values in the same plan as the pair rather than leaving the operator with an
-    // enabled channel and a stale siphon/passive choice that would fight it.
-    stageChange("sensor_mode", "loch", wlCfgValue("sensor_mode"));
-    stageChange("netflow_mode", "active", wlCfgValue("netflow_mode"));
-    // ONE SIDE ONLY: both channel ports see every frame, so capturing Zeek or NetFlow on both
-    // would record the same conversation twice. Use the upstream port for both feeds; the
-    // server refuses a multi-interface capture while a channel pair is configured.
-    stageChange("zeek_ifaces", up.value, wlCfgValue("zeek_ifaces"));
-    stageChange("netflow_iface", up.value, wlCfgValue("netflow_iface"));
-  }
-  note.textContent = "applying channel…";
+  const changes = { channel_upstream: up.value, channel_downstream: down.value };
   const btn = document.getElementById("wl-sensor-channel-apply");
+  note.textContent = "saving the channel to this weirling's plan…";
   if (btn) btn.disabled = true;
   try {
-    if (typeof applyStage !== "function") throw new Error("the apply path is not available");
-    await applyStage(true, { skipSiphonConfirm: true,
-                             reason: "channel configured from the sensor sheet" });
-    note.textContent = enabled
-      ? "Channel applied. Siphon and passive NetFlow are now locked out on this sensor."
-      : "Channel removed.";
+    // THE PLAN IS THE PER-SENSOR STORE, not the hub's ConfigMap. Preview first (the same
+    // validation the write uses), then apply -- both against THIS sensor's row.
+    const preview = await postJSON("/api/weirlings/plan",
+      { sensor_id: r.sensor_id, changes });
+    if (!preview || preview.ok !== true) {
+      throw new Error((preview && preview.error) || "the server refused the plan");
+    }
+    const res = await postJSON("/api/weirlings/apply",
+      { sensor_id: r.sensor_id, changes, reason: "" });
+    if (!res || res.ok !== true) {
+      throw new Error((res && res.error) || "the server refused the write");
+    }
+    note.textContent = up.value
+      ? "Saved to this weirling's plan. It reads the plan on its next refresh; until its own " +
+        "report agrees, the sheet calls the channel staged."
+      : "Channel cleared from this weirling's plan.";
     if (typeof loadWeirlings === "function") await loadWeirlings();
     closeSheet(WL_SENSOR_CARD);
   } catch (err) {
-    note.textContent = "Could not apply the channel: " + (err && err.message ? err.message : err);
+    note.textContent = "Could not save the channel: "
+      + (err && err.message ? err.message : err);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1563,8 +1677,8 @@ function wlShowNicSettings(nic, interfaces) {
   const netflowOn = !flowActive || (flowIfaces.length ? flowIfaces.includes(nic) : siphonOn);
   // A CHANNEL IS ONE INLINE PAIR. Both ports see every frame, so only the upstream side may
   // carry Zeek/NetFlow while the pair is configured; the other NIC's feed controls are disabled.
-  const channelOn = wlChannelEnabled();
-  const channelSide = String(wlStagedValue("channel_upstream") || "").trim();
+  const channelOn = wlChannelEnabled(wlDetail);
+  const channelSide = wlChannelSide(wlDetail);
   const zeekFeed = channelOn ? nic === channelSide : zeekOn;
   const netflowFeed = channelOn ? nic === channelSide : netflowOn;
   const feedHere = !channelOn || nic === channelSide;
@@ -1708,7 +1822,7 @@ function wlStageNicSettings() {
   const netBox = document.getElementById("wl-nic-netflow");
   const activeSource = document.getElementById("wl-nic-netflow-active");
   const note = document.getElementById("wl-nic-note");
-  const channelOn = wlChannelEnabled();
+  const channelOn = wlChannelEnabled(wlDetail);
   let zeekOn = !!(zeekBox && zeekBox.checked);
   let siphonOn = !!(siphonBox && siphonBox.checked) && !channelOn;
   let lochOn = !!(lochBox && lochBox.checked) || channelOn;

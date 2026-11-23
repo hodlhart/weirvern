@@ -908,6 +908,9 @@ class InterceptController:
         # configured-but-unarmed siphon sensor, and what lets the fleet view say "declared
         # siphon, reporting siphon, zero mappings".
         self.mode = "loch"
+        # The IN-LINE CHANNEL pair from this unit's plan. Not a sensor mode: the unit may stay
+        # `loch` and still be the bridge traffic crosses. Empty on both sides = no channel.
+        self.channel: tuple[str, str] = ("", "")
 
     @staticmethod
     def _default_factory(cfg):
@@ -924,8 +927,18 @@ class InterceptController:
     def apply(self, plan) -> None:
         """Make reality match the declared plan. Never raises."""
         configs = plan.to_intercept_configs() if plan is not None else []
+        # A CHANNEL IS PART OF THE PLAN BUT NOT PART OF THE INTERCEPT. It is reported on every
+        # heartbeat even when no siphon NIC exists, because an inline `loch` unit is a normal
+        # channel deployment; `channel.detect` reads the kernel rather than trusting the plan.
+        self.channel = ((str(plan.channel_upstream or ""), str(plan.channel_downstream or ""))
+                        if plan is not None else ("", ""))
         key = plan.as_dict() if plan is not None else None
         if key is not None:
+            # THE CHANNEL IS NOT PART OF THE INTERCEPT. Leaving it in this key would rebuild a
+            # healthy siphon supervisor -- a restore/re-poison seam -- every time somebody edited
+            # the bridge pair, which has nothing to do with the intercept child.
+            key = {k: v for k, v in key.items()
+                   if k not in ("channel_upstream", "channel_downstream")}
             key = {**key, "nics": plan.nics}
         if not configs:
             self.stop(why="the plan does not ask for an intercept")
@@ -1021,8 +1034,30 @@ def refresh_plan(client, sid: str, controller: InterceptController) -> None:
     controller.apply(plan)
 
 
+def _channel_fields(channel: tuple[str, str] | None) -> dict:
+    """Heartbeat fields for this unit's inline channel, read from the kernel. Never raises.
+
+    The PAIR comes from the plan (what the unit is meant to bridge); `active` comes from
+    `channel.detect`, which checks the bridge, both ports' carrier and forwarding state, bridge-nf
+    and the node's FORWARD path. A plan is never allowed to make this say True on its own.
+    """
+    if channel is None:
+        return {}
+    up, down = (str(channel[0] or ""), str(channel[1] or ""))
+    try:
+        from weirvern.admin import channel as channel_mod  # noqa: PLC0415
+
+        state = channel_mod.detect(up, down)
+        return {"channel_active": state.active, "channel_upstream": state.upstream,
+                "channel_downstream": state.downstream, "channel_bridge": state.bridge}
+    except Exception:  # noqa: BLE001 -- reporting must never break the heartbeat
+        # The pair is still a fact from the plan; active is UNKNOWN, not False.
+        return {"channel_active": None, "channel_upstream": up, "channel_downstream": down}
+
+
 def beat(client, sid: str, iface: str, *, mode: str = "loch",
-         failures: list[str] | None = None) -> bool:
+         failures: list[str] | None = None,
+         channel: tuple[str, str] | None = None) -> bool:
     """One heartbeat from observation. Never raises; returns whether it landed.
 
     `mode` is what this unit is RUNNING (its plan's mode, via the controller) -- never the
@@ -1039,6 +1074,7 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
     # carried [] while the hub's carried its NICs -- this call site predated the column).
     fields.setdefault("interfaces", status.sensor_interfaces())
+    fields.update(_channel_fields(channel))
     if getattr(client, "is_gateway", False):
         try:
             return bool(client.heartbeat(fields))
@@ -1048,7 +1084,8 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     return status.heartbeat(client, sensor_id=sid, **fields)
 
 
-def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
+def _final_beat(client, sid: str, iface: str, *, mode: str = "loch",
+                channel: tuple[str, str] | None = None) -> None:
     """A last row saying running=False, so the fleet reads "stopped cleanly" immediately
     instead of "stale" minutes later. Best-effort: a kill -9 gets no such courtesy and
     staleness covers it."""
@@ -1059,6 +1096,7 @@ def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
         fields["running"] = False
         fields["host_stats"] = host_stats()
         fields.setdefault("interfaces", status.sensor_interfaces())
+        fields.update(_channel_fields(channel))
         if getattr(client, "is_gateway", False):
             client.heartbeat(fields)
         else:
@@ -1208,7 +1246,8 @@ def main() -> None:
                 stop.wait(interval)
                 continue
             if not beat(client, sid, iface, mode=controller.mode,
-                        failures=controller.failures()):
+                        failures=controller.failures(),
+                        channel=controller.channel):
                 # The write failed; drop the client so the next cycle reconnects rather than
                 # hammering a dead connection.
                 logger.warning("heartbeat write failed; will reconnect and retry")
@@ -1227,7 +1266,7 @@ def main() -> None:
     try:
         if client is None:
             client = connect(settings)
-        _final_beat(client, sid, iface, mode=controller.mode)
+        _final_beat(client, sid, iface, mode=controller.mode, channel=controller.channel)
     except Exception:  # noqa: BLE001
         pass
     logger.info("sensor unit %r: stopped", sid)

@@ -2263,7 +2263,8 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         args, refusal = web.weirling_plan_args(body)
         if refusal:
             return jsonify({"ok": False, "error": refusal}), 400
-        code, payload = payloads.weirling_plan(_connect, **args)
+        code, payload = payloads.weirling_plan(
+            _connect, settings=getattr(ctx, "settings", None), **args)
         return jsonify(payload), code
 
     @app.post("/api/weirlings/apply")
@@ -2281,7 +2282,8 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return jsonify({"ok": False, "error": refusal}), 400
         ident = requestauth.identity(ctx, _auth_headers())
         code, payload = payloads.weirling_apply(
-            _connect, actor=(ident.username if ident else "operator"), **args)
+            _connect, actor=(ident.username if ident else "operator"),
+            settings=getattr(ctx, "settings", None), **args)
         return jsonify(payload), code
 
     @app.post("/api/weirlings/probe")

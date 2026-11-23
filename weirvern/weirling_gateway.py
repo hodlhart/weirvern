@@ -62,6 +62,7 @@ HEARTBEAT_FIELDS = frozenset({
     "mode", "iface", "segment", "hosts", "mappings", "running", "uptime_s",
     "restores", "refreshes", "failures", "capture_loss_pct", "packets_recv",
     "packets_dropped", "host_stats", "interfaces",
+    "channel_active", "channel_upstream", "channel_downstream", "channel_bridge",
 })
 
 

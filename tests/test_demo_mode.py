@@ -69,6 +69,32 @@ def test_fleet_seeds_both_sensors_and_their_evidence():
             "weirvern.weirling_enrollments", "weirvern.weirling_probe_requests"} <= names
 
 
+def test_site_b_seeds_three_nics_and_the_inline_channel_pair():
+    """SITE B IS THE INLINE DEMO. Its channel is not a mode: the pair lives in its plan, and the
+    seeded heartbeat reports it as NOT active because a demo box has no kernel bridge. The row
+    must be writable and readable through the same columns the store uses, not a UI-only fake.
+    """
+    client = _Client()
+    demo_extras.seed_fleet(client, hosts=4)
+
+    wl_rows, wl_cols = next((rows, cols) for table, rows, cols in client.inserts
+                            if table == "weirvern.weirlings")
+    site_b = next(dict(zip(wl_cols, row, strict=True)) for row in wl_rows
+                  if row[0] == "weir-site-b")
+    assert set(json.loads(site_b["plan_nics"])) == {"eth0", "eth1", "eth2"}
+    assert site_b["plan_channel_upstream"] == "eth1"
+    assert site_b["plan_channel_downstream"] == "eth2"
+
+    ss_rows, ss_cols = next((rows, cols) for table, rows, cols in client.inserts
+                            if table == "weirvern.sensor_status")
+    heartbeat = next(dict(zip(ss_cols, row, strict=True)) for row in ss_rows
+                     if row[0] == "weir-site-b")
+    assert heartbeat["interfaces"] == ["eth0", "eth1", "eth2"]
+    assert heartbeat["channel_active"] == 0, "the demo must not claim a bridge it does not have"
+    assert heartbeat["channel_upstream"] == "eth1"
+    assert heartbeat["channel_downstream"] == "eth2"
+
+
 def test_assets_seed_one_record_per_identity():
     client = _Client(_identity_rows(4))
     written = demo_extras.seed_assets(client, hosts=4)

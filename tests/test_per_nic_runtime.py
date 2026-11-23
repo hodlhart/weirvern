@@ -80,7 +80,8 @@ def test_nic_rows_use_the_plan_roles_not_the_sensor_capture_interface():
     js = Path("weirvern/admin/web/weirlings.js").read_text()
     assert "const plans = wlPlans();" in js
     assert 'const siphon = planMode === "siphon" || plan.siphon === true;' in js
-    assert 'channel: (siphon && wlChannelEnabled()) ? ((r.channel && r.channel.state) || "") : "",' in js
+    assert ('channel: (siphon && wlChannelEnabled(r)) ? ((r.channel && r.channel.state) '
+            '|| "") : "",' in js)
     assert "const hasNicPlan = Object.prototype.hasOwnProperty.call(plans, name);" in js
 
 

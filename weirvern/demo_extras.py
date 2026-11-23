@@ -69,18 +69,35 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
     enroll_rows = []
     probe_rows = []
     for i, (sensor_id, addr, segment, mode, note, live) in enumerate(sensors):
+        # SITE B IS THE INLINE DEMO. It has three NICs -- eth0 management, eth1 upstream and
+        # eth2 downstream -- and its channel pair lives in its PLAN, exactly where a real
+        # weirling's would. The pair is deliberately reported as NOT active: there is no kernel
+        # bridge on a demo box, and claiming one would make the sheet say "active" about a
+        # bridge that does not exist. The UI shows a declared-but-inactive pair, which is the
+        # honest state for seeded data.
+        site_b = sensor_id == "weir-site-b"
+        interfaces = ["eth0", "eth1", "eth2"] if site_b else ["eth0", "eth1"]
+        plan_nics = (json.dumps({"eth0": {}, "eth1": {"capture": True}, "eth2": {}},
+                                sort_keys=True) if site_b else "")
+        channel_up = "eth1" if site_b else ""
+        channel_down = "eth2" if site_b else ""
         wl_rows.append([
             sensor_id, addr, segment, mode, 1, note, now - timedelta(days=7),
             now, None, mode, "eth1", segment, addr, "192.0.2.1",
             "*" if mode in ("siphon", "channel") else "",
-            [segment], "", "demo",
+            channel_up, channel_down,
+            [segment], plan_nics, "demo",
         ])
         if live:
             ss_rows.append([
                 sensor_id, mode, "eth1", segment, hosts,
                 hosts if mode in ("siphon", "channel") else 0,
                 1, 86_400.0 + i * 3_600, 0, 0,
-                0.0, 1_000_000 + i * 100_000, 0, ["eth0", "eth1"], "{}", [],
+                0.0, 1_000_000 + i * 100_000, 0, interfaces, "{}", [],
+                # 0 is a MEASUREMENT ("the bridge is not active"), not NULL: these heartbeats
+                # come from a build that reports the channel. NULL would mean "not reported"
+                # and would render as unknown rather than as the honest seeded state.
+                0, channel_up, channel_down, "",
                 now - timedelta(seconds=5),
             ])
         audit_rows.append([
@@ -99,7 +116,8 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
         client.insert("weirvern.weirlings", wl_rows, column_names=[
             "sensor_id", "address", "segment", "expected_mode", "enabled", "note", "added_at",
             "updated_at", "revoked_at", "plan_mode", "plan_iface", "plan_segment", "plan_addr",
-            "plan_gateway", "plan_targets", "networks", "plan_nics", "topology"])
+            "plan_gateway", "plan_targets", "plan_channel_upstream", "plan_channel_downstream",
+            "networks", "plan_nics", "topology"])
         written["weirlings"] = len(wl_rows)
     except Exception as exc:  # noqa: BLE001
         written["weirlings"] = f"failed: {exc}"[:100]  # type: ignore[assignment]
@@ -107,7 +125,8 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
         client.insert("weirvern.sensor_status", ss_rows, column_names=[
             "sensor_id", "mode", "iface", "segment", "hosts", "mappings", "running", "uptime_s",
             "restores", "refreshes", "capture_loss_pct", "packets_recv", "packets_dropped",
-            "interfaces", "host_stats", "failures", "ts"])
+            "interfaces", "host_stats", "failures",
+            "channel_active", "channel_upstream", "channel_downstream", "channel_bridge", "ts"])
         written["sensor_status"] = len(ss_rows)
     except Exception as exc:  # noqa: BLE001
         written["sensor_status"] = f"failed: {exc}"[:100]  # type: ignore[assignment]

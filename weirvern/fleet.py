@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
@@ -110,7 +110,14 @@ TOPOLOGIES = ("capture", "inline")
 # The intercept plan's fields, in one place. Every reader (the store's column mapping, the
 # API's per-field view, the GUI's controls) iterates THIS tuple, so a field cannot be added
 # to one of them and forgotten in another -- the drift this project keeps finding.
-PLAN_FIELDS = ("mode", "iface", "segment", "addr", "gateway", "targets")
+#
+# THE CHANNEL PAIR IS A PLAN FIELD, NOT A SENSOR MODE. `mode` says how the sensor gets traffic
+# (loch/siphon); `channel_upstream`/`channel_downstream` name the two NICs of an inline bridge.
+# It belongs in the same row because it is a per-sensor decision the hub has to be able to write
+# for a remote unit, for exactly the reason 020_weirling_plan.sql gives for the intercept fields.
+PLAN_FIELDS = ("mode", "iface", "segment", "addr", "gateway", "targets",
+               "channel_upstream", "channel_downstream")
+
 
 
 # ── the per-sensor intercept plan ────────────────────────────────────────────────────────────
@@ -147,9 +154,15 @@ class SensorPlan:
     addr: str = ""
     gateway: str = ""
     targets: str = ""
+    # THE INLINE CHANNEL PAIR. Empty on both sides = no channel. They are validated together
+    # (`make_plan`): a half-pair is refused because a bridge with one port is not a bridge.
+    channel_upstream: str = ""
+    channel_downstream: str = ""
     # PER-NIC PLANS for a sensor with more than one usable NIC. JSON keyed by interface;
     # empty means the legacy single plan above. This is what lets a remote weirling carry
-    # eth1=siphon + eth2=sluice instead of one plan overwriting the other.
+    # eth1=siphon + eth2=sluice instead of one plan overwriting the other. It is ALSO the
+    # authority for which interfaces a channel may name: a bridge cannot enslave a port the
+    # sensor has not declared.
     nics: str = ""
 
     @property
@@ -250,11 +263,15 @@ class SensorPlan:
 
 
 def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str = "",
-              gateway: str = "", targets: str = "", nics: str = "") -> SensorPlan:
+              gateway: str = "", targets: str = "", nics: str = "",
+              channel_upstream: str = "", channel_downstream: str = "",
+              mgmt_iface: str = "", known_nics: Iterable[str] = ()) -> SensorPlan:
     """A validated plan, or FleetError naming the field that is wrong.
 
     SHAPES ONLY -- see the block comment above: a half-filled plan is stored, and the sensor
-    says what is missing when it tries to arm.
+    says what is missing when it tries to arm. The CHANNEL PAIR is the exception: it is validated
+    as a pair (both or neither, different ports, real ports, not management) because a bridge
+    with one port is not a half-built bridge, it is not a bridge at all.
     """
     from weirvern.admin import intercept as ic_mod  # noqa: PLC0415 -- the intercept's own rules
     from weirvern.admin import mode as mode_mod  # noqa: PLC0415
@@ -310,6 +327,7 @@ def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str =
             raise FleetError(why)
 
     raw_nics = str(nics or "").strip()
+    declared_nics: list[str] = []
     if raw_nics:
         from weirvern.nic_plans import NicPlanError, NicPlanSet  # noqa: PLC0415
 
@@ -320,12 +338,67 @@ def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str =
         problems = plan_set.validate()
         if problems:
             raise FleetError("per-NIC plans cannot be stored: " + "; ".join(problems))
+        declared_nics = sorted(plan_set.plans)
         if not m:
             m = "siphon" if plan_set.siphon_ifaces() else "loch"
+    if not declared_nics:
+        # A sensor's own heartbeat is the other truthful declaration of its ports. `plan_nics`
+        # is authoritative when it exists; a remote unit with no per-NIC plan yet would
+        # otherwise be unable to name its own NICs, which is the opposite of "every weirling can
+        # carry a channel". The console's sheet uses the same report for its selects.
+        declared_nics = sorted({str(name).strip() for name in known_nics
+                                if str(name or "").strip() and str(name).strip() != "lo"})
+
+    # ── THE INLINE CHANNEL PAIR ──────────────────────────────────────────────────────────────
+    #
+    # A CHANNEL IS TWO PORTS OR NOTHING. Accepting one side would store a plan that looks staged
+    # while describing an impossible bridge, so a partial pair is refused here rather than left
+    # for the sensor to discover. Empty on BOTH sides is the way to clear a channel.
+    #
+    # THE PORTS MUST BE PORTS THE SENSOR DECLARED. `plan_nics` is that declaration (the JSON
+    # keyed by interface, 025_sensor_nic_plans.sql); when no per-NIC plan exists yet, the
+    # sensor's own heartbeat is the other truthful source (`known_nics`). A bridge cannot
+    # enslave a name that is not on the box, and a typo would otherwise surface as a kernel
+    # failure on the sensor instead of a refusal the operator can act on.
+    #
+    # MANAGEMENT IS NEVER A CHANNEL PORT. The bridge carries traffic BETWEEN networks; enslaving
+    # the port the hub reaches the sensor through would put the control path inside the thing it
+    # controls. The management name comes from the deployment's own `MGMT_IFACE` setting, with
+    # eth0 as the conventional default when nobody set one (the console uses the same fallback,
+    # so the sheet cannot offer a port the API will refuse).
+    up = str(channel_upstream or "").strip()
+    down = str(channel_downstream or "").strip()
+    if bool(up) != bool(down):
+        raise FleetError(
+            "a channel needs BOTH ports: channel_upstream and channel_downstream must be set "
+            "together. Send both as empty strings to remove the channel."
+        )
+    if up and down:
+        if up == down:
+            raise FleetError(
+                f"channel upstream and downstream must be different interfaces; {up!r} was "
+                f"named for both, and one port cannot bridge to itself."
+            )
+        mgmt = str(mgmt_iface or "").strip() or "eth0"
+        for label, value in (("upstream", up), ("downstream", down)):
+            if value == mgmt:
+                raise FleetError(
+                    f"channel {label} {value!r} is the management interface. A bridge must not "
+                    f"enslave the port the hub reaches this sensor through; pick a dedicated "
+                    f"interface."
+                )
+            if value not in declared_nics:
+                known = ", ".join(declared_nics) if declared_nics else "none"
+                raise FleetError(
+                    f"channel {label} {value!r} is not one of this sensor's declared NICs "
+                    f"(plan_nics or its own report: {known}). A bridge cannot enslave a port "
+                    f"the sensor does not have -- declare its interfaces first."
+                )
 
     return SensorPlan(mode=m, iface=iface, segment=segment,
                       addr=str(addr or "").strip(), gateway=str(gateway or "").strip(),
-                      targets=targets, nics=raw_nics)
+                      targets=targets, nics=raw_nics,
+                      channel_upstream=up, channel_downstream=down)
 
 
 def _targets_problem(targets: str) -> str:
@@ -362,13 +435,19 @@ def _targets_problem(targets: str) -> str:
     return "; ".join(problems)
 
 
-def plan_from_changes(current: SensorPlan, changes: Mapping[str, object]) -> SensorPlan:
+def plan_from_changes(current: SensorPlan, changes: Mapping[str, object], *,
+                      mgmt_iface: str = "", known_nics: Iterable[str] = ()) -> SensorPlan:
     """`changes` (row-keyed, partial) applied over `current`, validated as one plan.
 
     The merge-then-validate order is deliberate: a change is judged in the context of the plan
     it will produce, so a refusal names the value that is actually wrong rather than a field
     that is merely absent from the request. Unknown keys are REFUSED, never dropped -- a
     silently ignored field is a control that does nothing while looking applied.
+
+    `plan_nics` IS CARRIED ACROSS, not defaulted away. It is not one of the editable plan fields
+    (the plan sheet edits the legacy fields; per-NIC plans travel through their own document),
+    but it is the declaration the channel pair is validated against, so a channel edit that
+    dropped it would make the next edit unable to name a port the sensor still has.
     """
     unknown = sorted(set(changes) - set(PLAN_FIELDS))
     if unknown:
@@ -377,10 +456,11 @@ def plan_from_changes(current: SensorPlan, changes: Mapping[str, object]) -> Sen
             f"{', '.join(PLAN_FIELDS)}."
         )
     values = current.as_dict()
+    values["nics"] = current.nics
     for name in PLAN_FIELDS:
         if name in changes:
             values[name] = str(changes[name] if changes[name] is not None else "").strip()
-    return make_plan(**values)
+    return make_plan(**values, mgmt_iface=mgmt_iface, known_nics=known_nics)
 
 
 class FleetError(ValueError):
@@ -614,6 +694,14 @@ class SensorHealth:
     iface: str = ""
     mappings: int = 0
     running: bool = False
+    # THE IN-LINE CHANNEL, AS THE SENSOR REPORTED IT. `channel_active` is None when the sensor
+    # did not report one (an older agent): that is NOT the same as False, which is a measured
+    # "the bridge is not active". The pair is the one the SENSOR is using, so the console can
+    # compare it with the plan and call a difference "staged, sensor has not applied it yet".
+    channel_active: bool | None = None
+    channel_upstream: str = ""
+    channel_downstream: str = ""
+    channel_bridge: str = ""
     enabled: bool = True
     registered: bool = False
     age_s: float | None = None
@@ -703,6 +791,12 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         iface=str((newest or {}).get("iface") or ""),
         mappings=int((newest or {}).get("mappings") or 0),
         running=bool((newest or {}).get("running") or False),
+        # NULL is preserved: an agent that never reported a channel did not measure "off".
+        channel_active=(None if (newest or {}).get("channel_active") is None
+                        else bool((newest or {}).get("channel_active"))),
+        channel_upstream=str((newest or {}).get("channel_upstream") or ""),
+        channel_downstream=str((newest or {}).get("channel_downstream") or ""),
+        channel_bridge=str((newest or {}).get("channel_bridge") or ""),
         enabled=(reg.enabled if reg else False),
         registered=bool(reg is not None),
         age_s=age,
