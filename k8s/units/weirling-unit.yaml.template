@@ -196,6 +196,14 @@ spec:
               value: "0"
             - name: WEIRLING_FLOW_FILE
               value: /flows/flows.jsonl
+            # THE INLINE CHANNEL HELPER. A channel is a bridge between two NICs, and the
+            # reviewed helper is what creates/tears it down. The image ships it at this path;
+            # the state directory must be the per-unit hostPath so `teardown` can still refuse
+            # a bridge it did not create after a restart.
+            - name: WEIRVERN_INLINE_HELPER
+              value: /app/scripts/weirling-inline.sh
+            - name: WEIRVERN_INLINE_STATE
+              value: /models/inline
             # ── mTLS ONLY (operator rule, 2026-11-17) ────────────────────────────────────────
             #
             # "all communication between hub and weirling uses mtls". This unit therefore carries NO

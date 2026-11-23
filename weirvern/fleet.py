@@ -702,6 +702,10 @@ class SensorHealth:
     channel_upstream: str = ""
     channel_downstream: str = ""
     channel_bridge: str = ""
+    # The named refusal from the inline helper, when creating/tearing the bridge failed. Empty
+    # when nothing went wrong; carried from the heartbeat's `failures` so the sheet can say WHY
+    # a pair is staged instead of leaving the operator with a generic "not active".
+    channel_error: str = ""
     enabled: bool = True
     registered: bool = False
     age_s: float | None = None
@@ -797,6 +801,9 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         channel_upstream=str((newest or {}).get("channel_upstream") or ""),
         channel_downstream=str((newest or {}).get("channel_downstream") or ""),
         channel_bridge=str((newest or {}).get("channel_bridge") or ""),
+        channel_error=next(
+            (str(f) for f in ((newest or {}).get("failures") or [])
+             if "channel bridge" in str(f)), ""),
         enabled=(reg.enabled if reg else False),
         registered=bool(reg is not None),
         age_s=age,

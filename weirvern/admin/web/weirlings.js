@@ -1437,6 +1437,7 @@ function wlChannelReported(r) {
     up: String((r && r.channel_upstream) || "").trim(),
     down: String((r && r.channel_downstream) || "").trim(),
     bridge: String((r && r.channel_bridge) || "").trim(),
+    error: String((r && r.channel_error) || "").trim(),
     active: raw === true ? true : (raw === false ? false : null),
   };
 }
@@ -1496,10 +1497,10 @@ function wlRenderChannelNote(r) {
   const pair = wlChannelPlanPair(r);
   const reported = wlChannelReported(r);
   if (!pair.up || !pair.down) {
-    note.textContent = reported.active
+    note.textContent = reported.error || (reported.active
       ? `The sensor reports an active channel ${reported.up} <-> ${reported.down}` +
         `${reported.bridge ? ` on ${reported.bridge}` : ""}, but no pair is stored in its plan.`
-      : "";
+      : "");
     return;
   }
   const same = reported.up === pair.up && reported.down === pair.down;
@@ -1507,7 +1508,8 @@ function wlRenderChannelNote(r) {
     note.textContent = `Channel ${pair.up} <-> ${pair.down} is staged, sensor has not applied ` +
       `it yet` + (reported.up || reported.down
         ? `; it reports ${reported.up || "—"} <-> ${reported.down || "—"}.`
-        : "; it has not reported a channel.");
+        : "; it has not reported a channel.")
+      + (reported.error ? ` ${reported.error}` : "");
     return;
   }
   if (reported.active === true) {
@@ -1518,7 +1520,7 @@ function wlRenderChannelNote(r) {
   }
   note.textContent = `Channel ${pair.up} <-> ${pair.down} is declared, but the sensor reports ` +
     `it is NOT active (bridge, carrier or forwarding check). Siphon and passive NetFlow are ` +
-    `locked out while a channel is active.`;
+    `locked out while a channel is active.` + (reported.error ? ` ${reported.error}` : "");
 }
 
 function wlPopulateSensorChannel(r) {

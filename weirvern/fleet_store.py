@@ -684,6 +684,7 @@ def _health_to_json(h: SensorHealth) -> dict:
         "channel_upstream": h.channel_upstream,
         "channel_downstream": h.channel_downstream,
         "channel_bridge": h.channel_bridge,
+        "channel_error": h.channel_error,
         "enabled": h.enabled,
         "registered": h.registered,
         "age_s": h.age_s,

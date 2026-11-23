@@ -84,6 +84,12 @@ COPY weirvern ./weirvern
 # `--dry-run` from a checkout before it is trusted to page. The CronJob runs this exact file, so
 # the reviewed artifact and the scheduled artifact are the same bytes.
 COPY scripts/watchdog.py /app/scripts/watchdog.py
+# THE INLINE BRIDGE HELPER is the reviewed mechanism the weirling agent invokes to create or
+# tear down a channel bridge. It is a shell artifact, not a package module, so it needs this
+# copy; without it the agent has a perfectly good plan and nothing to run (the same
+# silent-inert class as a missing `nft`).
+COPY scripts/weirling-inline.sh /app/scripts/weirling-inline.sh
+RUN chmod 0755 /app/scripts/weirling-inline.sh
 # OP-3: the archived monthly reviews are read by /api/ml/review. They are docs, not package
 # data, so they need an explicit copy; without this the dashboard correctly says no archive.
 COPY docs/reviews ./docs/reviews

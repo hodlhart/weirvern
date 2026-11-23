@@ -585,6 +585,8 @@ case "\${1:-status}" in
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
       -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state -e TRUNK_DISABLE="$NO_TRUNK" \\
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
+      -e WEIRVERN_INLINE_HELPER=/app/scripts/weirling-inline.sh \\
+      -e WEIRVERN_INLINE_STATE=/state \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
       -v "\$TRUNKSTATE":/state \\
       -v "\$PKIDIR":"\$PKIDIR":ro \\

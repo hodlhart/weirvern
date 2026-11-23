@@ -222,6 +222,21 @@ def test_a_sensor_with_no_plan_nics_can_name_ports_from_its_own_report():
     assert (stored.plan.channel_upstream, stored.plan.channel_downstream) == ("eth1", "eth2")
 
 
+def test_a_bridge_refusal_rides_the_fleet_read_as_channel_error():
+    """The helper's named refusal must reach the sheet, not only the raw heartbeat row."""
+    from weirvern import fleet_store
+
+    heartbeat = _heartbeat("unit-a")
+    heartbeat[HEARTBEAT_COLUMNS.index("failures")] = [
+        "channel bridge NOT applied: weirling-inline: create needs root (ip link changes)"
+    ]
+    ch = _StubCh([_row("unit-a")], [heartbeat])
+    payload = fleet_store.build_fleet(ch)
+    row = payload["sensors"][0]
+    assert row["channel_error"].startswith("channel bridge NOT applied"), row
+    assert "needs root" in row["channel_error"], row
+
+
 # ── (c) clearing is two empty strings, and it preserves the NIC declaration ──────────────────
 
 def test_clearing_both_sides_removes_the_pair_and_keeps_plan_nics():
