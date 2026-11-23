@@ -721,9 +721,19 @@ function wlNicRows(r) {
 
 /** The ports the sensor actually sniffs: every reported NIC except management and loopback. */
 function wlSniffingInterfaces(r) {
-  const mgmt = String(wlCfgValue("mgmt_iface") || "eth0");
-  return (Array.isArray(r && r.interfaces) ? r.interfaces : [])
-    .filter((name) => name && name !== "lo" && name !== mgmt);
+  const reported = String((r && r.iface) || "").trim();
+  const ifaces = (Array.isArray(r && r.interfaces) ? r.interfaces : [])
+    .filter((name) => name && name !== "lo");
+  // THE CONSOLE'S mgmt_iface IS NOT THE SENSOR'S. Filtering a remote sensor's NIC list with the
+  // console's own management port picked eth0 on every remote unit whenever the console's
+  // management port was eth1. Use what the sensor reports; the local setting is only a default
+  // for the console's own host.
+  if (reported && ifaces.includes(reported)) return [reported];
+  if (r && r.local) {
+    const mgmt = String(wlCfgValue("mgmt_iface") || "eth0");
+    return ifaces.filter((name) => name !== mgmt);
+  }
+  return ifaces;
 }
 
 /** Put this sensor's own reading in its row; a remote sensor says it has not reported one. */
