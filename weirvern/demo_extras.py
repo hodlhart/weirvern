@@ -57,8 +57,8 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
         # by the gate itself, because channel is a bridge, not a sensor mode.
         ("weir-site-a", "10.10.0.253", "10.10.0.0/24", "loch",
          "edge sensor, HQ clients (10.10.0.0/24)", True),
-        ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "channel",
-         "edge sensor, branch; demo shows channel active, no bridge configured", True),
+        ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "loch",
+         "edge sensor, branch clients (192.168.20.0/24)", True),
         ("weir-site-c", "172.16.30.253", "172.16.30.0/24", "siphon",
          "edge sensor, warehouse; demo shows siphon active, no ARP is performed", True),
     ]
