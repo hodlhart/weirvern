@@ -600,6 +600,9 @@ function wlNicFacts(r) {
   // not hidden with a dash. Every remaining interface gets its own line in the sensor's row.
   const plans = wlPlans();
   const hasPlans = Object.keys(plans).length > 0;
+  // THE PLAN'S CHANNEL PAIR, not a mode. A loch unit can carry an inline bridge; the pair
+  // decides which NIC lines show a channel, and the state is the sensor's own report.
+  const pair = wlChannelPlanPair(r);
   // THE LABEL CAN COME FROM EITHER SIDE. The fleet payload normally carries `network_names`,
   // but a page loaded before an INTERFACE_NETWORKS apply has the old map; the settings rows it
   // already holds are the same mapping. Without this fallback eth2 rendered its CIDR where
@@ -651,10 +654,12 @@ function wlNicFacts(r) {
       network_name: (r.network_names && r.network_names[name]) || localNames[name] || "",
       networks: (role === "capture" || role === "siphon")
         ? (plan.segment || (role === "capture" ? segment : "")) : "",
-      // A CHANNEL BELONGS TO THE NIC THAT CARRIES IT, AND ONLY WHEN THE BRIDGE PAIR IS SET.
-      // Siphon is an in-path MODE, not a channel; saying "channel enabled" for a siphon-only
-      // NIC read as if the two ports had been bridged. The mode column carries siphon.
-      channel: (siphon && wlChannelEnabled(r)) ? ((r.channel && r.channel.state) || "") : "",
+      // A CHANNEL BELONGS TO EITHER PORT OF THE PLAN'S PAIR, not only to a siphon NIC.
+      // Siphon is an in-path MODE; a loch unit with an inline bridge is a normal channel
+      // deployment. The mode column carries siphon, this column carries the bridge.
+      channel: (pair.up && pair.down && (name === pair.up || name === pair.down))
+        ? ((r.channel && r.channel.state) || "declared")
+        : "",
     };
   });
   return { rows, capture, segment };
@@ -686,7 +691,7 @@ function wlNicRows(r) {
                           : "the mode the sensor reports running")
                      : "the sensor has not reported a mode") } }),
       el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
-                 attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
+                 attrs: { title: n.channel && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
       el("td", { class: "mono muted", attrs: { "data-wl-rate": n.name }, text: "—" }),
       // FLOW AND FEEDS BELONG TO EVERY NIC LINE (operator, 2026-10-20: "the flow trend and
