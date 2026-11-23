@@ -1387,8 +1387,15 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
             value=demo,
         ))
         for probe in report.probes:
-            if probe.name in ("ingest_freshness", "zeek_freshness", "detect_loop", "feed",
-                              "watchdog", "controls"):
+            if probe.name == "models":
+                # THE MODELS CARD IS SEEDED TOO. Eligibility and staleness are facts about a real
+                # training run; in demo mode there was no run, so reporting either answer would be
+                # inventing one. Not applicable, with the reason on the probe.
+                probe.ok = None
+                probe.detail = ("demo mode: models and calibration are seeded; eligibility, "
+                                "staleness and retraining are not measured.")
+            elif probe.name in ("ingest_freshness", "zeek_freshness", "detect_loop", "feed",
+                                "watchdog", "controls"):
                 probe.ok = None
                 probe.detail = ("demo mode: seeded data, not a live feed. " + probe.detail)[:400]
     return report
