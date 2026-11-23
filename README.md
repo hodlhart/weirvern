@@ -213,10 +213,11 @@ has nothing to show until traffic arrives. The supported way to see the whole pr
 pointing it at a network is the demo seed:
 
 ```sh
-weirvern demo-seed                  # the full test drive: traffic, fleet, inventory, ML, demo mode
+weirvern demo-seed                  # the full test drive: traffic, fleet, inventory, seeded findings, demo mode
 weirvern demo-seed --dry-run        # print the row counts, write nothing
-weirvern demo-seed --traffic-only   # traffic tables only; no fleet, inventory, ML or demo mode
-weirvern demo-seed --no-ml          # seed the data without training the detectors
+weirvern demo-seed --traffic-only   # traffic tables only; no fleet, inventory, findings or demo mode
+weirvern demo-seed --no-ml          # traffic and inventory without the seeded findings
+weirvern demo-seed --hosts 36       # three client sites (the default)
 weirvern demo-seed --clear-demo     # retire demo mode; the seeded rows stay
 ```
 
@@ -279,7 +280,32 @@ you shift it with `tcprewrite`. Replay needs capture privileges on the interface
 container usually does not have. And `--topspeed` can outrun Zeek, which shows up as
 `capture_loss` rather than as a clean demo.
 
-### What a seeded install contains
+### What the seeded demo shows
+
+The default seed is a three-site company, not one flat range. HQ is `10.10.0.0/24`, the branch is
+`192.168.20.0/24`, the warehouse is `172.16.30.0/24`, and the DMZ and public web stay on RFC 5737
+documentation ranges. Thirty-six clients generate 144 hours of traffic in both directions, and the
+three blocks are deliberately different so a reader can tell a site by its address.
+
+The fleet has a hub and an edge sensor at each site, all reporting, plus a siphon unit shown without
+a heartbeat because the demo performs no ARP redirects. The **Network** tab carries a weirling
+selector: choosing a site narrows the map to that segment and the peers it reaches (about 20 nodes
+per site against 44 for the whole company).
+
+The findings are seeded, not trained. Demo mode turns live detection off, and the seeder writes what
+the console should show: 12 anomalies on the two incident hosts, 2 high ripples with their evidence,
+102 normalized patterns (rendered green in **Normalize**), 5 models with calibration rows on
+**Models**, and the armed traffic and DNS blocks. **Normalize** also has a page select-all checkbox
+for bulk work.
+
+The demo login is `weirvern` / `demo`. It is published on purpose, created only by the demo seed, and
+must not be used anywhere real.
+
+The screenshots above are captured from this seeded console. `fathom` can run the threat-hunt skill
+against it; the resulting transcript stays internal because the demo's private ranges trip the
+publication guard, which is the guard doing its job.
+
+
 
 The point of the command is a console someone can take for a test drive, so it fills the surfaces a
 reader opens first rather than only the traffic tables.

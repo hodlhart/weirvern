@@ -47,7 +47,7 @@ def _hits() -> list[str]:
     demo_nets = tuple(ipaddress.ip_network(n) for n in
                       ("10.10.0.0/24", "192.168.20.0/24", "172.16.30.0/24"))
     demo_files = {"weirvern/demo_seed.py", "weirvern/demo_extras.py",
-                  "tests/test_demo_seed.py", "tests/test_demo_mode.py"}
+                  "tests/test_demo_seed.py", "tests/test_demo_mode.py", "README.md"}
 
     def demo_value(rel: str, value: str) -> bool:
         if rel not in demo_files:
