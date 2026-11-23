@@ -55,8 +55,6 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
         # 2026-11-23), so the siphon unit is in the fleet as a planned unit and gets no heartbeat:
         # a heartbeat would claim it is intercepting when nothing is. The channel is demonstrated
         # by the gate itself, because channel is a bridge, not a sensor mode.
-        ("weir-hub-01", "10.99.0.254", "10.99.0.0/24", "loch",
-         "hub management network; collects from the site sensors", True),
         ("weir-site-a", "10.10.0.253", "10.10.0.0/24", "loch",
          "edge sensor, HQ clients (10.10.0.0/24)", True),
         ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "loch",
