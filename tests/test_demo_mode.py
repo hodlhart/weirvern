@@ -60,7 +60,7 @@ def test_fleet_seeds_both_sensors_and_their_evidence():
     client = _Client()
     written = demo_extras.seed_fleet(client, hosts=4)
     assert written["weirlings"] == 3
-    assert written["sensor_status"] == 2, "the siphon has no heartbeat: it is not intercepting"
+    assert written["sensor_status"] == 3, "every mode is shown active in the demo"
     for table, rows, columns in client.inserts:
         for row in rows:
             assert len(row) == len(columns), f"{table}: {len(row)} values for {len(columns)} columns"

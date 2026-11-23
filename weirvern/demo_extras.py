@@ -57,10 +57,10 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
         # by the gate itself, because channel is a bridge, not a sensor mode.
         ("weir-site-a", "10.10.0.253", "10.10.0.0/24", "loch",
          "edge sensor, HQ clients (10.10.0.0/24)", True),
-        ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "loch",
-         "edge sensor, branch clients (192.168.20.0/24)", True),
+        ("weir-site-b", "192.168.20.253", "192.168.20.0/24", "channel",
+         "edge sensor, branch; demo shows channel active, no bridge configured", True),
         ("weir-site-c", "172.16.30.253", "172.16.30.0/24", "siphon",
-         "edge sensor, warehouse; siphon mode shown without ARP, so no heartbeat", False),
+         "edge sensor, warehouse; demo shows siphon active, no ARP is performed", True),
     ]
     written: dict[str, Any] = {}
     wl_rows = []
@@ -71,14 +71,17 @@ def seed_fleet(client, *, hosts: int, now: datetime | None = None) -> dict[str, 
     for i, (sensor_id, addr, segment, mode, note, live) in enumerate(sensors):
         wl_rows.append([
             sensor_id, addr, segment, mode, 1, note, now - timedelta(days=7),
-            now, None, mode, "eth1", segment, addr, "192.0.2.1", "",
+            now, None, mode, "eth1", segment, addr, "192.0.2.1",
+            "*" if mode in ("siphon", "channel") else "",
             [segment], "", "demo",
         ])
         if live:
             ss_rows.append([
-                sensor_id, mode, "eth1", segment, hosts, 0, 1, 86_400.0 + i * 3_600, 0, 0,
+                sensor_id, mode, "eth1", segment, hosts,
+                hosts if mode in ("siphon", "channel") else 0,
+                1, 86_400.0 + i * 3_600, 0, 0,
                 0.0, 1_000_000 + i * 100_000, 0, ["eth0", "eth1"], "{}", [],
-                now - timedelta(minutes=1),
+                now - timedelta(seconds=5),
             ])
         audit_rows.append([
             now - timedelta(days=7), "fleet", "register", sensor_id, note, "demo-seed",
