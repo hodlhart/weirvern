@@ -30,7 +30,7 @@ def test_the_viewport_meta_declares_a_device_width():
 
 def test_the_stylesheet_carries_both_breakpoints():
     css = _css()
-    assert "@media (max-width: 720px)" in css, "the phone layout is unguarded without it"
+    assert "@media (max-width: 768px)" in css, "the phone layout is unguarded without it"
     assert "@media (max-width: 420px)" in css, "the narrowest phones still in service"
 
 
@@ -39,7 +39,7 @@ def test_the_phone_block_carries_its_three_load_bearing_rules():
     every tap after that lands wrong), stacked settings rows (the control must not sit at the
     far edge of a phone-width row), and a shorter force-map canvas (the 460px desktop height
     has no phone-sized value)."""
-    phone = _css().split("@media (max-width: 720px)")[1]
+    phone = _css().split("@media (max-width: 768px)")[1]
     assert "font-size: var(--fs-4)" in phone
     assert ".setting { flex-direction: column" in phone
     assert ".graph { height:" in phone

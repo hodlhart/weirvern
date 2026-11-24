@@ -70,7 +70,7 @@ def test_the_blocks_drill_has_a_fresh_load_route():
 
 def test_the_mobile_sluice_checkboxes_are_a_full_touch_target():
     css = (WEB / "style.css").read_text(encoding="utf-8")
-    phone = css.split("@media (max-width: 720px)", 1)[1]
+    phone = css.split("@media (max-width: 768px)", 1)[1]
     assert '#view-sluice .controls input[type="checkbox"]' in phone
     assert "width: 44px; height: 44px" in phone
 

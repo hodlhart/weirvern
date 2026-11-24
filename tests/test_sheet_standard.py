@@ -25,7 +25,7 @@ def test_the_sheet_is_a_class_not_one_special_id():
     assert re.search(r"^\.sheet\.hidden \{", css, re.M), "no generic hidden rule"
     assert "#wl-detail-card.sheet {" not in css, "the overlay is still pinned to one id"
     assert "width: min(480px, 94vw)" in css
-    phone = css.split("@media (max-width: 720px) {", 1)[1]
+    phone = css.split("@media (max-width: 768px) {", 1)[1]
     assert ".sheet { width: 100vw" in phone, "a phone sheet is not full width"
 
 

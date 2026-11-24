@@ -144,7 +144,7 @@ def test_the_shell_wraps_instead_of_widening_the_page():
 def test_touch_controls_are_forty_four():
     """C-9 on the breakpoint that a finger uses: one button size, and it clears 44px."""
     css = (WEB / "style.css").read_text(encoding="utf-8")
-    block = css[css.find("@media (max-width: 720px)") :]
+    block = css[css.find("@media (max-width: 768px)") :]
     assert block, "the phone breakpoint disappeared"
     m = re.search(r"--btn-h:\s*(\d+)px", block)
     assert m, "the phone breakpoint no longer sets the button height"
