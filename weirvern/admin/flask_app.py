@@ -173,6 +173,14 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # Flask's default is to escape nothing and sort nothing; both defaults are fine here, but the
     # console expects compact JSON and no trailing newline stripping, so keep it literal.
     app.config["JSON_SORT_KEYS"] = False
+    # REJECT OVERSIZED BODIES BEFORE THEY ARE BUFFERED. The route-level 64 KiB check ran after
+    # request.get_data() had already read the whole body into memory, so a 64 MiB POST cost
+    # memory before it was refused. Werkzeug enforces this before the view runs.
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+
+    @app.errorhandler(413)
+    def _too_large(_err):
+        return _json_error(413, "request body exceeds 64 KiB")
 
     # ── the HTTPS edge, enforced from the FORWARDED scheme ─────────────────────────────────────
     #
@@ -321,6 +329,10 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         if store is None:
             return False
         try:
+            # AN UNREADABLE STORE IS NOT AN EMPTY ONE. has_users() returns False when the read
+            # failed, which would have opened registration on a store that may hold accounts.
+            if store.exists is None:
+                return False
             return not store.has_users()
         except Exception:  # noqa: BLE001
             return False

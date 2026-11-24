@@ -122,6 +122,32 @@ def test_register_is_CLOSED_once_an_account_exists():
     assert b"self-registration is closed" in got.data
 
 
+def test_register_is_CLOSED_when_the_store_is_unreadable():
+    """An unreadable store is not an empty one; registration must fail closed."""
+    class _Broken:
+        exists = None
+
+        def has_users(self):
+            return False
+
+    ctx = _ctx()
+    ctx.user_store = _Broken()
+
+    got = _app(ctx).test_client().get("/register")
+
+    assert got.status_code == 403
+    assert b"self-registration is closed" in got.data
+
+
+def test_an_oversized_body_is_refused_before_it_is_read():
+    """Werkzeug must reject it, not the view after get_data() buffered it."""
+    got = _app(_ctx()).test_client().post(
+        "/login", data=b"x" * (70 * 1024), content_type="application/json")
+
+    assert got.status_code == 413
+    assert b"64 KiB" in got.data
+
+
 # ── the flow ────────────────────────────────────────────────────────────────────────────────
 
 def test_register_then_sign_in_then_sign_out():

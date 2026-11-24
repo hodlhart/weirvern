@@ -227,6 +227,20 @@ def test_bootstrap_does_NOT_create_when_the_read_FAILED():
     assert not client.creates, "bootstrap wrote to a store it could not read"
 
 
+def test_persist_refuses_when_the_store_read_FAILED():
+    """A failed read is not an empty store: writing would replace every account."""
+    client = FakeClient(read_exc=RuntimeError("api server unreachable"))
+    store = users_mod.UserStore(client)
+    store.load()
+    assert store.exists is None
+
+    with pytest.raises(users_mod.UserError):
+        store.create_user("intruder", users_mod.ROLE_ADMIN, "a long enough password")
+
+    assert not client.creates, "created a document over a store it could not read"
+    assert not client.patches, "patched a store it could not read"
+
+
 def test_bootstrap_reports_why_when_the_write_fails():
     from weirvern.admin.cluster_config import ConfigError
 

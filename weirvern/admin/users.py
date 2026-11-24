@@ -430,6 +430,11 @@ class UserStore:
         principle and not defended against: the GUI is a single replica and account changes
         are rare, and pretending to a stronger guarantee would be worse than stating this.
         """
+        if self.exists is None:
+            # exists is None means the last read FAILED. It does not mean "no store": writing
+            # here would replace a document that may hold every account, including the last
+            # admin. Refuse, and let the caller retry once the store answers.
+            raise UserError("the user store could not be read; refusing to overwrite it")
         doc = json.dumps({"users": [u.to_json() for u in records]}, indent=1)
         if self.exists:
             self._client.patch_data({USERS_KEY: doc})
