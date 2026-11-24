@@ -1555,7 +1555,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
   .scanner-table th:last-child, .scanner-table td:last-child { padding-right: 0; }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   #view-logs .controls select { min-height: 44px; }
   /* A sheet on a phone is the whole width (C-8). */
   .sheet { width: 100vw; border-left: 0; }
@@ -1838,7 +1838,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 
 /* SETTINGS PHONE LAYOUT (2026-10-22): the desktop jump tools stack, and the sticky pending
    card becomes a normal card so it cannot cover the page on a small screen. */
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .settings-head { align-items: flex-start; }
   .settings-tools { width: 100%; }
   .settings-search { width: 100%; }
@@ -1852,7 +1852,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
  * Weirlings selector/revoked box (21px/13px). The control is
  * the input, not the label around it.
  */
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   #view-anomalies .controls input[type="number"],
   #view-weirlings select,
   #view-weirlings .controls input[type="checkbox"],
@@ -1885,7 +1885,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
      in BOTH dimensions even though desktop keeps the 28px density. */
   .row-more summary { min-height: 36px; min-width: 36px; }
 }
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   /* The remaining phone fields the audit found under the 44px line: the Assets lookup and
      scope/sort controls, the DNS filter fields, and Discover's feed/sensor selectors. */
   #view-assets input[type="search"],
@@ -1961,7 +1961,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .ext-prefix-row .mono { overflow-wrap: anywhere; }
 .ext-error { margin-top: 7px; font-size: var(--fs-1); }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .ext-grid { grid-template-columns: 1fr; }
 }
 
@@ -1988,7 +1988,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   font-variant-numeric: tabular-nums; color: var(--fg); }
 .net-peer-meta { white-space: nowrap; }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .net-peer-row { grid-template-columns: 20px minmax(0, 1fr) auto; gap: 4px 8px; }
   .net-peer-volume { grid-column: 2 / -1; }
   .net-peer-meta { grid-column: 2 / -1; white-space: normal; }
@@ -2011,7 +2011,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .nz-card { border-top: 1px solid var(--border); }
 .nz-card-row { display: flex; align-items: center; justify-content: space-between;
   gap: 12px; min-height: 32px; }
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   #nz-feed { display: none; }
   .nz-cards { display: block; }
 }
@@ -2166,7 +2166,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 @media (max-width: 760px) {
   .sl2-gates { grid-template-columns: 1fr; }
 }
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .sl2-gate { gap: var(--s2); }
   .sl2-fault-since { margin-left: 0; }
   /* The button system owns size: the phone floor is set on the base token, never as a height
@@ -2235,7 +2235,7 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
  * column collapsed to 0px, which made ONE row 4,497px tall and pushed the other rows below
  * an apparently empty page. Hiding JUST the table leaves the wrapper at zero height; the
  * cards below it are the phone reading. Above the breakpoint the table is unchanged. */
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   #ripples-table, #anomalies-table { display: none; }
   .rp-cards { display: block; }
 }
