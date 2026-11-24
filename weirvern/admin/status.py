@@ -1397,7 +1397,17 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
             elif probe.name in ("ingest_freshness", "zeek_freshness", "detect_loop", "feed",
                                 "watchdog", "controls"):
                 probe.ok = None
-                probe.detail = ("demo mode: seeded data, not a live feed. " + probe.detail)[:400]
+                # REPLACE THE DETAIL. Prefixing kept the live wording ("FLOW INGEST HAS
+                # STOPPED", "run kubectl ...") in a card that was marked N/A, which read as a
+                # contradiction on the demo's Health tab.
+                probe.detail = {
+                    "ingest_freshness": "demo mode: seeded flows, not a live feed; freshness is not measured.",
+                    "zeek_freshness": "demo mode: seeded Zeek records, not a live feed; freshness is not measured.",
+                    "detect_loop": "demo mode: detection results are seeded; the loop is not measured.",
+                    "feed": "demo mode: seeded flows, not a live feed.",
+                    "controls": "demo mode: control verdicts are seeded.",
+                    "watchdog": "demo mode: the watchdog is not running for seeded data.",
+                }.get(probe.name, "demo mode: not measured on seeded data.")
     return report
 
 
@@ -4124,7 +4134,11 @@ def pipeline_audit(client, *, now=None) -> dict:
             elapsed = None
             if exp is not None:
                 base = now.replace(tzinfo=None)
-                elapsed = max(0.0, (base - exp).total_seconds())
+                # CLICKHOUSE CAN RETURN AN AWARE DATETIME. Subtracting it from the naive UTC
+                # base raised TypeError, which the Issues list reported as "expired_rules could
+                # not run" and silently omitted every expired rule. Normalize the stored value.
+                exp_naive = exp.replace(tzinfo=None) if exp.tzinfo is not None else exp
+                elapsed = max(0.0, (base - exp_naive).total_seconds())
             findings.append({
                 "class": "expired_rule", "severity": "info", "subject": str(rid),
                 "detail": ("domain rule for " + str(domain)) if domain
