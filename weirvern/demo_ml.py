@@ -96,7 +96,15 @@ def run(client, settings, *, hours: int = DEFAULT_HOURS,
     demo_settings = replace(settings, model_dir=str(Path(settings.model_dir) / "demo"))
     Path(demo_settings.model_dir).mkdir(parents=True, exist_ok=True)
 
-    summary: dict[str, Any] = {"hours": hours, "model_dir": demo_settings.model_dir}
+    # THE MODEL WINDOW IS THE COVERAGE CEILING. `detection_sweep` clamps its cursor to
+    # `retrain_window_h`, so asking for 144 hours scored at most 72 and the summary still said
+    # 144. Report the requested and the effective span; never advertise hours the cursor cannot
+    # reach.
+    requested_hours = max(1, int(hours))
+    hours = min(requested_hours, max(1, int(demo_settings.retrain_window_h)))
+
+    summary: dict[str, Any] = {"hours": hours, "hours_requested": requested_hours,
+                              "model_dir": demo_settings.model_dir}
     cfg = worker.model_config(demo_settings)
     detectors = worker.build_detectors(demo_settings, cfg, model_dir=demo_settings.model_dir)
     usable, trained_at = worker.load_or_train(client, detectors, demo_settings, cfg)
