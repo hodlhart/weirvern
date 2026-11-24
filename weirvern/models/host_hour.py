@@ -52,9 +52,10 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from weirvern.clock import utcnow
 from weirvern.models.calibration import conformal_pvalue
 
 # Features the channels read, in the order the schema stores them.
@@ -122,9 +123,12 @@ def hour_key(value: Any) -> datetime | None:
             return None
     if not isinstance(value, datetime):
         return None
-    # PRESERVE THE WALL CLOCK. Converting to UTC here was the bug: the column is unzoned, so its
-    # 16:00 is the deployment's 16:00, not 22:00 UTC.
-    return value.replace(tzinfo=None)
+    # ONE INSTANT, AWARE UTC. The column is unzoned and stores the deployment's wall clock, so a
+    # stored 18:00 at -06:00 is midnight UTC. `read_features` converts the window back to that
+    # wall clock at the SQL boundary; that conversion is the missing half this module needed.
+    if value.tzinfo is None:
+        value = value.astimezone()  # legacy naive values mean local time
+    return value.astimezone(UTC)
 
 
 # ── pure: features ────────────────────────────────────────────────────────────────────────────
@@ -314,7 +318,7 @@ def build_features(client: Any, since: datetime, until: datetime) -> int:
     rows = client.query(sql).result_rows
     if not rows:
         return 0
-    now = datetime.now()
+    now = utcnow()
     client.insert(
         "weirvern.host_hour_features",
         [(*r, now) for r in rows],
@@ -324,11 +328,18 @@ def build_features(client: Any, since: datetime, until: datetime) -> int:
 
 
 def read_features(client: Any, since: datetime, until: datetime) -> list[dict[str, Any]]:
+    # THE SQL BOUNDARY IS THE COLUMN'S OWN WALL CLOCK. `since`/`until` are aware UTC; the
+    # unzoned DateTime stores deployment-local wall clock, so format the local reading of the
+    # same instant. Without this the window was six hours off its own rows on a CST host.
+    def _wall(value: datetime) -> str:
+        return (value if value.tzinfo is not None else value.astimezone()).astimezone() \
+            .strftime("%Y-%m-%d %H:%M:%S")
+
     sql = f"""
         SELECT hour, src_addr, flow_count, total_bytes, total_packets, dst_hosts,
                log_bytes, log_packets, log_flows, bytes_per_flow
         FROM weirvern.host_hour_features FINAL
-        WHERE hour >= '{since:%Y-%m-%d %H:%M:%S}' AND hour < '{until:%Y-%m-%d %H:%M:%S}'
+        WHERE hour >= '{_wall(since)}' AND hour < '{_wall(until)}'
         ORDER BY hour, src_addr
     """
     cols = list(_FEATURE_COLUMNS)
@@ -344,7 +355,7 @@ def rebuild_references(client: Any, *, days: int = 30,
     that include itself; with fifty-plus samples that shifts the p-value by at most 1/n and
     keeps the rebuild cheap enough to run daily.
     """
-    end = (now or datetime.now())
+    end = (hour_key(now) if now is not None else None) or utcnow()
     start = end - timedelta(days=int(days))
     rows = read_features(client, start, end)
     if not rows:
@@ -469,7 +480,7 @@ def score_vector(host: str, hour: datetime, vector: dict[str, float],
 
 def store_scores(client: Any, results: Iterable[dict[str, Any]]) -> int:
     rows = []
-    now = datetime.now()
+    now = utcnow()
     for result in results:
         if result.get("fused_p") is not None:
             rows.append((result["hour"], result["host"], "fused", 0.0,
@@ -546,7 +557,7 @@ def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = Non
     before the thirty days a per-host baseline needs, so the hour has to be accumulated while
     the flow log still has it.
     """
-    end = hour_key(now) or datetime.now()
+    end = hour_key(now) or utcnow()
     end = end.replace(minute=0, second=0, microsecond=0)
     last_complete = end - timedelta(hours=1)
     # The window ENDS at the last completed hour and reaches back `lookback_hours`. An earlier
