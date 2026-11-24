@@ -217,11 +217,13 @@ def test_episodes_are_counted_per_host():
 # whole shadow stayed dark. Normalize's `_hour_key` had the same class of bug.
 
 def test_hour_key_is_one_offset_free_key_for_every_input():
-    # 18:00 at -06:00 is midnight UTC the next day -- the SAME instant as the naive form.
+    # 18:00 at -06:00 is the DEPLOYMENT's wall clock, and the unzoned DateTime column stores
+    # 18:00. Converting it to midnight UTC was the defect: the tick then looked six hours ahead
+    # of its own data and built nothing.
     aware = datetime(2026, 11, 20, 18, 0, tzinfo=timezone(timedelta(hours=-6)))
-    assert host_hour.hour_key(aware) == datetime(2026, 11, 21, 0, 0)
+    assert host_hour.hour_key(aware) == datetime(2026, 11, 20, 18, 0)
     assert host_hour.hour_key(datetime(2026, 11, 21, 0, 0)) == datetime(2026, 11, 21, 0, 0)
-    assert host_hour.hour_key("2026-11-21T00:00:00-06:00") == datetime(2026, 11, 21, 6, 0)
+    assert host_hour.hour_key("2026-11-21T00:00:00-06:00") == datetime(2026, 11, 21, 0, 0)
     assert host_hour.hour_key("2026-11-21T00:00:00Z") == datetime(2026, 11, 21, 0, 0)
     assert host_hour.hour_key(None) is None
     assert host_hour.hour_key("not a timestamp") is None

@@ -52,7 +52,7 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from weirvern.models.calibration import conformal_pvalue
@@ -97,19 +97,18 @@ STATES = ("scored", "no-reference", "no-data", "error")
 
 # ── ONE CLOCK FOR BOTH SIDES OF A SUBTRACTION ─────────────────────────────────────────────────
 #
-# ClickHouse returns an AWARE datetime for a `DateTime` column -- the deployment's tz, e.g.
-# `...16:00:00-06:00` -- while every `now` in this module is a NAIVE UTC datetime. So
-# `end - fresh_at` in the tick raised "can't subtract offset-naive and offset-aware datetimes",
-# and the worker logged `ML host-hour shadow failed: ...` on every run while the tables stayed
-# empty. This is the same class already fixed in Normalize's `_hour_key`, where one branch kept
-# the offset and the other dropped it and the join matched nothing.
+# ClickHouse's unzoned `DateTime` is the SERVER'S WALL CLOCK, not UTC. The driver may hand it
+# back with the deployment offset attached (`...16:00:00-06:00`), and this module used to convert
+# that to UTC and then compare it with a naive UTC clock. On a host six hours west of UTC the two
+# sides differed by six hours: the tick's six-hour window started in the future, found zero rows,
+# and the host-hour tables stayed empty while every probe read green.
 #
-# An aware value is an absolute instant: converting it to UTC and dropping the offset is
-# lossless. A naive value is already the UTC wall clock this module writes, so it is left alone
-# rather than guessed at. Strings are accepted because a driver or a test shim may hand back text.
+# The fix is to keep ONE wall clock, the one the column stores. An aware value keeps its wall
+# clock and drops the offset; a naive value is already that wall clock and is left alone. Strings
+# are accepted because a driver or a test shim may hand back text.
 
 def hour_key(value: Any) -> datetime | None:
-    """The offset-free UTC datetime for a stored timestamp (None when unreadable).
+    """The offset-free SERVER wall clock for a stored timestamp (None when unreadable).
 
     Use this on BOTH sides of every comparison or subtraction in this module. Sorting mixed
     values raises the same TypeError that subtracting them does.
@@ -123,9 +122,9 @@ def hour_key(value: Any) -> datetime | None:
             return None
     if not isinstance(value, datetime):
         return None
-    if value.tzinfo is not None:
-        return value.astimezone(UTC).replace(tzinfo=None)
-    return value
+    # PRESERVE THE WALL CLOCK. Converting to UTC here was the bug: the column is unzoned, so its
+    # 16:00 is the deployment's 16:00, not 22:00 UTC.
+    return value.replace(tzinfo=None)
 
 
 # ── pure: features ────────────────────────────────────────────────────────────────────────────
@@ -315,7 +314,7 @@ def build_features(client: Any, since: datetime, until: datetime) -> int:
     rows = client.query(sql).result_rows
     if not rows:
         return 0
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now()
     client.insert(
         "weirvern.host_hour_features",
         [(*r, now) for r in rows],
@@ -345,7 +344,7 @@ def rebuild_references(client: Any, *, days: int = 30,
     that include itself; with fifty-plus samples that shifts the p-value by at most 1/n and
     keeps the rebuild cheap enough to run daily.
     """
-    end = (now or datetime.now(UTC).replace(tzinfo=None))
+    end = (now or datetime.now())
     start = end - timedelta(days=int(days))
     rows = read_features(client, start, end)
     if not rows:
@@ -470,7 +469,7 @@ def score_vector(host: str, hour: datetime, vector: dict[str, float],
 
 def store_scores(client: Any, results: Iterable[dict[str, Any]]) -> int:
     rows = []
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now()
     for result in results:
         if result.get("fused_p") is not None:
             rows.append((result["hour"], result["host"], "fused", 0.0,
@@ -547,7 +546,7 @@ def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = Non
     before the thirty days a per-host baseline needs, so the hour has to be accumulated while
     the flow log still has it.
     """
-    end = hour_key(now) or datetime.now(UTC).replace(tzinfo=None)
+    end = hour_key(now) or datetime.now()
     end = end.replace(minute=0, second=0, microsecond=0)
     last_complete = end - timedelta(hours=1)
     # The window ENDS at the last completed hour and reaches back `lookback_hours`. An earlier
