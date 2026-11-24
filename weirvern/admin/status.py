@@ -3374,7 +3374,14 @@ def alert_evidence(client, src_addr: str, window_start: str,
             # THE TUPLE IS POSITIONAL. Keep this SELECT and the row[n] mapping in lockstep.
             "strong_families, severity_basis "
             "FROM weirvern.netflow_anomalies WHERE src_addr = %(a)s "
-            "AND window_start = parseDateTime64BestEffort(%(w)s) LIMIT 1",
+            # THE CALLER MAY PASS AN HOUR START, NOT THE ANOMALY'S EXACT WINDOW. The ripple
+            # sheet passed the hour while the stored anomaly sat at :53, and an equality match
+            # returned nothing, so the evidence page said "no verdict stored". Match the first
+            # anomaly at or after the requested instant inside that hour; an exact window still
+            # resolves to itself.
+            "AND window_start >= parseDateTime64BestEffort(%(w)s) "
+            "AND window_start < parseDateTime64BestEffort(%(w)s) + INTERVAL 1 HOUR "
+            "ORDER BY window_start ASC LIMIT 1",
             parameters={"a": src_addr, "w": window_start},
         )
         if res.result_rows:

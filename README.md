@@ -44,8 +44,8 @@
 z-scores, the baseline, the model votes and the raw flows, Zeek sessions, TLS records and DNS
 answers behind the window. Click an alert and the evidence is on the same screen.
 
-**Four detectors, one verdict.** Isolation Forest, Gradient Boosting, DBSCAN and a per-host
-adaptive baseline are trained independently and fused into one score. A corroboration gate
+**Five detectors, one verdict.** Isolation Forest, Gradient Boosting, a KNN distance model,
+LOF and a per-host adaptive baseline are trained independently and fused into one score. A corroboration gate
 decides when independent families and material evidence justify raising severity. A shadow
 calibration layer and challenger channels measure false-alarm budgets and temporal evidence
 without changing the alert path.
@@ -221,9 +221,9 @@ weirvern demo-seed --hosts 36       # three client sites (the default)
 weirvern demo-seed --clear-demo     # retire demo mode; the seeded rows stay
 ```
 
-That writes **330,059 rows across 23 tables** and then runs the detection pipeline over them. The
+That writes roughly **700,000 rows across those tables** and then runs the detection pipeline over them. The
 traffic half is six days ending at the current minute: `zeek_conn` (116,528), `zeek_dns` (23,088),
-`zeek_ssl` (22,647), `zeek_http` (23,317), `zeek_weird` (5,487) and `flows` (116,528) for 22
+`zeek_ssl` (22,647), `zeek_http` (23,317), `zeek_weird` (5,487) and `flows` (116,528) for 36
 simulated hosts. The other thirteen Zeek logs the console reads (notice, files, ssh, kerberos,
 dce_rpc, smb_mapping, smb_files, ntlm, dhcp, x509, tunnel, quic, ldap_search) carry 1,728 rows each,
 so no view is empty because the seeder forgot it existed. Two properties are deliberate.
@@ -252,13 +252,11 @@ Without this the demo fills 300,000 rows and still shows an empty Ripples card, 
 broken feature and is really a seed that asked too little of itself. Measured on a seeded
 database: `combined_p` 4.3e-05 across three families, one ripple.
 
-**The ML is the real pipeline, not a fixture.** After the rows land, the seeder builds the five
-detectors, trains them on the seeded windows, measures calibration, drains the detection sweep in
-bounded chunks, refreshes episodes, records each alert decision, runs the shadow specialists and
-fuses the ripples. Measured on the shipped seed: 5 detectors trained, 4 eligible, fused
-false-alarm rate **1.15%** (95% CI 0.77–1.70%, n=2090), **24 anomalies**, **6 episodes**, and 22
-hosts scored by the host-hour model. A demo whose Models tab says "no calibration" is a demo the
-pipeline never ran for.
+**The ML path is real; a seed does not train it.** The seeder writes labelled detection results so
+every card is populated, and it says so. A separate ML run trains the five detectors on the same
+windows, calibrates them, drains the detection sweep and fuses the ripples. Measured in this
+session: 5 detectors trained, 29 new anomalies concentrated on the planted hosts, and the ripple
+evaluator still in cold start. The demo never presents seeded detections as computed.
 
 **Demo mode is a fact about the data.** The seeder writes a `demo_state` row; the console reads
 it, shows a **DEMO DATA** banner on every view including sign-in, and marks the live-feed checks
@@ -311,16 +309,16 @@ reader opens first rather than only the traffic tables.
 
 | Surface | What is there after one run |
 | --- | --- |
-| Alerts | 2 ripples and 24 model detections, grouped into 6 episodes with review state |
+| Alerts | 2 labelled ripples and 12 seeded detections; a real ML run adds its own |
 | Ripples | Two incidents of different shapes, both high severity, four families each |
-| Models | 5 detectors trained, 4 eligible with FAR, CI and n; shadow specialists scored |
-| Weirlings | 2 sensors with heartbeats, a used enrollment and a completed capture probe |
-| Assets | 22 assets with MAC and hostname, 44 services, a scan and scan job each, 6 scored changes |
+| Models | 5 detector rows seeded; a real ML run trains them and writes the calibration |
+| Weirlings | 3 weirlings; site B has three NICs and a declared channel pair |
+| Assets | 36 assets with MAC and hostname, 44 services, a scan and scan job each, 6 scored changes |
 | Sluice | One traffic block on a host, one DNS block on a name, each with the hits it caught |
 | Gate | Armed, reporting the two live rules and the packets those hits blocked |
 | Approvals | One block proposal waiting for a decision, with its reason and evidence |
 | Blocklists | Five sources and the blocked name on the custom list |
-| Network | All 22 hosts classified, with MAC, vendor and an operating system guess |
+| Network | All 36 hosts classified, with MAC, vendor and an operating system guess |
 | Zeek | Every log the console reads, not only conn, DNS, TLS, HTTP and weird |
 | Normalized | One value marked expected, with a reason and a review date |
 | Health | `demo_mode` green; the live feed checks marked not applicable, not failed |
