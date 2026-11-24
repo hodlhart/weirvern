@@ -1152,6 +1152,9 @@ function openRuleSheet(rule) {
 }
 
 function openRuleComposer(domain, prefill) {
+  // THE RULE SHEET LIVES INSIDE THE SLUICE VIEW. Opening it from DNS or Alerts while that
+  // section was `display:none` produced a 0x0 sheet: the button looked dead. Switch first.
+  showView("sluice");
   sl2OpenCreate(domain || "", prefill || {});
 }
 

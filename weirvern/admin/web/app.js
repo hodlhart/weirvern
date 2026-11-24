@@ -471,14 +471,19 @@ async function doLogin(username, password) {
     throw new Error((payload && payload.error) || `HTTP ${resp.status}`);
   }
   setSession(payload.session || "");
+  // THE ANONYMOUS SESSION READ MUST NOT SURVIVE THE LOGIN. `loadSession()` reads through
+  // getJSON, and boot already cached `/api/session` as anonymous; without this the header said
+  // "Not signed in" for up to GET_CACHE_TTL_MS after a successful sign-in.
+  clearGetCache();
   await loadSession();
   refreshChrome();
   return payload;
 }
 
 async function doLogout() {
-  try { await postJSON("/api/logout", {}); } catch (_e) { /* already gone is fine */ }
+  try { await postJSON("/api/logout", {});  } catch (_e) { /* already gone is fine */ }
   setSession("");
+  clearGetCache();
   Object.assign(AUTH, { authenticated: false, username: "", role: "", must_change: false,
                         via: "" });
   refreshChrome();
@@ -9017,8 +9022,8 @@ function networkScopeRow(scope, writable) {
     el("td", { class: "num", text: scope.hosts === null || scope.hosts === undefined ? "—" : String(scope.hosts) }),
     el("td", { class: "num", text: scope.alerts === null || scope.alerts === undefined ? "—" : String(scope.alerts) }),
     el("td", {}, [
-      el("button", { class: "quiet", type: "button", attrs: { "data-net-edit": scope.id, disabled: writable ? null : "disabled" }, text: "Edit" }),
-      el("button", { class: "quiet danger", type: "button", attrs: { "data-net-delete": scope.id, disabled: writable ? null : "disabled" }, text: "Delete" }),
+      el("button", { class: "quiet", type: "button", attrs: writable ? { "data-net-edit": scope.id } : { "data-net-edit": scope.id, disabled: "disabled" }, text: "Edit" }),
+      el("button", { class: "quiet danger", type: "button", attrs: writable ? { "data-net-delete": scope.id } : { "data-net-delete": scope.id, disabled: "disabled" }, text: "Delete" }),
     ]),
   ]);
 }
