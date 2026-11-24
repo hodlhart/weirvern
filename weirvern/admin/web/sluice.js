@@ -1493,6 +1493,9 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       if (note) note.textContent = `sync failed: ${(err && err.message) || err}`;
     }
+    // THE TABLE HAS ITS OWN READ. loadSluice() refreshes settings and rules, not
+    // /api/blocklists, so the pane still said "never fetched / 0" after a successful sync.
+    loadBlocklistPane().catch(showError);
     loadSluice().catch(showError);
   });
   const addSource = document.getElementById("sl-bl-source-add");
