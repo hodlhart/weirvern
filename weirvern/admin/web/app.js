@@ -5637,14 +5637,18 @@ function modalWiring() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Tab" || shell.classList.contains("hidden")) return;
     if (document.querySelector(".sheet:not(.hidden)")) return;
-    const focusable = modalFocusables();
+    // THE CLOSE BUTTON IS PART OF THE DIALOG. It sits outside #modal-body, so a trap built only
+    // from the body let Tab walk from the last body control into the page behind the modal.
+    const focusable = [document.getElementById("modal-close"), ...modalFocusables()].filter(Boolean);
     if (!focusable.length) { e.preventDefault(); return; }
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
+    const at = focusable.indexOf(document.activeElement);
+    if (e.shiftKey && at <= 0) {
+      // -1 means focus is outside the dialog entirely; pull it back rather than let it roam.
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && (at === -1 || at === focusable.length - 1)) {
       e.preventDefault();
       first.focus();
     }

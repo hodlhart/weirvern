@@ -70,7 +70,22 @@ function openSheet(card, opts) {
   scrim.classList.remove("hidden");
   const wanted = merged.initialFocus ? document.getElementById(merged.initialFocus) : null;
   const target = wanted || card;
-  if (target && typeof target.focus === "function") target.focus();
+  if (target && typeof target.focus === "function") {
+    // A KEYBOARD-OPENED SHEET MUST TAKE THE KEYBOARD. The card was the fallback target, but a
+    // plain <section> is not focusable, so focus stayed on the row behind the sheet and Tab
+    // walked through obscured controls. Make it a focus target, and fall back to its first control.
+    if (!target.hasAttribute("tabindex")
+        && !/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) {
+      target.setAttribute("tabindex", "-1");
+    }
+    target.focus();
+    if (document.activeElement !== target) {
+      const inner = card.querySelector(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+        + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+      if (inner) inner.focus();
+    }
+  }
 }
 
 function closeSheet(card) {
