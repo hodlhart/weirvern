@@ -267,7 +267,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def demo():
         from weirvern.admin import payloads  # noqa: PLC0415
 
-        return _payload_route(payloads.demo)
+        return _payload_route(payloads.demo, public=True)
 
     # NOT named `session`: a view function called `session` shadows flask.session inside this
     # factory, so every later `session.get(...)` in the rendered-UI helpers called the view instead
@@ -503,7 +503,8 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # answer a failed read with a 503 and some with a 200 carrying `available: false`; that
     # difference is deliberate per route (a panel that can still draw around a missing card), and a
     # port that "tidied" it into one shape would change what the operator sees.
-    def _payload_route(fetcher, *, needs_client=True, settings_positional=False, **kwargs):
+    def _payload_route(fetcher, *, needs_client=True, settings_positional=False,
+                       public=False, **kwargs):
         """Call a fetcher and answer its payload.
 
         `settings_positional` IS NOT CALLED `settings` ANY MORE, and the rename is the fix for a real
@@ -527,6 +528,12 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                     return jsonify(fetcher(client, ctx.settings, **kwargs))
                 return jsonify(fetcher(client, **kwargs))
         except Exception as exc:  # noqa: BLE001
+            if public:
+                # A PUBLIC ROUTE MUST NOT NARRATE ITS FAILURE. `/api/demo` is readable without an
+                # account; the raw text carried the ClickHouse host, port, driver internals and
+                # query id. Log it, and answer with the fact the caller can act on.
+                logger.warning("public route %s failed: %s", request.path, exc)
+                return _json_error(503, "the demo state could not be read")
             return _json_error(503, read_failure(exc))
 
     def _soft_route(fetcher, failure, **kwargs):

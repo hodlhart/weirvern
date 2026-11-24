@@ -599,8 +599,10 @@ class LoginThrottle:
     """
 
     _DELAY_AFTER = 3
-    _MAX_DELAY_S = 5.0
+    _MAX_DELAY_S = 2.0
     _MAX_TRACKED = 1024
+    _MAX_ATTEMPTS = 50
+    _WINDOW_S = 900
 
     def __init__(self) -> None:
         self._failures: dict[str, list[float]] = {}
@@ -612,7 +614,12 @@ class LoginThrottle:
         with self._lock:
             if len(self._failures) > self._MAX_TRACKED and client not in self._failures:
                 self._failures.pop(next(iter(self._failures)), None)
-            self._failures.setdefault(client, []).append(time.time())
+            # BOUND THE PER-ADDRESS HISTORY. The address cap alone let one client accumulate
+            # 200k timestamps, which is a memory growth path an unauthenticated caller controls.
+            cutoff = time.time() - self._WINDOW_S
+            attempts = [t for t in self._failures.get(client, []) if t >= cutoff]
+            attempts.append(time.time())
+            self._failures[client] = attempts[-self._MAX_ATTEMPTS:]
 
     def clear(self, client: str) -> None:
         with self._lock:
