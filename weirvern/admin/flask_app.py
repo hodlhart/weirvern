@@ -191,6 +191,26 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     def _https_redirect():
         return _redirect_to_https()
 
+    @app.before_request
+    def _api_write_guard():
+        """Refuse cross-origin and non-JSON API writes.
+
+        A cookie session now authenticates reads and writes alike, so the write path needs the
+        check its carrier implies: a same-site page must not be able to post with the operator's
+        cookie, and a form-encoded body must not be accepted where every client sends JSON.
+        """
+        if not request.path.startswith("/api/") or request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        origin = (request.headers.get("Origin") or "").strip()
+        if origin:
+            from urllib.parse import urlsplit  # noqa: PLC0415
+
+            if urlsplit(origin).netloc != request.host:
+                return _json_error(403, "cross-origin writes are refused")
+        if request.content_length and request.mimetype != "application/json":
+            return _json_error(415, "API writes must be application/json")
+        return None
+
     @app.after_request
     def _https_headers(response):
         return _security_headers(response)
@@ -203,7 +223,10 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         @functools.wraps(view)
         def wrapper(*args, **kwargs):
-            ok, refusal = requestauth.read_refusal(ctx, request)
+            # THE SAME CARRIER AS WRITES. Reads used the raw request (header-only) while writes
+            # used `_auth_headers()` (header plus the rendered UI's cookie), so a cookie session
+            # could post but was told to sign in when it read. One bridge for both.
+            ok, refusal = requestauth.read_refusal(ctx, _auth_headers())
             if not ok:
                 # `read_refusal` returns (True, None) or (False, (code, message)). The None branch
                 # cannot co-occur with ok=False, but reading it defensively keeps a future edit that
@@ -252,7 +275,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
     # attribute 'get'" before the rename.
     @app.get("/api/session")
     def api_session():
-        return jsonify(requestauth.session_payload(ctx, request))
+        return jsonify(requestauth.session_payload(ctx, _auth_headers()))
 
     # ── the rendered UI: helpers ────────────────────────────────────────────────────────────────
     def _secret_missing() -> bool:

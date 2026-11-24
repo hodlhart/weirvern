@@ -178,6 +178,40 @@ def test_register_then_sign_in_then_sign_out():
     assert client.get("/home").status_code == 302, "the session survived a sign out"
 
 
+def test_the_cookie_session_also_authenticates_the_api():
+    """One carrier, read and write alike: the rendered form's cookie must not read as anonymous."""
+    ctx = _ctx()
+    client = _app(ctx).test_client()
+
+    nonce = _csrf(client, "/register")
+    client.post("/register", data={
+        "username": "sam", "password": "a long enough password",
+        "password2": "a long enough password", "csrf": nonce,
+    })
+
+    got = client.get("/api/session")
+
+    assert got.status_code == 200
+    body = got.get_json()
+    assert body["authenticated"] is True
+    assert body["username"] == "sam"
+
+
+def test_cross_origin_api_writes_are_refused():
+    got = _app(_ctx()).test_client().post(
+        "/api/login", json={}, headers={"Origin": "http://evil.example"})
+    assert got.status_code == 403
+    assert b"cross-origin" in got.data
+
+
+def test_form_encoded_api_writes_are_refused():
+    got = _app(_ctx()).test_client().post(
+        "/api/login", data={"username": "sam"},
+        content_type="application/x-www-form-urlencoded")
+    assert got.status_code == 415
+    assert b"application/json" in got.data
+
+
 def test_a_wrong_password_is_refused_without_saying_which_half_was_wrong():
     ctx = _ctx()
     ctx.user_store.create_user("sam", users_mod.ROLE_VIEWER, "a long enough password")
