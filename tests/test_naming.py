@@ -14,9 +14,9 @@ is easy to ship by accident:
   * a stale DB name             -> the schema Job creates a second empty database
   * a stale doc path            -> an operator follows a command that 404s
 
-The previous name may appear in exactly ONE place: the README's reference to the
-original graduate-school project, which is historical fact about a different and
-older codebase. Anything else is a missed rename.
+The previous name may appear in the two deliberate lineage documents: the README's
+"Where this came from" section and the course record, both of which describe the
+original project as history. Anything else is a missed rename.
 """
 import re
 import subprocess
@@ -29,7 +29,8 @@ OLD = "flowforge"
 
 # Historical references to the ORIGINAL project. These describe a different,
 # older codebase and must not be rewritten — renaming them would falsify history.
-# The README's "Where this came from" section is the one deliberate lineage note.
+# README.md and COURSE.md are skipped as whole files below; this regex covers a
+# historical phrase that appears anywhere else.
 ALLOWED_HISTORICAL = re.compile(
     r"original FlowForge experiment"
     r"|generational improvement on \*\*FlowForge\*\*"
@@ -53,6 +54,11 @@ TEXT_SUFFIXES = {
 # (A guard that scanned itself and failed would be worse than useless: it would be
 # "fixed" by deleting it.)
 SELF_EXEMPT = {"tests/test_naming.py"}
+
+# The two lineage documents are allowed to name the original project on purpose.
+# They are the only files that describe the predecessor as history; every other
+# file must be clean. The path scan below still rejects a stale PATH.
+ALLOWED_FILES = {"README.md", "COURSE.md"}
 
 
 def _tracked_files() -> list[Path]:
@@ -92,7 +98,7 @@ def test_no_stale_old_name_in_any_tracked_file():
     problems: list[str] = []
     for path in _tracked_files():
         rel = str(path.relative_to(ROOT))
-        if rel in SELF_EXEMPT:
+        if rel in SELF_EXEMPT or rel in ALLOWED_FILES:
             continue
         if not path.is_file():
             continue
