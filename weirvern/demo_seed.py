@@ -421,7 +421,6 @@ def build(hours: int = 6, hosts: int = 22, seed: int = 1337,
     # Modulo, not indexing: a seed with one or two hosts is a legitimate smoke run, and it used to
     # raise IndexError. With fewer than three hosts the roles land on the same machine, which is
     # odd-looking but honest, and it beats refusing to build a small demo at all.
-    half = len(segment) // 2 or 1
     beacon = segment[0]
     scanner = segment[1 % len(segment)]
     # Kept at the third and fourth hosts so the incident arithmetic the tests pin does not move;

@@ -1415,6 +1415,9 @@ def build_context(connect_factory, settings, project_dir: Path,
     accounts_note = ""
     try:
         users_file = os.environ.get("WEIRVERN_USERS_FILE", "").strip()
+        # Two clients answer the same interface and mypy infers the first branch's type, so the
+        # name is declared Any here rather than annotated with one implementation.
+        users_client: Any
         if users_file:
             # A DEMO CONSOLE WITH NO CLUSTER. File-backed, and only when this variable names a
             # path: users.FileUserClient explains why there is no silent fallback.
