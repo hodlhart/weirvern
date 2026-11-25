@@ -285,6 +285,12 @@ def test_backfill_anchors_the_span_to_the_last_flow(monkeypatch):
     from types import SimpleNamespace
 
     latest = datetime(2026, 11, 23, 16, 36)
+    # The stored timestamp is unzoned wall-clock, so its UTC hour depends on the host zone.
+    # Compute the expected anchor instead of hardcoding one zone's offset.
+    anchor = host_hour.hour_key(latest)
+    assert anchor is not None
+    expected_until = anchor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    expected_start = expected_until - timedelta(hours=144)
 
     class Client:
         def query(self, sql, parameters=None):
@@ -300,7 +306,7 @@ def test_backfill_anchors_the_span_to_the_last_flow(monkeypatch):
 
     out = host_hour.backfill(Client(), hours=144, now=datetime(2026, 11, 25, 9, 0))
 
-    assert out["until"] == "2026-11-23T23:00:00+00:00", out["until"]
+    assert out["until"] == expected_until.isoformat(), out["until"]
     assert len(spans) == 6, spans
-    assert spans[0][0] == datetime(2026, 11, 17, 23, 0, tzinfo=UTC)
-    assert spans[-1][1] == datetime(2026, 11, 23, 23, 0, tzinfo=UTC)
+    assert spans[0][0] == expected_start
+    assert spans[-1][1] == expected_until
