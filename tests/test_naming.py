@@ -29,7 +29,14 @@ OLD = "flowforge"
 
 # Historical references to the ORIGINAL project. These describe a different,
 # older codebase and must not be rewritten — renaming them would falsify history.
-ALLOWED_HISTORICAL = re.compile(r"original FlowForge experiment", re.IGNORECASE)
+# The README's "Where this came from" section is the one deliberate lineage note.
+ALLOWED_HISTORICAL = re.compile(
+    r"original FlowForge experiment"
+    r"|generational improvement on \*\*FlowForge\*\*"
+    r"|FlowForge established the premise"
+    r"|ground-up generation beyond FlowForge",
+    re.IGNORECASE,
+)
 
 TEXT_SUFFIXES = {
     ".py", ".md", ".yaml", ".yml", ".toml", ".sql", ".cfg", ".example",

@@ -190,6 +190,27 @@ def test_the_public_list_NEVER_carries_a_hash():
     assert {"username", "role"} <= set(store.public_users()[0])
 
 
+def test_a_record_written_before_approval_existed_is_approved():
+    """Every account already in a deployment's store must keep working after the upgrade."""
+    record = users_mod.UserRecord.from_json(
+        {"username": "old", "role": "viewer", "hash": "scrypt$x"})
+    assert record.approved is True
+
+
+def test_set_approved_flips_the_flag_and_holds_a_pending_account():
+    store = _store_with(exists=False)
+    store.create_user("sam", "viewer", "password-123", approved=False)
+    pending = store.find("sam")
+    assert pending is not None
+    assert pending.approved is False
+
+    store.set_approved("sam", True)
+
+    approved = store.find("sam")
+    assert approved is not None
+    assert approved.approved is True
+
+
 # ── 4. bootstrap: created once, logged once, never stored ───────────────────────────────────
 
 
@@ -364,6 +385,7 @@ _ROUTES = {
     "_users_role": ("POST", "/api/users/role"),
     "_users_delete": ("POST", "/api/users/delete"),
     "_users_reset": ("POST", "/api/users/reset"),
+    "_users_approve": ("POST", "/api/users/approve"),
 }
 
 
@@ -672,6 +694,28 @@ def test_the_user_list_is_admin_only_and_never_carries_a_hash():
     ctx2, token2 = _authed(store, username="reader", role="viewer")
     h2 = _Handler(ctx2, headers={"X-Weirvern-Session": token2})
     h2.call("_users_list")
+    assert h2.status == 403
+
+
+def test_an_admin_approves_a_pending_account_and_a_viewer_cannot():
+    """The approval write is account administration, so it takes the same admin-session gate."""
+    store = _store_with(exists=False)
+    users_mod.bootstrap(store)
+    store.create_user("pending", "viewer", "password-123", approved=False)
+
+    ctx, token = _authed(store, username="admin", role="admin")
+    h = _Handler(ctx, headers={"X-Weirvern-Session": token},
+                 body='{"username": "pending"}')
+    out = h.call("_users_approve")
+    assert out.get("ok") is True, out
+    approved = store.find("pending")
+    assert approved is not None and approved.approved is True
+
+    # A viewer is refused even though the account is now approved.
+    ctx2, token2 = _authed(store, username="pending", role="viewer")
+    h2 = _Handler(ctx2, headers={"X-Weirvern-Session": token2},
+                  body='{"username": "pending"}')
+    h2.call("_users_approve")
     assert h2.status == 403
 
 

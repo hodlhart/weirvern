@@ -112,14 +112,27 @@ def test_register_is_open_on_a_FIRST_RUN_and_says_which_role_it_grants():
     assert 'name="role"' not in body, "the form offers a role selector -- that is an escalation hole"
 
 
-def test_register_is_CLOSED_once_an_account_exists():
+def test_register_stays_open_once_an_account_exists_and_creates_a_PENDING_account():
+    """Registration is no longer a first-run door: it stays open and an admin approves the account."""
     ctx = _ctx()
+    assert ctx.user_store is not None
     ctx.user_store.create_user("sam", users_mod.ROLE_ADMIN, "a long enough password")
+    client = _app(ctx).test_client()
 
-    got = _app(ctx).test_client().get("/register")
+    page = client.get("/register")
+    assert page.status_code == 200
+    assert b"administrator must approve" in page.data
 
-    assert got.status_code == 403
-    assert b"self-registration is closed" in got.data
+    nonce = _csrf(client, "/register")
+    posted = client.post("/register", data={
+        "username": "newbie", "password": "a long enough password2",
+        "password2": "a long enough password2", "csrf": nonce,
+    })
+    assert posted.status_code == 200
+    assert b"waiting for an administrator" in posted.data
+    record = ctx.user_store.find("newbie")
+    assert record is not None
+    assert record.approved is False, "self-registration created an account that can sign in"
 
 
 def test_register_is_CLOSED_when_the_store_is_unreadable():
@@ -150,8 +163,9 @@ def test_an_oversized_body_is_refused_before_it_is_read():
 
 # ── the flow ────────────────────────────────────────────────────────────────────────────────
 
-def test_register_then_sign_in_then_sign_out():
+def test_register_then_approve_then_sign_in_then_sign_out():
     ctx = _ctx()
+    assert ctx.user_store is not None
     app = _app(ctx)
     client = app.test_client()
 
@@ -160,11 +174,30 @@ def test_register_then_sign_in_then_sign_out():
         "username": "sam", "password": "a long enough password",
         "password2": "a long enough password", "csrf": nonce,
     })
-    assert got.status_code == 302, got.data[:300]
-    assert got.headers["Location"].endswith("/home")
+    assert got.status_code == 200, got.data[:300]
+    assert b"waiting for an administrator" in got.data
+    assert client.get("/home").status_code == 302, "a pending account was signed in"
 
-    # the account landed in the SHARED store, so the console can sign it in too
-    assert ctx.user_store.find("sam") is not None
+    # the account landed in the SHARED store, pending
+    record = ctx.user_store.find("sam")
+    assert record is not None and record.approved is False
+
+    # the right password is still refused while the account is pending
+    login_nonce = _csrf(client, "/login")
+    refused = client.post("/login", data={
+        "username": "sam", "password": "a long enough password", "csrf": login_nonce,
+    })
+    assert refused.status_code == 401
+    assert b"waiting for an administrator" in refused.data
+
+    # an admin approves it; the same password now signs in
+    ctx.user_store.set_approved("sam", True)
+    login_nonce = _csrf(client, "/login")
+    ok = client.post("/login", data={
+        "username": "sam", "password": "a long enough password", "csrf": login_nonce,
+    })
+    assert ok.status_code == 302, ok.data[:300]
+    assert ok.headers["Location"].endswith("/home")
 
     home = client.get("/home")
     assert home.status_code == 200
@@ -181,6 +214,7 @@ def test_register_then_sign_in_then_sign_out():
 def test_the_cookie_session_also_authenticates_the_api():
     """One carrier, read and write alike: the rendered form's cookie must not read as anonymous."""
     ctx = _ctx()
+    assert ctx.user_store is not None
     client = _app(ctx).test_client()
 
     nonce = _csrf(client, "/register")
@@ -188,6 +222,12 @@ def test_the_cookie_session_also_authenticates_the_api():
         "username": "sam", "password": "a long enough password",
         "password2": "a long enough password", "csrf": nonce,
     })
+    ctx.user_store.set_approved("sam", True)
+    login_nonce = _csrf(client, "/login")
+    signed_in = client.post("/login", data={
+        "username": "sam", "password": "a long enough password", "csrf": login_nonce,
+    })
+    assert signed_in.status_code == 302, signed_in.data[:300]
 
     got = client.get("/api/session")
 

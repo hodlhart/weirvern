@@ -1135,7 +1135,7 @@ def _seed_enforcement(client, *, hosts: int = 22, seed: int = 1337) -> dict[str,
     the console should find the Sluice gate holding rules, the blocklist holding a name, those rules
     carrying the hits they caught, and a proposal waiting for a decision. Empty enforcement panels in
     a product whose point is enforcement reads as unfinished rather than quiet, and the same is true
-    in a class demo where nobody can tell an empty table from a broken one.
+    in a demo where nobody can tell an empty table from a broken one.
 
     EVERY WRITE GOES THROUGH THE PRODUCT'S OWN STORE, not a hand-built row: `sluice_store.create_rule`
     validates the address, `blocklists.add_custom_domain` runs the same validator as a manual entry,

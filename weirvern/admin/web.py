@@ -837,7 +837,7 @@ def review_args(body: dict) -> dict:
 
 
 def user_write_args(body: dict, *, kind: str) -> dict:
-    """The account write's fields. `kind` is one of create, role, delete, reset.
+    """The account write's fields. `kind` is one of create, role, delete, reset, approve.
 
     CREATE KEEPS THE NAME AS TYPED; every other kind strips and lowercases it. The store normalises
     on create anyway, and changing the other three would alter which row a name matches. The role

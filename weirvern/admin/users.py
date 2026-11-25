@@ -220,14 +220,15 @@ class UserRecord:
     role: str
     hash: str
     must_change: bool = False
+    approved: bool = True
     created_at: str = ""
     updated_at: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
             "username": self.username, "role": self.role, "hash": self.hash,
-            "must_change": self.must_change, "created_at": self.created_at,
-            "updated_at": self.updated_at,
+            "must_change": self.must_change, "approved": self.approved,
+            "created_at": self.created_at, "updated_at": self.updated_at,
         }
 
     @classmethod
@@ -237,6 +238,8 @@ class UserRecord:
             role=str(entry.get("role") or ROLE_VIEWER),
             hash=str(entry.get("hash") or ""),
             must_change=bool(entry.get("must_change")),
+            # An account written before approval existed is already in use, so it is approved.
+            approved=bool(entry.get("approved", True)),
             created_at=str(entry.get("created_at") or ""),
             updated_at=str(entry.get("updated_at") or ""),
         )
@@ -245,8 +248,8 @@ class UserRecord:
         """The record as the API returns it: NEVER the hash."""
         return {
             "username": self.username, "role": self.role,
-            "must_change": self.must_change, "created_at": self.created_at,
-            "updated_at": self.updated_at,
+            "must_change": self.must_change, "approved": self.approved,
+            "created_at": self.created_at, "updated_at": self.updated_at,
         }
 
 
@@ -452,7 +455,7 @@ class UserStore:
             self._loaded = True
 
     def create_user(self, username: str, role: str, password: str,
-                    must_change: bool = False) -> UserRecord:
+                    must_change: bool = False, approved: bool = True) -> UserRecord:
         name = validate_username(username)
         if role not in ROLES:
             raise UserError(f"role must be one of {', '.join(ROLES)}")
@@ -462,9 +465,21 @@ class UserStore:
             raise UserError(f"a user named '{name}' already exists")
         now = _stamp()
         record = UserRecord(username=name, role=role, hash=hash_password(password),
-                            must_change=must_change, created_at=now, updated_at=now)
+                            must_change=must_change, approved=approved,
+                            created_at=now, updated_at=now)
         self._persist(records + [record])
         return record
+
+    def set_approved(self, username: str, approved: bool = True) -> UserRecord:
+        """Approve (or hold) an account. A pending account cannot sign in until this is true."""
+        records = self.snapshot()
+        target = next((u for u in records if u.username == username), None)
+        if target is None:
+            raise UserError(f"no user named '{username}'")
+        target.approved = bool(approved)
+        target.updated_at = _stamp()
+        self._persist(records)
+        return target
 
     def set_password(self, username: str, password: str, must_change: bool = False) -> None:
         validate_password(password)

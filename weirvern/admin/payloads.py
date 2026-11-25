@@ -1729,6 +1729,24 @@ def user_create(store: Any, *, username: str, role: str, password: str,
     return 200, {"ok": True, "user": record.public()}
 
 
+def user_approve(store: Any, sessions: Any, *, username: str) -> tuple[int, dict[str, Any]]:
+    """Approve a self-registered account so it can sign in.
+
+    `sessions` is part of the account-write signature; a pending account has no sessions to
+    revoke, so it is accepted and ignored here.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    try:
+        record = store.set_approved(username, True)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not approve the account: {exc}", "code": 502}
+    logger.info("approved account %s", record.username)
+    return 200, {"ok": True, "user": record.public()}
+
+
 def user_role(store: Any, sessions: Any, *, username: str, role: str) -> tuple[int, dict[str, Any]]:
     """Change an account's role, revoking its sessions only when the role actually CHANGED.
 

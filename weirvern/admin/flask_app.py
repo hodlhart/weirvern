@@ -340,23 +340,19 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         return wrapper
 
     def _register_allowed() -> bool:
-        """Self-service registration is a first-run convenience, not a standing door.
+        """Self-service registration is open, but a new account is PENDING until an admin approves.
 
-        Allowed when the operator has explicitly enabled it, or when the store is readable and has
-        NO accounts (the bootstrap case). Deliberately not allowed when the store cannot answer: an
-        unreadable store is not an invitation to create accounts in it.
+        The approval gate replaced the closed door as the control. An operator can still close
+        registration with WEIRVERN_DISABLE_SELF_REGISTER=1. Deliberately refused when the store
+        cannot answer: an unreadable store is not an invitation to create accounts in it.
         """
-        if _truthy(os.environ.get("WEIRVERN_ALLOW_SELF_REGISTER")):
-            return True
+        if _truthy(os.environ.get("WEIRVERN_DISABLE_SELF_REGISTER")):
+            return False
         store = getattr(ctx, "user_store", None)
         if store is None:
             return False
         try:
-            # AN UNREADABLE STORE IS NOT AN EMPTY ONE. has_users() returns False when the read
-            # failed, which would have opened registration on a store that may hold accounts.
-            if store.exists is None:
-                return False
-            return not store.has_users()
+            return store.exists is not None
         except Exception:  # noqa: BLE001
             return False
 
@@ -424,21 +420,16 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         if password != request.form.get("password2", ""):
             return _render("register.html", error="the two passwords are not the same",
                            username=username, role=REGISTER_ROLE_FALLBACK), 400
-        record, error = requestauth.create_account(ctx, username, password)
+        record, error = requestauth.create_account(ctx, username, password, approved=False)
         if record is None:
             return _render("register.html", error=error, username=username,
                            role=REGISTER_ROLE_FALLBACK), 400
-        # Sign the new account straight in: it just proved it knows the password it chose.
-        ident, token, login_error = requestauth.authenticate(ctx, username, password,
-                                                            addr=request.remote_addr or "")
-        if ident is None:
-            return _render("login.html", error=login_error, username=username,
-                           can_register=False,
-                           accounts_note=getattr(ctx, "accounts_note", "") or ""), 401
-        session.clear()
-        session["token"] = token
-        session.permanent = True
-        return redirect(url_for("home"))
+        # DO NOT SIGN IN. The account is pending until an administrator approves it; signing it
+        # in here would make the approval gate meaningless.
+        return _render("login.html", error="",
+                       accounts_note=("Your account was created and is waiting for an "
+                                      "administrator to approve it before you can sign in."),
+                       can_register=True)
 
     @app.post("/logout")
     def logout():
@@ -1601,6 +1592,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                 "role": f"role set to {args.get('role') or ''}",
                 "delete": "deleted account",
                 "reset": "password reset; must change at next sign-in",
+                "approve": "approved account so it can sign in",
             }[kind]
             _audit_write("auth", f"user_{kind}", str(args.get("username") or ""),
                          reason, ident.username)
@@ -1629,6 +1621,12 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         from weirvern.admin import payloads  # noqa: PLC0415
 
         return _account_write("reset", payloads.user_reset)
+
+    @app.post("/api/users/approve")
+    def users_approve():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _account_write("approve", payloads.user_approve)
 
     # ── per-token credentials: mint, list, revoke ────────────────────────────────────────────────
     #

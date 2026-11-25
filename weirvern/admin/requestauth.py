@@ -256,6 +256,14 @@ def authenticate(ctx: Any, username: str, password: str, *,
         audit_auth(ctx, "login", name, "rejected")
         return None, "", "the username or password is not correct"
 
+    # A PENDING ACCOUNT HAS A PASSWORD BUT NO DOOR. Self-registration creates it approved=False;
+    # an administrator approves it from the console. The password is checked first, so a wrong
+    # password on a pending account still gets the generic refusal and does not confirm the name.
+    if not record.approved:
+        logger.info("refused a sign-in for %r: awaiting approval", record.username)
+        audit_auth(ctx, "login", record.username, "pending approval")
+        return None, "", "this account is waiting for an administrator to approve it"
+
     if throttle is not None:
         throttle.clear(addr)
     ident = users_mod.Identity(username=record.username, role=record.role,
@@ -267,12 +275,15 @@ def authenticate(ctx: Any, username: str, password: str, *,
 
 
 def create_account(ctx: Any, username: str, password: str, *,
-                   role: str | None = None) -> tuple[Any, str]:
+                   role: str | None = None, approved: bool = True) -> tuple[Any, str]:
     """Register an account through the shared store. Returns `(record, error)`.
 
     Deliberately does NOT let a caller choose a role by default: a self-service register form that
     accepts `role` from the form would be a privilege-escalation hole. The role comes from the
     caller, and the Flask route passes the store's default rather than a submitted value.
+
+    `approved=False` is the self-registration path: the account exists, but `authenticate` refuses
+    it until an administrator approves it.
     """
     from weirvern.admin import users as users_mod
 
@@ -280,7 +291,8 @@ def create_account(ctx: Any, username: str, password: str, *,
     if store is None:
         return None, "the account store is not available on this GUI"
     try:
-        record = store.create_user(username, role or users_mod.ROLE_VIEWER, password)
+        record = store.create_user(username, role or users_mod.ROLE_VIEWER, password,
+                                   approved=approved)
     except Exception as exc:  # noqa: BLE001
         # `UserError` carries a sentence meant for a user ("a user named 'x' already exists"), so
         # passing it through is right; anything else is a real fault and must not be dressed up.

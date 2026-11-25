@@ -6,8 +6,9 @@
     </div>
     <h1>Register</h1>
   <p class="lede">
-    This creates a <strong>{{ role }}</strong> account. The role is not chosen by the form: a
-    self-service registration that accepted a role would be a privilege escalation.
+    This creates a <strong>{{ role }}</strong> account. An administrator must approve it before you
+    can sign in. The role is not chosen by the form: a self-service registration that accepted a
+    role would be a privilege escalation.
   </p>
 
   <div class="card">
@@ -27,7 +28,7 @@
     </form>
     <p class="note">
       Passwords are checked against the same rule the console applies, and the account is stored in
-      the same store, so either surface can sign it in.
+      the same store. It stays pending until an admin approves it from the console's Users card.
     </p>
   </div>
 {% endblock %}

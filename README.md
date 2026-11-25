@@ -73,6 +73,15 @@ kept as merge headroom, re-derived at startup and on every apply. An admin can o
 **No payload inspection.** Weirvern reads flow records and Zeek metadata. TLS still authenticates
 end to end. Nothing is decrypted, and nothing is probed.
 
+## Where this came from
+
+Weirvern is a generational improvement on **FlowForge**, a network-flow program I wrote completely
+before this one. FlowForge established the premise that flow metadata alone can carry a detection
+story; Weirvern rebuilds the system around that premise: a Kubernetes-native sensor fleet, five
+independently trained detectors fused into one verdict, per-host baselines, evidence on the same
+screen as the alert, and an inline gate that can enforce the finding. The lineage is deliberate.
+This is a ground-up generation beyond FlowForge, not a fork.
+
 ## Weirlings: one hub, sensors throughout the infrastructure
 
 A weirling is a sensor, not a remote-agent afterthought. The hub can run with no capture NIC at
@@ -447,6 +456,8 @@ already scoped to patch `weirvern-env`, `weirvern-users` and `weirvern-tokens` b
 - **Break-glass access is explicit.** The GUI token is a Secret, not a URL parameter; sessions
   and roles are recorded. Per-token credentials are individually revocable, role-scoped, and
   stored as digests.
+- **Registration is approval-gated.** Self-registration is open, but a new account cannot sign in
+  until an admin approves it from the console's Users card.
 - **Every write is audited.** Settings, plans, revocations and rules carry actor, time and reason.
 - **Fail-open by default.** A sensor that cannot enforce says so; the siphon watchdog restores
   every mapping on stop, crash or a stalled forward.
@@ -454,6 +465,22 @@ already scoped to patch `weirvern-env`, `weirvern-users` and `weirvern-tokens` b
 
 Read [Security and privacy](docs/security.md) and [USAGE_POLICY.md](USAGE_POLICY.md). This tool is
 for networks you own or are explicitly authorized to monitor.
+
+## AI Usage
+
+This project was built with AI assistance, and the division of work is deliberate.
+
+- **Claude Code** was the coding harness for scaffolding, refactors and test generation. Every
+  change it produced was reviewed, run and verified locally before it was committed.
+- An AI assistant was used as a second pair of eyes: it read diffs, ran the project gate and
+  pointed at failures. The author made the design decisions and accepted or rejected each
+  suggestion, including declining style-only changes with the reason recorded.
+- The `fathom` MCP server and the `threat-hunt` skill are part of the product: the server exposes
+  the console's read and proposal tools, and the skill encodes the investigation procedure an
+  operator follows.
+
+AI-generated changes were reviewed and verified before they were committed. No AI system was given
+unsupervised write access to the repository.
 
 ## Documentation
 

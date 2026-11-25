@@ -1859,7 +1859,9 @@ async function loadUsers() {
     return;
   }
   const users = data.users || [];
+  const pending = users.filter((u) => u.approved === false).length;
   note.textContent = `${users.length} account${users.length === 1 ? "" : "s"}. `
+    + (pending ? `${pending} waiting for approval. ` : "")
     + "Admins edit everything; viewers read.";
   const me = AUTH.username;
   for (const u of users) {
@@ -1867,6 +1869,9 @@ async function loadUsers() {
       el("td", {}, [
         el("span", { class: "mono", text: u.username }),
         u.username === me ? el("span", { class: "setting-src", text: "you" }) : null,
+        u.approved === false
+          ? el("span", { class: "bubble state warn", text: "pending approval" })
+          : null,
       ]),
       el("td", {}, [
         el("select", {
@@ -1883,6 +1888,10 @@ async function loadUsers() {
           : el("span", { class: "muted", text: "set" }),
       ]),
       el("td", {}, [
+        u.approved === false ? el("button", {
+          class: "user-act", text: "Approve", attrs: { type: "button" },
+          on: { click: () => approveUser(u.username) },
+        }) : null,
         el("button", {
           class: "user-act", text: "Reset password", attrs: { type: "button" },
           title: `set a temporary password for ${u.username}`,
@@ -1922,6 +1931,17 @@ async function deleteUser(username) {
   try {
     await postJSON("/api/users/delete", { username });
     usersResult(`deleted ${username}.`);
+    await loadUsers();
+  } catch (err) {
+    usersResult(String(err.message || err), true);
+    await loadUsers();
+  }
+}
+
+async function approveUser(username) {
+  try {
+    await postJSON("/api/users/approve", { username });
+    usersResult(`approved ${username}; the account can sign in now.`);
     await loadUsers();
   } catch (err) {
     usersResult(String(err.message || err), true);
