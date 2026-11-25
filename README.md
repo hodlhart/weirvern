@@ -76,17 +76,11 @@ end to end. Nothing is decrypted, and nothing is probed.
 ## Where this came from
 
 Weirvern is a generational improvement on **FlowForge**, a network-flow program I wrote completely
-before this one. FlowForge began as a way to read NetFlow records and answer a simple question:
-which host changed its behaviour, and what did it talk to? It proved that flow metadata alone can
-carry a detection story, but it was a single-process tool built around one collector and one
-machine. Every layer above the flow table was work the operator did by hand.
-
-Weirvern keeps that premise and rebuilds the system around it. The flow table is still the
-foundation, but it now feeds five independently trained detectors, a per-host adaptive baseline, a
-fused verdict and a ripple layer that groups evidence into incidents. The console shows the
-measurements behind every alert, the sensor fleet can sit on several segments and report its own
-health, and the Sluice Gate can enforce a decision inline or by ARP. The lineage is deliberate:
-this is a ground-up generation beyond FlowForge, not a fork.
+before this one. FlowForge established the premise that flow metadata alone can carry a detection
+story; Weirvern rebuilds the system around that premise: a Kubernetes-native sensor fleet, five
+independently trained detectors fused into one verdict, per-host baselines, evidence on the same
+screen as the alert, and an inline gate that can enforce the finding. The lineage is deliberate.
+This is a ground-up generation beyond FlowForge, not a fork.
 
 ## Weirlings: one hub, sensors throughout the infrastructure
 
@@ -476,21 +470,14 @@ for networks you own or are explicitly authorized to monitor.
 
 This project was built with AI assistance, and the division of work is deliberate.
 
-- **Claude Code** was the coding harness. It scaffolded modules, carried refactors across the
-  tree, wrote first drafts of tests, and ran the project's gate. Every change it produced was
-  read, run and verified locally before it was committed.
-- An **AI assistant** was the second pair of eyes. It read diffs against the design documents,
-  ran the test suite and the DOM harness, reproduced failures, and pointed at the file and line
-  that explained them. The author made the design decisions and accepted or rejected each
+- **Claude Code** was the coding harness for scaffolding, refactors and test generation. Every
+  change it produced was reviewed, run and verified locally before it was committed.
+- An AI assistant was used as a second pair of eyes: it read diffs, ran the project gate and
+  pointed at failures. The author made the design decisions and accepted or rejected each
   suggestion, including declining style-only changes with the reason recorded.
-- The **agentic pieces** are part of the product, not a demonstration bolted on at the end:
-  `fathom` exposes the console's read and proposal tools over MCP, and `threat-hunt` encodes the
-  investigation method an operator follows. The model never gets a write path that can block
-  traffic; `propose_block` files a proposal and a person decides.
-- **Verification was the rule, not the exception.** Changes were checked by running the code, not
-  by reading it: the full pytest suite, the jsdom harness against the shipping JavaScript, the
-  live demo console, and the MCP live check against the seeded deployment. A green test run that
-  did not exercise the change was treated as no evidence.
+- The `fathom` MCP server and the `threat-hunt` skill are part of the product: the server exposes
+  the console's read and proposal tools, and the skill encodes the investigation procedure an
+  operator follows.
 
 AI-generated changes were reviewed and verified before they were committed. No AI system was given
 unsupervised write access to the repository.
