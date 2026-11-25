@@ -77,9 +77,9 @@ def test_the_readme_links_every_document_in_the_set():
     # The product page carries real, checked-in screenshots of the shipping renderer. A
     # placeholder is no longer allowed: the README names files that must exist.
     assert "docs/screenshots/anomalies.png" in README
-    assert "docs/screenshots/network.png" in README
+    assert "docs/screenshots/network-3site.png" in README
     shots = ROOT / "docs" / "screenshots"
-    for name in ("anomalies.png", "network.png"):
+    for name in ("anomalies.png", "network-3site.png"):
         assert (shots / name).is_file(), f"README screenshot is missing: docs/screenshots/{name}"
 
 

@@ -39,7 +39,6 @@ BOUNDED = {
     "hp-alerts-reasons": "host page: top outcome reasons (bounded list)",
     "hp-alerts-recent": "host page: recent alerts, already carries its own pager",
     "episodes-table": "incident queue: one row per episode under the queue's own limit",
-    "detectors-table": "detector registry: one row per registered detector",
     "nz-entries": "normalize entries: operator-created, listed in full",
     "nz-sigs": "ripple signatures: operator-created, listed in full",
     "md-table": "models: one row per model in the registry",

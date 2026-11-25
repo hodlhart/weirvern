@@ -2791,8 +2791,10 @@ THE FRONT PAGE IS A PRODUCT PAGE, AND THE GRAPH USES ITS FULL WIDTH.
   summary, a Mermaid pipeline diagram, the three deployment shapes, quick start, trust notes
   and the documentation index. The old 200-line architecture essay is reduced to the places
   a new reader needs first; the detail remains in docs/.
-- Added `docs/screenshots/anomalies.png` and `docs/screenshots/network.png`, captured from the
-  shipping console against synthetic RFC 5737 data. No private addresses are in the images.
+- Added `docs/screenshots/anomalies.png`; the original `docs/screenshots/network.png` was
+  replaced by `docs/screenshots/network-3site.png` when the graph grew to three sites. Both were
+  captured from the shipping console against synthetic RFC 5737 data. No private addresses are in
+  the images.
 - The connection graph fits X and Y independently instead of one shared scale, so a circular
   force cloud uses the wide tile rather than occupying only its centre.
 

@@ -591,6 +591,10 @@
   }
 
   document.addEventListener("click", (ev) => {
+    // A .dcell INSIDE a tagged cell has its own, more specific verb. The anomalies row's
+    // detector pieces are the reference: tagging their column with the full model string
+    // would make "LOF" filter by "Isolation Forest, LOF" and shadow the piece's handler.
+    if (ev.target && ev.target.closest && ev.target.closest(".dcell")) return;
     const cell = ev.target && ev.target.closest
       ? ev.target.closest("[data-filter-field]") : null;
     if (!cell) return;
@@ -603,6 +607,7 @@
 
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Enter" && ev.key !== " ") return;
+    if (ev.target && ev.target.closest && ev.target.closest(".dcell")) return;
     const cell = ev.target && ev.target.closest
       ? ev.target.closest("[data-filter-field]") : null;
     if (!cell) return;

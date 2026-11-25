@@ -90,6 +90,10 @@
   --series-4: #a78bfa;  --series-5: #ee6368;  --series-6: #8899aa;
   --series-7: #53c4d4;  --series-8: #d98cb3;  --series-9: #a8b545;
   --series-10: #7f8cff;
+  /* Demo-mode banner: the warning ramp, not the accent, because a seeded console is a fact
+   * about the data rather than a navigation state. */
+  --demo-h: 34px;
+  --demo-bg: #3d2c00;  --demo-fg: #ffdd9a;  --demo-line: #7a5a00;  --demo-strong: #ffe9bc;
 }
 
 * { box-sizing: border-box; }
@@ -2280,14 +2284,13 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   position: fixed; inset: 0 0 auto 0; z-index: 9999;
   display: flex; gap: 10px; align-items: center; justify-content: center;
   padding: 7px 14px; font-size: var(--fs-1);
-  background: #3d2c00; color: #ffdd9a; border-bottom: 1px solid #7a5a00;
+  background: var(--demo-bg); color: var(--demo-fg); border-bottom: 1px solid var(--demo-line);
 }
 .demo-banner[hidden] { display: none; }
-.demo-banner strong { letter-spacing: .08em; color: #ffe9bc; }
+.demo-banner strong { letter-spacing: .08em; color: var(--demo-strong); }
 /* THE BANNER OWNS THE TOP OF THE VIEWPORT, so everything else starts below it. --demo-h is
    measured in app.js after the banner renders, because the text wraps on a narrow window and a
    hard-coded height then leaves the header tucked underneath. */
-:root { --demo-h: 34px; }
 body.demo-mode { padding-top: var(--demo-h); }
 body.demo-mode header { top: var(--demo-h); }
 body.demo-mode .gate { top: var(--demo-h); }

@@ -209,6 +209,12 @@ UNIVERSAL_EXAMPLES = {
     # referenced in the docs and tests that explain the exclusion feature. A real address in this
     # range would still be reported as private-ipv4 -- only these exact values are allowed.
     "10.20.30.0",
+    # THE DEMO SEED'S THREE CLIENT SITES. These are synthetic topology, not observations: the
+    # seeder and README declare them as demo sites, and the demo's DMZ and public web already use
+    # RFC 5737 ranges. Allowed BY VALUE, so a real host in one of these /24s is still reported.
+    "10.10.0.0", "10.10.0.253",
+    "192.168.20.0", "192.168.20.253",
+    "172.16.30.0", "172.16.30.253",
 }
 
 # A MAC that is obviously SYNTHETIC rather than captured -- the test is whether the octets look

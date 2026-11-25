@@ -2396,8 +2396,11 @@ function auditGo(fix) {
       sluiceHighlightRule(fix.rule_id);
     }
   }
-  if (fix.detector && typeof registryHighlight === "function") {
-    registryHighlight(fix.detector);
+  // A DETECTOR FIX FILTERS THE QUEUE. The registry strip was removed from Alerts on request
+  // (2026-11-23), so the old flash targeted a table nothing renders and the button became a
+  // no-op on a real finding. Filtering to the detector is the action that still exists.
+  if (fix.detector && typeof anSetFilter === "function") {
+    anSetFilter("model", fix.detector);
   }
 }
 
@@ -2455,94 +2458,6 @@ async function loadAudit() {
     note.textContent = "Checks that could not run: " +
       Object.entries(errs).map(([k, v]) => `${k} (${v})`).join(", ") + ".";
   }
-}
-
-function anRenderDiscipline(d) {
-  const box = document.getElementById("an-discipline");
-  if (!box) return;
-  if (!d || !d.available) {
-    box.textContent = d && d.reason
-      ? `Fired / acted-on counts unavailable \u2014 ${d.reason}.` : "";
-    return;
-  }
-  const open = Number(d.fired || 0) - Number(d.acted || 0);
-  box.textContent = `${d.fired} fired \u00b7 ${d.acted} acted on` +
-    (open > 0 ? ` \u00b7 ${open} still open` : "");
-}
-
-/** US-3: a registry fix lands ON the detector's row -- scrolled to and said once. The pending
- *  id survives the re-render showView() fires on selection (see sluiceApplyFlash). */
-let REG_FLASH_PENDING = "";
-let REG_FLASH_TIMER = null;
-function registryHighlight(name) {
-  REG_FLASH_PENDING = String(name);
-  registryFlashRow(REG_FLASH_PENDING);
-  if (REG_FLASH_TIMER) clearTimeout(REG_FLASH_TIMER);
-  REG_FLASH_TIMER = setTimeout(() => { REG_FLASH_PENDING = ""; }, 2500);
-}
-function registryFlashRow(name) {
-  const tr = [...document.querySelectorAll("#detectors-table tbody tr")]
-    .find((r) => r.getAttribute("data-detector") === String(name));
-  if (!tr) return false;
-  if (typeof tr.scrollIntoView === "function") {
-    try { tr.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
-  }
-  tr.classList.remove("flash-hit");
-  void tr.offsetWidth;
-  tr.classList.add("flash-hit");
-  return true;
-}
-function registryApplyFlash() {
-  if (!REG_FLASH_PENDING) return;
-  if (registryFlashRow(REG_FLASH_PENDING)) {
-    REG_FLASH_PENDING = "";
-    if (REG_FLASH_TIMER) { clearTimeout(REG_FLASH_TIMER); REG_FLASH_TIMER = null; }
-  }
-}
-
-/** The registry strip: who owns each detector and who may page, with its catch counts. */
-async function loadDetectors() {
-  const tbody = document.querySelector("#detectors-table tbody");
-  const note = document.getElementById("an-detectors-note");
-  if (!tbody) return;
-  let d;
-  try {
-    d = await getJSON("/api/detectors");
-  } catch (err) {
-    if (note) note.textContent = `The detector registry could not be read: ${err && err.message ? err.message : err}`;
-    return;
-  }
-  tbody.replaceChildren();
-  if (note) note.textContent = "";
-  if (!d || d.available !== true) {
-    if (note) note.textContent = `The detector registry is unavailable \u2014 ` +
-      `${(d && d.reason) || "the read did not run"}.`;
-    return;
-  }
-  for (const det of d.detectors || []) {
-    tbody.appendChild(el("tr", { attrs: { "data-detector": det.name } }, [
-      el("td", {}, [
-        // US-5: the registry row answers "show me what this detector found" in one click.
-        el("span", { class: "mono dcell", attrs: { title: "show only this detector's alerts" },
-                     on: { click: () => anSetFilter("model", det.name) } },
-           [el("span", { text: det.name })]),
-        det.known ? null : el("span", { class: "bubble state warn", text: " unregistered",
-          attrs: { title: "nobody has registered this detector: it cannot page until an owner and runbook exist" } }),
-      ]),
-      el("td", { text: det.owner || "—" }),
-      el("td", {}, [
-        el("span", { class: "bubble state " + (det.loud ? "pages" : "quiet"),
-                     text: det.loud ? "pages" : "quiet",
-                     attrs: { title: det.loud
-                       ? `may page a phone; runbook: ${det.runbook || "none recorded"}`
-                       : `console-only until it has an owner and runbook${det.runbook ? " — " + det.runbook : ""}` } }),
-      ]),
-      el("td", { class: "num", text: String(det.fired ?? "—") }),
-      el("td", { class: "num", text: String(det.acted ?? "—") }),
-    ]));
-  }
-  // US-3: a fix that named a detector fires its flash on THIS fresh render.
-  registryApplyFlash();
 }
 
 /** ONE COUNTER COMPONENT, USED TWICE (operator, 2026-11-20: "the model anomalies criticality
@@ -3778,8 +3693,6 @@ async function loadAnomalies() {
   anRenderSeverity(payload.band_counts || payload.severity_counts);
   anRenderMlLine(payload);
   anRenderFusedLine(payload);
-  anRenderDiscipline(payload.discipline);
-  await loadDetectors();
   // THE FILTER'S HONESTY RIDES THE PAYLOAD: when the watch store could not be read, the
   // checkbox turns itself off, says why, and never filters on a state nobody read.
   if (wchk) {

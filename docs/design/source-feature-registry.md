@@ -28,6 +28,7 @@ asset_scans | excluded
 asset_service_history | output
 asset_services | join-only
 baseline_history | feature-now
+demo_state | excluded
 blocklist_domains | excluded
 blocklist_sources | excluded
 dns_reverse_map | join-only

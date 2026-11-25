@@ -89,8 +89,8 @@ def test_ripples_are_primary_and_model_anomalies_are_still_on_the_same_page():
     # Model anomalies did not disappear: the queue, its filters and its review table are here.
     assert 'id="anomalies-table"' in view
     assert 'id="f-queue-mode"' in view
-    assert 'id="an-discipline"' in view
-    assert 'id="detectors-table"' in view
+    # The discipline line and the detector registry strip were removed from this tab on request
+    # (2026-11-23); ownership and paging bookkeeping is not what Alerts is for.
     # And the order is the contract: the ripple list comes before the corroboration section.
     assert view.index('id="ripples-table"') < view.index('id="anomalies-table"')
     assert view.index("Alerts") < view.index("Model anomalies")

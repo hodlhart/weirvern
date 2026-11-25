@@ -4206,7 +4206,7 @@ def pipeline_audit(client, *, now=None) -> dict:
                         "detail": "unregistered — no owner, no runbook: it cannot page",
                         "elapsed_s": None,
                         "fix": {"view": "anomalies", "detector": d["name"],
-                                "label": "register it (registry strip)"},
+                                "label": "show its alerts"},
                     })
                 elif not d["loud"] or not d["owner"]:
                     findings.append({
@@ -4214,7 +4214,7 @@ def pipeline_audit(client, *, now=None) -> dict:
                         "detail": "console-only: no owner or loud permission yet",
                         "elapsed_s": None,
                         "fix": {"view": "anomalies", "detector": d["name"],
-                                "label": "register it (registry strip)"},
+                                "label": "show its alerts"},
                     })
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit: detectors failed: %s", exc)

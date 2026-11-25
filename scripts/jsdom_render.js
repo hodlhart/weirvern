@@ -212,8 +212,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                      loadRipplePage, openRippleSheet, RIPPLES_STATE, rippleWindowOverlap,
-                     loadHost, loadHostPage, loadEvidence, loadAudit, loadDetectors,
-                     registryHighlight, sluiceHighlightRule,
+                     loadHost, loadHostPage, loadEvidence, loadAudit,
+                     sluiceHighlightRule,
                    NF_FILTERS, nfSetFilter, nfRemoveChip,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
@@ -1649,7 +1649,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           fix: { view: "blocked", rule_id: "r-2026-09-01-2", label: "read the hits on Blocked" } },
         { class: "unowned_detector", severity: "warn", subject: "Mystery Net",
           detail: "unregistered \u2014 no owner, no runbook: it cannot page", elapsed_s: null,
-          fix: { view: "anomalies", detector: "Mystery Net", label: "register it (registry strip)" } },
+          fix: { view: "anomalies", detector: "Mystery Net", label: "show its alerts" } },
         { class: "silent_sensor", severity: "warn", subject: "edge-promised",
           detail: "declared and enabled but never heard from \u2014 in-path, so its segment may be waiting for it",
           elapsed_s: null,
@@ -6353,9 +6353,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         check("a NIC's line uses its own plan segment, not the sensor-level one",
               eth1.networks === "198.51.100.0/24" && eth2.networks === "",
               `eth1=${eth1.networks} eth2=${eth2.networks}`);
-        check("a siphon on eth1 does not mark eth2's channel enabled",
-              eth1.channel === "enabled" && eth2.channel === "",
+        // A CHANNEL BELONGS TO THE PLAN'S PAIR, NOT TO THE SENSOR (2026-11-20). With no pair
+        // declared, a siphon port carries no channel at all; the old assertion pinned the
+        // sensor-level state onto eth1, which is the cross-pollution this block exists to stop.
+        check("a siphon with no declared pair marks neither NIC's channel",
+              eth1.channel === "" && eth2.channel === "",
               `eth1=${eth1.channel} eth2=${eth2.channel}`);
+        const pairedFacts = typeof window.wlNicFacts === "function"
+          ? window.wlNicFacts(Object.assign({}, fake, {
+              plan: { channel_upstream: "eth1", channel_downstream: "eth2" } }))
+          : { rows: [] };
+        const paired1 = pairedFacts.rows.find((n) => n.name === "eth1") || {};
+        const paired2 = pairedFacts.rows.find((n) => n.name === "eth2") || {};
+        check("a declared pair carries the channel on BOTH of its ports",
+              paired1.channel === "enabled" && paired2.channel === "enabled",
+              `eth1=${paired1.channel} eth2=${paired2.channel}`);
         check("a capture-only NIC with no mode in its plan reads loch, not the sensor's siphon",
               eth1.mode === "siphon" && eth2.mode === "loch",
               `eth1=${eth1.mode} eth2=${eth2.mode}`);
@@ -6398,7 +6410,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             eth1.networks === "198.51.100.0/24" && eth2.networks === "",
             `eth1=${eth1.networks} eth2=${eth2.networks}`);
       check("a siphon on eth1 does not mark eth2's channel enabled",
-            eth1.channel === "enabled" && eth2.channel === "",
+            eth1.channel === "" && eth2.channel === "",
             `eth1=${eth1.channel} eth2=${eth2.channel}`);
       check("a capture-only NIC with no mode in its plan reads loch, not the sensor's siphon",
             eth1.mode === "siphon" && eth2.mode === "loch",
@@ -6705,17 +6717,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           cells.length >= 11 && cells.some((c) => /edge-alive/.test(c)) &&
             cells.some((c) => /scored this window/.test(c)),
           cells.join(" | ").slice(0, 140));
-    const disc = needEl("an-discipline").textContent;
-    check("the fired-vs-acted-on budget line renders",
-          /4 fired/.test(disc) && /1 acted on/.test(disc) && /3 still open/.test(disc), disc);
-    const detRows = [...doc.querySelectorAll("#detectors-table tbody tr")];
-    const detText = detRows.map((r) => r.textContent).join(" || ");
-    check("the registry says who may page",
-          detRows.length >= 3 && detRows.some((r) => /pages/.test(r.textContent)) &&
-            detRows.some((r) => /quiet/.test(r.textContent)),
-          detText.slice(0, 160));
-    check("...and flags a detector nobody registered",
-          /unregistered/.test(detText), detText.slice(0, 140));
+    // THE DISCIPLINE LINE AND THE REGISTRY STRIP WERE REMOVED FROM ALERTS ON REQUEST
+    // (2026-11-23): ownership and paging bookkeeping is not what this tab is for. Nothing in
+    // this view renders either, so the three checks that read them are gone rather than left
+    // skipping; a check with no element behind it is a permanent unverified, not coverage.
     const acts = [...doc.querySelectorAll("#anomalies-table .review-acts .review-act")]
       .map((b) => b.textContent);
     const allowed = new Set(["Acknowledge", "Resolve", "Ignore", "clear"]);
@@ -6761,7 +6766,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             needEl("view-weirlings").classList.contains("active"));
     }
     const detBtn = [...doc.querySelectorAll("#audit-table button")]
-      .find((b) => /register it/.test(b.textContent));
+      .find((b) => /show its alerts/.test(b.textContent));
     if (detBtn) {
       detBtn.click();
       await new Promise((r) => setTimeout(r, 200));
@@ -8895,7 +8900,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         window.getComputedStyle(doc.querySelector(".tab")).flexShrink === "0",
         "flex-shrink squashes eleven labels into a smear instead of letting the strip scroll");
   check("the stylesheet carries the responsive section (both breakpoints, the grid cap, the scroll box)",
-        /@media\s*\(max-width:\s*720px\)/.test(css) &&
+        /@media\s*\(max-width:\s*768px\)/.test(css) &&
           /@media\s*\(max-width:\s*420px\)/.test(css) &&
           /minmax\(min\(380px, 100%\), 1fr\)/.test(css) &&
           /\.tablewrap\s*\{[^}]*overflow-x:\s*auto/.test(css),
@@ -9537,7 +9542,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
               fix: { view: "blocked", rule_id: "r1", label: "read the hits on Blocked" } },
             { class: "unowned_detector", severity: "warn", subject: "LOF",
               detail: "console-only: no owner", elapsed_s: null,
-              fix: { view: "anomalies", detector: "LOF", label: "register it (registry strip)" } },
+              fix: { view: "anomalies", detector: "LOF", label: "show its alerts" } },
           ],
           counts: { expired_rule: 1, stuck_rule: 1, unowned_detector: 1 }, errors: {} }) })
       : null);
@@ -9592,20 +9597,21 @@ check("...a contradicted segment names BOTH segments on the issues list",
             needEl("view-blocked").classList.contains("active") && opened,
             "id=" + seenId + " opened=" + opened);
     }
-    const detFix = fixBtns.find((b) => /registry/.test(b.textContent));
+    // A DETECTOR FIX FILTERS THE QUEUE. The registry strip was removed from Alerts on request
+    // (2026-11-23), so the button used to flash a row that no longer renders and read as a dead
+    // fix on a real finding. It now lands on that detector's alerts; proven by mutation,
+    // because routing it anywhere else must fail this check.
+    const detFix = fixBtns.find((b) => /show its alerts/.test(b.textContent));
     if (detFix) {
-      H.showView("anomalies");
-      await H.loadAnomalies();
-      await sleep(200);
+      H.showView("health");
+      await sleep(80);
       detFix.click();
-      await sleep(250);
-      const detRow = [...doc.querySelectorAll("#detectors-table tbody tr")]
-        .find((r) => r.getAttribute("data-detector") === "LOF");
-      check("a registry fix lands ON the detector's row",
-            needEl("view-anomalies").classList.contains("active")
-            && !!detRow && detRow.classList.contains("flash-hit"),
-            "row=" + !!detRow + " cls=" + (detRow ? detRow.className : "n/a")
-            + " btn=" + detFix.textContent.slice(0, 24));
+      await sleep(350);
+      const filtered = String(H.AN_FILTERS.model || "");
+      check("a detector fix lands on that detector's alerts",
+            needEl("view-anomalies").classList.contains("active") && filtered === "LOF",
+            `view=${needEl("view-anomalies").classList.contains("active")} model=${filtered}`
+            + ` btn=${detFix.textContent.slice(0, 24)}`);
     }
     fetchOverride = null;
     // 6. a revoked registration still opens its sheet.
@@ -9886,19 +9892,24 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(300);
-    const regCell = [...doc.querySelectorAll("#detectors-table tbody .dcell")]
-      .find((el2) => /LOF/.test(el2.textContent));
-    check("JOB quiet-detector: the registry row offers its verb", !!regCell);
+    // THE DETECTOR'S OWN CELL IS THE VERB now that the registry strip is gone. One row carries
+    // five targets; the detector name is one of them, and it filters the queue to what that
+    // detector found. This is the same journey the registry row offered, on the row itself.
+    const regCell = [...doc.querySelectorAll("#anomalies-table .dcell")]
+      .find((el2) => /^LOF$/.test(el2.textContent.trim()));
+    check("JOB quiet-detector: the anomaly row names the detector as its own verb", !!regCell);
     clicks = 0;
     if (regCell) {
-      C(regCell);                                // 1: filter the queue to this detector
+      C(regCell);                                // 1: the detector's own cell filters to it
       await sleep(350);
     }
     const uq3 = clicks;
-    check("JOB quiet-detector: understanding is ONE click (registry row -> its alerts)",
+    check("JOB quiet-detector: understanding is ONE click (row's detector -> its alerts)",
           uq3 === 1 && H.AN_FILTERS.model === "LOF"
           && AN_REQS.some((u) => u.includes("model=LOF")),
-          `clicks=${uq3} model=${H.AN_FILTERS.model} asked=${AN_REQS.length ? AN_REQS[AN_REQS.length - 1] : "none"}`);
+          `clicks=${uq3} model=${H.AN_FILTERS.model}`
+          + ` asked=${AN_REQS.length ? AN_REQS[AN_REQS.length - 1] : "none"}`
+          + ` cell=${regCell ? regCell.outerHTML.slice(0, 90) : "none"}`);
     note("quiet-detector", "understand", uq3);
     const ackBtn = [...doc.querySelectorAll("#anomalies-table .review-act")]
       .find((b) => b.textContent === "Acknowledge");
@@ -10680,7 +10691,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
           (doc.activeElement || {}).id || (doc.activeElement || {}).tagName);
     needEl("probe-b").focus();
     doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    check("Tab stays inside the dialog", doc.activeElement === needEl("probe-a"),
+    // THE FIRST STOP IS THE CLOSE BUTTON. The trap was rebuilt to include #modal-close, which
+    // sits outside #modal-body (the F-05 fix), so Tab from the last body control wraps to the
+    // close button rather than to the first body control. Asserting probe-a described the OLD
+    // trap, and the failure that produced it was the fix working.
+    check("Tab stays inside the dialog and wraps to its first stop",
+          doc.activeElement === needEl("modal-close")
+          && needEl("modal").contains(doc.activeElement),
           (doc.activeElement || {}).id || "?");
     H.closeModal(pane);
     await new Promise((r) => setTimeout(r, 40));

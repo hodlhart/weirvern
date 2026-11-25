@@ -85,5 +85,5 @@ def test_the_client_lands_on_rule_and_detector_targets():
     seg = src.split("function auditGo(", 1)[1].split("\nfunction ", 1)[0]
     assert "fix.rule_id" in seg and "blOpenRuleById" in seg and "sluiceHighlightRule" in seg, \
         "auditGo no longer routes rule fixes to the blocked card / sluice row"
-    assert "fix.detector" in seg and "registryHighlight" in seg, \
-        "auditGo no longer routes registry fixes to the detector row"
+    assert "fix.detector" in seg and 'anSetFilter("model"' in seg, \
+        "auditGo no longer routes a detector fix to that detector's alerts"
