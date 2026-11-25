@@ -19,6 +19,7 @@ DESIGN RULES
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,6 +28,8 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern.clock import utcnow
 from weirvern.config import Settings
+
+logger = logging.getLogger(__name__)
 
 SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 EPISODE_COLUMNS = [
@@ -50,6 +53,18 @@ def _naive_utc(value: Any) -> datetime:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
+
+
+def _utc_aware(value: Any) -> datetime:
+    """The same instant as an aware UTC datetime, for a column declared in the server's zone.
+
+    THE BUG THIS EXISTS TO STOP (WV-ML-08). This module carries naive UTC internally, and a
+    naive value handed to the driver is written as LOCAL wall clock: 19:53Z went in as 19:53
+    America/Chicago, six hours ahead of the anomaly it grouped. An aware value is converted to
+    the column's zone instead, so the stored instant is the one that was meant. Verified
+    against ClickHouse: aware UTC and aware local store the same epoch, naive stores wall clock.
+    """
+    return _naive_utc(value).replace(tzinfo=UTC)
 
 
 def _rank(severity: str) -> int:
@@ -454,14 +469,21 @@ def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str,
     )
     # Superseded rows are history, never active episodes. Their updated_at is deliberately one
     # millisecond before the canonical row so a same-key canonical write wins deterministically.
+    #
+    # EVERY TIME VALUE IS SENT AWARE. A naive datetime is stored as local wall clock, which put
+    # the whole table six hours ahead of the anomalies it groups (WV-ML-08); the conversion is
+    # here, at the driver boundary, so the rest of the module can stay naive UTC.
     superseded_values = [
-        [row[col] for col in EPISODE_COLUMNS[:-1]] + [now] for row in superseded
+        [_utc_aware(row[col]) if isinstance(row[col], datetime) else row[col]
+         for col in EPISODE_COLUMNS[:-1]] + [now]
+        for row in superseded
     ]
     if superseded_values:
         client.insert("weirvern.alert_episodes", superseded_values, column_names=EPISODE_COLUMNS)
     canonical_updated = now + timedelta(milliseconds=1)
     values = [
-        [episode[col] for col in EPISODE_COLUMNS[:-1]] + [canonical_updated]
+        [_utc_aware(episode[col]) if isinstance(episode[col], datetime) else episode[col]
+         for col in EPISODE_COLUMNS[:-1]] + [canonical_updated]
         for episode in episodes
     ]
     if values:
@@ -477,23 +499,35 @@ def claim(client: Client, verdict: dict[str, Any], settings: Settings) -> bool:
 
     If the episode view is unavailable, this returns True: detection must not disappear because
     the budgeting read failed. The caller logs the exception and the reason.
+
+    A read that finds NO episode is logged as unknown and also returns True. That keeps a first
+    finding from being silenced by a view that has not been built yet, but it means a missing
+    episode is not the same answer as a pageable one, and the log has to say so (WV-ML-08).
     """
     src = str(verdict.get("src_addr") or "")
     start_raw = verdict.get("window_start")
     if not src or start_raw is None:
         return True
     at = _naive_utc(start_raw)
+    # THE COLUMN SPEAKS THE SERVER'S LOCAL WALL CLOCK; THE PARAMETER MUST SPEAK IT TOO. A
+    # datetime parameter is bound as a String and compared lexically, which matched nothing and
+    # made the page budget inert. Formatting the instant in the column's zone and casting it
+    # compares instants (WV-ML-08).
+    at_text = at.replace(tzinfo=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")
     result = client.query(
         "SELECT src_addr, episode_start, episode_end, first_detected, last_detected, "
         "occurrences, window_count, max_score, severity, severity_rank, role, page_window, "
         "pageable, page_reason, paged_at "
         "FROM weirvern.alert_episodes FINAL "
-        "WHERE src_addr = %(src)s AND episode_start <= %(at)s AND episode_end >= %(at)s "
+        "WHERE src_addr = %(src)s AND episode_start <= parseDateTime64BestEffort(%(at)s, 3) "
+        "AND episode_end >= parseDateTime64BestEffort(%(at)s, 3) "
         "AND page_reason != 'superseded' "
         "ORDER BY episode_start DESC LIMIT 1",
-        parameters={"src": src, "at": at},
+        parameters={"src": src, "at": at_text},
     )
     if not result.result_rows:
+        logger.info("Episode claim: no episode covers %s at %s; paging is unguarded",
+                    src, at.isoformat())
         return True
     names = list(result.column_names)
     episode = dict(zip(names, result.result_rows[0], strict=False))
@@ -506,8 +540,11 @@ def claim(client: Client, verdict: dict[str, Any], settings: Settings) -> bool:
     now = utcnow()
     episode.update({"pageable": 0, "page_reason": "paged", "paged_at": now,
                     "updated_at": now})
+    # The row read back carries local-aware timestamps; sending them back aware preserves the
+    # instant, and the normaliser keeps a naive value from being stored as wall clock.
     client.insert("weirvern.alert_episodes",
-                  [[episode[col] for col in EPISODE_COLUMNS]],
+                  [[_utc_aware(episode[col]) if isinstance(episode[col], datetime)
+                    else episode[col] for col in EPISODE_COLUMNS]],
                   column_names=EPISODE_COLUMNS)
     return True
 

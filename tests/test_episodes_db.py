@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from weirvern.config import Settings
-from weirvern.episodes import EPISODE_COLUMNS, refresh
+from weirvern.episodes import EPISODE_COLUMNS, claim, refresh
 
 BASE = datetime.now().replace(microsecond=0) - timedelta(hours=1)
 
@@ -55,13 +55,35 @@ def test_refresh_writes_one_episode_with_all_columns():
 
 
 class WindowClient:
-    """A fake that can slide the anomaly window between two refreshes."""
+    """A fake that can slide the anomaly window between two refreshes.
+
+    It models the COLUMN, not a Python list: DateTime64(3) with no declared zone stores an
+    instant and the driver reads it back aware in the server's zone. Every value it keeps is
+    normalised that way, so a key written from an aware UTC row matches the same instant a
+    naive-UTC fixture represents.
+    """
+
+    TIME_COLUMNS = ("episode_start", "episode_end", "first_detected", "last_detected",
+                    "page_window", "paged_at", "updated_at")
 
     def __init__(self, rounds, episodes=None):
         self.rounds = rounds
         self.round_index = 0
-        self.episodes = {(row[0], row[1]): dict(zip(EPISODE_COLUMNS, row, strict=False))
-                         for row in (episodes or [])}
+        self.episodes = {}
+        for row in (episodes or []):
+            self._store(dict(zip(EPISODE_COLUMNS, row, strict=False)))
+
+    @staticmethod
+    def _as_read(value):
+        if not isinstance(value, datetime):
+            return value
+        moment = value.replace(tzinfo=UTC) if value.tzinfo is None else value
+        return moment.astimezone()
+
+    def _store(self, item):
+        for col in self.TIME_COLUMNS:
+            item[col] = self._as_read(item.get(col))
+        self.episodes[(item["src_addr"], item["episode_start"])] = item
 
     def query(self, sql, parameters=None):
         if "FROM weirvern.netflow_anomalies" in sql:
@@ -79,9 +101,7 @@ class WindowClient:
 
     def insert(self, table, rows, column_names=None):
         for row in rows:
-            item = dict(zip(column_names, row, strict=False))
-            key = (item["src_addr"], item["episode_start"])
-            self.episodes[key] = item
+            self._store(dict(zip(column_names or EPISODE_COLUMNS, row, strict=False)))
 
 
 def _anomaly_rows(start):
@@ -121,7 +141,8 @@ def test_a_sliding_window_does_not_create_a_second_active_episode():
     assert first_summary["episodes"] == 1
     assert second_summary["episodes"] == 1
     assert len(active) == 1, "the sliding window inserted another active episode"
-    assert active[0]["episode_start"] == BASE, "the canonical start moved with the window"
+    assert active[0]["episode_start"].astimezone(UTC).replace(tzinfo=None) == BASE, (
+        "the canonical start moved with the window")
 
 
 def test_overlapping_prior_rows_are_marked_superseded_without_deleting_history():
@@ -137,9 +158,10 @@ def test_overlapping_prior_rows_are_marked_superseded_without_deleting_history()
                   if row["page_reason"] == "superseded"]
     assert summary["episodes"] == 1
     assert len(active) == 1
-    assert active[0]["episode_start"] == BASE
+    assert active[0]["episode_start"].astimezone(UTC).replace(tzinfo=None) == BASE
     assert len(superseded) == 1, "the older duplicate was not marked as history"
-    assert superseded[0]["episode_start"] == BASE + timedelta(minutes=5)
+    assert (superseded[0]["episode_start"].astimezone(UTC).replace(tzinfo=None)
+            == BASE + timedelta(minutes=5))
 
 
 def test_merge_normalises_aware_prior_timestamps():
@@ -209,3 +231,67 @@ def test_overlapping_rebuilt_episodes_are_collapsed_before_insert():
     assert merged[0]["episode_start"] == BASE
     assert merged[0]["episode_end"] == BASE + timedelta(minutes=30)
     assert not superseded
+
+
+def test_inserted_episode_times_are_aware_utc():
+    """WV-ML-08: a naive value is stored as LOCAL wall clock, six hours off on this host."""
+    client = FakeClient()
+    refresh(client, Settings())
+    _, rows, columns = client.inserts[-1]
+
+    for name in ("episode_start", "episode_end", "first_detected", "last_detected",
+                 "page_window", "updated_at"):
+        value = rows[0][columns.index(name)]
+        assert value.utcoffset() == timedelta(0), f"{name} was sent naive: {value!r}"
+
+    assert rows[0][columns.index("episode_start")] == BASE.replace(tzinfo=UTC), (
+        "the instant moved while being made aware")
+
+
+class ClaimClient:
+    """Returns the row the driver would give back: aware in the server's zone."""
+
+    COLUMNS = [col for col in EPISODE_COLUMNS if col != "updated_at"]
+
+    def __init__(self, row):
+        self.row = row
+        self.queries = []
+        self.inserts = []
+
+    def query(self, sql, parameters=None):
+        self.queries.append((sql, parameters))
+        return Result(self.COLUMNS, [self.row] if self.row else [])
+
+    def insert(self, table, rows, column_names=None):
+        self.inserts.append((table, rows, column_names))
+
+
+def _claim_row(at):
+    local = at.replace(tzinfo=UTC).astimezone()
+    return ("198.51.100.10", local, local + timedelta(minutes=5), local,
+            local + timedelta(minutes=5), 3, 3, 0.99, "critical", 4, "server", local,
+            1, "within-budget", None)
+
+
+def test_claim_formats_the_instant_in_the_column_zone_and_pages_once():
+    at = BASE
+    client = ClaimClient(_claim_row(at))
+
+    assert claim(client, {"src_addr": "198.51.100.10", "window_start": at}, Settings())
+
+    sql, parameters = client.queries[0]
+    assert "parseDateTime64BestEffort" in sql, "a String compared lexically is not a comparison"
+    expected = at.replace(tzinfo=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")
+    assert parameters["at"] == expected
+
+    table, rows, columns = client.inserts[-1]
+    assert rows[0][columns.index("page_reason")] == "paged"
+    assert rows[0][columns.index("paged_at")].utcoffset() == timedelta(0)
+
+
+def test_claim_without_an_episode_logs_unknown(caplog):
+    client = ClaimClient(None)
+    with caplog.at_level("INFO", logger="weirvern.episodes"):
+        assert claim(client, {"src_addr": "198.51.100.10", "window_start": BASE}, Settings())
+
+    assert "no episode covers 198.51.100.10" in caplog.text
