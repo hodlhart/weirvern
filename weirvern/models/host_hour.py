@@ -602,3 +602,55 @@ def run(client: Any, *, alerts_per_day: float = 20.0, now: datetime | None = Non
             "hosts": hosts, "anomalous": anomalous, "episodes": episodes,
             "alpha": round(alpha, 5),
             "budget_per_day": alerts_per_day}
+
+
+def backfill(client: Any, *, hours: int = 144, now: datetime | None = None,
+             chunk_hours: int = 24) -> dict[str, Any]:
+    """Build, reference and score host-hours over a span, in chunks.
+
+    `run` is an hourly tick and deliberately covers a handful of hours: a live loop must not
+    pin a day of features for every host on every pass. A demo, or a deployment that lost a
+    day, needs the span itself, and the reference cannot be back-filled later because `flows`
+    is trimmed long before the thirty days a per-host baseline wants. So this is the same work
+    as `run` with the window made explicit, chunked so one call cannot read the whole span at
+    once.
+
+    It does not touch the detect cursor, the alert path or the calibration tables. It is a
+    population builder, and its output is what the ripple replay derives an operating point
+    from.
+    """
+    end = (hour_key(now) if now is not None else None) or utcnow()
+    end = end.replace(minute=0, second=0, microsecond=0)
+    hours = max(1, int(hours))
+    # ANCHOR TO THE DATA, NOT THE CLOCK. A demo's span ends when its seed ended; anchored to
+    # now, a 144-hour request spends 48 hours reaching past the last flow and loses the oldest
+    # day it was asked for. On a live deployment the newest flow is within the hour, so this
+    # clamp changes nothing.
+    latest = hour_key(client.query("SELECT max(time_flow_start) FROM weirvern.flows")
+                      .result_rows[0][0])
+    if latest is not None:
+        end = min(end, latest.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+    start = end - timedelta(hours=hours)
+
+    built = 0
+    cursor = start
+    while cursor < end:
+        stop = min(cursor + timedelta(hours=max(1, int(chunk_hours))), end)
+        built += build_features(client, cursor, stop)
+        cursor = stop
+
+    references = rebuild_references(client, now=end)
+    stats, samples = load_reference(client)
+    rows = read_features(client, start, end)
+    results = [score_vector(str(row["src_addr"]), row["hour"], row,
+                            stats.get(str(row["src_addr"]), {}),
+                            samples.get(str(row["src_addr"]), {}))
+               for row in rows]
+    stored = store_scores(client, results)
+    scored = sum(1 for result in results if result.get("fused_p") is not None)
+    hours_built = len({row["hour"] for row in rows})
+    return {"hours_requested": hours, "hours_built": hours_built,
+            "host_hours": len(results), "rows": stored, "scored": scored,
+            "hosts": len({str(row["src_addr"]) for row in rows}),
+            "features": built, "references": references,
+            "since": start.isoformat(), "until": end.isoformat()}

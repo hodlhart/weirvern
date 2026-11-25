@@ -237,3 +237,58 @@ def test_a_deployment_with_no_history_abstains_instead_of_firing():
     rows = client.inserted[0][1]
     assert rows[0][2] == "unknown"
     assert "learning" in rows[0][3]
+
+
+def test_an_abstention_is_not_counted_as_an_evaluation():
+    """WV-ML-04: one unknown row per host per pass advanced the counter without adding history."""
+    history = [(1.0, "198.51.100.5", "unknown"), (0.4, "198.51.100.5", "observation"),
+               (0.0004, "198.51.100.5", "ripple"), (0.5, "", "unknown")]
+    client = FakeClient(history=history)
+
+    values, hosts = ripple_shadow.fused_history(client)
+
+    assert values == [0.4, 0.0004]
+    assert hosts == 1
+
+
+class ReplayClient:
+    def __init__(self, rows):
+        self.rows = rows
+        self.commands = []
+        self.inserted = []
+
+    def command(self, sql):
+        self.commands.append(sql)
+
+    def query(self, sql, parameters=None):
+        return SimpleNamespace(result_rows=list(self.rows))
+
+    def insert(self, table, rows, column_names=None):
+        self.inserted.append((table, list(rows), list(column_names or [])))
+
+
+def test_replay_evaluates_every_host_hour_through_the_real_fusion():
+    hour = datetime(2026, 11, 23, 10, 0, tzinfo=UTC)
+    rows = [
+        (hour, "198.51.100.5", "volume", 3.2, 0.01),
+        (hour, "198.51.100.5", "destinations", 2.1, 0.02),
+        (hour, "198.51.100.6", "volume", 0.4, 0.9),
+        (hour + timedelta(hours=1), "198.51.100.5", "volume", 5.0, 0.004),
+        (hour + timedelta(hours=1), "198.51.100.5", "destinations", 4.0, 0.006),
+    ]
+    client = ReplayClient(rows)
+
+    out = ripple_shadow.replay(client, since=hour, until=hour + timedelta(hours=2))
+
+    assert out["evaluations"] == 3
+    assert out["hosts"] == 2
+    assert out["hours"] == 2
+    assert out["observation"] == 3 and out["ripple"] == 0 and out["unknown"] == 0
+    assert any("DELETE" in sql for sql in client.commands), "a re-run would double the population"
+    table, inserted, columns = client.inserted[0]
+    assert table == "weirvern.ml_ripple"
+    assert len(inserted) == 3
+    assert {row[columns.index("model_version")] for row in inserted} == {
+        ripple_shadow.REPLAY_MODEL_VERSION}
+    assert {row[columns.index("status")] for row in inserted} == {"observation"}
+    assert all(0 < row[columns.index("combined_p")] <= 1 for row in inserted)

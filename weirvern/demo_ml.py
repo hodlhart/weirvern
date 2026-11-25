@@ -165,15 +165,34 @@ def run(client, settings, *, hours: int = DEFAULT_HOURS,
     summary["sweeps"] = sweeps
     summary["anomalies"] = total
 
+    # SPECIALISTS BEFORE FUSION (WV-ML-11). The shadow pass fuses what the specialists wrote;
+    # run it after them and every host is `unknown` because the tables it reads are still empty.
+    summary["specialists"] = _specialists(client, demo_settings)
+
+    # THE HOST-HOUR POPULATION, THEN THE REPLAY THAT TURNS IT INTO A DISTRIBUTION (WV-ML-04).
+    # `run` is an hourly tick; a demo needs the span, and the fused evaluator cannot derive a
+    # threshold from three hours of one day. The host-hour builder reads raw flows, so it uses
+    # the REQUESTED span, not the sweep's model-window clamp: 72 hours would leave 44 hosts
+    # below the 4,400 evaluations the operating point asks for.
     try:
-        summary["host_hour"] = host_hour.run(client)
+        summary["host_hour"] = host_hour.backfill(client, hours=requested_hours)
     except Exception as exc:  # noqa: BLE001
         summary["host_hour"] = f"failed: {exc}"[:120]
+
+    span = summary.get("host_hour")
+    if isinstance(span, dict):
+        try:
+            summary["ripple_replay"] = ripple_shadow.replay(
+                client,
+                since=datetime.fromisoformat(span["since"]),
+                until=datetime.fromisoformat(span["until"]),
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary["ripple_replay"] = f"failed: {exc}"[:120]
 
     try:
         summary["ripples"] = ripple_shadow.run(client)
     except Exception as exc:  # noqa: BLE001
         summary["ripples"] = f"failed: {exc}"[:120]
 
-    summary["specialists"] = _specialists(client, demo_settings)
     return summary

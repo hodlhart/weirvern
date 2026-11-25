@@ -29,10 +29,13 @@ from typing import Any
 from clickhouse_connect.driver.client import Client
 
 from weirvern.clock import utcnow
-from weirvern.models import generic_channels, operating_point
+from weirvern.models import generic_channels, host_hour, operating_point
 from weirvern.models.ripple import ChannelEvidence, evidence_from_shadow, fuse, is_retired_channel
 
 MODEL_VERSION = "ripple-1"
+#: Rows written by `replay()` carry their own version so a reader can tell a replayed hour from
+#: a live evaluation, and so a later live pass does not silently adopt them as its own output.
+REPLAY_MODEL_VERSION = "ripple-replay-1"
 
 # A week is long enough to contain a host's ordinary week and short enough that a retrain
 # does not leave the reference straddling two different models. The sample is per model and
@@ -154,8 +157,8 @@ def family_scale_for(model: str) -> tuple[str, str]:
     return slug, "5m"
 
 
-def _query(client: Client, sql: str) -> list[Any]:
-    return list(client.query(sql).result_rows)
+def _query(client: Client, sql: str, parameters: dict[str, Any] | None = None) -> list[Any]:
+    return list(client.query(sql, parameters=parameters).result_rows)
 
 
 def reference_population(client: Client) -> dict[str, list[float]]:
@@ -273,7 +276,7 @@ def strongest_per_channel(evidence: list[ChannelEvidence]) -> list[ChannelEviden
 
 
 FUSED_HISTORY_SQL = """
-SELECT combined_p, src_addr
+SELECT combined_p, src_addr, status
 FROM weirvern.ml_ripple
 WHERE combined_p > 0 AND combined_p <= 1
 ORDER BY evaluated_at DESC
@@ -286,12 +289,18 @@ def fused_history(client: Client) -> tuple[list[float], int]:
 
     The deployment's own history is the only calibration source that exists: no labels, no
     operator, no second system to compare against.
+
+    AN ABSTENTION IS NOT AN EVALUATION (WV-ML-04). A cold-start pass writes one row per host
+    with `combined_p = 1.0` and `status = 'unknown'`, and a segment row does the same when no
+    host reported. Counting those made the sample counter advance one per pass while the
+    history never reached the requirement it was measuring against.
     """
     values: list[float] = []
     hosts: set[str] = set()
     for row in _query(client, FUSED_HISTORY_SQL):
         value, host = row[0], str(row[1] or "")
-        if value is None:
+        status = str(row[2] or "") if len(row) > 2 else ""
+        if value is None or status == "unknown":
             continue
         values.append(float(value))
         if host:
@@ -398,7 +407,101 @@ def run(client: Client, *, now: datetime | None = None,
     }
 
 
+def replay(client: Client, *, since: datetime, until: datetime,
+           max_p: float | None = None, write: bool = True) -> dict[str, Any]:
+    """Replay stored host-hours through the real fusion, so a demo has a distribution.
+
+    WHY THIS EXISTS (WV-ML-04). The fused evaluator needs its own history before it will choose
+    a threshold, and on a demo the whole span is two days old: waiting 100 hourly passes is not
+    an option, so the deployment's own measured hours are the population. `host_hour_scores`
+    already holds one p-value per host, hour and channel; this rebuilds `ChannelEvidence` from
+    those rows and calls the same `fuse()` the live path uses, which is the point. A replay that
+    reimplemented the combination would prove nothing about the shipping code.
+
+    A host-hour has ONE family and ONE scale, so this cannot produce a ripple by the product's
+    own rule (`min_families = 2`). It produces observations with a real combined p, which is
+    exactly the population the operating point is derived from.
+    """
+    moment = _aware(until)
+    window_s = _wall(since)
+    window_e = _wall(until)
+    if write:
+        # A RE-RUN REPLACES ITS OWN WINDOW. `ml_ripple` is a MergeTree with no dedupe key, so a
+        # second replay of the same hours would double the population this exists to provide.
+        # mutations_sync makes the delete land before the insert, or the count is briefly both.
+        client.command(
+            "ALTER TABLE weirvern.ml_ripple DELETE "
+            "WHERE model_version = 'ripple-replay-1' "
+            f"AND evaluated_at >= toDateTime('{window_s}') "
+            f"AND evaluated_at < toDateTime('{window_e}') "
+            "SETTINGS mutations_sync = 1"
+        )
+    rows = _query(
+        client,
+        "SELECT hour, src_addr, channel, score, p_value "
+        "FROM weirvern.host_hour_scores FINAL "
+        "WHERE hour >= %(since)s AND hour < %(until)s "
+        "AND channel != 'fused' AND state = 'scored' "
+        "AND p_value > 0 AND p_value <= 1 "
+        "ORDER BY hour, src_addr, channel",
+        {"since": window_s, "until": window_e},
+    )
+
+    grouped: dict[tuple[datetime, str], list[ChannelEvidence]] = {}
+    for hour, host, channel, score, pvalue in rows:
+        family = _HOST_HOUR_FAMILY.get(str(channel), "flow")
+        grouped.setdefault((_aware(hour), str(host)), []).append(ChannelEvidence(
+            channel=str(channel), family=family, scale="1h",
+            model_id=f"host-hour:{channel}", model_version=REPLAY_MODEL_VERSION,
+            score=float(score), pvalue=float(pvalue), freshness_s=0.0, present=True,
+            host=str(host), observed_at=_aware(hour), p_method="empirical",
+        ))
+
+    records: list[dict[str, Any]] = []
+    for (hour, host), evidence in sorted(grouped.items()):
+        verdict = fuse(evidence) if max_p is None else fuse(evidence, max_p=max_p)
+        record = _record(host, verdict, hour)
+        record["model_version"] = REPLAY_MODEL_VERSION
+        records.append(record)
+
+    if write and records:
+        client.insert(
+            "weirvern.ml_ripple",
+            [[r["evaluated_at"], r["src_addr"], r["status"], r["reason"], r["confidence"],
+              r["combined_p"], r["families"], r["scales"],
+              json.dumps(r["contributors"], separators=(",", ":")),
+              json.dumps(r["unknown_channels"], separators=(",", ":")),
+              r["channel_count"], r["pageable"], r["model_version"]] for r in records],
+            column_names=_COLUMNS,
+        )
+    counts = Counter(r["status"] for r in records)
+    return {
+        "evaluations": len(records),
+        "hosts": len({host for _, host in grouped}),
+        "hours": len({hour for hour, _ in grouped}),
+        "ripple": counts.get("ripple", 0),
+        "observation": counts.get("observation", 0),
+        "unknown": counts.get("unknown", 0),
+        "since": moment.isoformat(),
+    }
+
+
+def _wall(value: datetime) -> str:
+    """The column's own wall clock, as text, for a DateTime with no declared zone."""
+    moment = value if value.tzinfo is not None else value.astimezone()
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# host_hour's channels are the families this replay reports under; one family per channel set.
+_HOST_HOUR_FAMILY = {
+    channel: family
+    for family, channels in host_hour.FAMILIES.items()
+    for channel in channels
+}
+
+
 __all__ = ["CANDIDATE_FAMILIES", "EVIDENCE_LOOKBACK_S", "FUSED_HISTORY_SQL", "MAX_HOSTS",
-           "MODEL_VERSION", "fused_history", "changepoint_stale",
+           "MODEL_VERSION", "REPLAY_MODEL_VERSION", "fused_history", "changepoint_stale",
            "REFERENCE_DAYS", "REFERENCE_SAMPLE", "changepoint_scale", "evaluate",
-           "family_scale_for", "missing_channels", "recent_rows", "reference_population", "run"]
+           "family_scale_for", "missing_channels", "recent_rows", "reference_population",
+           "replay", "run"]

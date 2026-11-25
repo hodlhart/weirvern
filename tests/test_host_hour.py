@@ -278,3 +278,29 @@ def test_episodes_compare_naive_and_aware_hours_without_raising():
     rows = [("198.51.100.5", datetime(2026, 11, 16, 3, 0, tzinfo=UTC), 0.001),
             ("198.51.100.5", datetime(2026, 11, 16, 4, 0, tzinfo=UTC), 0.001)]
     assert host_hour.count_episodes(rows, 0.01) == 1
+
+
+def test_backfill_anchors_the_span_to_the_last_flow(monkeypatch):
+    """WV-ML-04: a 144-hour request anchored to the clock spent two days past the seed."""
+    from types import SimpleNamespace
+
+    latest = datetime(2026, 11, 23, 16, 36)
+
+    class Client:
+        def query(self, sql, parameters=None):
+            return SimpleNamespace(result_rows=[[latest]])
+
+    spans = []
+    monkeypatch.setattr(host_hour, "build_features",
+                        lambda client, since, until: spans.append((since, until)) or 0)
+    monkeypatch.setattr(host_hour, "rebuild_references", lambda client, now=None: {})
+    monkeypatch.setattr(host_hour, "load_reference", lambda client: ({}, {}))
+    monkeypatch.setattr(host_hour, "read_features", lambda client, since, until: [])
+    monkeypatch.setattr(host_hour, "store_scores", lambda client, results: 0)
+
+    out = host_hour.backfill(Client(), hours=144, now=datetime(2026, 11, 25, 9, 0))
+
+    assert out["until"] == "2026-11-23T23:00:00+00:00", out["until"]
+    assert len(spans) == 6, spans
+    assert spans[0][0] == datetime(2026, 11, 17, 23, 0, tzinfo=UTC)
+    assert spans[-1][1] == datetime(2026, 11, 23, 23, 0, tzinfo=UTC)
