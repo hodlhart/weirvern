@@ -1,4 +1,6 @@
-# INF 601 final project: course context
+# INF601 - Advanced Programming in Python
+# Samuel Hart
+# Final Project
 
 This file records the INF 601 Advanced Programming in Python requirements for the final project.
 The product README covers the software itself.
